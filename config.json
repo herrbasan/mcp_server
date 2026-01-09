@@ -1,0 +1,29 @@
+{
+  "servers": {
+    "lm-studio": {
+      "enabled": true,
+      "endpoint": "http://192.168.0.100:12345/v1/chat/completions",
+      "model": "nvidia/nemotron-3-nano",
+      "systemPrompt": "You provide concise second opinions on development decisions. Focus on performance, maintainability, and best practices."
+    },
+    "code-analyzer": {
+      "enabled": true,
+      "description": "Analyzes code quality and suggests improvements"
+    },
+    "docs-helper": {
+      "enabled": true,
+      "description": "Helps with documentation generation and API references"
+    },
+    "memory": {
+      "enabled": true,
+      "embeddingEndpoint": "http://192.168.0.100:12345/v1/embeddings",
+      "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
+      "storePath": "data/memories.json",
+      "description": "Persistent semantic memory across sessions"
+    }
+  },
+  "orchestrator": {
+    "name": "mcp-orchestrator",
+    "version": "1.0.0"
+  }
+}
