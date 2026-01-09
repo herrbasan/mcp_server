@@ -60,19 +60,19 @@ export class MemoryServer {
     return [
       {
         name: 'remember',
-        description: 'Store a memory (preference, project detail, weakness, pattern) for future recall',
+        description: 'LLM-managed memory for improving OUTPUT QUALITY. Store evidence-based rules, not user preferences. Categories: proven (demonstrated good outcomes), anti_patterns (caused problems), hypotheses (untested ideas), context (project facts), observed (behavioral patterns). New memories start confidence 0.3.',
         inputSchema: {
           type: 'object',
           properties: {
-            text: { type: 'string', description: 'The memory to store' },
-            category: { type: 'string', description: 'Category: preferences, projects, weaknesses, patterns, or general' }
+            text: { type: 'string', description: 'The memory to store - should be actionable for quality improvement' },
+            category: { type: 'string', description: 'Category: proven, anti_patterns, hypotheses, context, or observed' }
           },
           required: ['text', 'category']
         }
       },
       {
         name: 'recall',
-        description: 'Semantic search for relevant memories based on query',
+        description: 'Search quality rules and evidence. Results: [#id] category (similarity%) confidence-indicator. ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5). Use before generating code to check what approaches have worked or failed.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -116,25 +116,65 @@ export class MemoryServer {
           },
           required: ['id', 'text']
         }
+      },
+      {
+        name: 'reflect_on_session',
+        description: 'USER triggers at session end. Analyze: What approaches worked? What failed? What should be promoted from hypothesis to proven, or flagged as anti_pattern? Focus on OUTPUT QUALITY - did the code we produced meet performance/simplicity standards? Propose evidence-based updates.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sessionSummary: { type: 'string', description: 'Summary of what was built, what worked, what did not' }
+          },
+          required: ['sessionSummary']
+        }
+      },
+      {
+        name: 'apply_reflection_changes',
+        description: 'Apply quality-focused updates. Promote hypotheses to proven when validated. Create anti_patterns when approaches caused problems. Goal: accumulate evidence for what produces good outcomes, not what user prefers.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            changes: {
+              type: 'array',
+              description: 'Array of approved changes from reflection',
+              items: {
+                type: 'object',
+                properties: {
+                  action: { type: 'string', enum: ['create', 'update', 'reinforce', 'decrease'] },
+                  id: { type: 'number', description: 'Memory ID for update/reinforce/decrease' },
+                  text: { type: 'string', description: 'Memory text for create/update' },
+                  category: { type: 'string', description: 'Category for create/update' },
+                  reason: { type: 'string', description: 'Reasoning for this change' }
+                }
+              }
+            }
+          },
+          required: ['changes']
+        }
       }
     ];
   }
 
   handlesTool(name) {
-    return ['remember', 'recall', 'forget', 'list_memories', 'update_memory'].includes(name);
+    return ['remember', 'recall', 'forget', 'list_memories', 'update_memory', 'reflect_on_session', 'apply_reflection_changes'].includes(name);
   }
 
   async callTool(name, args) {
     if (name === 'remember') {
       const { text, category } = args;
       const embedding = await this.getEmbedding(text);
+      const now = new Date().toISOString();
       
       const memory = {
         id: this.memories.nextId++,
         text,
         category,
         embedding,
-        timestamp: new Date().toISOString()
+        timestamp: now,
+        confidence: 0.3,
+        observations: 1,
+        firstSeen: now,
+        lastSeen: now
       };
       
       this.memories.memories.push(memory);
@@ -155,10 +195,11 @@ export class MemoryServer {
       let candidates = this.memories.memories;
       if (category) candidates = candidates.filter(m => m.category === category);
       
-      const scored = candidates.map(m => ({
-        ...m,
-        score: this.cosineSimilarity(queryEmbed, m.embedding)
-      })).sort((a, b) => b.score - a.score).slice(0, limit);
+      const scored = candidates.map(m => {
+        const conf = m.confidence ?? 0.5;
+        const sim = this.cosineSimilarity(queryEmbed, m.embedding);
+        return { ...m, score: sim, weightedScore: sim * (0.7 + conf * 0.3) };
+      }).sort((a, b) => b.weightedScore - a.weightedScore).slice(0, limit);
       
       if (!scored.length) {
         return {
@@ -166,9 +207,12 @@ export class MemoryServer {
         };
       }
       
-      const results = scored.map(m => 
-        `[#${m.id}] ${m.category} (${(m.score * 100).toFixed(1)}%)\n${m.text}`
-      ).join('\n\n');
+      const results = scored.map(m => {
+        const conf = m.confidence ?? 0.5;
+        const obs = m.observations ?? 1;
+        const confTag = conf >= 0.7 ? '✓' : conf >= 0.5 ? '~' : '?';
+        return `[#${m.id}] ${m.category} (${(m.score * 100).toFixed(1)}%) ${confTag}${obs > 1 ? ` x${obs}` : ''}\n${m.text}`;
+      }).join('\n\n');
       
       return {
         content: [{ type: 'text', text: `Found ${scored.length} memories:\n\n${results}` }]
@@ -236,6 +280,7 @@ export class MemoryServer {
       memory.embedding = embedding;
       if (category) memory.category = category;
       memory.timestamp = new Date().toISOString();
+      memory.lastSeen = new Date().toISOString();
       
       this.saveMemories();
       
@@ -243,6 +288,108 @@ export class MemoryServer {
         content: [{
           type: 'text',
           text: `✓ Updated memory #${id} in '${memory.category}'`
+        }]
+      };
+    }
+
+    if (name === 'reflect_on_session') {
+      const { sessionSummary } = args;
+      const allMemories = this.memories.memories;
+      
+      const memoryContext = allMemories.map(m => {
+        const conf = m.confidence ?? 0.5;
+        const obs = m.observations ?? 1;
+        return `[#${m.id}] ${m.category} (conf: ${conf.toFixed(2)}, obs: ${obs})\n${m.text}`;
+      }).join('\n\n');
+      
+      const analysis = {
+        sessionSummary,
+        currentMemories: memoryContext,
+        instructions: `Analyze this session against current memories. Propose changes:
+
+1. CREATE: New observations not captured (start confidence: 0.3)
+2. REINFORCE: Observed behavior matching existing memory (increase confidence by 0.1, max 0.95)
+3. UPDATE: Nuance/correction needed in existing memory
+4. DECREASE: Observed contradiction to existing memory (decrease confidence by 0.2)
+
+Focus on:
+- Stated preferences vs actual behavior
+- Decision patterns under pressure
+- Contradictions or nuances
+- Repeated behaviors
+
+Return JSON array of proposed changes with reasoning.`
+      };
+      
+      return {
+        content: [{
+          type: 'text',
+          text: `SESSION REFLECTION\n\nSession: ${sessionSummary}\n\n${memoryContext}\n\n---\n\nPropose changes based on observed behavior in this session.\n\nFor each proposal, specify:\n- action: create/update/reinforce/decrease\n- id: (for update/reinforce/decrease)\n- text: (for create/update)\n- category: (for create/update)\n- reason: why this change\n\nFormat as JSON array for apply_reflection_changes tool.`
+        }]
+      };
+    }
+
+    if (name === 'apply_reflection_changes') {
+      const { changes } = args;
+      const results = [];
+      
+      for (const change of changes) {
+        if (change.action === 'create') {
+          const embedding = await this.getEmbedding(change.text);
+          const now = new Date().toISOString();
+          const memory = {
+            id: this.memories.nextId++,
+            text: change.text,
+            category: change.category,
+            embedding,
+            timestamp: now,
+            confidence: 0.3,
+            observations: 1,
+            firstSeen: now,
+            lastSeen: now
+          };
+          this.memories.memories.push(memory);
+          results.push(`✓ Created #${memory.id}: ${change.reason}`);
+        }
+        
+        if (change.action === 'reinforce') {
+          const memory = this.memories.memories.find(m => m.id === change.id);
+          if (memory) {
+            memory.confidence = Math.min(0.95, (memory.confidence ?? 0.5) + 0.1);
+            memory.observations = (memory.observations ?? 1) + 1;
+            memory.lastSeen = new Date().toISOString();
+            results.push(`✓ Reinforced #${change.id} → ${memory.confidence.toFixed(2)}: ${change.reason}`);
+          }
+        }
+        
+        if (change.action === 'update') {
+          const memory = this.memories.memories.find(m => m.id === change.id);
+          if (memory) {
+            const embedding = await this.getEmbedding(change.text);
+            memory.text = change.text;
+            memory.embedding = embedding;
+            if (change.category) memory.category = change.category;
+            memory.lastSeen = new Date().toISOString();
+            results.push(`✓ Updated #${change.id}: ${change.reason}`);
+          }
+        }
+        
+        if (change.action === 'decrease') {
+          const memory = this.memories.memories.find(m => m.id === change.id);
+          if (memory) {
+            memory.confidence = Math.max(0.1, (memory.confidence ?? 0.5) - 0.2);
+            memory.lastSeen = new Date().toISOString();
+            results.push(`✓ Decreased #${change.id} → ${memory.confidence.toFixed(2)}: ${change.reason}`);
+          }
+        }
+      }
+      
+      this.saveMemories();
+      
+      return {
+        content: [{
+          type: 'text',
+          text: `Applied ${results.length} changes:\n\n${results.join('\n')}`
         }]
       };
     }

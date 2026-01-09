@@ -78,14 +78,20 @@ Or configure via VS Code: Command Palette → "MCP: Add Server..." → Choose "C
       "args": ["D:/Work/_GIT/mcp_server/src/index.js"]
     }
   }
-} (10 total)
+} (12 total)
 
-### Memory Server (Semantic Storage)
-- `remember` - Store preferences, project details, weaknesses, patterns
-- `recall` - Semantic search across memories (uses LM Studio embeddings)
+### Memory Server (Quality-Focused Storage)
+- `remember` - Store evidence-based quality rules (categories: proven, anti_patterns, observed, hypotheses, context)
+- `recall` - Semantic search with confidence weighting
 - `forget` - Delete memory by ID
 - `list_memories` - Browse all memories or filter by category
 - `update_memory` - Update existing memory text/category
+- `reflect_on_session` - Analyze what worked/failed, propose memory updates
+- `apply_reflection_changes` - Apply approved changes with confidence adjustments
+
+**Memory Philosophy**: Exists to improve output quality, not store user preferences. Categories track what produces good outcomes (proven), what causes problems (anti_patterns), and ideas being tested (hypotheses).
+
+**Confidence System**: Memories start at 0.3, increase when reinforced across sessions (+0.1), decrease when contradicted (-0.2). Recall is weighted by confidence. Indicators: ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5).
 ```
 
 ## Available Tools
