@@ -6,7 +6,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { LMStudioServer } from './servers/lm-studio.js';
 import { CodeAnalyzerServer } from './servers/code-analyzer.js';
-import { DocsHelperServer } from './servers/docs-helper.js';
+import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -30,11 +30,11 @@ if (config.servers['code-analyzer']?.enabled) {
   console.error('✓ Code Analyzer');
 }
 
-if (config.servers['docs-helper']?.enabled) {
-  const s = new DocsHelperServer(config.servers['docs-helper']);
-  serverModules.set('docs-helper', s);
+if (config.servers['web-research']?.enabled) {
+  const s = new WebResearchServer(config.servers['web-research']);
+  serverModules.set('web-research', s);
   tools.push(...s.getTools());
-  console.error('✓ Docs Helper');
+  console.error('✓ Web Research');
 }
 
 if (config.servers['memory']?.enabled) {

@@ -1,11 +1,11 @@
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server that manages multiple specialized servers and exposes them to VS Code Copilot. Provides 12 tools across 4 server modules:
+Centralized MCP server that manages multiple specialized servers and exposes them to VS Code Copilot. Provides 11 tools across 4 server modules:
 - **Memory**: Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LM Studio**: Local model integration (get_second_opinion)
 - **Code Analyzer**: Code quality analysis (analyze_code_quality, suggest_refactoring)
-- **Docs Helper**: Documentation generation (generate_jsdoc, explain_api)
+- **Web Research**: Multi-source web research with local LLM synthesis (research_topic)
 
 ## Memory System Philosophy
 Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:

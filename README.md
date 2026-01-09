@@ -26,7 +26,7 @@ mcp_server/
 │       ├── memory.js            # Persistent semantic memory
 │       ├── lm-studio.js         # LM Studio integration
 │       ├── code-analyzer.js     # Code quality analysis
-│       └── docs-helper.js       # Documentation generation
+│       └── web-research.js      # Multi-source web research
 ├── data/
 │   └── memories.json            # Memory storage (gitignored)
 ├── config.json                  # Server configuration
@@ -56,8 +56,12 @@ Edit `config.json` to enable/disable servers and configure endpoints:
     "code-analyzer": {
       "enabled": true
     },
-    "docs-helper": {
-      "enabled": true
+    "web-research": {
+      "enabled": true,
+      "llmEndpoint": "http://192.168.0.100:12345/v1/chat/completions",
+      "llmModel": "nvidia/nemotron-3-nano",
+      "maxPages": 10,
+      "timeout": 180000
     }
 **Global Setup (Recommended):**
 Add to User Settings JSON (Ctrl+Shift+P → "Preferences: Open User Settings (JSON)"):
@@ -78,34 +82,79 @@ Or configure via VS Code: Command Palette → "MCP: Add Server..." → Choose "C
       "args": ["D:/Work/_GIT/mcp_server/src/index.js"]
     }
   }
-} (12 total)
-
-### Memory Server (Quality-Focused Storage)
-- `remember` - Store evidence-based quality rules (categories: proven, anti_patterns, observed, hypotheses, context)
-- `recall` - Semantic search with confidence weighting
-- `forget` - Delete memory by ID
-- `list_memories` - Browse all memories or filter by category
-- `update_memory` - Update existing memory text/category
-- `reflect_on_session` - Analyze what worked/failed, propose memory updates
-- `apply_reflection_changes` - Apply approved changes with confidence adjustments
-
-**Memory Philosophy**: Exists to improve output quality, not store user preferences. Categories track what produces good outcomes (proven), what causes problems (anti_patterns), and ideas being tested (hypotheses).
-
-**Confidence System**: Memories start at 0.3, increase when reinforced across sessions (+0.1), decrease when contradicted (-0.2). Recall is weighted by confidence. Indicators: ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5).
-```
+} (11 total)
 
 ## Available Tools
 
-### LM Studio Server
-- `get_second_opinion` - Query local LM Studio model for code/architecture advice
+### Memory Server (7 tools)
+Quality-focused semantic storage with confidence weighting. Memories exist to improve output quality by tracking what works, what fails, and patterns observed across sessions.
 
-### Code Analyzer
-- `analyze_code_quality` - Analyze code for quality issues and complexity
-- `suggest_refactoring` - Get refactoring suggestions
+- **`remember`** - Store new memory with category
+  - Categories: `proven` (evidence-backed approaches), `anti_patterns` (known failures), `observed` (behavioral patterns), `hypotheses` (untested ideas), `context` (project facts)
+  - New memories start at confidence 0.3
+  
+- **`recall`** - Semantic search across memories
+  - Returns results ranked by similarity and confidence
+  - Indicators: ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5)
+  - Optional category filter
+  
+- **`list_memories`** - Browse all memories or filter by category
+  - View complete memory store with IDs, categories, and confidence levels
+  
+- **`update_memory`** - Modify existing memory text/category by ID
+  - Change wording, reclassify, or correct inaccuracies
+  
+- **`forget`** - Delete memory by ID
+  - Remove outdated or incorrect memories
+  
+- **`reflect_on_session`** - Analyze session outcomes and propose memory updates
+  - Identifies what worked, what failed, patterns observed
+  - Proposes CREATE (new observation), REINFORCE (+0.1 confidence), UPDATE (add nuance), DECREASE (-0.2 confidence)
+  - Returns proposed changes for review
+  
+- **`apply_reflection_changes`** - Apply approved reflection proposals
+  - Updates memory store with confirmed changes
+  - Adjusts confidence scores based on evidence
 
-### Docs Helper
-- `generate_jsdoc` - Generate JSDoc comments
-- `explain_api` - Explain API usage
+**Confidence System**: Memories gain confidence when reinforced across sessions (+0.1), lose confidence when contradicted (-0.2). High-confidence memories are prioritized in recall.
+
+### LM Studio Server (1 tool)
+Integration with local LM Studio instance for alternative perspectives on development decisions.
+
+- **`get_second_opinion`** - Query local model for advice
+  - Use for code/architecture decisions, design trade-offs
+  - Optional context parameter for code snippets
+  - 30-second timeout, configurable model and system prompt
+  - Requires LM Studio running with model loaded
+
+### Code Analyzer (2 tools)
+Fast static analysis for code quality issues and refactoring opportunities.
+
+- **`analyze_code_quality`** - Detect quality issues
+  - Checks: function length, cyclomatic complexity, promise chains, var usage, loose equality
+  - Optional language parameter (js, py, etc.)
+  - Returns list of detected issues with suggestions
+  
+- **`suggest_refactoring`** - Get refactoring recommendations
+  - Focus areas: `performance`, `readability`, `maintainability`
+  - Performance: loop optimization, iteration method selection
+  - Readability: function extraction, call simplification
+  - Maintainability: magic number extraction, error handling
+
+### Web Research (1 tool)
+Automated multi-source research using local LLM for synthesis. Dramatically reduces API costs by doing heavy processing locally.
+
+- **`research_topic`** - Comprehensive web research
+  - **Phase 1**: Query multiple search engines (DuckDuckGo, Google, Bing)
+  - **Phase 2**: Local LLM selects most authoritative sources
+  - **Phase 3**: Parallel Puppeteer scraping (handles JS-rendered content)
+  - **Phase 4**: Local LLM cross-references facts, synthesizes report
+  - Returns markdown report with citations and source URLs
+  - Configurable limits: `max_pages` (default 10), 3-minute timeout
+  - Use for: library comparisons, technical research, gathering context from multiple sources
+  - Cost-effective: 3-4 local LLM calls vs thousands of tokens for you to process raw HTML
+
+**Safety Features**: Hard page limits, total timeout, progress reporting to stderr, graceful degradation if sources fail.
 
 ## Adding New Servers
 
