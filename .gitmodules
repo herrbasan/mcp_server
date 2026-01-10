@@ -1,0 +1,3 @@
+[submodule "LMStudioAPI"]
+	path = LMStudioAPI
+	url = https://github.com/herrbasan/LMStudioAPI.git

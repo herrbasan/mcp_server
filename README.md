@@ -24,11 +24,14 @@ mcp_server/
 │   ├── index.js                 # Main orchestrator
 │   └── servers/
 │       ├── memory.js            # Persistent semantic memory
-│       ├── lm-studio.js         # LM Studio integration
+│       ├── lm-studio-ws.js      # WebSocket LM Studio integration
+│       ├── lm-studio-http.js    # HTTP LM Studio (reference)
 │       ├── code-analyzer.js     # Code quality analysis
 │       └── web-research.js      # Multi-source web research
+├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
 ├── data/
 │   └── memories.json            # Memory storage (gitignored)
+├── test/                        # Test scripts
 ├── config.json                  # Server configuration
 ├── package.json
 └── README.md
@@ -49,9 +52,11 @@ Edit `config.json` to enable/disable servers and configure endpoints:
     },
     "lm-studio": {
       "enabled": true,
-      "endpoint": "http://192.168.0.100:12345/v1/chat/completions",
+      "endpoint": "ws://192.168.0.100:12345",
       "model": "nvidia/nemotron-3-nano",
-      "systemPrompt": "You provide concise second opinions on development decisions..."
+      "systemPrompt": "You provide concise second opinions on development decisions...",
+      "temperature": 0.7,
+      "maxTokens": 2000
     },
     "code-analyzer": {
       "enabled": true
@@ -77,12 +82,9 @@ Add to User Settings JSON (Ctrl+Shift+P → "Preferences: Open User Settings (JS
 }
 ```
 
-Or configure via VS Code: Command Palette → "MCP: Add Server..." → Choose "Command (stdio)" "orchestrator": {
-      "command": "node",
-      "args": ["D:/Work/_GIT/mcp_server/src/index.js"]
-    }
-  }
-} (11 total)
+Or configure via VS Code: Command Palette → "MCP: Add Server..." → Choose "Command (stdio)"
+
+## Available Tools (14 total)
 
 ## Available Tools
 
@@ -118,14 +120,32 @@ Quality-focused semantic storage with confidence weighting. Memories exist to im
 
 **Confidence System**: Memories gain confidence when reinforced across sessions (+0.1), lose confidence when contradicted (-0.2). High-confidence memories are prioritized in recall.
 
-### LM Studio Server (1 tool)
-Integration with local LM Studio instance for alternative perspectives on development decisions.
+### LM Studio Server (4 tools)
+WebSocket integration with local LM Studio for model queries and management. Real-time MCP progress notifications show model loading (1%-100%) and generation status.
 
-- **`get_second_opinion`** - Query local model for advice
+- **`query_model`** - Query model with custom prompt
+  - Raw prompt without specialized instructions
+  - Optional model parameter to specify which model to use
+  - Optional maxTokens parameter (default: 2000)
+  - Real-time progress: connection → model loading → generation → complete
+  - Auto-unload previous model when switching (enforces single model)
+  
+- **`get_second_opinion`** - Get development perspective
+  - Same as query_model but with specialized system prompt
   - Use for code/architecture decisions, design trade-offs
   - Optional context parameter for code snippets
-  - 30-second timeout, configurable model and system prompt
-  - Requires LM Studio running with model loaded
+  - Configured system prompt focuses on performance, maintainability, best practices
+  
+- **`list_available_models`** - List all LM Studio models
+  - Shows context lengths, loaded status, capabilities
+  - Indicators: [LOADED], [Vision], [Tools]
+  - Use to discover available models before querying
+  
+- **`get_loaded_model`** - Check currently loaded model
+  - Returns model ID and context window size
+  - Use to verify which model is active
+
+**Transport**: WebSocket via LMStudioAPI submodule (github.com/herrbasan/LMStudioAPI.git). Model selection auto-detects loaded model or falls back to config default. Validates model IDs against available models.
 
 ### Code Analyzer (2 tools)
 Fast static analysis for code quality issues and refactoring opportunities.
@@ -191,6 +211,19 @@ export class YourServer {
 - Node.js 18+
 - @modelcontextprotocol/sdk
 - LM Studio running (if using lm-studio server)
+- Git submodule: LMStudioAPI (auto-cloned with `git submodule update --init`)
+
+## Installation
+
+```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/herrbasan/mcp_server.git
+
+# Or if already cloned
+git submodule update --init
+
+npm install
+```
 
 ## Development
 
