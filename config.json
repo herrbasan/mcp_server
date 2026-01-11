@@ -33,5 +33,11 @@
   "orchestrator": {
     "name": "mcp-orchestrator",
     "version": "1.0.0"
+  },
+  "web": {
+    "enabled": true,
+    "host": "localhost",
+    "port": 3010,
+    "maxLogs": 1000
   }
 }

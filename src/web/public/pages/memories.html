@@ -1,0 +1,47 @@
+<header>
+	<h1>Memory Management</h1>
+	<p>View and manage semantic memories stored by the orchestrator.</p>
+</header>
+
+<section>
+	<h2>Filters</h2>
+	<nui-button-container gap="0.5rem">
+		<nui-button type="primary">
+			<button type="button" data-action="filter-category">All</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category" data-category="proven">Proven</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category" data-category="anti_patterns">Anti-patterns</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category" data-category="hypotheses">Hypotheses</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category" data-category="context">Context</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category" data-category="observed">Observed</button>
+		</nui-button>
+	</nui-button-container>
+</section>
+
+<section>
+	<h2>Actions</h2>
+	<nui-button-container gap="0.5rem">
+		<nui-button variant="submit">
+			<button type="button" data-action="create-memory">Create Memory</button>
+		</nui-button>
+		<nui-button type="outline">
+			<button type="button" data-action="filter-category">Refresh</button>
+		</nui-button>
+	</nui-button-container>
+</section>
+
+<section>
+	<h2>Memories</h2>
+	<div id="memories-list">
+		<p>Loading...</p>
+	</div>
+</section>

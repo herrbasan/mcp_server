@@ -8,6 +8,9 @@ import { LMStudioWSServer } from './servers/lm-studio-ws.js';
 import { CodeAnalyzerServer } from './servers/code-analyzer.js';
 import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
+import { WebServer } from './web/server.js';
+import { LMStudioServer as LMStudioHTTP } from './servers/lm-studio-http.js';
+import { globalLogger } from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
@@ -47,6 +50,14 @@ if (config.servers['memory']?.enabled) {
 }
 
 console.error(`📦 ${tools.length} tools, ${resources.length} resources ready\n`);
+
+// Start web interface if enabled
+if (config.web?.enabled) {
+  const memoryServer = serverModules.get('memory');
+  const lmStudioHTTP = new LMStudioHTTP(config.servers['lm-studio']);
+  const webServer = new WebServer(config.web, memoryServer, lmStudioHTTP);
+  webServer.start();
+}
 
 const server = new Server(
   { name: config.orchestrator.name, version: config.orchestrator.version },
@@ -93,7 +104,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         });
       }
       
-      return await module.callTool(name, args);
+      try {
+        const result = await module.callTool(name, args);
+        globalLogger.log('mcp-tool', name, args, result);
+        return result;
+      } catch (err) {
+        globalLogger.log('mcp-tool', name, args, null, err);
+        throw err;
+      }
     }
   }
   

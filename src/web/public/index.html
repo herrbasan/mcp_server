@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="color-scheme" content="light dark">
+	<title>MCP Orchestrator Dashboard</title>
+	<link rel="stylesheet" href="/nui_wc2/NUI/css/nui-theme.css">
+	<link rel="stylesheet" href="/nui_wc2/NUI/css/modules/nui-menu.css">
+	<style>
+		body { margin: 0; padding: 0; overflow: hidden; }
+		nui-app:not(.nui-ready) { display: none; }
+		.stat-card {
+			padding: 1rem;
+			border-radius: 0.5rem;
+			background: var(--nui-color-surface-variant);
+		}
+		.stat-card h3 {
+			margin: 0 0 0.5rem 0;
+			font-size: 0.875rem;
+			color: var(--nui-color-text-secondary);
+		}
+		.stat-card .value {
+			font-size: 2rem;
+			font-weight: bold;
+		}
+		.confidence-indicator {
+			display: inline-block;
+			width: 0.75rem;
+			height: 0.75rem;
+			border-radius: 50%;
+			margin-left: 0.5rem;
+		}
+		.confidence-high { background: var(--nui-color-success); }
+		.confidence-med { background: var(--nui-color-warning); }
+		.confidence-low { background: var(--nui-color-error); }
+		.log-entry {
+			padding: 0.5rem;
+			margin: 0.25rem 0;
+			border-left: 3px solid var(--nui-color-primary);
+			background: var(--nui-color-surface-variant);
+			font-family: monospace;
+			font-size: 0.875rem;
+		}
+		.log-entry.error {
+			border-left-color: var(--nui-color-error);
+		}
+		.log-timestamp {
+			color: var(--nui-color-text-secondary);
+			font-size: 0.75rem;
+		}
+	</style>
+	<script type="module" src="/web/public/app.js"></script>
+</head>
+<body>
+	<nui-app nui-vars-sidebar_width="15rem" nui-vars-sidebar_force-breakpoint="60rem">
+		<nui-skip-links></nui-skip-links>
+
+		<nui-top-nav>
+			<header>
+				<layout>
+					<item>
+						<nui-button data-action="toggle-sidebar">
+							<button type="button" aria-label="Toggle navigation menu">
+								<nui-icon name="menu">☰</nui-icon>
+							</button>
+						</nui-button>
+					</item>
+					<item>
+						<h1>MCP Orchestrator</h1>
+					</item>
+					<item>
+						<nui-button data-action="toggle-theme">
+							<button type="button" aria-label="Toggle light/dark theme">
+								<nui-icon name="brightness">⛭</nui-icon>
+							</button>
+						</nui-button>
+					</item>
+				</layout>
+			</header>
+		</nui-top-nav>
+
+		<nui-side-nav>
+			<nui-link-list mode="fold">
+				<!-- Navigation loaded from JavaScript -->
+			</nui-link-list>
+		</nui-side-nav>
+
+		<nui-content>
+			<nui-main>
+				<!-- Content loaded dynamically -->
+			</nui-main>
+		</nui-content>
+
+		<nui-app-footer>
+			<span>MCP Orchestrator v1.0</span>
+		</nui-app-footer>
+	</nui-app>
+</body>
+</html>
