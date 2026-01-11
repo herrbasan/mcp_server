@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -14,6 +15,23 @@ import { globalLogger } from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
+
+// Override config with environment variables if present
+if (process.env.LM_STUDIO_WS_ENDPOINT) config.servers['lm-studio'].endpoint = process.env.LM_STUDIO_WS_ENDPOINT;
+if (process.env.LM_STUDIO_MODEL) config.servers['lm-studio'].model = process.env.LM_STUDIO_MODEL;
+if (process.env.LM_STUDIO_HTTP_ENDPOINT) {
+  const baseUrl = process.env.LM_STUDIO_HTTP_ENDPOINT;
+  config.servers['web-research'].llmEndpoint = `${baseUrl}/v1/chat/completions`;
+  config.servers['memory'].embeddingEndpoint = `${baseUrl}/v1/embeddings`;
+}
+if (process.env.LM_STUDIO_MODEL) config.servers['web-research'].llmModel = process.env.LM_STUDIO_MODEL;
+if (process.env.EMBEDDING_MODEL) config.servers['memory'].embeddingModel = process.env.EMBEDDING_MODEL;
+
+// Override web config with environment variables
+if (process.env.WEB_ENABLED !== undefined) config.web.enabled = process.env.WEB_ENABLED === 'true';
+if (process.env.WEB_HOST) config.web.host = process.env.WEB_HOST;
+if (process.env.WEB_PORT) config.web.port = parseInt(process.env.WEB_PORT);
+if (process.env.WEB_MAX_LOGS) config.web.maxLogs = parseInt(process.env.WEB_MAX_LOGS);
 
 const serverModules = new Map();
 const tools = [];

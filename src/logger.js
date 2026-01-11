@@ -2,6 +2,25 @@ export class Logger {
   constructor(maxLogs = 1000) {
     this.logs = [];
     this.maxLogs = maxLogs;
+    this.listeners = new Set();
+  }
+
+  addListener(fn) {
+    this.listeners.add(fn);
+  }
+
+  removeListener(fn) {
+    this.listeners.delete(fn);
+  }
+
+  notifyListeners(entry) {
+    for (const fn of this.listeners) {
+      try {
+        fn(entry);
+      } catch (err) {
+        console.error('Listener error:', err);
+      }
+    }
   }
 
   log(type, tool, request, response, error = null) {
@@ -16,6 +35,8 @@ export class Logger {
     
     this.logs.unshift(entry);
     if (this.logs.length > this.maxLogs) this.logs.pop();
+    
+    this.notifyListeners(entry);
     
     return entry;
   }

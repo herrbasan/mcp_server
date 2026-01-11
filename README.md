@@ -1,20 +1,38 @@
 # MCP Server Orchestrator
 
-Centralized Node.js server that manages multiple MCP servers and exposes them to VS Code Copilot.
+Centralized MCP server running as an independent HTTP/SSE service. Manages multiple specialized servers and exposes 14 tools to VS Code Copilot via remote connection.
 
 ## Features
 
+- **Remote Architecture**: Independent server accessible over network (HTTP/SSE transport)
+- **Web Monitoring**: Real-time log streaming and memory management UI
 - **Single Entry Point**: One MCP server manages multiple specialized servers
 - **Modular Design**: Easy to add/remove server modules
-- **Configuration-Driven**: Enable/disable servers via config.json
+- **Environment-Based Config**: Sensitive settings in .env (not tracked)
 - **Vanilla JavaScript**: No TypeScript, fast and lean
 
 ## Quick Start
 
+### Server (192.168.0.100 or remote machine)
 ```bash
 npm install
-npm start
+cp .env.example .env  # Edit with your LM Studio endpoints
+npm run start:http    # Starts on ports 3100 (MCP) and 3010 (web)
 ```
+
+### Client (VS Code)
+Add to `%APPDATA%\Code\User\mcp.json`:
+```json
+{
+  "servers": {
+    "mcp-server-orchestrator": {
+      "type": "sse",
+      "url": "http://192.168.0.100:3100/mcp"
+    }
+  }
+}
+```
+Restart VS Code.
 
 ## Project Structure
 
@@ -39,22 +57,39 @@ mcp_server/
 
 ## Configuration
 
-Edit `config.json` to enable/disable servers and configure endpoints:
+### Environment Variables (.env)
+**Required** - Copy `.env.example` to `.env` and configure:
+
+```env
+# LM Studio endpoints
+LM_STUDIO_WS_ENDPOINT=ws://localhost:12345
+LM_STUDIO_HTTP_ENDPOINT=http://localhost:12345
+
+# Embedding model for memory system
+EMBEDDING_MODEL=text-embedding-nomic-embed-text-v2-moe
+MAX_MEMORY_CHARS=30000
+
+# Server binding (0.0.0.0 for remote access)
+MCP_HOST=0.0.0.0
+MCP_PORT=3100
+WEB_HOST=0.0.0.0
+WEB_PORT=3010
+```
+
+### Server Configuration (config.json)
+Non-sensitive settings (models, prompts, timeouts):
 
 ```json
 {
   "servers": {
     "memory": {
       "enabled": true,
-      "embeddingEndpoint": "http://192.168.0.100:12345/v1/embeddings",
-      "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
       "storePath": "data/memories.json"
     },
     "lm-studio": {
       "enabled": true,
-      "endpoint": "ws://192.168.0.100:12345",
       "model": "nvidia/nemotron-3-nano",
-      "systemPrompt": "You provide concise second opinions on development decisions...",
+      "systemPrompt": "You provide concise second opinions...",
       "temperature": 0.7,
       "maxTokens": 2000
     },
@@ -63,26 +98,45 @@ Edit `config.json` to enable/disable servers and configure endpoints:
     },
     "web-research": {
       "enabled": true,
-      "llmEndpoint": "http://192.168.0.100:12345/v1/chat/completions",
       "llmModel": "nvidia/nemotron-3-nano",
       "maxPages": 10,
       "timeout": 180000
-    }
-**Global Setup (Recommended):**
-Add to User Settings JSON (Ctrl+Shift+P → "Preferences: Open User Settings (JSON)"):
-
-```json
-{
-  "mcp.servers": {
-    "orchestrator": {
-      "command": "node",
-      "args": ["D:/Work/_GIT/mcp_server/src/index.js"]
     }
   }
 }
 ```
 
-Or configure via VS Code: Command Palette → "MCP: Add Server..." → Choose "Command (stdio)"
+## Architecture
+
+**Transport**: StreamableHTTPServerTransport (MCP SDK)
+- Server: `src/http-server.js` - HTTP POST endpoint with session management
+- Web UI: `src/web/server.js` - Real-time SSE log streaming
+- Ports: 3100 (MCP protocol), 3010 (web monitoring)
+
+**Network Setup**:
+- Server binds to `0.0.0.0` for remote access (configurable in .env)
+- Firewall: Allow TCP 3100, 3010 on server
+- Clients connect via `http://SERVER_IP:3100/mcp` in mcp.json
+
+**Tools Exposed** (14 total):
+- Memory: remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes
+- LM Studio: query_model, get_second_opinion, list_available_models, get_loaded_model
+- Code Analyzer: analyze_code_quality, suggest_refactoring
+- Web Research: research_topic
+
+## Web Monitoring
+
+Access at `http://SERVER_IP:3010` for:
+- Real-time log streaming (SSE)
+- Memory browser and search
+- Server status
+
+## Development
+
+**Local Testing** (stdio mode):
+```bash
+npm start  # Uses src/index.js with stdio transport
+```
 
 ## Available Tools (14 total)
 

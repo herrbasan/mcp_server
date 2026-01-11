@@ -6,7 +6,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:http": "node src/http-server.js",
     "dev": "node --watch src/index.js",
+    "dev:http": "node --watch src/http-server.js",
     "web": "node src/web-start.js"
   },
   "keywords": [
@@ -19,7 +21,8 @@
   "license": "MIT",
   "dependencies": {
     "@lmstudio/sdk": "^1.5.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "dotenv": "^17.2.3",
     "puppeteer": "^24.34.0"
   }
 }

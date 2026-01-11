@@ -9,7 +9,16 @@ export class MemoryServer {
     this.endpoint = config.embeddingEndpoint;
     this.model = config.embeddingModel;
     this.storePath = join(__dirname, '..', '..', config.storePath);
+    this.maxChars = parseInt(process.env.MAX_MEMORY_CHARS) || 1800; // ~450 tokens safe for 512 limit
     this.memories = this.loadMemories();
+  }
+
+  chunkText(text) {
+    const chunks = [];
+    for (let i = 0; i < text.length; i += this.maxChars) {
+      chunks.push(text.slice(i, i + this.maxChars));
+    }
+    return chunks;
   }
 
   loadMemories() {
@@ -26,6 +35,11 @@ export class MemoryServer {
   }
 
   async getEmbedding(text) {
+    // Chunk large text to avoid embedding model token limits
+    if (text.length > this.maxChars) {
+      text = text.slice(0, this.maxChars);
+    }
+    
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     
@@ -37,7 +51,10 @@ export class MemoryServer {
         signal: controller.signal
       });
       
-      if (!res.ok) throw new Error(`Embedding failed: ${res.status}`);
+      if (!res.ok) {
+        const error = await res.text();
+        throw new Error(`Embedding failed (${res.status}): ${error}`);
+      }
       
       const data = await res.json();
       return data.data[0].embedding;
@@ -162,9 +179,42 @@ export class MemoryServer {
   async callTool(name, args) {
     if (name === 'remember') {
       const { text, category } = args;
-      const embedding = await this.getEmbedding(text);
       const now = new Date().toISOString();
       
+      // Check if chunking is needed
+      if (text.length > this.maxChars) {
+        const chunks = this.chunkText(text);
+        const memoryIds = [];
+        
+        for (let i = 0; i < chunks.length; i++) {
+          const embedding = await this.getEmbedding(chunks[i]);
+          const memory = {
+            id: this.memories.nextId++,
+            text: chunks[i],
+            category,
+            embedding,
+            timestamp: now,
+            confidence: 0.3,
+            observations: 1,
+            firstSeen: now,
+            lastSeen: now,
+            chunkInfo: { part: i + 1, total: chunks.length }
+          };
+          this.memories.memories.push(memory);
+          memoryIds.push(memory.id);
+        }
+        
+        this.saveMemories();
+        return {
+          content: [{
+            type: 'text',
+            text: `✓ Stored ${chunks.length} memory chunks #${memoryIds.join(', #')} in '${category}' (text was ${text.length} chars, split into ${chunks.length} parts)`
+          }]
+        };
+      }
+      
+      // Single memory for small text
+      const embedding = await this.getEmbedding(text);
       const memory = {
         id: this.memories.nextId++,
         text,
@@ -256,7 +306,10 @@ export class MemoryServer {
       });
       
       const output = Object.entries(grouped).map(([cat, mems]) => 
-        `${cat.toUpperCase()}:\n${mems.map(m => `  [#${m.id}] ${m.text}`).join('\n')}`
+        `${cat.toUpperCase()}:\n${mems.map(m => {
+          const chunkStr = m.chunkInfo ? ` [part ${m.chunkInfo.part}/${m.chunkInfo.total}]` : '';
+          return `  [#${m.id}]${chunkStr} ${m.text}`;
+        }).join('\n')}`
       ).join('\n\n');
       
       return {

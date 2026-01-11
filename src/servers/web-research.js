@@ -10,6 +10,49 @@ export class WebResearchServer {
     this.searchEngines = config.searchEngines || ['duckduckgo', 'google'];
   }
 
+  enhanceQuery(query) {
+    // Technical terms that need quotes to prevent word splitting
+    const technicalTerms = [
+      /\bVirtual DOM\b/gi,
+      /\bReact\s+\w+/gi, // React hooks, React components, etc.
+      /\bVue\s+\w+/gi,
+      /\bWeb Components?\b/gi,
+      /\bShadow DOM\b/gi,
+      /\bService Worker\b/gi,
+      /\bWeb Worker\b/gi,
+      /\bWebSocket\b/gi,
+      /\bIndexedDB\b/gi,
+      /\bLocalStorage\b/gi,
+      /\bSessionStorage\b/gi,
+    ];
+    
+    let enhanced = query;
+    
+    // Quote technical terms
+    for (const term of technicalTerms) {
+      enhanced = enhanced.replace(term, (match) => `"${match}"`);
+    }
+    
+    // Add context keywords for disambiguation
+    const contextMap = {
+      'Virtual DOM': 'Virtual DOM React performance web development',
+      'Shadow DOM': 'Shadow DOM web components JavaScript',
+      'Service Worker': 'Service Worker PWA JavaScript',
+    };
+    
+    for (const [term, context] of Object.entries(contextMap)) {
+      if (query.toLowerCase().includes(term.toLowerCase()) && !query.includes('"')) {
+        // Only add context if we haven't already quoted it
+        if (!enhanced.includes(`"${term}"`)) {
+          enhanced = context;
+          break;
+        }
+      }
+    }
+    
+    return enhanced;
+  }
+
   getTools() {
     return [{
       name: 'research_topic',
@@ -65,9 +108,16 @@ export class WebResearchServer {
   }
 
   async researchTopic(query, maxPages, engines, signal) {
+    // Enhance query for better technical results
+    const enhancedQuery = this.enhanceQuery(query);
+    console.error(`\n🔍 Original query: "${query}"`);
+    if (enhancedQuery !== query) {
+      console.error(`   Enhanced to: "${enhancedQuery}"`);
+    }
+    
     // Phase 1: Search engines
     console.error('\n📡 Phase 1: Searching...');
-    const searchResults = await this.searchMultipleEngines(query, engines, signal);
+    const searchResults = await this.searchMultipleEngines(enhancedQuery, engines, signal);
     console.error(`   Found ${searchResults.length} potential sources`);
     
     if (searchResults.length === 0) {

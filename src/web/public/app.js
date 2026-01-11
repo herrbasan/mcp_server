@@ -10,7 +10,49 @@ let currentCategory = null;
 
 // Logs state
 let logs = [];
-let logsInterval = null;
+let logsEventSource = null;
+
+function startLogStream() {
+	if (logsEventSource) {
+		logsEventSource.close();
+	}
+
+	console.log('Starting SSE log stream...');
+	logsEventSource = new EventSource(`${API_BASE}/api/logs/stream`);
+	
+	logsEventSource.onopen = () => {
+		console.log('SSE connection opened');
+	};
+	
+	logsEventSource.onmessage = (event) => {
+		console.log('SSE message received:', event.data);
+		const data = JSON.parse(event.data);
+		
+		if (data.type === 'initial') {
+			console.log('Initial logs received:', data.logs.length);
+			logs = data.logs;
+			renderLogs();
+		} else if (data.type === 'log') {
+			console.log('New log received:', data.log);
+			logs.unshift(data.log);
+			if (logs.length > 100) logs.pop();
+			renderLogs();
+		}
+	};
+	
+	logsEventSource.onerror = (error) => {
+		console.error('SSE connection error:', error);
+		console.error('SSE readyState:', logsEventSource?.readyState);
+		setTimeout(() => startLogStream(), 5000);
+	};
+}
+
+function stopLogStream() {
+	if (logsEventSource) {
+		logsEventSource.close();
+		logsEventSource = null;
+	}
+}
 
 // Navigation data
 const navigationData = [
@@ -237,7 +279,8 @@ document.addEventListener('click', async (e) => {
 
 	// Logs actions
 	if (action === 'refresh-logs') {
-		await loadLogs();
+		stopLogStream();
+		startLogStream();
 	}
 
 	if (action === 'clear-logs') {
@@ -246,12 +289,11 @@ document.addEventListener('click', async (e) => {
 
 	if (action === 'toggle-auto-refresh') {
 		const btn = target;
-		if (logsInterval) {
-			clearInterval(logsInterval);
-			logsInterval = null;
+		if (logsEventSource) {
+			stopLogStream();
 			btn.textContent = 'Auto-Refresh: OFF';
 		} else {
-			logsInterval = setInterval(() => loadLogs(), 2000);
+			startLogStream();
 			btn.textContent = 'Auto-Refresh: ON';
 		}
 	}
@@ -267,7 +309,8 @@ function escapeHtml(text) {
 // Export for page modules
 window.app = {
 	loadMemories,
-	loadLogs,
+	startLogStream,
+	stopLogStream,
 	memories,
 	logs
 };

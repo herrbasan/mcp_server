@@ -174,6 +174,58 @@ export class WebServer {
         return;
       }
 
+      // SSE endpoint for real-time logs
+      if (path === '/api/logs/stream') {
+        console.error('[SSE] Client connected for log stream');
+        console.error('[SSE] Current log count:', globalLogger.logs.length);
+        console.error('[SSE] Active listeners:', globalLogger.listeners.size);
+        
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'Access-Control-Allow-Origin': '*'
+        });
+
+        // Send initial logs
+        const logs = globalLogger.getLogs(50);
+        console.error(`[SSE] Sending ${logs.length} initial logs`);
+        res.write(`data: ${JSON.stringify({ type: 'initial', logs })}\n\n`);
+
+        // Subscribe to new logs
+        const listener = (entry) => {
+          console.error('[SSE] Broadcasting new log:', entry.type, entry.tool);
+          try {
+            res.write(`data: ${JSON.stringify({ type: 'log', log: entry })}\n\n`);
+          } catch (err) {
+            console.error('[SSE] Error writing to stream:', err.message);
+          }
+        };
+        
+        globalLogger.addListener(listener);
+        console.error('[SSE] Listener added, total listeners:', globalLogger.listeners.size);
+
+        // Heartbeat to keep connection alive
+        const heartbeat = setInterval(() => {
+          try {
+            res.write(': heartbeat\n\n');
+          } catch (err) {
+            clearInterval(heartbeat);
+          }
+        }, 30000);
+
+        // Cleanup on disconnect
+        req.on('close', () => {
+          console.error('[SSE] Client disconnected');
+          clearInterval(heartbeat);
+          globalLogger.removeListener(listener);
+          console.error('[SSE] Listener removed, total listeners:', globalLogger.listeners.size);
+          res.end();
+        });
+        
+        return;
+      }
+
       if (path === '/api/logs/clear' && req.method === 'POST') {
         globalLogger.clear();
         
