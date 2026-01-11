@@ -1,3 +1,6 @@
 [submodule "LMStudioAPI"]
 	path = LMStudioAPI
 	url = https://github.com/herrbasan/LMStudioAPI.git
+[submodule "nui_wc2"]
+	path = nui_wc2
+	url = https://github.com/herrbasan/nui_wc2.git
