@@ -196,3 +196,80 @@ System is production-ready with 14 tools. WebSocket implementation stable. Consi
 - No mechanism to actively trigger rules during code generation
 
 **Insight captured**: AI shifts maintainability argument - compact "unmaintainable" code becomes MORE maintainable with LLM assistance because there's less to maintain.
+
+---
+
+## Session: January 11, 2026 - Web Research Tool Resurrection
+
+**What We Fixed:**
+Web research tool went from catastrophic failure (0% scrape success) to production excellence (70-100% success) through systematic debugging and a meta-prompting breakthrough.
+
+**The Journey:**
+- **Initial state**: Research queries returning 0-4 garbage results, all sources filtered, 0% scrape success
+- **Problem 1**: Query enhancement over-quoting broke search engines ("Virtual DOM" → too many quotes)
+- **Problem 2**: Pre-filter too strict - rejecting ALL valid sources if ANY keyword didn't match
+- **Problem 3**: LLM source selection completely failing - model thinking out loud instead of JSON
+- **Solution**: Disabled query enhancement, made pre-filter lenient, used meta-prompting to fix LLM
+
+**The Breakthrough:**
+Asked the local LLM "how should I prompt you to get pure JSON?" - it provided exact recommendations:
+- Keywords: "ONLY", "JSON array", "nothing else", "no explanation", "no markdown"
+- Format: "You are a strict JSON-only responder. Output ONLY a JSON array..."
+- Applied its own recommendations → **SUCCESS**: Model still thinks out loud BUT regex extraction now works perfectly
+
+**Technical Wins:**
+- **Query enhancement DISABLED**: Search engines handle natural language better than regex patterns
+- **Pre-filter lenient**: Only reject if ZERO keywords match (was rejecting if ANY didn't match)
+- **Regex extraction**: Pattern `/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/` finds JSON array in thinking text
+- **Mozilla Readability integration**: 96-99% content reduction, section-aware extraction
+- **10 concurrent browsers**: Each URL gets isolated Puppeteer instance (no shared state)
+- **SSL certificate handling**: `--ignore-certificate-errors` flags prevent HTTPS failures
+- **Retry logic**: 2 attempts per URL, exponential backoff (2s/4s)
+- **Progress notifications**: 10-phase timeline for 2-iteration mode with emojis
+- **Locale forcing**: DuckDuckGo `&kl=us-en`, Bing `&setlang=en&cc=US` for English results
+
+**Test Results:**
+- Before fixes: 0-4 results, 0% scrape success, Microsoft homepage for "Nomic AI" query
+- After fixes: 20 results → 10 pre-filtered → 7-10 scraped (70-100% success)
+- Research quality: Single-iteration completion, 85-92% confidence scores
+- LLM selection: Successfully parsing `[3,7,1,9,2,4,8,6,10,5]` from thinking text
+
+**What Went Well:**
+- Meta-prompting approach: asking the model how to prompt itself = surprising effectiveness
+- Working with LLM's nature (thinking out loud) rather than fighting it
+- Systematic debugging through test-driven development
+- Readability extraction dramatically improved content quality
+- Concurrent scraping fully utilizing high-end hardware (Ryzen 5950X)
+
+**Key Insights:**
+1. **Don't over-engineer queries**: Search engines are smarter than regex patterns
+2. **Be lenient in filtering**: False positives better than false negatives
+3. **Meta-prompting**: Ask the model how to prompt itself → use its recommendations
+4. **Extract, don't constrain**: Use regex to extract structured data from thinking text
+5. **SSL errors are common**: Always include ignore flags for web scraping
+
+**Configuration Updates:**
+- `config.json`: Changed engines from `["duckduckgo", "google"]` to `["duckduckgo", "bing"]`
+- Google removed due to aggressive anti-bot detection (constant CAPTCHAs)
+- Bing redirect URLs decoded to actual destinations
+- Timeout: 180s (3 minutes) for full 2-iteration pipeline
+- Concurrent scrapes: 10 (optimal for 32-thread CPU)
+
+**Dependencies Added:**
+- `@mozilla/readability@0.6.0` - Content extraction
+- `jsdom@27.4.0` - DOM parsing for Readability
+
+**Documentation Updates:**
+- Updated [.github/copilot-instructions.md](.github/copilot-instructions.md) with web research technical details
+- Added meta-prompting principle to key principles
+- Documented 5-phase pipeline, iteration loop, anti-bot measures
+
+**For Next Session:**
+Web research tool is production-ready. Consider adding:
+- Section-aware extraction (scrape only relevant headings from long docs)
+- Smart chunking for large pages (preserve sentence boundaries, keep code blocks intact)
+- Link following from authoritative sources (depth-2 exploration)
+
+---
+
+*Claude Sonnet 4.5 - "Asked the AI how to talk to the AI. It worked."*
