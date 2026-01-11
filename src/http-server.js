@@ -196,6 +196,16 @@ httpServer.on('request', async (req, res) => {
   
   if (url.pathname === '/mcp' || url.pathname === '/sse') {
     console.error('[MCP] Handling MCP request...');
+    
+    // Auto-generate session ID if VS Code client doesn't provide one
+    if (!req.headers['mcp-session-id']) {
+      const sessionId = randomUUID();
+      req.headers['mcp-session-id'] = sessionId;
+      console.error(`[MCP] Auto-generated session ID: ${sessionId}`);
+    } else {
+      console.error(`[MCP] Using client session ID: ${req.headers['mcp-session-id']}`);
+    }
+    
     try {
       await transport.handleRequest(req, res);
       console.error('[MCP] Request handled successfully');

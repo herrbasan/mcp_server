@@ -131,62 +131,139 @@ if (evaluation.confidence < 80 && iteration < 2) {
 
 ## Implementation Phases
 
-### Phase 1: Query Preparation Tool (Week 1)
-- Add `prepare_research_query` to expose search strategy to calling LLM
-- Allows review before execution
+### Phase 1: Query Preparation Tool ✅ COMPLETE (Jan 11, 2026)
+- Implemented `prepare_research_query` (backpocket - not exposed)
+- Guardrails configuration added
+- Updated `research_topic` description to guide calling LLM on query formulation
+- Calling LLM naturally optimizes queries using conversation context
 - Low risk, high value
 
-### Phase 2: Smart Search Routing (Week 2)
-- Domain detection (technical/academic/news)
-- Site filters and recency
-- Result deduplication
+### Phase 2: Smart Search Routing - SKIPPED
+**Rationale**: Auto-modification of user queries is presumptuous. The calling LLM already knows search syntax (`site:`, recency filters, quotes) and will use it when appropriate. No need to second-guess.
 
-### Phase 3: Content Extraction (Week 3)
-- Integrate Readability algorithm
-- LLM-guided section extraction
-- Chunking for large pages
+**Alternative**: Could provide search syntax reference in tool description, but "if you know it, you know it already."
 
-### Phase 4: Iterative Loop (Week 4)
+### Phase 3: Content Extraction (CURRENT)
+**Goal**: Extract only relevant content, dramatically reduce noise
+
+**Current Problems**:
+- Still contains: ads, cookie banners, related articles, comments sections
+- No section awareness (can't extract just "Performance" section from long article)
+- Wastes local LLM tokens on irrelevant content
+- Large pages truncated arbitrarily at 12MB limit
+- Simple tag stripping misses complex layouts
+
+**Solutions**:
+1. **Readability Filtering** - Use Mozilla Readability algorithm or equivalent
+   - Strips boilerplate: nav, ads, footers, sidebars
+   - Identifies main article content using heuristics
+   - Preserves structure (headings, code blocks, lists)
+
+2. **Section-Aware Extraction** - Parse document structure before full scrape
+   - Extract heading hierarchy (h1, h2, h3)
+   - Let LLM identify relevant sections based on query
+   - Fetch only those sections (don't scrape entire page)
+   - Example: "Performance" section from 50-section tutorial
+
+3. **Smart Chunking** - Split large content intelligently
+   - Preserve sentence boundaries (not arbitrary character cuts)
+   - Keep code blocks intact
+   - Maintain context with small overlaps between chunks
+
+**Expected Impact**:
+- 70-80% noise reduction per page
+- Faster LLM synthesis (fewer tokens)
+- More relevant extractions (section targeting)
+- Better handling of documentation sites with deep structure
+
+### Phase 4: Iterative Loop (Week 4) - FUTURE
 - Self-evaluation prompt
-- Follow-up query generation
+- Follow-up query generation  
 - Synthesis merging
 
-### Phase 5: Source Selection Enhancement (Week 5)
+### Phase 5: Source Selection Enhancement (Week 5) - FUTURE
 - Two-phase preview + ranking
 - Link following from authoritative sources
 - Visited URL tracking
 
 ## Technical Considerations
 
-**Performance**:
-- Parallel scraping (current: sequential)
-- Cache scraped content (avoid re-fetching)
-- Timeout per iteration (don't exceed total timeout)
+**Reliability Guardrails** (Local-First Focus):
+- **Hard timeouts**: 30s total pipeline, 5s per web scrape, 10s per LLM call
+- **Iteration caps**: Max 2 refinement loops (prevent runaway)
+- **Memory limits**: Max 10MB per scraped page, cleanup after each stage
+- **State tracking**: Visited URLs set, answered questions list (prevent duplicates)
+- **Resource monitoring**: Watch local LLM load, queue requests if busy
+- **Connection health**: Auto-reconnect to LM Studio on failures
 
-**LLM Usage**:
-- Stage 0: Calling LLM (cheap - uses conversation context)
-- Stages 2-4: Local LLM (expensive - multiple calls)
-- Budget token usage: estimate before execution
+**Performance** (Not Cost-Related):
+- Parallel scraping with limit (max 5 concurrent to avoid overwhelming network)
+- Cache scraped content (avoid re-fetching, saves time not money)
+- Token window management: chunk content to fit local LLM context limits
+
+**LLM Usage** (All Local):
+- Stage 0: Calling LLM (GitHub Copilot - uses conversation context)
+- Stages 2-4: Local LLM via LM Studio (limit concurrent calls to 1)
+- Context window: respect model limits, chunk large content
 
 **Error Handling**:
 - Graceful degradation: If Stage 2 fails, fall back to Stage 1 results
-- Scrape failures: Continue with successful sources
-- LLM timeouts: Use partial results
+- Scrape failures: Continue with successful sources (don't abort pipeline)
+- LLM timeouts: Return partial results with confidence score
+- WebSocket errors: Auto-reconnect and retry (implemented Jan 11)
 
 ## Success Metrics
 
+**Quality**:
 - **Relevance**: % of sources directly answering query (target: >80%)
 - **Depth**: Average content quality score (LLM-evaluated)
 - **Coverage**: % of user questions answered (target: >90%)
-- **Efficiency**: Time to first useful result (<30s)
-- **Iteration rate**: % of queries requiring follow-up (target: <30%)
+
+**Reliability** (Local Focus):
+- **Completion rate**: % of pipelines that complete without errors (target: >95%)
+- **Timeout handling**: % of timed-out stages that return partial results (target: 100%)
+- **Reconnection success**: % of LM Studio disconnects that auto-recover (target: >99%)
+- **Memory stability**: No pipeline should exceed 100MB total memory
+
+**Performance**:
+- **Time to first result**: <30s for simple queries, <60s with refinement
+- **Iteration efficiency**: % of queries requiring follow-up (target: <30%)
+- **Parallel utilization**: Web scraping should use 3-5 concurrent connections
+
+## Local-First Implementation Notes
+
+**LM Studio Integration**:
+- Use WebSocket connection with auto-reconnect (implemented Jan 11)
+- Serialize LLM calls (no concurrent requests to avoid overload)
+- Respect model's configured memory/GPU settings (don't override)
+- Monitor connection health before each stage
+
+**Resource Management**:
+- Track memory per pipeline, cleanup scraped content after synthesis
+- Limit concurrent web scrapes to 5 (avoid network saturation)
+- Use streaming where possible (don't load entire pages into memory)
+- Implement graceful shutdown (cleanup in-progress pipelines)
+
+**Guardrails Configuration**:
+```javascript
+const PIPELINE_LIMITS = {
+  totalTimeout: 60000,        // 60s total
+  scrapeTimeout: 5000,        // 5s per page
+  llmTimeout: 10000,          // 10s per LLM call
+  maxIterations: 2,           // refinement loops
+  maxSources: 10,             // pages to scrape
+  maxMemoryPerPage: 10485760, // 10MB
+  concurrentScrapes: 5
+};
+```
 
 ## Next Steps
 
 1. **Review this architecture** - discuss trade-offs
 2. **Prototype Stage 0** - validate query preparation improves results
-3. **A/B test** - compare old vs new pipeline on sample queries
-4. **Iterate** - measure metrics, tune prompts, adjust limits
+3. **Test reliability** - simulate LM Studio restarts, network failures, timeouts
+4. **Measure metrics** - track completion rate, memory usage, reconnection success
+5. **Iterate** - tune prompts, adjust guardrail limits based on real usage
 
 ---
 

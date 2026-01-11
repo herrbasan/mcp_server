@@ -19,8 +19,20 @@ export class LMStudioWSServer {
     }
   }
 
+  async _isSessionHealthy() {
+    if (!this.session) return false;
+    try {
+      await this.session.listModels();
+      return true;
+    } catch (err) {
+      console.log('[LM Studio] Connection health check failed, will reconnect');
+      this.session = null;
+      return false;
+    }
+  }
+
   async ensureConnected() {
-    if (this.session) return;
+    if (this.session && await this._isSessionHealthy()) return;
     if (this.connectPromise) return this.connectPromise;
     
     this.connectPromise = this._initSession();
@@ -82,6 +94,7 @@ export class LMStudioWSServer {
         loadedInstances: m.loadedInstances
       }));
     } catch (err) {
+      this.session = null;
       throw new Error(`Failed to fetch models: ${err.message}`);
     }
   }
@@ -256,6 +269,7 @@ export class LMStudioWSServer {
           }]
         };
       } catch (err) {
+        this.session = null;
         return {
           content: [{
             type: 'text',
@@ -359,6 +373,7 @@ export class LMStudioWSServer {
         }]
       };
     } catch (err) {
+      this.session = null;
       return {
         content: [{
           type: 'text',

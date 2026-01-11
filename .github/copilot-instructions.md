@@ -13,7 +13,12 @@ Centralized MCP server running as **independent HTTP/SSE service** on remote mac
 - **Memory**: Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LM Studio**: WebSocket-based local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
 - **Code Analyzer**: Code quality analysis (analyze_code_quality, suggest_refactoring)
-- **Web Research**: Multi-source web research with local LLM synthesis (research_topic)
+- **Web Research**: Multi-source web research with iterative refinement (research_topic)
+  - 5-phase pipeline: search → select → scrape → synthesize → evaluate
+  - Intelligent source selection via local LLM (strict JSON-only prompting)
+  - 10 concurrent isolated browser instances for anti-bot resilience
+  - SSL certificate error handling, retry logic, rate limiting
+  - Iterative loop: re-searches if confidence < 80%, max 2 iterations
 
 ## LM Studio Integration
 - **Transport**: WebSocket via custom LMStudioAPI submodule (github.com/herrbasan/LMStudioAPI.git)
@@ -56,3 +61,8 @@ Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - Minimal dependencies - build custom solutions over third-party libraries
 - Preserve stack traces in errors, throw don't log
 - Validate model IDs against available models before use
+- When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
+
+## Contributors
+- **@herrbasan** - Initial architecture, LM Studio integration, memory system
+- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging

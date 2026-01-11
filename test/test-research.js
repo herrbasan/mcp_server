@@ -1,4 +1,4 @@
-import { WebResearchServer } from './src/servers/web-research.js';
+import { WebResearchServer } from '../src/servers/web-research.js';
 
 const config = {
   llmEndpoint: 'http://192.168.0.100:12345/v1/chat/completions',
