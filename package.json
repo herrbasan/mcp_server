@@ -3,13 +3,12 @@
   "version": "1.0.0",
   "description": "Centralized MCP server orchestrator for managing multiple MCP servers",
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/http-server.js",
   "scripts": {
-    "start": "node src/index.js",
-    "start:http": "node src/http-server.js",
-    "dev": "node --watch src/index.js",
-    "dev:http": "node --watch src/http-server.js",
-    "web": "node src/web-start.js"
+    "start": "node src/http-server.js",
+    "start:stdio": "node src/stdio-server.js",
+    "dev": "node --watch src/http-server.js",
+    "dev:stdio": "node --watch src/stdio-server.js"
   },
   "keywords": [
     "mcp",
