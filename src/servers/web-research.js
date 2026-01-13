@@ -1,11 +1,13 @@
 import puppeteer from 'puppeteer';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
+import { ScraperRegistry } from '../scrapers/index.js';
 
 export class WebResearchServer {
   constructor(config) {
     this.llmEndpoint = config.llmEndpoint;
     this.llmModel = config.llmModel;
+    this.scraperRegistry = new ScraperRegistry();
     
     // Guardrails (local-first reliability focus)
     this.limits = {
@@ -586,7 +588,18 @@ Array:`;
       killTimer = setTimeout(async () => {
         console.error(`   ⚠️ Force-killing browser for ${url.substring(0, 60)}...`);
         if (browser && browser.process()) {
-          browser.process().kill('SIGKILL');
+          const proc = browser.process();
+          try {
+            // Windows-compatible force kill
+            if (process.platform === 'win32') {
+              const { execSync } = await import('child_process');
+              execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+            } else {
+              proc.kill('SIGKILL');
+            }
+          } catch (e) {
+            // Already dead
+          }
         }
       }, this.limits.scrapeTimeout + 1000);
       
@@ -601,14 +614,36 @@ Array:`;
       if (killTimer) clearTimeout(killTimer);
       if (browser) {
         try {
-          await Promise.race([
-            browser.close(),
-            new Promise(resolve => setTimeout(resolve, 2000)) // 2s max for cleanup
-          ]);
+          const closePromise = browser.close();
+          const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2000));
+          await Promise.race([closePromise, timeoutPromise]);
+          
+          // If still running after timeout, force kill (Windows-compatible)
+          if (browser.process() && !browser.process().killed) {
+            const proc = browser.process();
+            if (process.platform === 'win32') {
+              const { execSync } = await import('child_process');
+              try {
+                execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+              } catch (e) {}
+            } else {
+              proc.kill('SIGKILL');
+            }
+          }
         } catch (e) {
-          // Force kill if close hangs
-          if (browser.process()) {
-            browser.process().kill('SIGKILL');
+          // Force kill on any error
+          try {
+            if (browser.process() && !browser.process().killed) {
+              const proc = browser.process();
+              if (process.platform === 'win32') {
+                const { execSync } = await import('child_process');
+                execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+              } else {
+                proc.kill('SIGKILL');
+              }
+            }
+          } catch (killErr) {
+            // Already dead, ignore
           }
         }
       }
@@ -626,16 +661,8 @@ Array:`;
         // Random delay before navigation (100-500ms)
         await this.randomDelay(100, 500);
         
-        await page.goto(url, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: this.limits.scrapeTimeout 
-        });
-        
-        // Simulate human-like scrolling
-        await this.humanScroll(page);
-        
-        // Get full HTML for Readability processing
-        const html = await page.content();
+        // Use site-specific scraper if available
+        const html = await this.scraperRegistry.scrapeUrl(url, page);
         
         // Extract clean content using Readability
         const extracted = this.extractReadableContent(html, url);
