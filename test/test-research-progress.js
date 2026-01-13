@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 
-const server = spawn('node', ['src/index.js'], { stdio: ['pipe', 'pipe', 'pipe'] });
+const server = spawn('node', ['src/stdio-server.js'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
 let buffer = '';
 let progressUpdates = [];

@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import { config as loadDotEnv } from 'dotenv';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -14,6 +14,7 @@ import { LMStudioServer as LMStudioHTTP } from './servers/lm-studio-http.js';
 import { globalLogger } from './logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+loadDotEnv({ path: join(__dirname, '..', '.env') });
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
 
 // Override config with environment variables if present

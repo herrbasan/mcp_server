@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 
-const server = spawn('node', ['src/index.js'], { cwd: process.cwd() });
+const server = spawn('node', ['src/stdio-server.js'], { cwd: process.cwd() });
 
 let output = '';
 

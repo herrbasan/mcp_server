@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 
-const server = spawn('node', ['src/index.js'], { stdio: ['pipe', 'pipe', 'pipe'] });
+const server = spawn('node', ['src/stdio-server.js'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
 let buffer = '';
 let progressUpdates = [];
@@ -43,9 +43,7 @@ server.stderr.on('data', (data) => {
 await new Promise(r => setTimeout(r, 1000));
 
 console.log('🧪 Testing LM Studio SDK with progress reporting\n');
-console.log('📝 Getting second opinion on lm-studio.js...\n');
-
-const code = readFileSync('src/servers/lm-studio.js', 'utf-8');
+console.log('📝 Getting a quick second opinion...\n');
 
 const testRequest = {
   jsonrpc: '2.0',
@@ -54,8 +52,8 @@ const testRequest = {
   params: {
     name: 'get_second_opinion',
     arguments: {
-      question: 'Review this code for potential improvements, bugs, or better practices. Focus on the LM Studio SDK integration and progress reporting implementation.',
-      context: code
+      question: 'In 2-3 sentences, suggest one concrete improvement to a Node.js server that streams model output and reports progress.',
+      maxTokens: 96
     },
     _meta: {
       progressToken: 'test-progress-123'

@@ -7,6 +7,12 @@ export class LMStudioWSServer {
     this.currentModel = null;
     this.progressCallback = null;
     this.connectPromise = null;
+    this._modelsCache = null;
+    this._modelsCacheAt = 0;
+    this._modelLoadPromise = null;
+    this._modelLoadKey = null;
+    this._connectNsSeen = null;
+    this._lastStatus = null;
   }
 
   setProgressCallback(callback) {
@@ -19,20 +25,33 @@ export class LMStudioWSServer {
     }
   }
 
-  async _isSessionHealthy() {
+  _sendStatus(progress, message) {
+    if (!message) return;
+    if (message === this._lastStatus) return;
+    this._lastStatus = message;
+    this.sendProgress(progress, 100, message);
+  }
+
+  _isConnectionError(err) {
+    const msg = err && err.message ? String(err.message) : String(err || '');
+    const m = msg.toLowerCase();
+    return (
+      m.includes('not connected') ||
+      m.includes('connect timeout') ||
+      m.includes('connection closed') ||
+      m.includes('connection error') ||
+      m.includes('econnrefused') ||
+      m.includes('websocket')
+    );
+  }
+
+  _isSessionReady() {
     if (!this.session) return false;
-    try {
-      await this.session.listModels();
-      return true;
-    } catch (err) {
-      console.log('[LM Studio] Connection health check failed, will reconnect');
-      this.session = null;
-      return false;
-    }
+    return typeof this.session.connectionState === 'number' ? this.session.connectionState === 3 : true;
   }
 
   async ensureConnected() {
-    if (this.session && await this._isSessionHealthy()) return;
+    if (this._isSessionReady()) return;
     if (this.connectPromise) return this.connectPromise;
     
     this.connectPromise = this._initSession();
@@ -48,22 +67,54 @@ export class LMStudioWSServer {
     
     this.session = new LMStudioSession({
       baseUrl,
+      // Defaults in LMStudioAPI are good; we tune for reliability under load.
+      connectTimeoutMs: this.config.connectTimeoutMs || 10000,
+      rpcTimeoutMs: this.config.rpcTimeoutMs || 120000,
+      autoReconnect: true,
+      reconnect: {
+        enabled: true,
+        maxAttempts: 12,
+        baseDelayMs: 200,
+        maxDelayMs: 6000,
+        multiplier: 1.7,
+        jitter: 0.3,
+      },
+      telemetry: {
+        onReconnect: (info) => {
+          this.sendProgress(2, 100, `Reconnecting (${info?.namespace || 'unknown'})...`);
+        },
+        onGiveUp: (info) => {
+          this.sendProgress(2, 100, `Reconnect gave up (${info?.namespace || 'unknown'})`);
+        },
+      },
       modelOptions: {
-        enforceSingleModel: true
+        enforceSingleModel: true,
+        // JIT auto-unload TTL is optional; keep it off unless configured.
+        ...(typeof this.config.autoUnloadTtlMs === 'number' ? { autoUnloadTtlMs: this.config.autoUnloadTtlMs } : {})
       }
     });
 
     try {
+      this._connectNsSeen = new Set();
       await this.session.connect({
         onProgress: (p) => {
-          if (p.status) {
-            this.sendProgress(p.progress || 0, 100, p.status);
-          }
+          if (!p || typeof p !== 'object') return;
+
+          if (p.namespace) this._connectNsSeen.add(String(p.namespace));
+
+          // Coarse connect progress: keep it stable and cheap.
+          // Most of the meaningful progress happens during model loading.
+          const nsCount = this._connectNsSeen ? this._connectNsSeen.size : 0;
+          const pct = Math.min(10, 2 + nsCount * 2);
+          const msg = p.message || p.status || 'connecting';
+          this._sendStatus(pct, msg);
         }
       });
     } catch (err) {
       this.session = null;
       throw err;
+    } finally {
+      this._connectNsSeen = null;
     }
   }
 
@@ -80,9 +131,15 @@ export class LMStudioWSServer {
   async getAvailableModels() {
     await this.ensureConnected();
     try {
+      const now = Date.now();
+      const ttlMs = 1500;
+      if (this._modelsCache && (now - this._modelsCacheAt) < ttlMs) return this._modelsCache;
+
       const models = await this.session.listModels();
       // Map to consistent structure
-      return models.filter(m => !m.isEmbeddingModel).map(m => ({
+      const mapped = models
+        .filter(m => m && m.type === 'llm' && !m.isEmbeddingModel)
+        .map(m => ({
         id: m.id || m.path || m.modelKey,
         path: m.path,
         modelKey: m.modelKey || m.id || m.path,
@@ -93,8 +150,12 @@ export class LMStudioWSServer {
         supportsToolUse: m.supportsToolUse,
         loadedInstances: m.loadedInstances
       }));
+
+      this._modelsCache = mapped;
+      this._modelsCacheAt = now;
+      return mapped;
     } catch (err) {
-      this.session = null;
+      if (this._isConnectionError(err)) this.session = null;
       throw new Error(`Failed to fetch models: ${err.message}`);
     }
   }
@@ -127,6 +188,65 @@ export class LMStudioWSServer {
     return this.config.model;
   }
 
+  async _ensureModelLoaded(modelKey) {
+    await this.ensureConnected();
+
+    if (this._modelLoadPromise) {
+      if (this._modelLoadKey === modelKey) return this._modelLoadPromise;
+      try { await this._modelLoadPromise; } catch (e) {}
+    }
+
+    this._modelLoadKey = modelKey;
+    this._modelsCache = null;
+    this._modelsCacheAt = 0;
+
+    this._modelLoadPromise = this.session.ensureModelLoaded(modelKey, (p) => {
+      if (!p || typeof p !== 'object') return;
+      if (p.status === 'loading_model' && typeof p.progress === 'number') {
+        const pct = Math.max(0, Math.min(100, Math.round(p.progress * 100)));
+        this._sendStatus(5 + Math.round(pct * 0.3), `Loading model: ${pct}%`);
+      }
+    }).finally(() => {
+      if (this._modelLoadKey === modelKey) {
+        this._modelLoadPromise = null;
+        this._modelLoadKey = null;
+      }
+    });
+
+    return this._modelLoadPromise;
+  }
+
+  async _predictOnce({ prompt, model, maxTokens, systemPrompt }) {
+    await this.ensureConnected();
+    const selectedModel = await this.selectModel(model);
+
+    this._sendStatus(0, `Using model: ${selectedModel}`);
+    this._sendStatus(5, 'Ensuring model loaded...');
+    await this._ensureModelLoaded(selectedModel);
+
+    this._sendStatus(35, 'Generating response...');
+
+    let fullResponse = '';
+    const tokens = maxTokens || this.config.maxTokens || 500;
+
+    const stream = this.session.predict({
+      modelKey: selectedModel,
+      prompt,
+      ...(systemPrompt ? { systemPrompt } : {}),
+      maxTokens: tokens,
+      onProgress: (p) => {
+        if (!p || typeof p !== 'object' || !p.status) return;
+        if (p.status === 'streaming') return;
+        this._sendStatus(35, p.status);
+      }
+    });
+
+    for await (const chunk of stream) fullResponse += chunk;
+
+    this._sendStatus(100, 'Complete');
+    return fullResponse;
+  }
+
   getTools() {
     return [
       {
@@ -150,7 +270,8 @@ export class LMStudioWSServer {
           properties: {
             question: { type: 'string', description: 'Question for the local model' },
             context: { type: 'string', description: 'Optional code or context' },
-            model: { type: 'string', description: 'Optional: specific model to use (defaults to loaded model or config default)' }
+            model: { type: 'string', description: 'Optional: specific model to use (defaults to loaded model or config default)' },
+            maxTokens: { type: 'number', description: 'Optional: maximum tokens to generate (default: 500)' }
           },
           required: ['question']
         }
@@ -225,42 +346,7 @@ export class LMStudioWSServer {
       const { prompt, model, maxTokens } = args;
       
       try {
-        await this.ensureConnected();
-        
-        const selectedModel = await this.selectModel(model);
-        this.sendProgress(0, 100, `Using model: ${selectedModel}`);
-        
-        this.sendProgress(5, 100, 'Ensuring model loaded...');
-        await this.session.ensureModelLoaded(selectedModel, (progress) => {
-          if (progress.progress !== undefined) {
-            const pct = Math.round(progress.progress * 100);
-            this.sendProgress(5 + pct * 0.3, 100, `Loading model: ${pct}%`);
-          }
-        });
-        
-        this.sendProgress(35, 100, 'Generating response...');
-        
-        let fullResponse = '';
-        let chunkCount = 0;
-        const tokens = maxTokens || this.config.maxTokens || 500;
-        
-        const stream = await this.session.predict({
-          modelKey: selectedModel,
-          prompt,
-          maxTokens: tokens,
-          onProgress: (p) => {
-            if (p.status) {
-              this.sendProgress(35, 100, p.status);
-            }
-          }
-        });
-        
-        for await (const chunk of stream) {
-          fullResponse += chunk;
-          chunkCount++;
-        }
-        
-        this.sendProgress(100, 100, 'Complete');
+        const fullResponse = await this._predictOnce({ prompt, model, maxTokens });
         
         return {
           content: [{
@@ -269,7 +355,7 @@ export class LMStudioWSServer {
           }]
         };
       } catch (err) {
-        this.session = null;
+        if (this._isConnectionError(err)) this.session = null;
         return {
           content: [{
             type: 'text',
@@ -323,48 +409,16 @@ export class LMStudioWSServer {
       }
     }
     
-    const { question, context, model } = args;
+    const { question, context, model, maxTokens } = args;
     const prompt = context ? `${context}\n\nQuestion: ${question}` : question;
     
     try {
-      await this.ensureConnected();
-      
-      const selectedModel = await this.selectModel(model);
-      this.sendProgress(0, 100, `Using model: ${selectedModel}`);
-      
-      // Auto-load model with progress tracking
-      this.sendProgress(5, 100, 'Ensuring model loaded...');
-      await this.session.ensureModelLoaded(selectedModel, (progress) => {
-        if (progress.progress !== undefined) {
-          const pct = Math.round(progress.progress * 100);
-          this.sendProgress(5 + pct * 0.3, 100, `Loading model: ${pct}%`);
-        }
-      });
-      
-      this.sendProgress(35, 100, 'Generating response...');
-      
-      let fullResponse = '';
-      let chunkCount = 0;
-      const maxTokens = this.config.maxTokens || 500;
-      
-      const stream = await this.session.predict({
-        modelKey: selectedModel,
+      const fullResponse = await this._predictOnce({
         prompt,
+        model,
+        maxTokens: maxTokens || this.config.maxTokens || 500,
         systemPrompt: this.config.systemPrompt,
-        maxTokens,
-        onProgress: (p) => {
-          if (p.status) {
-            this.sendProgress(35, 100, p.status);
-          }
-        }
       });
-      
-      for await (const chunk of stream) {
-        fullResponse += chunk;
-        chunkCount++;
-      }
-      
-      this.sendProgress(100, 100, 'Complete');
       
       return {
         content: [{
@@ -373,7 +427,7 @@ export class LMStudioWSServer {
         }]
       };
     } catch (err) {
-      this.session = null;
+      if (this._isConnectionError(err)) this.session = null;
       return {
         content: [{
           type: 'text',

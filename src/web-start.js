@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import { config as loadDotEnv } from 'dotenv';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -7,6 +7,7 @@ import { MemoryServer } from './servers/memory.js';
 import { LMStudioServer } from './servers/lm-studio-http.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+loadDotEnv({ path: join(__dirname, '..', '.env') });
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
 
 // Override config with environment variables if present
