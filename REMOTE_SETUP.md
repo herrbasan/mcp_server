@@ -18,18 +18,19 @@ npm run start:http
 The server will display:
 ```
 🚀 MCP Server listening on http://0.0.0.0:3100
-📡 SSE endpoint: http://0.0.0.0:3100/sse
+📡 MCP endpoint: http://0.0.0.0:3100/mcp
 ```
 
 ### 2. On Your VS Code Client Machine
 
-Add to VS Code settings (`.vscode/settings.json` or User Settings):
+Add to `%APPDATA%\Code\User\mcp.json` (VS Code user-level MCP config):
 
 ```json
 {
-  "github.copilot.chat.mcp.servers": {
-    "mcp-orchestrator": {
-      "url": "http://192.168.1.100:3100/sse"
+  "servers": {
+    "mcp-server-orchestrator": {
+      "type": "sse",
+      "url": "http://192.168.1.100:3100/mcp"
     }
   }
 }
@@ -63,15 +64,14 @@ sudo ufw allow 3100/tcp
 
 ## Security Notes
 
-- The SSE endpoint has **no authentication** by default
+- The MCP endpoint has **no authentication** by default
 - Only run on trusted networks
 - Consider using SSH tunneling for public networks:
   ```bash
   ssh -L 3100:localhost:3100 user@server
   ```
-  Then use `http://localhost:3100/sse` in VS Code
+  Then use `http://localhost:3100/mcp` in VS Code
 
 ## Local vs Remote
 
-**Local (stdio):** Use `npm start` - VS Code spawns process directly  
-**Remote (SSE/HTTP):** Use `npm run start:http` - VS Code connects to HTTP endpoint
+This repo runs as a remote HTTP MCP service. Use `npm run start:http` and connect VS Code to `/mcp`.

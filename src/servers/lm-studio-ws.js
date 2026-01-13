@@ -229,11 +229,15 @@ export class LMStudioWSServer {
     let fullResponse = '';
     const tokens = maxTokens || this.config.maxTokens || 500;
 
+    const stripThinking = this.config.stripThinking !== false;
+    const thinkingTags = Array.isArray(this.config.thinkingTags) && this.config.thinkingTags.length ? this.config.thinkingTags : undefined;
+
     const stream = this.session.predict({
       modelKey: selectedModel,
       prompt,
       ...(systemPrompt ? { systemPrompt } : {}),
       maxTokens: tokens,
+      ...(stripThinking ? { stripThinking: true, ...(thinkingTags ? { thinkingTags } : {}) } : {}),
       onProgress: (p) => {
         if (!p || typeof p !== 'object' || !p.status) return;
         if (p.status === 'streaming') return;

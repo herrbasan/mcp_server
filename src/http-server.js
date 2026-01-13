@@ -2,7 +2,7 @@ import { config as loadDotEnv } from 'dotenv';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { readFileSync } from 'fs';
+import { readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
@@ -18,6 +18,28 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Process managers/Electron often spawn with a different cwd; load .env by absolute path.
 loadDotEnv({ path: join(__dirname, '..', '.env') });
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
+
+const PROCESS_LOG_PATH = join(__dirname, '..', 'data', 'process-events.log');
+const logProcessEvent = (event, data = {}) => {
+  try {
+    appendFileSync(PROCESS_LOG_PATH, `${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}\n`);
+  } catch { }
+};
+
+process.on('exit', (code) => logProcessEvent('exit', { code }));
+process.on('SIGINT', () => logProcessEvent('signal', { signal: 'SIGINT' }));
+process.on('SIGTERM', () => logProcessEvent('signal', { signal: 'SIGTERM' }));
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err);
+  logProcessEvent('uncaughtException', { message: err?.message, stack: err?.stack });
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(typeof reason === 'string' ? reason : 'UnhandledRejection');
+  console.error('[FATAL] unhandledRejection:', err);
+  logProcessEvent('unhandledRejection', { message: err?.message, stack: err?.stack });
+  process.exit(1);
+});
 
 // Override config with environment variables if present
 if (process.env.LM_STUDIO_WS_ENDPOINT) config.servers['lm-studio'].endpoint = process.env.LM_STUDIO_WS_ENDPOINT;
@@ -79,123 +101,106 @@ if (config.web?.enabled) {
   console.log('✓ Web Interface');
 }
 
-// Create single MCP server instance
-const mcpServer = new Server({
-  name: config.orchestrator.name,
-  version: config.orchestrator.version
-}, {
-  capabilities: {
-    tools: {},
-    resources: resources.length > 0 ? {} : undefined
+// Factory function to create and configure a new MCP server instance per connection
+function createMCPServer() {
+  const server = new Server({
+    name: config.orchestrator.name,
+    version: config.orchestrator.version
+  }, {
+    capabilities: {
+      tools: {},
+      resources: resources.length > 0 ? {} : undefined
+    }
+  });
+
+  // Set up request handlers
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+
+  if (resources.length > 0) {
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const uri = request.params.uri;
+      for (const [sName, module] of serverModules) {
+        if (module.readResource) {
+          try {
+            return await module.readResource(uri);
+          } catch (err) {
+            continue;
+          }
+        }
+      }
+      throw new Error(`Resource not found: ${uri}`);
+    });
   }
-});
 
-// Set up request handlers
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-
-if (resources.length > 0) {
-  mcpServer.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources }));
-  mcpServer.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const uri = request.params.uri;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args, _meta } = request.params;
+    const progressToken = _meta?.progressToken;
+    
     for (const [sName, module] of serverModules) {
-      if (module.readResource) {
+      if (module.handlesTool(name)) {
+        if (progressToken && module.setProgressCallback) {
+          module.setProgressCallback((progress, total, message) => {
+            server.notification({
+              method: 'notifications/progress',
+              params: { progressToken, progress, total, message }
+            });
+          });
+        }
+        
         try {
-          return await module.readResource(uri);
+          const result = await module.callTool(name, args);
+          globalLogger.log('mcp-tool', name, args, result);
+          return result;
         } catch (err) {
-          continue;
+          console.error(`[MCP] Tool error: ${err.message}`);
+          globalLogger.log('mcp-tool', name, args, null, err);
+          throw err;
         }
       }
     }
-    throw new Error(`Resource not found: ${uri}`);
+    
+    throw new Error(`Unknown tool: ${name}`);
   });
+
+  return server;
 }
-
-mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args, _meta } = request.params;
-  const progressToken = _meta?.progressToken;
-  
-  // Keep stderr reserved for actual errors; noisy debug logs can confuse process managers.
-  if (process.env.DEBUG_MCP_HTTP === '1') {
-    console.log(`\n🔧 Tool: ${name}`);
-    console.log(`  [DEBUG] Request received in CallToolRequestSchema handler`);
-    console.log(`  [DEBUG] Logging to globalLogger and web monitoring`);
-    console.log(`  [DEBUG] globalLogger state - logs: ${globalLogger.logs.length}, listeners: ${globalLogger.listeners.size}`);
-  }
-  
-  for (const [sName, module] of serverModules) {
-    if (module.handlesTool(name)) {
-      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`  → ${sName}`);
-      
-      if (progressToken && module.setProgressCallback) {
-        module.setProgressCallback((progress, total, message) => {
-          mcpServer.notification({
-            method: 'notifications/progress',
-            params: { progressToken, progress, total, message }
-          });
-        });
-      }
-      
-      try {
-        const result = await module.callTool(name, args);
-        if (process.env.DEBUG_MCP_HTTP === '1') console.log(`  [DEBUG] Tool executed successfully, now logging...`);
-        globalLogger.log('mcp-tool', name, args, result);
-        if (process.env.DEBUG_MCP_HTTP === '1') console.log(`  [DEBUG] Log created! New log count: ${globalLogger.logs.length}, listeners: ${globalLogger.listeners.size}`);
-        return result;
-      } catch (err) {
-        console.error(`  ✗ Error: ${err.message}`);
-        globalLogger.log('mcp-tool', name, args, null, err);
-        throw err;
-      }
-    }
-  }
-  
-  throw new Error(`Unknown tool: ${name}`);
-});
-
-// Create StreamableHTTPServerTransport with session management
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: () => randomUUID(),
-});
-
-// Connect server to transport
-await mcpServer.connect(transport);
-console.log('[MCP] Server connected to StreamableHTTP transport');
-
 const httpServer = createServer();
 const HOST = process.env.MCP_HOST || '0.0.0.0';
 const PORT = process.env.MCP_PORT || 3100;
 
-httpServer.listen(PORT, HOST, () => {
-  console.log(`🚀 MCP Server listening on http://${HOST}:${PORT}`);
-  console.log(`📡 MCP endpoint: http://${HOST}:${PORT}/mcp`);
-  console.log(`📡 SSE endpoint (legacy): http://${HOST}:${PORT}/sse`);
-  if (config.web?.enabled) {
-    console.log(`🌐 Web interface: http://${config.web.host}:${config.web.port}`);
-  }
-  console.log(`\nConfigure VS Code mcp.json with:`);
-  console.log(`{`);
-  console.log(`  "servers": {`);
-  console.log(`    "orchestrator": {`);
-  console.log(`      "type": "sse",`);
-  console.log(`      "url": "http://${HOST === '0.0.0.0' ? 'YOUR_IP' : HOST}:${PORT}/mcp"`);
-  console.log(`    }`);
-  console.log(`  }`);
-  console.log(`}`);
-  
-  // Test log to verify logger is working
-  globalLogger.log('system', 'startup', {}, { status: 'ready', listeners: globalLogger.listeners.size });
-  if (process.env.DEBUG_MCP_HTTP === '1') {
-    console.log(`\n[DEBUG] Test log created - total logs: ${globalLogger.logs.length}, listeners: ${globalLogger.listeners.size}`);
-  }
+const sessions = new Map();
+const createSession = () => {
+  const server = createMCPServer();
+
+  let session;
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: randomUUID,
+    onsessioninitialized: (sessionId) => {
+      sessions.set(sessionId, session);
+      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Session initialized: ${sessionId}`);
+    },
+    onsessionclosed: (sessionId) => {
+      const s = sessions.get(sessionId);
+      sessions.delete(sessionId);
+      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Session closed: ${sessionId}`);
+      try { s?.server?.close(); } catch { }
+    }
+  });
+
+  const connectPromise = server.connect(transport);
+  session = { server, transport, connectPromise, createdAt: Date.now() };
+  return session;
+};
+
+httpServer.on('error', (err) => {
+  console.error('[HTTP] Server error:', err);
+  logProcessEvent('httpServerError', { code: err?.code, message: err?.message, stack: err?.stack, host: HOST, port: PORT });
+  process.exit(1);
 });
 
 httpServer.on('request', async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  
-  // Log all incoming requests for debugging
-  if (process.env.DEBUG_MCP_HTTP === '1') {
-    console.log(`[HTTP] ${req.method} ${url.pathname} from ${req.socket.remoteAddress}`);
-  }
   
   if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -203,31 +208,53 @@ httpServer.on('request', async (req, res) => {
     return;
   }
   
-  if (url.pathname === '/mcp' || url.pathname === '/sse') {
-    if (process.env.DEBUG_MCP_HTTP === '1') console.log('[MCP] Handling MCP request...');
-    
-    // Auto-generate session ID if VS Code client doesn't provide one
-    if (!req.headers['mcp-session-id']) {
-      const sessionId = randomUUID();
-      req.headers['mcp-session-id'] = sessionId;
-      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Auto-generated session ID: ${sessionId}`);
+  if (url.pathname === '/mcp') {
+    const sessionId = req.headers['mcp-session-id'];
+    let session;
+    if (sessionId) {
+      session = sessions.get(sessionId);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Session not found');
+        return;
+      }
     } else {
-      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Using client session ID: ${req.headers['mcp-session-id']}`);
+      session = createSession();
     }
-    
+
     try {
-      await transport.handleRequest(req, res);
-      if (process.env.DEBUG_MCP_HTTP === '1') console.log('[MCP] Request handled successfully');
+      await session.connectPromise;
+      await session.transport.handleRequest(req, res);
     } catch (err) {
-      console.error('[MCP] Error handling request:', err);
+      console.error('[MCP] Request error:', err);
+      logProcessEvent('mcpRequestError', { message: err?.message, stack: err?.stack, path: url.pathname, method: req.method });
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end(`Error: ${err.message}`);
+        res.end(`MCP Error: ${err.message}`);
       }
     }
     return;
   }
   
   res.writeHead(404);
-  res.end('Not found. Use /mcp or /sse for MCP connection, /health for status');
+  res.end('Not found. Use /mcp for MCP connection, /health for status');
+});
+
+httpServer.listen(PORT, HOST, () => {
+  console.log(`🚀 MCP Server listening on http://${HOST}:${PORT}`);
+  console.log(`📡 MCP endpoint: http://${HOST}:${PORT}/mcp`);
+  if (config.web?.enabled) {
+    console.log(`🌐 Web interface: http://${config.web.host}:${config.web.port}`);
+  }
+  console.log(`\nConfigure VS Code mcp.json with:`);
+  console.log(`{`);
+  console.log(`  "servers": {`);
+  console.log(`    "orchestrator": {`);
+  console.log(`      "url": "http://${HOST === '0.0.0.0' ? 'YOUR_IP' : HOST}:${PORT}/mcp"`);
+  console.log(`    }`);
+  console.log(`  }`);
+  console.log(`}`);
+  
+  globalLogger.log('system', 'startup', {}, { status: 'ready', transport: 'streamable-http-per-session' });
+  logProcessEvent('startup', { host: HOST, port: PORT, transport: 'streamable-http-per-session', web: !!config.web?.enabled, webHost: config.web?.host, webPort: config.web?.port });
 });

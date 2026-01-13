@@ -1,11 +1,12 @@
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server running as **independent HTTP/SSE service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes 14 tools to VS Code Copilot clients via network.
+Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes 14 tools to VS Code Copilot clients via network.
 
-**Architecture**: StreamableHTTPServerTransport (not stdio, not legacy SSE)
+**Architecture**: StreamableHTTPServerTransport (not legacy SSE)
 - Server: `src/http-server.js` - Ports 3100 (MCP), 3010 (web monitoring)
-- Transport: HTTP POST with `Mcp-Session-Id` header, session-based multiplexing
+- Transport: Streamable HTTP at `/mcp` with `mcp-session-id` header (stateful sessions)
+- Multi-client: DO NOT share a single transport across clients; create one `StreamableHTTPServerTransport` per session and route requests by `mcp-session-id`
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
@@ -30,7 +31,7 @@ Centralized MCP server running as **independent HTTP/SSE service** on remote mac
 ## Deployment & Configuration
 - **Environment**: `.env` file for sensitive config (LM Studio endpoints, embedding model, host/port binding)
 - **Config**: `config.json` for non-sensitive settings (models, prompts, timeouts, enable/disable servers)
-- **Start**: `npm run start:http` (production remote), `npm start` (local stdio dev)
+- **Start**: `npm run start:http`
 - **Endpoints**: LM_STUDIO_WS_ENDPOINT (ws://localhost:12345), LM_STUDIO_HTTP_ENDPOINT (http://localhost:12345)
 - **Binding**: MCP_HOST/WEB_HOST must be `0.0.0.0` for remote access (not localhost)
 - **Firewall**: OPNsense/Windows Firewall rules for TCP 3100, 3010

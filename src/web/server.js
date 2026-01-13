@@ -271,6 +271,11 @@ export class WebServer {
       res.end('Not Found');
     });
 
+    server.on('error', (err) => {
+      console.error('[WEB] Server error:', err);
+      globalLogger.log('system', 'web-server-error', { host: this.config.host, port: this.config.port }, null, err);
+    });
+
     server.listen(this.config.port, this.config.host, () => {
       console.error(`🌐 Web interface: http://${this.config.host}:${this.config.port}`);
     });

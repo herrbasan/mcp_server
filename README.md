@@ -1,10 +1,10 @@
 # MCP Server Orchestrator
 
-Centralized MCP server running as an independent HTTP/SSE service. Manages multiple specialized servers and exposes 14 tools to VS Code Copilot via remote connection.
+Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes 14 tools to VS Code Copilot via remote connection.
 
 ## Features
 
-- **Remote Architecture**: Independent server accessible over network (HTTP/SSE transport)
+- **Remote Architecture**: Independent server accessible over network (Streamable HTTP)
 - **Web Monitoring**: Real-time log streaming and memory management UI
 - **Single Entry Point**: One MCP server manages multiple specialized servers
 - **Modular Design**: Easy to add/remove server modules
@@ -39,11 +39,11 @@ Restart VS Code.
 ```
 mcp_server/
 ├── src/
-│   ├── index.js                 # Main orchestrator
+│   ├── http-server.js           # HTTP server (remote mode)
+│   ├── web-start.js             # Start web UI only
 │   └── servers/
 │       ├── memory.js            # Persistent semantic memory
 │       ├── lm-studio-ws.js      # WebSocket LM Studio integration
-│       ├── lm-studio-http.js    # HTTP LM Studio (reference)
 │       ├── code-analyzer.js     # Code quality analysis
 │       └── web-research.js      # Multi-source web research
 ├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
@@ -109,9 +109,14 @@ Non-sensitive settings (models, prompts, timeouts):
 ## Architecture
 
 **Transport**: StreamableHTTPServerTransport (MCP SDK)
-- Server: `src/http-server.js` - HTTP POST endpoint with session management
+- Server: `src/http-server.js` - Streamable HTTP endpoint at `/mcp`
 - Web UI: `src/web/server.js` - Real-time SSE log streaming
 - Ports: 3100 (MCP protocol), 3010 (web monitoring)
+
+**Multi-client support**:
+- Streamable HTTP transports are stateful per instance.
+- The server creates one `StreamableHTTPServerTransport` per MCP session and routes requests by the `mcp-session-id` header.
+- New sessions are created on the initial request without a session header; unknown session IDs return 404.
 
 **Network Setup**:
 - Server binds to `0.0.0.0` for remote access (configurable in .env)
@@ -133,9 +138,9 @@ Access at `http://SERVER_IP:3010` for:
 
 ## Development
 
-**Local Testing** (stdio mode):
+Run the orchestrator in HTTP mode:
 ```bash
-npm start  # Uses src/index.js with stdio transport
+npm run start:http
 ```
 
 ## Available Tools (14 total)
@@ -234,7 +239,7 @@ Automated multi-source research using local LLM for synthesis. Dramatically redu
 
 1. Create new file in `src/servers/your-server.js`
 2. Export class with methods: `getTools()`, `handlesTool(name)`, `callTool(name, args)`
-3. Import in `src/index.js`
+3. Import in `src/http-server.js`
 4. Add initialization block
 5. Update `config.json`
 

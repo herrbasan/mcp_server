@@ -6,9 +6,9 @@
   "main": "src/http-server.js",
   "scripts": {
     "start": "node src/http-server.js",
-    "start:stdio": "node src/stdio-server.js",
+    "start:http": "node src/http-server.js",
     "dev": "node --watch src/http-server.js",
-    "dev:stdio": "node --watch src/stdio-server.js"
+    "dev:http": "node --watch src/http-server.js"
   },
   "keywords": [
     "mcp",
@@ -19,7 +19,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@lmstudio/sdk": "^1.5.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@mozilla/readability": "^0.6.0",
     "dotenv": "^17.2.3",
