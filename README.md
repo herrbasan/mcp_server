@@ -1,6 +1,6 @@
 # MCP Server Orchestrator
 
-Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes 14 tools to VS Code Copilot via remote connection.
+Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes 12 tools to VS Code Copilot via remote connection.
 
 ## Features
 
@@ -44,7 +44,6 @@ mcp_server/
 │   └── servers/
 │       ├── memory.js            # Persistent semantic memory
 │       ├── lm-studio-ws.js      # WebSocket LM Studio integration
-│       ├── code-analyzer.js     # Code quality analysis
 │       └── web-research.js      # Multi-source web research
 ├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
 ├── data/

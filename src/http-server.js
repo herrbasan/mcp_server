@@ -8,7 +8,6 @@ import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { randomUUID } from 'crypto';
 import { LMStudioWSServer } from './servers/lm-studio-ws.js';
-import { CodeAnalyzerServer } from './servers/code-analyzer.js';
 import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
 import { WebServer } from './web/server.js';
@@ -69,13 +68,6 @@ if (config.servers['lm-studio']?.enabled) {
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());
   console.log('✓ LM Studio (WebSocket)');
-}
-
-if (config.servers['code-analyzer']?.enabled) {
-  const s = new CodeAnalyzerServer(config.servers['code-analyzer']);
-  serverModules.set('code-analyzer', s);
-  tools.push(...s.getTools());
-  console.log('✓ Code Analyzer');
 }
 
 if (config.servers['web-research']?.enabled) {

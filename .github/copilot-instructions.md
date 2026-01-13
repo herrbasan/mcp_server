@@ -10,10 +10,9 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (14 across 4 modules):
+**Tools** (12 across 3 modules):
 - **Memory**: Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LM Studio**: WebSocket-based local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
-- **Code Analyzer**: Code quality analysis (analyze_code_quality, suggest_refactoring)
 - **Web Research**: Multi-source web research with iterative refinement (research_topic)
   - 5-phase pipeline: search → select → scrape → synthesize → evaluate
   - Intelligent source selection via local LLM (strict JSON-only prompting)
@@ -25,7 +24,8 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - **Transport**: WebSocket via custom LMStudioAPI submodule (github.com/herrbasan/LMStudioAPI.git)
 - **Progress**: Real-time MCP notifications (model loading 1%-100%, generation status)
 - **Auto-unload**: Single model enforcement via `enforceSingleModel: true`
-- **Model Management**: Auto-detect loaded model, validate against whitelist, fallback to config default
+- **TTL Management**: Default model (nemotron) has 60-minute idle timeout, other models 10-minute timeout
+- **Model Management**: Auto-detect loaded model, validate against whitelist, fallback to config default, then first available
 - **Error Handling**: Promise lock prevents race conditions, stack traces preserved for debugging
 
 ## Deployment & Configuration

@@ -6,10 +6,6 @@
       "temperature": 0.7,
       "maxTokens": 4096
     },
-    "code-analyzer": {
-      "enabled": true,
-      "description": "Analyzes code quality and suggests improvements"
-    },
     "web-research": {
       "enabled": true,
       "maxPages": 10,

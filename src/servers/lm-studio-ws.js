@@ -13,6 +13,10 @@ export class LMStudioWSServer {
     this._modelLoadKey = null;
     this._connectNsSeen = null;
     this._lastStatus = null;
+    this._modelLastUsed = new Map();
+    this._ttlCheckInterval = null;
+    this._defaultModelTtlMs = 60 * 60 * 1000; // 60 minutes for default
+    this._nonDefaultModelTtlMs = 10 * 60 * 1000; // 10 minutes for others
   }
 
   setProgressCallback(callback) {
@@ -166,26 +170,46 @@ export class LMStudioWSServer {
   }
 
   async selectModel(modelId = null) {
+    const available = await this.getAvailableModels();
+    
+    // If specific model requested
     if (modelId) {
-      const available = await this.getAvailableModels();
       const found = available.find(m => 
         m.id === modelId || m.modelKey === modelId || m.path === modelId
       );
       if (!found) {
-        throw new Error(`Model "${modelId}" not found. Available models: ${available.map(m => m.id).join(', ')}`);
+        throw new Error(`Model "${modelId}" not found. Available: ${available.map(m => m.id).join(', ')}`);
       }
-      this.currentModel = found.modelKey || found.id;
+      this.currentModel = found.modelKey || found.path;
       return this.currentModel;
     }
     
-    const loaded = await this.getLoadedModel();
+    // Prefer already-loaded model
+    const loaded = available.find(m => m.isLoaded);
     if (loaded) {
-      this.currentModel = loaded.modelKey || loaded.id;
+      this.currentModel = loaded.modelKey || loaded.path;
       return this.currentModel;
     }
     
-    this.currentModel = this.config.model;
-    return this.config.model;
+    // Try config default
+    if (this.config.model) {
+      const defaultModel = available.find(m =>
+        m.id === this.config.model || m.modelKey === this.config.model || m.path === this.config.model
+      );
+      if (defaultModel) {
+        this.currentModel = defaultModel.modelKey || defaultModel.path;
+        return this.currentModel;
+      }
+    }
+    
+    // Fallback: first available LLM model
+    if (available.length === 0) {
+      throw new Error('No LLM models found. Download a model in LM Studio first.');
+    }
+    
+    const firstModel = available[0];
+    this.currentModel = firstModel.modelKey || firstModel.path;
+    return this.currentModel;
   }
 
   async _ensureModelLoaded(modelKey) {
@@ -216,6 +240,49 @@ export class LMStudioWSServer {
     return this._modelLoadPromise;
   }
 
+  _trackModelUsage(modelKey) {
+    this._modelLastUsed.set(modelKey, Date.now());
+  }
+
+  _startTtlMonitoring() {
+    if (this._ttlCheckInterval) return;
+    this._ttlCheckInterval = setInterval(() => this._checkAndUnloadExpired(), 60000); // Check every minute
+  }
+
+  async _checkAndUnloadExpired() {
+    if (!this.session || !this._isSessionReady()) return;
+    
+    try {
+      const models = await this.getAvailableModels();
+      const now = Date.now();
+      
+      for (const model of models) {
+        if (!model.isLoaded) continue;
+        
+        const modelKey = model.modelKey || model.path;
+        const lastUsed = this._modelLastUsed.get(modelKey);
+        if (!lastUsed) continue;
+        
+        const isDefault = modelKey === this.config.model;
+        const ttl = isDefault ? this._defaultModelTtlMs : this._nonDefaultModelTtlMs;
+        const elapsed = now - lastUsed;
+        
+        if (elapsed > ttl) {
+          console.log(`[TTL] Unloading ${isDefault ? 'default' : 'non-default'} model after ${Math.round(elapsed / 60000)}min: ${modelKey}`);
+          try {
+            await this.session.llm.unloadModel(modelKey);
+            this._modelLastUsed.delete(modelKey);
+            this._modelsCache = null;
+          } catch (err) {
+            console.error(`[TTL] Failed to unload ${modelKey}:`, err.message);
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore errors during TTL check
+    }
+  }
+
   async _predictOnce({ prompt, model, maxTokens, systemPrompt }) {
     await this.ensureConnected();
     const selectedModel = await this.selectModel(model);
@@ -223,6 +290,8 @@ export class LMStudioWSServer {
     this._sendStatus(0, `Using model: ${selectedModel}`);
     this._sendStatus(5, 'Ensuring model loaded...');
     await this._ensureModelLoaded(selectedModel);
+    this._trackModelUsage(selectedModel);
+    this._startTtlMonitoring();
 
     this._sendStatus(35, 'Generating response...');
 
@@ -444,9 +513,14 @@ export class LMStudioWSServer {
   }
 
   async cleanup() {
+    if (this._ttlCheckInterval) {
+      clearInterval(this._ttlCheckInterval);
+      this._ttlCheckInterval = null;
+    }
     if (this.session) {
       await this.session.disconnect();
       this.session = null;
     }
+    this._modelLastUsed.clear();
   }
 }
