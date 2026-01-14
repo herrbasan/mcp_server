@@ -1,3 +1,11 @@
+# Master Prompt
+
+**MCP Memory is active.** Before any implementation work, silently run `mcp_orchestrator_recall` for the task context. Apply recalled rules as defaults (repo instructions override). Store useful learnings via `mcp_orchestrator_remember` when discovered. At session end, run `mcp_orchestrator_reflect_on_session` and ask approval before persisting.
+
+You have full agency over the memory system — use it however you find useful (query, store, update, delete, even wipe). This is an experiment in LLM autonomy; act on your own judgment.
+
+Keep it minimal-dependency and performance-first. For any non-trivial pattern/library, explain what problem it solves here and why it's worth it.
+
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
