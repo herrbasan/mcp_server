@@ -161,6 +161,12 @@ const httpServer = createServer();
 const HOST = process.env.MCP_HOST || '0.0.0.0';
 const PORT = process.env.MCP_PORT || 3100;
 
+try { httpServer.setTimeout?.(0); } catch { }
+
+const MCP_SSE_KEEPALIVE_MS = Math.max(0, parseInt(process.env.MCP_SSE_KEEPALIVE_MS || '45000', 10) || 0);
+const MCP_TCP_KEEPALIVE_MS = Math.max(0, parseInt(process.env.MCP_TCP_KEEPALIVE_MS || '30000', 10) || 0);
+const MCP_SESSION_TTL_MS = Math.max(0, parseInt(process.env.MCP_SESSION_TTL_MS || '3600000', 10) || 0);
+
 const sessions = new Map();
 const createSession = () => {
   const server = createMCPServer();
@@ -173,17 +179,31 @@ const createSession = () => {
       if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Session initialized: ${sessionId}`);
     },
     onsessionclosed: (sessionId) => {
-      const s = sessions.get(sessionId);
-      sessions.delete(sessionId);
-      if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Session closed: ${sessionId}`);
-      try { s?.server?.close(); } catch { }
+      closeSession(sessionId);
     }
   });
 
   const connectPromise = server.connect(transport);
-  session = { server, transport, connectPromise, createdAt: Date.now() };
+  session = { server, transport, connectPromise, createdAt: Date.now(), lastSeen: Date.now() };
   return session;
 };
+
+const closeSession = (sessionId, reason) => {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  sessions.delete(sessionId);
+  if (process.env.DEBUG_MCP_HTTP === '1') console.log(`[MCP] Session closed${reason ? ` (${reason})` : ''}: ${sessionId}`);
+  try { s?.server?.close(); } catch { }
+};
+
+if (MCP_SESSION_TTL_MS > 0) {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [sessionId, s] of sessions) {
+      if (now - (s?.lastSeen || s?.createdAt || now) > MCP_SESSION_TTL_MS) closeSession(sessionId, 'ttl');
+    }
+  }, Math.min(60000, Math.max(10000, Math.floor(MCP_SESSION_TTL_MS / 6)))).unref?.();
+}
 
 httpServer.on('error', (err) => {
   console.error('[HTTP] Server error:', err);
@@ -213,6 +233,59 @@ httpServer.on('request', async (req, res) => {
     } else {
       session = createSession();
     }
+
+    session.lastSeen = Date.now();
+
+    try {
+      if (MCP_TCP_KEEPALIVE_MS > 0) {
+        try {
+          req.socket?.setKeepAlive?.(true, MCP_TCP_KEEPALIVE_MS);
+          req.socket?.setNoDelay?.(true);
+          req.socket?.setTimeout?.(0);
+        } catch { }
+      }
+    } catch { }
+
+    let keepAliveTimer;
+    let contentType;
+    const _setHeader = res.setHeader?.bind(res);
+    const _writeHead = res.writeHead?.bind(res);
+
+    if (_setHeader) {
+      res.setHeader = (name, value) => {
+        if (typeof name === 'string' && name.toLowerCase() === 'content-type') contentType = String(value);
+        return _setHeader(name, value);
+      };
+    }
+    if (_writeHead) {
+      res.writeHead = (...args) => {
+        const headers = args.length >= 2 && typeof args[1] === 'object' ? args[1] : (args.length >= 3 && typeof args[2] === 'object' ? args[2] : null);
+        if (headers && !contentType) {
+          for (const k of Object.keys(headers)) {
+            if (k && String(k).toLowerCase() === 'content-type') { contentType = String(headers[k]); break; }
+          }
+        }
+        const ret = _writeHead(...args);
+        if (MCP_SSE_KEEPALIVE_MS > 0 && contentType && /text\/event-stream/i.test(contentType) && !keepAliveTimer) {
+          keepAliveTimer = setInterval(() => {
+            try { res.write(`:ka\n\n`); } catch { }
+          }, MCP_SSE_KEEPALIVE_MS);
+          keepAliveTimer.unref?.();
+        }
+        return ret;
+      };
+    }
+
+    const clearKeepAlive = () => {
+      if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+        keepAliveTimer = null;
+      }
+      if (_setHeader) res.setHeader = _setHeader;
+      if (_writeHead) res.writeHead = _writeHead;
+    };
+    res.on('close', clearKeepAlive);
+    res.on('finish', clearKeepAlive);
 
     try {
       await session.connectPromise;
