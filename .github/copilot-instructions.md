@@ -53,6 +53,8 @@ Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - **hypotheses**: Untested ideas
 - **context**: Project facts, background info
 
+Domain scoping: Memories can be tagged with optional `domain` field (LMStudioAPI, nui_wc2, LocalVectorDB, etc) for project-specific organization. Use domain parameter in recall/list_memories to filter results.
+
 ## Code Style & Philosophy
 - **Language**: Vanilla JavaScript (ES modules) - NO TypeScript
 - **Approach**: Lean, simple, fast code

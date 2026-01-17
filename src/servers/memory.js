@@ -42,6 +42,18 @@ export class MemoryServer {
     }
   }
 
+  extractDomain(text) {
+    // Helper to auto-extract domain from PROJECT: prefix when creating new memories
+    const match = text.match(/^PROJECT:\s*([^—\n]+?)\s*—\s*/);
+    if (match) {
+      return {
+        domain: match[1].trim(),
+        text: text.substring(match[0].length).trim()
+      };
+    }
+    return { domain: null, text };
+  }
+
   saveMemories() {
     writeFileSync(this.storePath, JSON.stringify(this.memories, null, 2));
   }
@@ -124,25 +136,27 @@ export class MemoryServer {
     return [
       {
         name: 'remember',
-        description: 'LLM-managed memory for improving OUTPUT QUALITY. Store evidence-based rules, not user preferences. Categories: proven (demonstrated good outcomes), anti_patterns (caused problems), hypotheses (untested ideas), context (project facts), observed (behavioral patterns). New memories start confidence 0.3.',
+        description: 'LLM-managed memory for improving OUTPUT QUALITY. Store evidence-based rules, not user preferences. Categories: proven (demonstrated good outcomes), anti_patterns (caused problems), hypotheses (untested ideas), context (project facts), observed (behavioral patterns). New memories start confidence 0.3.\n\nDOMAIN SCOPING: Use the domain field to scope memories to specific projects/codebases (e.g., "LMStudioAPI", "NUI", "LocalVectorDB", "mcp_server"). Project-specific patterns, workflows, and technical decisions should have a domain. Universal programming principles and user preferences should omit domain (null). This enables efficient recall filtered by current working context.',
         inputSchema: {
           type: 'object',
           properties: {
             text: { type: 'string', description: 'The memory to store - should be actionable for quality improvement' },
-            category: { type: 'string', description: 'Category: proven, anti_patterns, hypotheses, context, or observed' }
+            category: { type: 'string', description: 'Category: proven, anti_patterns, hypotheses, context, or observed' },
+            domain: { type: 'string', description: 'Optional domain/project scope (e.g., "LMStudioAPI", "NUI", "LocalVectorDB"). Use for project-specific memories. Omit for universal principles.' }
           },
           required: ['text', 'category']
         }
       },
       {
         name: 'recall',
-        description: 'Search quality rules and evidence. Results: [#id] category (similarity%) confidence-indicator. ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5). Use before generating code to check what approaches have worked or failed.',
+        description: 'Search quality rules and evidence. Results: [#id] [domain] category (similarity%) confidence-indicator. ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5). Use before generating code to check what approaches have worked or failed.\n\nEFFICIENCY TIP: Filter by domain when working in a specific project context to get relevant memories faster. Example: recall(query="model loading", domain="LMStudioAPI") retrieves only LMStudioAPI-specific patterns, not unrelated projects.',
         inputSchema: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'What to search for' },
             limit: { type: 'number', description: 'Max results (default: 5)' },
-            category: { type: 'string', description: 'Filter by category (optional)' }
+            category: { type: 'string', description: 'Filter by category (optional)' },
+            domain: { type: 'string', description: 'Filter by domain/project (optional). Highly recommended when working in a specific project to avoid noise from other projects.' }
           },
           required: ['query']
         }
@@ -160,11 +174,12 @@ export class MemoryServer {
       },
       {
         name: 'list_memories',
-        description: 'List all memories or filter by category',
+        description: 'List all memories or filter by category and/or domain. Use domain filter to see all memories for a specific project. Useful for understanding project-specific context at session start.',
         inputSchema: {
           type: 'object',
           properties: {
-            category: { type: 'string', description: 'Filter by category (optional)' }
+            category: { type: 'string', description: 'Filter by category (optional)' },
+            domain: { type: 'string', description: 'Filter by domain/project (optional). Useful for reviewing all memories for current working project.' }
           }
         }
       },
@@ -176,7 +191,8 @@ export class MemoryServer {
           properties: {
             id: { type: 'number', description: 'Memory ID to update' },
             text: { type: 'string', description: 'New text' },
-            category: { type: 'string', description: 'New category (optional)' }
+            category: { type: 'string', description: 'New category (optional)' },
+            domain: { type: 'string', description: 'New domain/project (optional)' }
           },
           required: ['id', 'text']
         }
@@ -208,6 +224,7 @@ export class MemoryServer {
                   id: { type: 'number', description: 'Memory ID for update/reinforce/decrease' },
                   text: { type: 'string', description: 'Memory text for create/update' },
                   category: { type: 'string', description: 'Category for create/update' },
+                  domain: { type: 'string', description: 'Domain/project for create/update (optional)' },
                   reason: { type: 'string', description: 'Reasoning for this change' }
                 }
               }
@@ -225,8 +242,15 @@ export class MemoryServer {
 
   async callTool(name, args) {
     if (name === 'remember') {
-      const { text, category } = args;
+      let { text, category, domain } = args;
       const now = new Date().toISOString();
+      
+      // Auto-extract domain from PROJECT: prefix if present
+      if (!domain) {
+        const extracted = this.extractDomain(text);
+        domain = extracted.domain;
+        text = extracted.text;
+      }
       
       // Check if chunking is needed
       if (text.length > this.maxChars) {
@@ -247,15 +271,17 @@ export class MemoryServer {
             lastSeen: now,
             chunkInfo: { part: i + 1, total: chunks.length }
           };
+          if (domain) memory.domain = domain;
           this.memories.memories.push(memory);
           memoryIds.push(memory.id);
         }
         
         this.saveMemories();
+        const domainStr = domain ? ` [${domain}]` : '';
         return {
           content: [{
             type: 'text',
-            text: `✓ Stored ${chunks.length} memory chunks #${memoryIds.join(', #')} in '${category}' (text was ${text.length} chars, split into ${chunks.length} parts)`
+            text: `✓ Stored ${chunks.length} memory chunks #${memoryIds.join(', #')} in '${category}'${domainStr} (text was ${text.length} chars, split into ${chunks.length} parts)`
           }]
         };
       }
@@ -273,24 +299,27 @@ export class MemoryServer {
         firstSeen: now,
         lastSeen: now
       };
+      if (domain) memory.domain = domain;
       
       this.memories.memories.push(memory);
       this.saveMemories();
       
+      const domainStr = domain ? ` [${domain}]` : '';
       return {
         content: [{
           type: 'text',
-          text: `✓ Stored memory #${memory.id} in '${category}'`
+          text: `✓ Stored memory #${memory.id} in '${category}'${domainStr}`
         }]
       };
     }
 
     if (name === 'recall') {
-      const { query, limit = 5, category } = args;
+      const { query, limit = 5, category, domain } = args;
       const queryEmbed = await this.getEmbedding(query);
       
       let candidates = this.memories.memories;
       if (category) candidates = candidates.filter(m => m.category === category);
+      if (domain) candidates = candidates.filter(m => m.domain === domain);
       
       const scored = candidates.map(m => {
         const conf = m.confidence ?? 0.5;
@@ -308,7 +337,8 @@ export class MemoryServer {
         const conf = m.confidence ?? 0.5;
         const obs = m.observations ?? 1;
         const confTag = conf >= 0.7 ? '✓' : conf >= 0.5 ? '~' : '?';
-        return `[#${m.id}] ${m.category} (${(m.score * 100).toFixed(1)}%) ${confTag}${obs > 1 ? ` x${obs}` : ''}\n${m.text}`;
+        const domainTag = m.domain ? `[${m.domain}] ` : '';
+        return `[#${m.id}] ${domainTag}${m.category} (${(m.score * 100).toFixed(1)}%) ${confTag}${obs > 1 ? ` x${obs}` : ''}\n${m.text}`;
       }).join('\n\n');
       
       return {
@@ -335,25 +365,31 @@ export class MemoryServer {
     }
 
     if (name === 'list_memories') {
-      const { category } = args;
+      const { category, domain } = args;
       let list = this.memories.memories;
       
       if (category) list = list.filter(m => m.category === category);
+      if (domain) list = list.filter(m => m.domain === domain);
       
       if (!list.length) {
+        const filters = [];
+        if (category) filters.push(`category '${category}'`);
+        if (domain) filters.push(`domain '${domain}'`);
+        const filterStr = filters.length ? ` matching ${filters.join(' and ')}` : '';
         return {
-          content: [{ type: 'text', text: category ? `No memories in '${category}'` : 'No memories stored' }]
+          content: [{ type: 'text', text: `No memories${filterStr}` }]
         };
       }
       
       const grouped = {};
       list.forEach(m => {
-        if (!grouped[m.category]) grouped[m.category] = [];
-        grouped[m.category].push(m);
+        const key = m.domain ? `${m.domain}/${m.category}` : m.category;
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(m);
       });
       
-      const output = Object.entries(grouped).map(([cat, mems]) => 
-        `${cat.toUpperCase()}:\n${mems.map(m => {
+      const output = Object.entries(grouped).map(([key, mems]) => 
+        `${key.toUpperCase()}:\n${mems.map(m => {
           const chunkStr = m.chunkInfo ? ` [part ${m.chunkInfo.part}/${m.chunkInfo.total}]` : '';
           return `  [#${m.id}]${chunkStr} ${m.text}`;
         }).join('\n')}`
@@ -365,7 +401,7 @@ export class MemoryServer {
     }
 
     if (name === 'update_memory') {
-      const { id, text, category } = args;
+      const { id, text, category, domain } = args;
       const memory = this.memories.memories.find(m => m.id === id);
       
       if (!memory) {
@@ -379,15 +415,17 @@ export class MemoryServer {
       memory.text = text;
       memory.embedding = embedding;
       if (category) memory.category = category;
+      if (domain !== undefined) memory.domain = domain || null;
       memory.timestamp = new Date().toISOString();
       memory.lastSeen = new Date().toISOString();
       
       this.saveMemories();
       
+      const domainStr = memory.domain ? ` [${memory.domain}]` : '';
       return {
         content: [{
           type: 'text',
-          text: `✓ Updated memory #${id} in '${memory.category}'`
+          text: `✓ Updated memory #${id} in '${memory.category}'${domainStr}`
         }]
       };
     }
@@ -448,6 +486,7 @@ Return JSON array of proposed changes with reasoning.`
             firstSeen: now,
             lastSeen: now
           };
+          if (change.domain) memory.domain = change.domain;
           this.memories.memories.push(memory);
           results.push(`✓ Created #${memory.id}: ${change.reason}`);
         }
@@ -469,6 +508,7 @@ Return JSON array of proposed changes with reasoning.`
             memory.text = change.text;
             memory.embedding = embedding;
             if (change.category) memory.category = change.category;
+            if (change.domain !== undefined) memory.domain = change.domain || null;
             memory.lastSeen = new Date().toISOString();
             results.push(`✓ Updated #${change.id}: ${change.reason}`);
           }

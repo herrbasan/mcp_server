@@ -149,20 +149,22 @@ npm run start:http
 ### Memory Server (7 tools)
 Quality-focused semantic storage with confidence weighting. Memories exist to improve output quality by tracking what works, what fails, and patterns observed across sessions.
 
-- **`remember`** - Store new memory with category
+- **`remember`** - Store new memory with category and optional domain
   - Categories: `proven` (evidence-backed approaches), `anti_patterns` (known failures), `observed` (behavioral patterns), `hypotheses` (untested ideas), `context` (project facts)
+  - Optional domain: Project-specific scoping (LMStudioAPI, nui_wc2, LocalVectorDB, etc)
   - New memories start at confidence 0.3
   
 - **`recall`** - Semantic search across memories
   - Returns results ranked by similarity and confidence
   - Indicators: ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5)
-  - Optional category filter
+  - Optional category and domain filters
   
-- **`list_memories`** - Browse all memories or filter by category
-  - View complete memory store with IDs, categories, and confidence levels
+- **`list_memories`** - Browse all memories or filter by category/domain
+  - View complete memory store with IDs, categories, domains, and confidence levels
   
-- **`update_memory`** - Modify existing memory text/category by ID
+- **`update_memory`** - Modify existing memory text/category/domain by ID
   - Change wording, reclassify, or correct inaccuracies
+  - Set or remove domain scoping
   
 - **`forget`** - Delete memory by ID
   - Remove outdated or incorrect memories
