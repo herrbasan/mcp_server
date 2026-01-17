@@ -61,12 +61,13 @@ const serverModules = new Map();
 const tools = [];
 const resources = [];
 
-// Initialize enabled servers
+// Initialize LM Studio server first (needed by memory server for embeddings)
+let lmStudioServer = null;
 if (config.servers['lm-studio']?.enabled) {
-  const s = new LMStudioWSServer(config.servers['lm-studio']);
-  serverModules.set('lm-studio', s);
-  tools.push(...s.getTools());
-  if (s.getResources) resources.push(...s.getResources());
+  lmStudioServer = new LMStudioWSServer(config.servers['lm-studio']);
+  serverModules.set('lm-studio', lmStudioServer);
+  tools.push(...lmStudioServer.getTools());
+  if (lmStudioServer.getResources) resources.push(...lmStudioServer.getResources());
   console.log('✓ LM Studio (WebSocket)');
 }
 
@@ -78,7 +79,8 @@ if (config.servers['web-research']?.enabled) {
 }
 
 if (config.servers['memory']?.enabled) {
-  const s = new MemoryServer(config.servers['memory']);
+  // Pass LMStudioServer to memory server for embedding model loading pipeline
+  const s = new MemoryServer(config.servers['memory'], lmStudioServer);
   serverModules.set('memory', s);
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());
@@ -87,7 +89,6 @@ if (config.servers['memory']?.enabled) {
 // Start web monitoring interface
 if (config.web?.enabled) {
   const memoryServer = serverModules.get('memory');
-  const lmStudioServer = new LMStudioWSServer(config.servers['lm-studio']);
   const webServer = new WebServer(config.web, memoryServer, lmStudioServer);
   webServer.start();
   console.log('✓ Web Interface');

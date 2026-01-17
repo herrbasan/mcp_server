@@ -5,12 +5,24 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export class MemoryServer {
-  constructor(config) {
+  constructor(config, lmStudioServer = null) {
+    this.lmStudioServer = lmStudioServer;
     this.endpoint = config.embeddingEndpoint;
     this.model = config.embeddingModel;
     this.storePath = join(__dirname, '..', '..', config.storePath);
     this.maxChars = parseInt(process.env.MAX_MEMORY_CHARS) || 1800; // ~450 tokens safe for 512 limit
     this.memories = this.loadMemories();
+    this.progressCallback = null;
+  }
+
+  setProgressCallback(callback) {
+    this.progressCallback = callback;
+  }
+
+  sendProgress(progress, total, message) {
+    if (this.progressCallback) {
+      this.progressCallback(progress, total, message);
+    }
   }
 
   chunkText(text) {
@@ -40,6 +52,41 @@ export class MemoryServer {
       text = text.slice(0, this.maxChars);
     }
     
+    // Use LMStudioSession if available (with model loading pipeline)
+    if (this.lmStudioServer) {
+      try {
+        this.sendProgress(5, 100, 'Connecting to LM Studio...');
+        
+        // Ensure WebSocket connection is established
+        await this.lmStudioServer.ensureConnected();
+        
+        this.sendProgress(10, 100, 'Preparing embedding...');
+        
+        // createEmbedding handles model loading with progress
+        const embedding = await this.lmStudioServer.session.createEmbedding(
+          text,
+          this.model,
+          {
+            autoUnload: true,
+            onProgress: (progress, message) => {
+              // Map SDK progress (0-1) to MCP progress (10-95)
+              const pct = 10 + Math.round(progress * 85);
+              this.sendProgress(pct, 100, message);
+            }
+          }
+        );
+        
+        this.sendProgress(100, 100, 'Embedding complete');
+        return embedding;
+      } catch (err) {
+        // Preserve stack trace
+        const error = new Error(`Embedding via LM Studio failed: ${err.message}`);
+        error.stack = err.stack;
+        throw error;
+      }
+    }
+    
+    // Fallback to HTTP endpoint (legacy, no model loading pipeline)
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     
