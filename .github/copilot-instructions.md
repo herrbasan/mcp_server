@@ -28,13 +28,25 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - SSL certificate error handling, retry logic, rate limiting
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
 
+## LLM Router Architecture
+- **Multi-Provider**: Unified interface for LMStudio, Ollama, Gemini, OpenAI via adapter pattern
+- **Task-Based Routing**: Config defines taskDefaults (embedding, analysis, synthesis, query) mapped to providers
+- **Routing Logic**: explicitProvider > taskType default > global default
+- **Adapters**: BaseLLMAdapter abstract class, provider-specific implementations
+- **Current Config**:
+  - embedding → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
+  - analysis → gemini (source selection, credibility)
+  - synthesis → gemini (multi-source synthesis)
+  - query → gemini (query_model, get_second_opinion)
+- **Dimension Compatibility**: All embedding models use 768-dim nomic-embed-text-v2-moe (LMStudio Q4/Q5, Ollama Q8)
+- **cosineSimilarity**: Handles dimension mismatch by returning 0 for incompatible vectors
+
 ## LM Studio Integration
 - **Transport**: WebSocket via custom LMStudioAPI submodule (github.com/herrbasan/LMStudioAPI.git)
 - **Progress**: Real-time MCP notifications (model loading 1%-100%, generation status)
-- **Auto-unload**: Single model enforcement via `enforceSingleModel: true`
 - **TTL Management**: Default model (nemotron) has 60-minute idle timeout, other models 10-minute timeout
-- **Model Management**: Auto-detect loaded model, validate against whitelist, fallback to config default, then first available
 - **Error Handling**: Promise lock prevents race conditions, stack traces preserved for debugging
+- **Router Integration**: LMStudioAdapter provides full feature set (progress, TTL, model management) via router.predict()
 
 ## Deployment & Configuration
 - **Environment**: `.env` file for sensitive config (LM Studio endpoints, embedding model, host/port binding)

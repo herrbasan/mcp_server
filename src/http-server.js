@@ -12,11 +12,15 @@ import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
 import { WebServer } from './web/server.js';
 import { globalLogger } from './logger.js';
+import { LLMRouter } from './llm/router.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Process managers/Electron often spawn with a different cwd; load .env by absolute path.
 loadDotEnv({ path: join(__dirname, '..', '.env') });
-const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
+const configRaw = readFileSync(join(__dirname, '..', 'config.json'), 'utf-8');
+// Replace environment variables in config
+const configStr = configRaw.replace(/\${(\w+)}/g, (_, key) => process.env[key] || '');
+const config = JSON.parse(configStr);
 
 const PROCESS_LOG_PATH = join(__dirname, '..', 'data', 'process-events.log');
 const logProcessEvent = (event, data = {}) => {
@@ -61,10 +65,17 @@ const serverModules = new Map();
 const tools = [];
 const resources = [];
 
-// Initialize LM Studio server first (needed by memory server for embeddings)
+// Initialize LLM Router
+let llmRouter = null;
+if (config.llm) {
+  llmRouter = new LLMRouter(config.llm);
+  console.log('✓ LLM Router initialized');
+}
+
+// Initialize LM Studio server first (for legacy compatibility and tools)
 let lmStudioServer = null;
 if (config.servers['lm-studio']?.enabled) {
-  lmStudioServer = new LMStudioWSServer(config.servers['lm-studio']);
+  lmStudioServer = new LMStudioWSServer(config.servers['lm-studio'], llmRouter);
   serverModules.set('lm-studio', lmStudioServer);
   tools.push(...lmStudioServer.getTools());
   if (lmStudioServer.getResources) resources.push(...lmStudioServer.getResources());
@@ -72,15 +83,15 @@ if (config.servers['lm-studio']?.enabled) {
 }
 
 if (config.servers['web-research']?.enabled) {
-  const s = new WebResearchServer(config.servers['web-research']);
+  const s = new WebResearchServer(config.servers['web-research'], llmRouter);
   serverModules.set('web-research', s);
   tools.push(...s.getTools());
   console.log('✓ Web Research');
 }
 
 if (config.servers['memory']?.enabled) {
-  // Pass LMStudioServer to memory server for embedding model loading pipeline
-  const s = new MemoryServer(config.servers['memory'], lmStudioServer);
+  // Pass LLM router to memory server for embedding
+  const s = new MemoryServer(config.servers['memory'], llmRouter);
   serverModules.set('memory', s);
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());

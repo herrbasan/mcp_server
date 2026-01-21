@@ -1,12 +1,14 @@
 {
   "servers": {
     "lm-studio": {
+      "_taskType": "query",
       "enabled": true,
       "systemPrompt": "You provide concise second opinions on development decisions. Focus on performance, maintainability, and best practices.",
       "temperature": 0.7,
-      "maxTokens": 4096
+      "maxTokens": 8192
     },
     "web-research": {
+      "_taskTypes": ["analysis", "synthesis"],
       "enabled": true,
       "maxPages": 10,
       "maxDepth": 2,
@@ -15,9 +17,69 @@
       "description": "Multi-source web research with local LLM synthesis"
     },
     "memory": {
+      "_taskType": "embedding",
       "enabled": true,
       "storePath": "data/memories.json",
       "description": "Persistent semantic memory across sessions"
+    }
+  },
+  "llm": {
+    "defaultProvider": "lmstudio",
+    "taskDefaults": {
+      "embedding": "ollama",
+      "analysis": "gemini",
+      "synthesis": "gemini",
+      "query": "gemini"
+    },
+    "_taskMapping": {
+      "_comment": "Task defaults are used by the following servers:",
+      "embedding": ["memory: embeddings for semantic search"],
+      "analysis": ["web-research: source selection and credibility analysis"],
+      "synthesis": ["web-research: multi-source content synthesis"],
+      "query": ["lm-studio: query_model and get_second_opinion tools"]
+    },
+    "providers": {
+      "lmstudio": {
+        "enabled": true,
+        "type": "lmstudio",
+        "endpoint": "${LM_STUDIO_WS_ENDPOINT}",
+        "model": "nvidia/nemotron-3-nano",
+        "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
+        "maxTokens": 8192,
+        "temperature": 0.7,
+        "stripThinking": true,
+        "connectTimeoutMs": 10000,
+        "rpcTimeoutMs": 120000,
+        "defaultModelTtlMs": 3600000,
+        "nonDefaultModelTtlMs": 600000
+      },
+      "ollama": {
+        "enabled": true,
+        "type": "ollama",
+        "endpoint": "http://192.168.0.145:11434",
+        "model": "gemma3:12b",
+        "embeddingModel": "nomic-embed-text-v2-moe",
+        "maxTokens": 8192,
+        "temperature": 0.7
+      },
+      "gemini": {
+        "enabled": true,
+        "type": "gemini",
+        "apiKey": "${GEMINI_API_KEY}",
+        "model": "gemini-2.0-flash-exp",
+        "embeddingModel": "text-embedding-004",
+        "maxTokens": 8192,
+        "temperature": 0.7
+      },
+      "openai": {
+        "enabled": false,
+        "type": "openai",
+        "apiKey": "${OPENAI_API_KEY}",
+        "endpoint": "${LM_STUDIO_HTTP_ENDPOINT}/v1/chat/completions",
+        "model": "gpt-4o",
+        "maxTokens": 8192,
+        "temperature": 0.7
+      }
     }
   },
   "orchestrator": {

@@ -41,18 +41,81 @@ mcp_server/
 ├── src/
 │   ├── http-server.js           # HTTP server (remote mode)
 │   ├── web-start.js             # Start web UI only
+│   ├── llm/                     # LLM Translation Layer (NEW)
+│   │   ├── base-adapter.js      # Abstract adapter interface
+│   │   ├── lmstudio-adapter.js  # LM Studio WebSocket adapter
+│   │   ├── ollama-adapter.js    # Ollama HTTP adapter
+│   │   ├── gemini-adapter.js    # Google Gemini API adapter
+│   │   ├── copilot-adapter.js   # GitHub Copilot/Azure adapter
+│   │   ├── router.js            # Multi-provider orchestrator
+│   │   ├── index.js             # Public exports
+│   │   └── README.md            # Technical reference
 │   └── servers/
 │       ├── memory.js            # Persistent semantic memory
 │       ├── lm-studio-ws.js      # WebSocket LM Studio integration
 │       └── web-research.js      # Multi-source web research
 ├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
+├── docs/                        # Documentation
+│   ├── llm-translation-layer.md # LLM layer user guide
+│   ├── llm-architecture.md      # Architecture diagrams
+│   └── llm-implementation-summary.md  # Implementation details
 ├── data/
 │   └── memories.json            # Memory storage (gitignored)
 ├── test/                        # Test scripts
+│   └── test-llm-router.js       # LLM router test suite
 ├── config.json                  # Server configuration
 ├── package.json
 └── README.md
 ```
+
+## LLM Translation Layer
+
+Unified interface for multiple LLM providers with **task-based routing**, consistent API, and automatic provider selection.
+
+### Supported Providers
+- **LM Studio** (local) - Full model management, progress reporting, embeddings
+- **Ollama** (remote) - HTTP interface, embeddings, deployed on Arc A770
+- **Google Gemini** (cloud) - Latest Gemini models, vision, embeddings
+- **OpenAI** (cloud) - GPT-4o, o1 models, Azure-compatible
+
+### Task-Based Routing
+
+The router automatically selects providers based on task type:
+
+```javascript
+import { LLMRouter } from './src/llm/router.js';
+
+const router = new LLMRouter(config.llm);
+
+// Embeddings use lmstudio (local, fast)
+const embedding = await router.embedText('search query');
+
+// Text generation uses gemini (quality)
+const response = await router.predict({
+  prompt: 'Explain async/await',
+  taskType: 'query',  // Uses taskDefaults.query provider
+  maxTokens: 500
+});
+
+// Override with explicit provider
+const localResponse = await router.predict({
+  prompt: 'What is quantum computing?',
+  provider: 'lmstudio',  // Force specific provider
+  model: 'nvidia/nemotron-3-nano'
+});
+```
+
+**Current Routing** (configured in config.json):
+- `embedding` → **lmstudio** (local, 768-dim nomic-embed-text-v2-moe)
+- `analysis` → **gemini** (web research source selection)
+- `synthesis` → **gemini** (web research content synthesis)
+- `query` → **gemini** (query_model, get_second_opinion tools)
+
+**Dimension Compatibility**: All embedding models standardized on 768-dim nomic-embed-text-v2-moe. Memory system handles dimension mismatches gracefully (returns 0 similarity for incompatible vectors).
+
+📖 **Full Documentation**: [docs/llm-translation-layer.md](docs/llm-translation-layer.md)
+
+🏗️ **Architecture**: [docs/llm-architecture.md](docs/llm-architecture.md)
 
 ## Configuration
 
@@ -63,6 +126,10 @@ mcp_server/
 # LM Studio endpoints
 LM_STUDIO_WS_ENDPOINT=ws://localhost:12345
 LM_STUDIO_HTTP_ENDPOINT=http://localhost:12345
+
+# LLM Provider API Keys (for cloud providers)
+GEMINI_API_KEY=your-google-api-key-here
+COPILOT_API_KEY=your-github-copilot-key-here
 
 # Embedding model for memory system
 EMBEDDING_MODEL=text-embedding-nomic-embed-text-v2-moe
@@ -100,6 +167,49 @@ Non-sensitive settings (models, prompts, timeouts):
       "llmModel": "nvidia/nemotron-3-nano",
       "maxPages": 10,
       "timeout": 180000
+    }
+  },
+  "llm": {
+    "defaultProvider": "lmstudio",
+    "taskDefaults": {
+      "embedding": "lmstudio",
+      "analysis": "gemini",
+      "synthesis": "gemini",
+      "query": "gemini"
+    },
+    "providers": {
+      "lmstudio": {
+        "enabled": true,
+        "type": "lmstudio",
+        "endpoint": "${LM_STUDIO_WS_ENDPOINT}",
+        "model": "nvidia/nemotron-3-nano",
+        "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
+        "maxTokens": 8192
+      },
+      "ollama": {
+        "enabled": true,
+        "type": "ollama",
+        "endpoint": "http://192.168.0.145:11434",
+        "model": "gemma3:12b",
+        "embeddingModel": "nomic-embed-text-v2-moe",
+        "maxTokens": 8192
+      },
+      "gemini": {
+        "enabled": true,
+        "type": "gemini",
+        "apiKey": "${GEMINI_API_KEY}",
+        "model": "gemini-2.0-flash-exp",
+        "embeddingModel": "text-embedding-004",
+        "maxTokens": 8192
+      },
+      "openai": {
+        "enabled": false,
+        "type": "openai",
+        "apiKey": "${OPENAI_API_KEY}",
+        "endpoint": "${LM_STUDIO_HTTP_ENDPOINT}/v1/chat/completions",
+        "model": "gpt-4o",
+        "maxTokens": 8192
+      }
     }
   }
 }

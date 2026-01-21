@@ -4,9 +4,10 @@ import { JSDOM } from 'jsdom';
 import { ScraperRegistry } from '../scrapers/index.js';
 
 export class WebResearchServer {
-  constructor(config) {
-    this.llmEndpoint = config.llmEndpoint;
-    this.llmModel = config.llmModel;
+  constructor(config, llmRouter = null) {
+    this.router = llmRouter;
+    this.synthesisProvider = config.synthesisProvider || null; // null = use task default
+    this.selectionProvider = config.selectionProvider || null;
     this.scraperRegistry = new ScraperRegistry();
     
     // Guardrails (local-first reliability focus)
@@ -869,32 +870,23 @@ Return the merged synthesis in markdown.`;
   }
 
   async queryLLM(prompt, signal, maxTokens = 1000) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.limits.llmTimeout);
-    
-    try {
-      const res = await fetch(this.llmEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: this.llmModel,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.3,
-          max_tokens: maxTokens
-        }),
-        signal: signal || controller.signal
-      });
+    if (!this.router) {
+      throw new Error('LLM router not configured for web research');
+    }
 
-      if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
+    try {
+      // Use synthesis provider (or task default)
+      const response = await this.router.predict({
+        prompt,
+        provider: this.synthesisProvider,
+        maxTokens,
+        temperature: 0.3,
+        taskType: 'synthesis'
+      });
       
-      const data = await res.json();
-      if (!data?.choices?.[0]?.message?.content) {
-        throw new Error('Invalid LLM response');
-      }
-      
-      return data.choices[0].message.content;
-    } finally {
-      clearTimeout(timeoutId);
+      return response;
+    } catch (err) {
+      throw new Error(`LLM query failed: ${err.message}`);
     }
   }
 

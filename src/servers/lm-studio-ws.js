@@ -1,8 +1,10 @@
 import { LMStudioSession } from '../../LMStudioAPI/vanilla-sdk.js';
 
 export class LMStudioWSServer {
-  constructor(config) {
+  constructor(config, llmRouter = null) {
     this.config = config;
+    this.router = llmRouter;
+    this.queryProvider = config.queryProvider || null; // null = use taskDefaults
     this.session = null;
     this.currentModel = null;
     this.progressCallback = null;
@@ -284,40 +286,27 @@ export class LMStudioWSServer {
   }
 
   async _predictOnce({ prompt, model, maxTokens, systemPrompt }) {
-    await this.ensureConnected();
-    const selectedModel = await this.selectModel(model);
+    if (!this.router) {
+      throw new Error('LLM router not configured for LM Studio server');
+    }
 
-    this._sendStatus(0, `Using model: ${selectedModel}`);
-    this._sendStatus(5, 'Ensuring model loaded...');
-    await this._ensureModelLoaded(selectedModel);
-    this._trackModelUsage(selectedModel);
-    this._startTtlMonitoring();
+    this._sendStatus(0, `Querying ${this.queryProvider}...`);
+    
+    try {
+      const response = await this.router.predict({
+        prompt,
+        systemPrompt,
+        model,
+        maxTokens: maxTokens || this.config.maxTokens || 500,
+        provider: this.queryProvider,
+        taskType: 'query'
+      });
 
-    this._sendStatus(35, 'Generating response...');
-
-    let fullResponse = '';
-    const tokens = maxTokens || this.config.maxTokens || 500;
-
-    const stripThinking = this.config.stripThinking !== false;
-    const thinkingTags = Array.isArray(this.config.thinkingTags) && this.config.thinkingTags.length ? this.config.thinkingTags : undefined;
-
-    const stream = this.session.predict({
-      modelKey: selectedModel,
-      prompt,
-      ...(systemPrompt ? { systemPrompt } : {}),
-      maxTokens: tokens,
-      ...(stripThinking ? { stripThinking: true, ...(thinkingTags ? { thinkingTags } : {}) } : {}),
-      onProgress: (p) => {
-        if (!p || typeof p !== 'object' || !p.status) return;
-        if (p.status === 'streaming') return;
-        this._sendStatus(35, p.status);
-      }
-    });
-
-    for await (const chunk of stream) fullResponse += chunk;
-
-    this._sendStatus(100, 'Complete');
-    return fullResponse;
+      this._sendStatus(100, 'Complete');
+      return response;
+    } catch (err) {
+      throw new Error(`Query failed: ${err.message}`);
+    }
   }
 
   getTools() {

@@ -5,12 +5,11 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export class MemoryServer {
-  constructor(config, lmStudioServer = null) {
-    this.lmStudioServer = lmStudioServer;
-    this.endpoint = config.embeddingEndpoint;
-    this.model = config.embeddingModel;
+  constructor(config, llmRouter = null) {
+    this.router = llmRouter;
+    this.embeddingProvider = config.embeddingProvider || null; // null = use task default
     this.storePath = join(__dirname, '..', '..', config.storePath);
-    this.maxChars = parseInt(process.env.MAX_MEMORY_CHARS) || 1800; // ~450 tokens safe for 512 limit
+    this.maxChars = parseInt(process.env.MAX_MEMORY_CHARS) || 1800;
     this.memories = this.loadMemories();
     this.progressCallback = null;
   }
@@ -64,72 +63,41 @@ export class MemoryServer {
       text = text.slice(0, this.maxChars);
     }
     
-    // Use LMStudioSession if available (with model loading pipeline)
-    if (this.lmStudioServer) {
-      try {
-        this.sendProgress(5, 100, 'Connecting to LM Studio...');
-        
-        // Ensure WebSocket connection is established
-        await this.lmStudioServer.ensureConnected();
-        
-        this.sendProgress(10, 100, 'Preparing embedding...');
-        
-        // createEmbedding handles model loading with progress
-        const embedding = await this.lmStudioServer.session.createEmbedding(
-          text,
-          this.model,
-          {
-            autoUnload: true,
-            onProgress: (progress, message) => {
-              // Map SDK progress (0-1) to MCP progress (10-95)
-              const pct = 10 + Math.round(progress * 85);
-              this.sendProgress(pct, 100, message);
-            }
-          }
-        );
-        
-        this.sendProgress(100, 100, 'Embedding complete');
-        return embedding;
-      } catch (err) {
-        // Preserve stack trace
-        const error = new Error(`Embedding via LM Studio failed: ${err.message}`);
-        error.stack = err.stack;
-        throw error;
-      }
+    if (!this.router) {
+      throw new Error('LLM router not configured for memory server');
     }
     
-    // Fallback to HTTP endpoint (legacy, no model loading pipeline)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    
     try {
-      const res = await fetch(this.endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: this.model, input: text }),
-        signal: controller.signal
-      });
+      this.sendProgress(5, 100, 'Generating embedding...');
       
-      if (!res.ok) {
-        const error = await res.text();
-        throw new Error(`Embedding failed (${res.status}): ${error}`);
-      }
+      // Use router with task-based routing
+      const embedding = await this.router.embedText(text, this.embeddingProvider);
       
-      const data = await res.json();
-      return data.data[0].embedding;
-    } finally {
-      clearTimeout(timeout);
+      this.sendProgress(100, 100, 'Embedding complete');
+      return embedding;
+    } catch (err) {
+      const error = new Error(`Embedding failed: ${err.message}`);
+      error.stack = err.stack;
+      throw error;
     }
   }
 
   cosineSimilarity(a, b) {
+    if (!a || !b) return 0;
+    if (a.length !== b.length) {
+      // Dimension mismatch - different embedding models
+      // Return 0 to skip incompatible embeddings
+      return 0;
+    }
+    
     let dot = 0, magA = 0, magB = 0;
     for (let i = 0; i < a.length; i++) {
       dot += a[i] * b[i];
       magA += a[i] * a[i];
       magB += b[i] * b[i];
     }
-    return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+    const mag = Math.sqrt(magA) * Math.sqrt(magB);
+    return mag === 0 ? 0 : dot / mag;
   }
 
   getTools() {
