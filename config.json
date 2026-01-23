@@ -26,10 +26,10 @@
   "llm": {
     "defaultProvider": "lmstudio",
     "taskDefaults": {
-      "embedding": "ollama",
-      "analysis": "gemini",
-      "synthesis": "gemini",
-      "query": "gemini"
+      "embedding": "lmstudio",
+      "analysis": "lmstudio",
+      "synthesis": "lmstudio",
+      "query": "lmstudio"
     },
     "_taskMapping": {
       "_comment": "Task defaults are used by the following servers:",

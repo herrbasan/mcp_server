@@ -188,15 +188,24 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     this._sendStatus(10, `Loading ${modelKey}...`);
     
     try {
-      await this.session.llm.loadModel(modelKey, {
-        onProgress: (p) => {
+      await this.session._loadModelAndWait(
+        { modelKey, path: modelKey },
+        (p) => {
           if (!p || typeof p !== 'object') return;
+          
+          // Extract progress percentage
           const pct = typeof p.progress === 'number' ? Math.round(p.progress * 100) : 
-                     (p.status === 'loading' ? 50 : 10);
+                     (p.status === 'loading_model' ? 50 : 10);
+          
+          // Map to 10-35% range for model loading phase
           const progress = 10 + Math.min(pct * 0.25, 25);
-          this._sendStatus(progress, p.status || `Loading ${pct}%`);
+          
+          // Extract status message
+          const statusMsg = p.message || p.status || `Loading ${pct}%`;
+          
+          this._sendStatus(progress, statusMsg);
         }
-      });
+      );
       
       this._modelsCache = null;
       this._sendStatus(35, `Model ${modelKey} loaded`);
@@ -214,7 +223,12 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     if (!model) return;
 
     const modelKey = model.modelKey || model.path;
-    await this.session.llm.unloadModel(modelKey);
+    const instances = Array.isArray(model.loadedInstances) ? model.loadedInstances : [];
+    const identifier = instances.length > 0 
+      ? (typeof instances[0] === 'string' ? instances[0] : (instances[0].identifier || instances[0].instanceReference || modelKey))
+      : modelKey;
+    
+    await this.session.llm.unloadModel(identifier);
     this._modelLastUsed.delete(modelKey);
     this._modelsCache = null;
   }

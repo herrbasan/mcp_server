@@ -324,7 +324,7 @@ case 'mycustom':
 - **LM Studio**: Best for local deployment, full features, highest overhead
 - **Ollama**: Fast local deployment, simpler, less control
 - **Gemini**: Cloud-based, fast, rate-limited by API quota
-- **Copilot**: Cloud-based, best GPT-4 access, rate-limited
+- **OpenAI**: Cloud-based, best GPT-4 access, rate-limited
 
 ## Blueprint: LM Studio Features
 

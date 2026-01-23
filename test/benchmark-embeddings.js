@@ -1,51 +1,36 @@
 import { readdirSync, statSync, readFileSync } from 'fs';
 import { join, extname, relative } from 'path';
 import { config } from 'dotenv';
+import { LLMRouter } from '../src/llm/index.js';
+import llmConfig from '../config.json' with { type: 'json' };
 
 config();
 
-// Simple LM Studio HTTP client for embeddings
-class EmbeddingClient {
-  constructor(baseURL) {
-    this.baseURL = baseURL;
-  }
-  
-  async createEmbedding(text) {
-    const response = await fetch(`${this.baseURL}/v1/embeddings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'text-embedding-nomic-embed-text-v2-moe',
-        input: text
-      })
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Embedding failed: ${response.statusText}`);
+// Interpolate env vars in config
+function interpolateEnvVars(obj) {
+  const result = JSON.parse(JSON.stringify(obj));
+  const interpolate = (val) => {
+    if (typeof val === 'string' && val.startsWith('${') && val.endsWith('}')) {
+      const envVar = val.slice(2, -1);
+      return process.env[envVar] || val;
     }
-    
-    const data = await response.json();
-    return data.data[0].embedding;
-  }
+    return val;
+  };
   
-  async createEmbeddings(texts) {
-    const response = await fetch(`${this.baseURL}/v1/embeddings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'text-embedding-nomic-embed-text-v2-moe',
-        input: texts
-      })
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Batch embedding failed: ${response.statusText}`);
+  const walk = (obj) => {
+    for (const key in obj) {
+      if (typeof obj[key] === 'object' && obj[key] !== null) {
+        walk(obj[key]);
+      } else {
+        obj[key] = interpolate(obj[key]);
+      }
     }
-    
-    const data = await response.json();
-    return data.data.map(d => d.embedding);
-  }
+  };
+  walk(result);
+  return result;
 }
+
+const router = new LLMRouter(interpolateEnvVars(llmConfig.llm));
 
 // Collect sample files
 function collectFiles(dirPath, maxFiles = 100) {
@@ -91,13 +76,10 @@ function collectFiles(dirPath, maxFiles = 100) {
 // Run benchmarks
 async function runBenchmarks() {
   const targetPath = process.argv[2] || process.cwd();
-  const endpoint = process.env.LM_STUDIO_HTTP_ENDPOINT || 'http://localhost:1234';
   
   console.log(`\n📊 Embedding Creation Benchmark`);
   console.log(`Target: ${targetPath}`);
-  console.log(`Endpoint: ${endpoint}\n`);
-  
-  const client = new EmbeddingClient(endpoint);
+  console.log(`Using LLM Router\n`);
   
   // Collect sample files
   console.log(`Collecting sample files...`);
@@ -112,7 +94,7 @@ async function runBenchmarks() {
   // Test 1: Single embedding
   console.log(`Test 1: Single Embedding`);
   const singleStart = performance.now();
-  await client.createEmbedding(files[0].content);
+  await router.embedText(files[0].content);
   const singleEnd = performance.now();
   const singleDuration = singleEnd - singleStart;
   console.log(`  Duration: ${singleDuration.toFixed(2)}ms\n`);
@@ -122,7 +104,7 @@ async function runBenchmarks() {
   console.log(`Test 2: Batch Embedding (${batchSize} files)`);
   const batchTexts = files.slice(0, batchSize).map(f => f.content);
   const batchStart = performance.now();
-  await client.createEmbeddings(batchTexts);
+  await Promise.all(batchTexts.map(text => router.embedText(text)));
   const batchEnd = performance.now();
   const batchDuration = batchEnd - batchStart;
   console.log(`  Total duration: ${batchDuration.toFixed(2)}ms`);
@@ -134,7 +116,7 @@ async function runBenchmarks() {
     console.log(`Test 3: Large Batch (${largeSize} files)`);
     const largeTexts = files.slice(0, largeSize).map(f => f.content);
     const largeStart = performance.now();
-    await client.createEmbeddings(largeTexts);
+    await Promise.all(largeTexts.map(text => router.embedText(text)));
     const largeEnd = performance.now();
     const largeDuration = largeEnd - largeStart;
     console.log(`  Total duration: ${largeDuration.toFixed(2)}ms (${(largeDuration/1000).toFixed(2)}s)`);

@@ -44,10 +44,10 @@ Complete port from existing lm-studio-ws.js with all features:
 - Text embeddings via text-embedding-004
 - API key authentication
 
-#### **[copilot-adapter.js](src/llm/copilot-adapter.js)** - GitHub/Azure
+#### **[openai-adapter.js](src/llm/openai-adapter.js)** - OpenAI/Azure
 - OpenAI-compatible chat completions API
 - Models: gpt-4o, gpt-4o-mini, o1-preview, o1-mini
-- Works with GitHub Copilot and Azure OpenAI endpoints
+- Works with OpenAI and Azure OpenAI endpoints
 - API key authentication
 - No embeddings support
 
@@ -73,7 +73,7 @@ Complete port from existing lm-studio-ws.js with all features:
       "lmstudio": { "enabled": true, ... },
       "ollama": { "enabled": false, ... },
       "gemini": { "enabled": false, ... },
-      "copilot": { "enabled": false, ... }
+      "openai": { "enabled": false, ... }
     }
   }
 }
@@ -82,7 +82,7 @@ Complete port from existing lm-studio-ws.js with all features:
 Environment variables:
 - `LM_STUDIO_WS_ENDPOINT`
 - `GEMINI_API_KEY`
-- `COPILOT_API_KEY`
+- `OPENAI_API_KEY`
 
 ### 5. Documentation
 
@@ -229,7 +229,7 @@ Others use existing dependencies or built-in fetch.
 - Rate limited by API quota
 - No local resources
 
-### Copilot
+### OpenAI
 - Cloud latency
 - Best GPT-4 access
 - Rate limited
@@ -256,7 +256,7 @@ Others use existing dependencies or built-in fetch.
 - `src/llm/lmstudio-adapter.js` (350 lines)
 - `src/llm/ollama-adapter.js` (150 lines)
 - `src/llm/gemini-adapter.js` (120 lines)
-- `src/llm/copilot-adapter.js` (120 lines)
+- `src/llm/openai-adapter.js` (120 lines)
 - `src/llm/router.js` (180 lines)
 - `src/llm/index.js` (6 lines)
 - `src/llm/README.md` (130 lines)

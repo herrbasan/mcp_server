@@ -23,6 +23,9 @@ export class LMStudioWSServer {
 
   setProgressCallback(callback) {
     this.progressCallback = callback;
+    if (this.router) {
+      this.router.setProgressCallback(callback);
+    }
   }
 
   sendProgress(progress, total, message) {
