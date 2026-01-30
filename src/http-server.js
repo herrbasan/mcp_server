@@ -1,7 +1,7 @@
 import { config as loadDotEnv } from 'dotenv';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { readFileSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { LMStudioWSServer } from './servers/lm-studio-ws.js';
 import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
+import { BrowserServer } from './servers/browser.js';
 import { WebServer } from './web/server.js';
 import { globalLogger } from './logger.js';
 import { LLMRouter } from './llm/router.js';
@@ -64,6 +65,7 @@ if (process.env.WEB_MAX_LOGS) config.web.maxLogs = parseInt(process.env.WEB_MAX_
 const serverModules = new Map();
 const tools = [];
 const resources = [];
+const prompts = [];
 
 // Initialize LLM Router
 let llmRouter = null;
@@ -95,7 +97,15 @@ if (config.servers['memory']?.enabled) {
   serverModules.set('memory', s);
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());
+  if (s.getPrompts) prompts.push(...s.getPrompts());
   console.log('✓ Memory');
+}
+
+if (config.servers['browser']?.enabled) {
+  const s = new BrowserServer(config.servers['browser']);
+  serverModules.set('browser', s);
+  tools.push(...s.getTools());
+  console.log('✓ Browser');
 }
 // Start web monitoring interface
 if (config.web?.enabled) {
@@ -113,12 +123,30 @@ function createMCPServer() {
   }, {
     capabilities: {
       tools: {},
-      resources: resources.length > 0 ? {} : undefined
+      resources: resources.length > 0 ? {} : undefined,
+      prompts: prompts.length > 0 ? {} : undefined
     }
   });
 
   // Set up request handlers
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+
+  if (prompts.length > 0) {
+    server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts }));
+    server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      const name = request.params.name;
+      for (const [sName, module] of serverModules) {
+        if (module.getPrompt) {
+          try {
+            return await module.getPrompt(name);
+          } catch (err) {
+            continue;
+          }
+        }
+      }
+      throw new Error(`Prompt not found: ${name}`);
+    });
+  }
 
   if (resources.length > 0) {
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources }));

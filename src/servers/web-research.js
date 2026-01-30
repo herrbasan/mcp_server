@@ -305,6 +305,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     
     console.error('\n✅ Research complete\n');
     this.sendProgress(10, 10, '✅ Research complete');
+    
+    if (!currentSynthesis || !currentSynthesis.text) {
+      return '❌ Research failed: No content could be synthesized from available sources.';
+    }
+    
     return currentSynthesis.text;
   }
 

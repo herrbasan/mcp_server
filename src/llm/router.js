@@ -3,13 +3,131 @@ import { OllamaAdapter } from './ollama-adapter.js';
 import { GeminiAdapter } from './gemini-adapter.js';
 import { OpenAIAdapter } from './openai-adapter.js';
 
+const DEFAULT_THINKING_TAGS = ['think', 'analysis', 'reasoning'];
+
+/**
+ * Robust thinking tag stripper adapted from LMStudioAPI.
+ * Handles: encapsulated blocks, separator-style tags (orphan </think>), 
+ * and mixed patterns.
+ */
+function createThinkingStripper(tags = DEFAULT_THINKING_TAGS) {
+  const maxBuffer = 16384;
+  let buffer = '';
+  let inTag = null;
+
+  const closeNeedleFor = (tagLower) => `</${tagLower}>`;
+
+  const isOpenTagAt = (text, idx, tagLower) => {
+    if (text[idx] !== '<') return false;
+    if (text[idx + 1] !== tagLower[0]) return false;
+    const after = text[idx + 1 + tagLower.length];
+    return after === '>' || after === ' ' || after === '\t' || after === '\r' || after === '\n' || after === '/';
+  };
+
+  const findNextOpen = () => {
+    const lower = buffer.toLowerCase();
+    let bestIdx = -1, bestTag = null;
+    for (const tag of tags) {
+      const tagLower = String(tag).toLowerCase();
+      let idx = lower.indexOf(`<${tagLower}`);
+      while (idx !== -1) {
+        if (isOpenTagAt(lower, idx, tagLower)) break;
+        idx = lower.indexOf(`<${tagLower}`, idx + 1);
+      }
+      if (idx !== -1 && (bestIdx === -1 || idx < bestIdx)) {
+        bestIdx = idx;
+        bestTag = tagLower;
+      }
+    }
+    return bestIdx === -1 ? null : { idx: bestIdx, tag: bestTag };
+  };
+
+  const findNextClose = () => {
+    const lower = buffer.toLowerCase();
+    let bestIdx = -1, bestTag = null;
+    for (const tag of tags) {
+      const tagLower = String(tag).toLowerCase();
+      const idx = lower.indexOf(closeNeedleFor(tagLower));
+      if (idx !== -1 && (bestIdx === -1 || idx < bestIdx)) {
+        bestIdx = idx;
+        bestTag = tagLower;
+      }
+    }
+    return bestIdx === -1 ? null : { idx: bestIdx, tag: bestTag };
+  };
+
+  return {
+    process(text) {
+      if (!text) return '';
+      buffer += String(text);
+      if (buffer.length > maxBuffer) buffer = buffer.slice(-maxBuffer);
+
+      let out = '';
+      while (true) {
+        if (inTag) {
+          const closeNeedle = closeNeedleFor(inTag);
+          const closeIdx = buffer.toLowerCase().indexOf(closeNeedle);
+          if (closeIdx === -1) {
+            buffer = buffer.slice(-(closeNeedle.length - 1));
+            break;
+          }
+          buffer = buffer.slice(closeIdx + closeNeedle.length);
+          inTag = null;
+          continue;
+        }
+
+        const nextOpen = findNextOpen();
+        const nextClose = findNextClose();
+
+        // Handle orphan close tag (separator style: everything before </think> is thinking)
+        if (nextClose && (!nextOpen || nextClose.idx < nextOpen.idx)) {
+          buffer = buffer.slice(nextClose.idx + closeNeedleFor(nextClose.tag).length);
+          continue;
+        }
+
+        if (!nextOpen) break;
+
+        // Output content before the opening tag
+        if (nextOpen.idx > 0) {
+          out += buffer.slice(0, nextOpen.idx);
+          buffer = buffer.slice(nextOpen.idx);
+        }
+
+        const gt = buffer.indexOf('>');
+        if (gt === -1) break;
+
+        buffer = buffer.slice(gt + 1);
+        inTag = nextOpen.tag;
+      }
+
+      return out;
+    },
+    flush() {
+      const out = inTag ? '' : buffer;
+      buffer = '';
+      inTag = null;
+      return out;
+    }
+  };
+}
+
+function stripThinkingFromText(text, tags = DEFAULT_THINKING_TAGS) {
+  if (!text || typeof text !== 'string') return text;
+  const stripper = createThinkingStripper(tags);
+  const result = stripper.process(text) + stripper.flush();
+  return result.trim();
+}
+
 export class LLMRouter {
   constructor(config) {
     this.config = config;
     this.adapters = new Map();
     this.defaultProvider = config.defaultProvider || 'lmstudio';
+    this.maxTokens = config.maxTokens || 32768;
     this.taskDefaults = config.taskDefaults || {};
     this.progressCallback = null;
+    this.stripThinking = config.stripThinking !== false; // default true
+    this.thinkingTags = Array.isArray(config.thinkingTags) ? config.thinkingTags : DEFAULT_THINKING_TAGS;
     this._initAdapters();
   }
 
@@ -20,7 +138,12 @@ export class LLMRouter {
       if (!providerConfig.enabled) continue;
 
       try {
-        const adapter = this._createAdapter(name, providerConfig);
+        // Inject centralized maxTokens if not set per-provider
+        const configWithDefaults = {
+          ...providerConfig,
+          maxTokens: providerConfig.maxTokens || this.maxTokens
+        };
+        const adapter = this._createAdapter(name, configWithDefaults);
         if (adapter) {
           this.adapters.set(name, adapter);
         }
@@ -127,7 +250,13 @@ export class LLMRouter {
   async predict({ prompt, systemPrompt, maxTokens, temperature, model, provider, taskType = 'analysis' }) {
     const adapter = this.getAdapter(provider, taskType);
     await adapter.connect();
-    return adapter.predict({ prompt, systemPrompt, maxTokens, temperature, model });
+    let response = await adapter.predict({ prompt, systemPrompt, maxTokens, temperature, model });
+    
+    if (this.stripThinking && response) {
+      response = stripThinkingFromText(response, this.thinkingTags);
+    }
+    
+    return response;
   }
 
   async embedText(text, providerName) {

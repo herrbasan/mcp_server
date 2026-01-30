@@ -11,10 +11,10 @@ loadDotEnv({ path: join(__dirname, '..', '.env') });
 const config = JSON.parse(readFileSync(join(__dirname, '..', 'config.json'), 'utf-8'));
 
 // Override config with environment variables if present
-if (process.env.LM_STUDIO_WS_ENDPOINT) config.servers['lm-studio'].endpoint = process.env.LM_STUDIO_WS_ENDPOINT;
+if (process.env.LM_STUDIO_ENDPOINT) config.servers['lm-studio'].endpoint = process.env.LM_STUDIO_ENDPOINT;
 if (process.env.LM_STUDIO_MODEL) config.servers['lm-studio'].model = process.env.LM_STUDIO_MODEL;
-if (process.env.LM_STUDIO_HTTP_ENDPOINT) {
-  const baseUrl = process.env.LM_STUDIO_HTTP_ENDPOINT;
+if (process.env.LM_STUDIO_ENDPOINT) {
+  const baseUrl = process.env.LM_STUDIO_ENDPOINT;
   config.servers['web-research'].llmEndpoint = `${baseUrl}/v1/chat/completions`;
   config.servers['memory'].embeddingEndpoint = `${baseUrl}/v1/embeddings`;
 }

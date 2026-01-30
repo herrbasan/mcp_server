@@ -4,8 +4,7 @@
       "_taskType": "query",
       "enabled": true,
       "systemPrompt": "You provide concise second opinions on development decisions. Focus on performance, maintainability, and best practices.",
-      "temperature": 0.7,
-      "maxTokens": 8192
+      "temperature": 0.7
     },
     "web-research": {
       "_taskTypes": ["analysis", "synthesis"],
@@ -21,10 +20,19 @@
       "enabled": true,
       "storePath": "data/memories.json",
       "description": "Persistent semantic memory across sessions"
+    },
+    "browser": {
+      "enabled": true,
+      "timeout": 30000,
+      "maxContentSize": 2097152,
+      "idleTimeout": 300000,
+      "viewport": { "width": 1280, "height": 800 },
+      "description": "Direct browser automation for LLMs - persistent browser with 5min idle timeout"
     }
   },
   "llm": {
     "defaultProvider": "lmstudio",
+    "maxTokens": 32768,
     "taskDefaults": {
       "embedding": "lmstudio",
       "analysis": "lmstudio",
@@ -42,10 +50,9 @@
       "lmstudio": {
         "enabled": true,
         "type": "lmstudio",
-        "endpoint": "${LM_STUDIO_WS_ENDPOINT}",
+        "endpoint": "${LM_STUDIO_ENDPOINT}",
         "model": "nvidia/nemotron-3-nano",
         "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
-        "maxTokens": 8192,
         "temperature": 0.7,
         "stripThinking": true,
         "connectTimeoutMs": 10000,
@@ -59,7 +66,6 @@
         "endpoint": "http://192.168.0.145:11434",
         "model": "gemma3:12b",
         "embeddingModel": "nomic-embed-text-v2-moe",
-        "maxTokens": 8192,
         "temperature": 0.7
       },
       "gemini": {
@@ -68,16 +74,14 @@
         "apiKey": "${GEMINI_API_KEY}",
         "model": "gemini-2.0-flash-exp",
         "embeddingModel": "text-embedding-004",
-        "maxTokens": 8192,
         "temperature": 0.7
       },
       "openai": {
         "enabled": false,
         "type": "openai",
         "apiKey": "${OPENAI_API_KEY}",
-        "endpoint": "${LM_STUDIO_HTTP_ENDPOINT}/v1/chat/completions",
+        "endpoint": "${LM_STUDIO_ENDPOINT}/v1/chat/completions",
         "model": "gpt-4o",
-        "maxTokens": 8192,
         "temperature": 0.7
       }
     }
