@@ -253,24 +253,24 @@ run_local_agent(
       },
       {
         name: 'retrieve_file',
-        description: 'Retrieve raw file content from a workspace. Use after semantic/keyword search to get actual source code. Returns complete file content.',
+        description: 'Get file content using file ID from search results. SUPPORTS PARTIAL RETRIEVAL - use startLine/endLine to fetch only the lines you need (saves massive tokens). Optimal workflow: search_semantic → get_file_info (see function at line X) → retrieve_file (startLine=X, endLine=X+50). File IDs format: "workspace:path" (e.g., "BADKID-DEV:src/http-server.js"). Returns: content, total_lines, retrieved_lines, start_line, end_line, size.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            file: {
               type: 'string',
-              description: 'Local path to workspace (e.g., D:\\Work\\_GIT\\SoundApp)'
+              description: 'File ID from search results (e.g., "BADKID-DEV:src/http-server.js", "COOLKID-Work:project/index.ts")'
             },
-            filePath: {
-              type: 'string',
-              description: 'Relative path to file within workspace (e.g., libs/ffmpeg-napi-interface/lib/player-sab.js)'
+            startLine: {
+              type: 'number',
+              description: 'Start line (1-indexed, inclusive). Use with get_file_info function line numbers to fetch specific functions. Omit to read from beginning.'
             },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional, uses default from config if not specified)'
+            endLine: {
+              type: 'number',
+              description: 'End line (1-indexed, inclusive). Omit to read to end. Example: if function is at line 245, use startLine=245, endLine=280 to get just that function.'
             }
           },
-          required: ['path', 'filePath']
+          required: ['file']
         }
       }
     ];
@@ -339,34 +339,44 @@ run_local_agent(
   }
 
   async _retrieveFile(args) {
-    const { path: localPath, filePath, machine = null } = args;
+    const { file, startLine, endLine } = args;
 
     try {
-      // Resolve workspace path to UNC
-      const uncPath = this.workspace.resolvePath(localPath, machine);
-      const allowedShares = this.workspace.getAllowedShares(machine);
+      // Parse file ID using workspace resolver
+      const uncPath = this.workspace.resolveFileId(file);
+      const { workspace } = this.workspace.parseFileId(file);
       
-      // Validate workspace path
-      await this.workspace.validateResolvedPath(uncPath, allowedShares);
-
-      // Construct full file path
-      const fullFilePath = path.join(uncPath, filePath);
-      
-      // Validate file path is within workspace
-      await this.workspace.validateResolvedPath(fullFilePath, allowedShares);
+      // Validate file path is accessible
+      await this.workspace.validatePath(uncPath, workspace);
 
       // Read file
-      const content = await fs.readFile(fullFilePath, 'utf-8');
+      const content = await fs.readFile(uncPath, 'utf-8');
       const lines = content.split('\n');
+      
+      // Handle partial retrieval
+      let retrievedContent;
+      let actualStart = 1;
+      let actualEnd = lines.length;
+      
+      if (startLine !== undefined || endLine !== undefined) {
+        actualStart = Math.max(1, startLine || 1);
+        actualEnd = Math.min(lines.length, endLine || lines.length);
+        retrievedContent = lines.slice(actualStart - 1, actualEnd).join('\n');
+      } else {
+        retrievedContent = content;
+      }
 
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
-            path: filePath,
-            lines: lines.length,
-            size: content.length,
-            content: content
+            file_id: file,
+            total_lines: lines.length,
+            retrieved_lines: actualEnd - actualStart + 1,
+            start_line: actualStart,
+            end_line: actualEnd,
+            size: retrievedContent.length,
+            content: retrievedContent
           }, null, 2)
         }]
       };
@@ -377,7 +387,7 @@ run_local_agent(
           text: JSON.stringify({
             error: err.message,
             code: err.code || 'RETRIEVE_ERROR',
-            path: args.filePath
+            file_id: file
           }, null, 2)
         }]
       };

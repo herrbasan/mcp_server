@@ -162,143 +162,156 @@ export class CodeSearchServer {
   getTools() {
     return [
       {
-        name: 'refresh_index',
-        description: 'Incrementally update code search index for files changed since last build. Fast (seconds). Call after making code changes to keep index fresh.',
+        name: 'get_workspace_config',
+        description: 'CALL FIRST to discover available workspaces for code search. Returns workspace names, index status, and file counts. All other code search tools require a workspace name from this list. File results use format "workspace:path" (e.g., "BADKID-DEV:src/file.js") - pass these directly to retrieve_file.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: []
+        }
+      },
+      {
+        name: 'get_file_info',
+        description: 'Get detailed metadata for a specific file. Returns: functions/classes with LINE NUMBERS, imports, exports, language, size. CRITICAL: Use this after search to see WHERE functions are located (line numbers), then use retrieve_file with startLine/endLine to fetch only what you need. Workflow: search_semantic → get_file_info (see line numbers) → retrieve_file (partial). Does NOT return content.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            file: {
               type: 'string',
-              description: 'Local path to workspace (e.g., D:\\DEV\\mcp_server)'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional, uses default from config if not specified)'
+              description: 'File ID from search results (format: "workspace:path" e.g., "BADKID-DEV:src/http-server.js")'
             }
           },
-          required: ['path']
+          required: ['file']
+        }
+      },
+      {
+        name: 'refresh_index',
+        description: 'Incrementally update code search index for a workspace. Fast (seconds) - only processes files changed since last index. Call after making code changes to keep search results current.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            workspace: {
+              type: 'string',
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV", "COOLKID-Work")'
+            }
+          },
+          required: ['workspace']
+        }
+      },
+      {
+        name: 'refresh_all_indexes',
+        description: 'Refresh indexes for ALL configured workspaces in one call. Useful after bulk changes across multiple projects or when setting up a new environment.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            force: {
+              type: 'boolean',
+              description: 'Force full rebuild instead of incremental update (default: false)'
+            }
+          },
+          required: []
         }
       },
       {
         name: 'get_index_stats',
-        description: 'Get code search index health: exists, file count, age, staleness warnings. Use to check if workspace is indexed before searching.',
+        description: 'Check index health for a workspace: file count, last build time, staleness warnings. Use before searching to verify the index exists and is fresh.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional)'
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")'
             }
           },
-          required: ['path']
+          required: ['workspace']
         }
       },
       {
         name: 'search_files',
-        description: 'Find files by name/path pattern using glob matching. Fast cached search.',
+        description: 'Find files by name/path pattern using glob matching. Returns ONLY file IDs ("workspace:path") - no metadata, no functions, no content. Fast for exploring directory structure or finding files by name. For metadata, use get_file_info after finding files. For content, use retrieve_file.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace'
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")'
             },
             glob: {
               type: 'string',
-              description: 'Glob pattern (e.g., "*auth*.js", "src/**/*.ts")'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional)'
+              description: 'Glob pattern: "*auth*.js" (files containing auth), "src/**/*.ts" (all TS in src), "**/*test*" (all test files)'
             }
           },
-          required: ['path', 'glob']
+          required: ['workspace', 'glob']
         }
       },
       {
         name: 'search_keyword',
-        description: 'Fast keyword/regex search across indexed files. Uses cached index for speed.',
+        description: 'Fast text/regex search across all indexed files. Returns file IDs with matching line excerpts - no function metadata. Use for: finding exact strings, function calls, variable references, TODO comments. For function/class structure, use search_semantic or get_file_info instead.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace'
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")'
             },
             pattern: {
               type: 'string',
-              description: 'Search pattern or regex'
+              description: 'Search text or regex pattern (e.g., "StreamableHTTP", "async function \\w+", "TODO|FIXME")'
             },
             regex: {
               type: 'boolean',
-              description: 'Treat pattern as regex (default: false)'
+              description: 'Treat pattern as regex (default: false). Enable for advanced patterns.'
             },
             limit: {
               type: 'number',
               description: 'Max results (default: 50)'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional)'
             }
           },
-          required: ['path', 'pattern']
+          required: ['workspace', 'pattern']
         }
       },
       {
         name: 'search_semantic',
-        description: 'Semantic code search using embeddings - finds code by meaning, not keywords. Returns files with similarity scores.',
+        description: 'Find code by MEANING using AI embeddings - understands concepts, not just keywords. Returns: file IDs, similarity scores (0-100%), language, size, and FUNCTION/CLASS NAMES found in each file. Does NOT include line numbers - use get_file_info for that. Use for: "authentication logic", "error handling", "database connection setup". Functions array helps you identify relevant files before retrieving content.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace'
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")'
             },
             query: {
               type: 'string',
-              description: 'What to search for (e.g., "authentication logic", "error handling")'
+              description: 'Natural language description of what you\'re looking for (e.g., "WebSocket connection handling", "memory leak prevention")'
             },
             limit: {
               type: 'number',
               description: 'Max results (default: 10)'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional)'
             }
           },
-          required: ['path', 'query']
+          required: ['workspace', 'query']
         }
       },
       {
         name: 'search_code',
-        description: 'Multi-modal search combining semantic, keyword, and file name matching. Best for complex queries. Triggers LLM enrichment on top results.',
+        description: 'Multi-modal search combining semantic + keyword + file patterns. Returns: file IDs, similarity scores, function/class names, and enriched code snippets. Best for complex queries where you\'re not sure of exact terms. Like search_semantic, includes function/class arrays but no line numbers - use get_file_info for precise locations.',
         inputSchema: {
           type: 'object',
           properties: {
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace'
+              description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")'
             },
             query: {
               type: 'string',
-              description: 'Search query (supports natural language)'
+              description: 'Natural language search query - will search by meaning AND keywords'
             },
             limit: {
               type: 'number',
               description: 'Max results (default: 5)'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional)'
             }
           },
-          required: ['path', 'query']
+          required: ['workspace', 'query']
         }
       }
     ];
@@ -318,8 +331,14 @@ export class CodeSearchServer {
   async callTool(name, args) {
     try {
       switch (name) {
+        case 'get_workspace_config':
+          return await this._getWorkspaceConfig();
+        case 'get_file_info':
+          return await this._getFileInfo(args);
         case 'refresh_index':
           return await this._refreshIndex(args);
+        case 'refresh_all_indexes':
+          return await this._refreshAllIndexes();
         case 'get_index_stats':
           return await this._getIndexStats(args);
         case 'search_files':
@@ -343,9 +362,50 @@ export class CodeSearchServer {
     }
   }
 
+  /**
+   * Get index file path for a workspace
+   */
+  _getIndexFilePath(workspace) {
+    return path.join(this.indexPath, `${workspace}.json`);
+  }
+
+  async _getWorkspaceConfig() {
+    // Get available indexes
+    const indexDir = path.join(process.cwd(), 'data', 'indexes');
+    let availableIndexes = [];
+    try {
+      const files = await fs.readdir(indexDir);
+      availableIndexes = files.filter(f => f.endsWith('.json')).map(f => f.replace('.json', ''));
+    } catch (err) {
+      // indexDir doesn't exist yet
+    }
+    
+    const workspaces = this.workspace.getWorkspaces();
+    
+    const result = {
+      workspaces: workspaces.map(({ name, uncPath }) => ({
+        name,
+        uncPath,
+        indexed: availableIndexes.includes(name)
+      })),
+      usage: {
+        search: "mcp_orchestrator_search_files({ workspace: 'BADKID-DEV', glob: '**/*.js' })",
+        retrieve: "mcp_orchestrator_retrieve_file({ file: 'BADKID-DEV:src/http-server.js' })",
+        note: "Search returns file IDs like 'workspace:relative/path' - pass these directly to retrieve_file"
+      }
+    };
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2)
+      }]
+    };
+  }
+
   async _getIndexStats(args) {
-    const { path: localPath, machine = null } = args;
-    const indexFile = this._getIndexFilePath(localPath, machine);
+    const { workspace } = args;
+    const indexFile = this._getIndexFilePath(workspace);
 
     try {
       const index = await this._loadIndex(indexFile);
@@ -354,6 +414,7 @@ export class CodeSearchServer {
 
       const stats = {
         exists: true,
+        workspace,
         file_count: index.file_count || 0,
         last_full_build: index.last_full_build || index.created_at,
         last_refresh: index.last_refresh || index.created_at,
@@ -371,7 +432,8 @@ export class CodeSearchServer {
             type: 'text',
             text: JSON.stringify({
               exists: false,
-              hint: `No index found. Run: node scripts/build-index.js --workspace "${localPath}"`
+              workspace,
+              hint: `No index found. Run: node scripts/build-index.js --workspace "${workspace}"`
             }, null, 2)
           }]
         };
@@ -380,14 +442,106 @@ export class CodeSearchServer {
     }
   }
 
+  async _getFileInfo(args) {
+    const { file } = args;
+
+    try {
+      const { workspace, relativePath } = this.workspace.parseFileId(file);
+      const indexFile = this._getIndexFilePath(workspace);
+      const index = await this._loadIndex(indexFile);
+
+      const fileData = index.files[relativePath];
+      if (!fileData) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'File not found in index',
+              file,
+              hint: 'File may not be indexed yet. Try refresh_index first.'
+            }, null, 2)
+          }]
+        };
+      }
+
+      // Return metadata without content or embeddings
+      const info = {
+        file,
+        workspace,
+        path: relativePath,
+        language: fileData.language,
+        size_bytes: fileData.size_bytes,
+        functions: fileData.tree?.functions?.map(f => ({ name: f.name, line: f.line })) || [],
+        classes: fileData.tree?.classes?.map(c => ({ name: c.name, line: c.line })) || [],
+        imports: fileData.tree?.imports || [],
+        exports: fileData.tree?.exports || [],
+        last_indexed: fileData.last_indexed_at,
+        enriched: !!fileData.enrichment
+      };
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(info, null, 2)
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: err.message,
+            file
+          }, null, 2)
+        }]
+      };
+    }
+  }
+
+  async _refreshAllIndexes() {
+    const workspaces = this.workspace.getWorkspaces();
+    const results = [];
+    
+    this.sendProgress(0, workspaces.length, 'Starting refresh of all indexes...');
+    
+    for (let i = 0; i < workspaces.length; i++) {
+      const { name } = workspaces[i];
+      this.sendProgress(i, workspaces.length, `Refreshing ${name}...`);
+      
+      try {
+        const result = await this._refreshIndex({ workspace: name });
+        const parsed = JSON.parse(result.content[0].text);
+        results.push({ workspace: name, status: 'success', ...parsed });
+      } catch (err) {
+        results.push({ workspace: name, status: 'error', error: err.message });
+      }
+    }
+    
+    this.sendProgress(workspaces.length, workspaces.length, 'Complete');
+    
+    const summary = {
+      total: workspaces.length,
+      success: results.filter(r => r.status === 'success').length,
+      errors: results.filter(r => r.status === 'error').length,
+      results
+    };
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(summary, null, 2)
+      }]
+    };
+  }
+
   async _refreshIndex(args) {
-    const { path: localPath, machine = null } = args;
+    const { workspace } = args;
     const startTime = Date.now();
 
     this.sendProgress(5, 100, 'Resolving workspace path...');
     
-    const uncPath = this.workspace.resolvePath(localPath, machine);
-    const indexFile = this._getIndexFilePath(localPath, machine);
+    const uncPath = this.workspace.getWorkspacePath(workspace);
+    const indexFile = this._getIndexFilePath(workspace);
 
     // Try to acquire lock
     const lockAcquired = await this._acquireIndexLock(indexFile);
@@ -408,7 +562,7 @@ export class CodeSearchServer {
         index = await this._loadIndex(indexFile);
       } catch (err) {
         if (err.code === 'ENOENT') {
-          throw new Error(`No index found. Run: node scripts/build-index.js --workspace "${localPath}"`);
+          throw new Error(`No index found. Run: node scripts/build-index.js --workspace "${workspace}"`);
         }
         throw err;
       }
@@ -514,14 +668,14 @@ export class CodeSearchServer {
   }
 
   async _searchFiles(args) {
-    const { path: localPath, glob, machine = null } = args;
-    const index = await this._loadIndexForWorkspace(localPath, machine);
+    const { workspace, glob } = args;
+    const index = await this._loadIndexForWorkspace(workspace);
 
     const regex = this._globToRegex(glob);
     const matches = Object.keys(index.files)
       .filter(filePath => regex.test(filePath))
       .map(filePath => ({
-        path: filePath,
+        file: this.workspace.createFileId(workspace, filePath),
         language: index.files[filePath].language,
         size: index.files[filePath].size_bytes
       }));
@@ -535,9 +689,9 @@ export class CodeSearchServer {
   }
 
   async _searchKeyword(args) {
-    const { path: localPath, pattern, regex = false, limit = 50, machine = null } = args;
-    const index = await this._loadIndexForWorkspace(localPath, machine);
-    const uncPath = this.workspace.resolvePath(localPath, machine);
+    const { workspace, pattern, regex = false, limit = 50 } = args;
+    const index = await this._loadIndexForWorkspace(workspace);
+    const uncPath = this.workspace.getWorkspacePath(workspace);
 
     const searchRegex = regex ? new RegExp(pattern, 'gi') : null;
     const matches = [];
@@ -555,7 +709,7 @@ export class CodeSearchServer {
           if (match) {
             const trimmed = lines[i].trim();
             matches.push({
-              file: filePath,
+              file: this.workspace.createFileId(workspace, filePath),
               line: i + 1,
               content: trimmed.length > 120 ? trimmed.slice(0, 120) + '...' : trimmed,
               language: fileData.language
@@ -577,8 +731,8 @@ export class CodeSearchServer {
   }
 
   async _searchSemantic(args) {
-    const { path: localPath, query, limit = 10, machine = null } = args;
-    const index = await this._loadIndexForWorkspace(localPath, machine);
+    const { workspace, query, limit = 10 } = args;
+    const index = await this._loadIndexForWorkspace(workspace);
 
     // Generate query embedding
     const queryEmbedding = await this._generateEmbedding(query);
@@ -590,7 +744,7 @@ export class CodeSearchServer {
       
       const similarity = this._cosineSimilarity(queryEmbedding, fileData.embedding);
       results.push({
-        path: filePath,
+        file: this.workspace.createFileId(workspace, filePath),
         similarity,
         language: fileData.language,
         size: fileData.size_bytes,
@@ -612,10 +766,10 @@ export class CodeSearchServer {
   }
 
   async _searchCode(args) {
-    const { path: localPath, query, limit = 5, machine = null } = args;
+    const { workspace, query, limit = 5 } = args;
 
     // Multi-modal search: combine semantic + keyword + filename
-    const semanticResults = await this._searchSemantic({ ...args, limit: limit * 2 });
+    const semanticResults = await this._searchSemantic({ workspace, query, limit: limit * 2 });
     const semantic = JSON.parse(semanticResults.content[0].text).results;
 
     // Trigger enrichment on top results (if not already enriched)
@@ -635,18 +789,13 @@ export class CodeSearchServer {
 
   // ========== HELPER METHODS ==========
 
-  _getIndexFilePath(localPath, machine) {
-    const filename = this.workspace.getIndexPath(localPath, machine);
-    return path.join(this.indexPath, filename);
-  }
-
   async _loadIndex(indexFile) {
     const content = await fs.readFile(indexFile, 'utf-8');
     return JSON.parse(content);
   }
 
-  async _loadIndexForWorkspace(localPath, machine) {
-    const indexFile = this._getIndexFilePath(localPath, machine);
+  async _loadIndexForWorkspace(workspace) {
+    const indexFile = this._getIndexFilePath(workspace);
     const index = await this._loadIndex(indexFile);
     if (!index.files) {
       throw new Error('Invalid index: no files found');

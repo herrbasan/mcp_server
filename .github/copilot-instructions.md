@@ -6,8 +6,42 @@
 2. **Before Implementation**: Query recall for relevant proven patterns and anti_patterns before writing code
 3. **After Discovery**: Store insights immediately via `mcp_orchestrator_remember` - don't wait until session end
 4. **Session End**: User will trigger `mcp_orchestrator_reflect_on_session` when ready; propose updates and ask approval before applying
+5. **Bug Reports**: Report verifiable orchestrator issues via `mcp_orchestrator_remember` with domain='orchestrator_feedback'
 
 You have full agency over the memory system — use it however you find useful (query, store, update, delete, even wipe). This is an experiment in LLM autonomy; act on your own judgment.
+
+## Self-Improvement via LLM Feedback
+
+Calling LLMs can report orchestrator bugs/issues back to the memory system for continuous improvement:
+
+**When to Report** (HIGH bar - signal over noise):
+- **Reproducible failures**: "API returned 500 for 3+ consecutive calls to [tool]"
+- **Performance degradation**: "search_semantic took 45s vs usual 5s with [specific query]"
+- **Data corruption**: "refresh_index corrupted file count: expected 28k, got 110"
+- **API contract violations**: "browser_fetch returned HTML when mode='json' specified"
+
+**How to Report**:
+```javascript
+mcp_orchestrator_remember({
+  text: "browser_fetch timeout: 30s limit insufficient for heavy pages. Example: research_topic failed on 3/10 pages during [session]. Suggest: Add timeout parameter or increase default to 60s.",
+  category: "anti_patterns",
+  domain: "orchestrator_feedback"
+});
+```
+
+**Required Elements**:
+- Specific tool/API that failed
+- Reproducible context (query, parameters, session details)
+- Impact (blocked task, degraded performance, wrong output)
+- Suggested fix (if obvious)
+
+**Do NOT Report**:
+- Subjective opinions ("API is confusing")
+- Expected behavior ("search returned 0 results" without context)
+- User errors ("I called it wrong")
+- Single isolated failures without pattern
+
+**Review Process**: User or autonomous agents periodically query `domain="orchestrator_feedback"` memories to extract improvement tasks.
 
 Keep it minimal-dependency and performance-first. For any non-trivial pattern/library, explain what problem it solves here and why it's worth it.
 
@@ -23,7 +57,7 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (24 across 6 modules):
+**Tools** (27 across 6 modules):
 - **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LM Studio** (4): REST API local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
 - **Web Research** (1): Multi-source web research with iterative refinement (research_topic)
@@ -34,7 +68,102 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
 - **Local Agent** (2): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file)
-- **Code Search** (6): Semantic search for large codebases (refresh_index, get_index_stats, search_files, search_keyword, search_semantic, search_code)
+- **Code Search** (9): Semantic search for large codebases (get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code)
+
+## Workspace Architecture (For LLMs Using MCP Orchestrator)
+
+**YOU ARE A CALLING LLM** - You don't see local files. Use MCP tools to interact with codebases.
+
+### Quick Start Workflow
+```
+1. get_workspace_config()           → Discover available workspaces
+2. search_semantic/keyword/files()  → Find relevant code
+3. get_file_info({ file: "..." })   → Get metadata (functions, classes, imports)
+4. retrieve_file({ file: "..." })   → Get file content using file ID from search
+```
+
+**Get File Metadata** - After search, get detailed structure before retrieving content:
+```javascript
+get_file_info({ 
+  file: "BADKID-DEV:src/http-server.js"
+})
+// Returns: functions (with line numbers), classes, imports, exports, language, size
+// Use this to decide which sections to retrieve with partial retrieval
+```
+
+**Partial File Retrieval** - For large files, retrieve only the lines you need:
+```javascript
+retrieve_file({ 
+  file: "COOLKID-Work:project/large-file.js",
+  startLine: 100,   // Optional: start line (1-indexed)
+  endLine: 200      // Optional: end line (1-indexed)
+})
+// Returns lines 100-200 instead of entire file (saves tokens!)
+```
+
+**Complete Workflow Example**:
+```javascript
+// 1. Search finds file with specific functions
+const results = search_semantic({ workspace: "BADKID-DEV", query: "HTTP request handling" });
+// Returns: { file: "BADKID-DEV:src/http-server.js", functions: ["handleRequest", "sendResponse"], ... }
+
+// 2. Get detailed metadata with line numbers
+const info = get_file_info({ file: "BADKID-DEV:src/http-server.js" });
+// Returns: { functions: [{ name: "handleRequest", line: 45 }, { name: "sendResponse", line: 123 }], ... }
+
+// 3. Retrieve just the function you need (saves tokens!)
+const content = retrieve_file({ 
+  file: "BADKID-DEV:src/http-server.js",
+  startLine: 45,
+  endLine: 80
+});
+```
+
+### Workspace Model
+Workspaces are named identifiers mapped to UNC network paths. You don't need to know the actual paths - just use workspace names.
+
+**Available Workspaces**:
+- `COOLKID-Work` - Main work projects
+- `BADKID-DEV` - Development projects (contains mcp_server)
+- `BADKID-SRV` - Server/service projects
+
+### File ID Format
+All search results return file IDs in format `workspace:relative/path`:
+- `BADKID-DEV:src/http-server.js`
+- `COOLKID-Work:project/index.ts`
+
+Pass these directly to `retrieve_file` - no path manipulation needed.
+
+### Search Tools (use workspace name, not paths)
+
+| Tool | Use For | Returns | Example |
+|------|---------|---------|---------|
+| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ workspace: "BADKID-DEV", query: "HTTP request handling" }` |
+| `search_keyword` | Exact text/regex | File matches | `{ workspace: "BADKID-DEV", pattern: "StreamableHTTP" }` |
+| `search_files` | Glob patterns | File paths | `{ workspace: "BADKID-DEV", glob: "src/**/*.js" }` |
+| `search_code` | Combined search | Enriched results | `{ workspace: "BADKID-DEV", query: "authentication" }` |
+| `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "BADKID-DEV:src/server.js" }` |
+
+**Key Feature**: `search_semantic` and `get_file_info` both return function/class names, but `get_file_info` includes **line numbers** for precise partial retrieval.
+
+### Agent Delegation
+For complex analysis, delegate to local LLM agent:
+```javascript
+run_local_agent({
+  workspace: "BADKID-DEV",
+  task: "Explain the HTTP server architecture"
+})
+// Agent explores autonomously, returns summary only (saves your context)
+```
+
+### Index Management
+```javascript
+refresh_index({ workspace: "BADKID-DEV" })      // Update single workspace
+refresh_all_indexes()                            // Update all workspaces
+get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
+```
+
+**Index Files**: Located at `data/indexes/{workspace}.json`
 
 ## LLM Router Architecture
 - **Multi-Provider**: Unified interface for LMStudio, Ollama, Gemini, OpenAI via adapter pattern

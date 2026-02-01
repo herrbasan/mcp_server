@@ -1,6 +1,6 @@
 # MCP Server Orchestrator
 
-Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes **24 tools** to VS Code Copilot via remote connection.
+Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes **27 tools** to VS Code Copilot via remote connection.
 
 ## Features
 
@@ -261,17 +261,13 @@ Non-sensitive settings (models, prompts, timeouts):
 - Firewall: Allow TCP 3100, 3010 on server
 - Clients connect via `http://SERVER_IP:3100/mcp` in mcp.json
 
-**Tools Exposed** (24 total):
+**Tools Exposed** (26 total):
 - **Memory** (7): remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes
 - **LM Studio** (4): query_model, get_second_opinion, list_available_models, get_loaded_model
 - **Web Research** (1): research_topic
 - **Browser** (5): browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf
 - **Local Agent** (2): run_local_agent, retrieve_file
-- **Code Search** (6): refresh_index, get_index_stats, search_files, search_keyword, search_semantic, search_code
-- Memory: remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes
-- LM Studio: query_model, get_second_opinion, list_available_models, get_loaded_model
-- Code Analyzer: analyze_code_quality, suggest_refactoring
-- Web Research: research_topic
+- **Code Search** (8): get_workspace_config, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
 
 ## Web Monitoring
 
@@ -391,51 +387,56 @@ Autonomous code analysis and semantic search across remote codebases via UNC net
 - **Speed**: Semantic search returns results in <1s from pre-built indexes
 - **Scalability**: Handles 100k+ file codebases efficiently
 - **Remote Access**: UNC path resolution for network shares (Windows SMB/CIFS)
+- **Path-Agnostic**: Calling LLMs use workspace names, not paths
 
 ### Setup
 
 #### 1. Configure Workspaces (config.json)
+Workspaces are named identifiers mapped to UNC paths:
 ```json
 {
   "workspaces": {
-    "defaultMachine": "COOLKID",
-    "machines": {
-      "COOLKID": {
-        "D:\\Work": "\\\\COOLKID\\Work\\Work",
-        "D:\\DEV": "\\\\COOLKID\\DEV"
-      },
-      "FATTEN": {
-        "E:\\Projects": "\\\\FATTEN\\Projects"
-      }
-    }
+    "COOLKID-Work": "\\\\COOLKID\\Work",
+    "BADKID-DEV": "\\\\BADKID\\Stuff\\DEV",
+    "BADKID-SRV": "\\\\BADKID\\Stuff\\SRV"
   }
 }
 ```
 
 #### 2. Build Initial Index (CLI - one-time, ~20min for large codebases)
 ```bash
-node scripts/build-index.js --workspace "D:\Work\_GIT\SoundApp"
+# Single workspace
+node scripts/build-index.js --workspace "BADKID-DEV"
+
+# All workspaces
+node scripts/build-index.js --all --force
 ```
 
 **What it does**:
-- Scans workspace recursively (skips node_modules, .git, etc.)
+- Scans workspace recursively (skips node_modules, .git, $RECYCLE.BIN, etc.)
 - Parses code structure (regex-based: functions, classes, imports)
 - Generates embeddings (768-dim via nomic-embed-text-v2-moe)
-- Saves to `data/indexes/MACHINE-PATH.json` (~16MB for 650 files)
+- Saves to `data/indexes/{workspace}.json` (~16MB for 650 files)
 
 #### 3. Use via MCP Tools
+
+**Discover Workspaces** - Always call first:
+```javascript
+// get_workspace_config returns available workspaces
+// Returns: { workspaces: { "BADKID-DEV": { indexed: true, fileCount: 647 }, ... } }
+```
 
 **Semantic Search** - Find code by meaning:
 ```javascript
 {
   name: "search_semantic",
   args: {
-    query: "SharedArrayBuffer audio streaming implementation",
-    path: "D:\\Work\\_GIT\\SoundApp",
+    workspace: "BADKID-DEV",
+    query: "HTTP server initialization",
     limit: 10
   }
 }
-// Returns: Top 10 files ranked by similarity (0-100%)
+// Returns: [{ file: "BADKID-DEV:src/http-server.js", similarity: 0.85, ... }]
 ```
 
 **Keyword Search** - Fast text/regex search:
@@ -443,12 +444,12 @@ node scripts/build-index.js --workspace "D:\Work\_GIT\SoundApp"
 {
   name: "search_keyword",
   args: {
-    pattern: "AudioWorklet",
-    path: "D:\\Work\\_GIT\\SoundApp",
+    workspace: "BADKID-DEV",
+    pattern: "StreamableHTTP",
     regex: false
   }
 }
-// Returns: Line-by-line matches with context
+// Returns: [{ file: "BADKID-DEV:src/http-server.js", matches: [...] }]
 ```
 
 **File Search** - Glob pattern matching:
@@ -456,23 +457,22 @@ node scripts/build-index.js --workspace "D:\Work\_GIT\SoundApp"
 {
   name: "search_files",
   args: {
-    glob: "**/*worklet*.js",
-    path: "D:\\Work\\_GIT\\SoundApp"
+    workspace: "BADKID-DEV",
+    glob: "src/**/*.js"
   }
 }
-// Returns: All matching file paths
+// Returns: [{ file: "BADKID-DEV:src/http-server.js" }, ...]
 ```
 
-**Retrieve File** - Get raw source code:
+**Retrieve File** - Get raw source code using file ID:
 ```javascript
 {
   name: "retrieve_file",
   args: {
-    path: "D:\\Work\\_GIT\\SoundApp",
-    filePath: "libs/ffmpeg-napi-interface/lib/player-sab.js"
+    file: "BADKID-DEV:src/http-server.js"
   }
 }
-// Returns: Complete file content (JSON with path, lines, size, content)
+// Returns: Complete file content
 ```
 
 **Local Agent** - Autonomous code analysis:
@@ -480,12 +480,12 @@ node scripts/build-index.js --workspace "D:\Work\_GIT\SoundApp"
 {
   name: "run_local_agent",
   args: {
-    task: "Explain the architecture of the SAB audio player",
-    path: "D:\\Work\\_GIT\\SoundApp",
+    task: "Explain the HTTP server architecture",
+    workspace: "BADKID-DEV",
     maxTokens: 20000
   }
 }
-// Agent autonomously explores code using search tools + file operations
+// Agent autonomously explores code using search tools
 // Returns: Summary (no code, just analysis)
 ```
 
@@ -497,51 +497,64 @@ node scripts/build-index.js --workspace "D:\Work\_GIT\SoundApp"
 3. Claude context: 50k+ tokens consumed
 
 **With Code Search** (after):
-1. Claude searches: `search_semantic("audio player")`
-2. Claude retrieves: `retrieve_file("player-sab.js")`
-3. Claude context: ~6k tokens
+1. Claude discovers: `get_workspace_config()` → sees available workspaces
+2. Claude searches: `search_semantic({ workspace: "BADKID-DEV", query: "audio player" })`
+3. Claude retrieves: `retrieve_file({ file: "BADKID-DEV:src/player.js" })`
+4. Claude context: ~6k tokens
 
 **With Local Agent** (ultra-efficient):
-1. Claude delegates: `run_local_agent("How does the audio player work?")`
+1. Claude delegates: `run_local_agent({ workspace: "BADKID-DEV", task: "How does the audio player work?" })`
 2. Agent (local LLM) explores autonomously using search tools
 3. Claude receives summary only
 4. Claude context: ~500 tokens
 
 ### Incremental Index Updates
 
-After code changes:
+Refresh single workspace:
 ```javascript
 {
   name: "refresh_index",
-  args: { path: "D:\\Work\\_GIT\\SoundApp" }
+  args: { workspace: "BADKID-DEV" }
 }
 // Fast (seconds) - only re-indexes changed files via mtime comparison
+```
+
+Refresh all workspaces:
+```javascript
+{
+  name: "refresh_all_indexes",
+  args: {}
+}
+// Refreshes indexes for all configured workspaces
 ```
 
 Check index health:
 ```javascript
 {
   name: "get_index_stats",
-  args: { path: "D:\\Work\\_GIT\\SoundApp" }
+  args: { workspace: "BADKID-DEV" }
 }
 // Returns: file count, last build time, staleness warnings
 ```
 
 ### Technical Details
 
-**Path Resolution**: Longest-prefix matching with case-insensitive drive letters
-- `D:\Work\Project` → `\\COOLKID\Work\Work\Project`
-- Security: Post-realpath validation catches symlink escapes
+**Workspace Resolution**: Named workspaces map directly to UNC paths
+- `BADKID-DEV` → `\\BADKID\Stuff\DEV`
+- File IDs: `workspace:relative/path` (e.g., `BADKID-DEV:src/http-server.js`)
+- Security: Path traversal validation, no escaping workspace root
 
 **Agent Loop** (run_local_agent):
 - Max 20 iterations, 50k token budget (configurable)
-- Tools: list_dir, read_file, grep, find_files (or search tools if indexed)
+- Tools: Dynamically selected based on workspace (search tools if indexed)
 - Loop detection: Auto-stops if 3 consecutive identical calls
 - Returns partial results if limits hit
 
-**Index Format** (JSON):
+**Index Format** (JSON at `data/indexes/{workspace}.json`):
 ```json
 {
+  "workspace": "BADKID-DEV",
+  "uncPath": "\\\\BADKID\\Stuff\\DEV",
   "created_at": "2026-02-01T08:54:40.243Z",
   "file_count": 647,
   "files": {
@@ -558,7 +571,7 @@ Check index health:
 }
 ```
 
-**Supported Languages**: JavaScript, TypeScript, Python (regex-based parsing)
+**Supported Languages**: JavaScript, TypeScript, Python, Java, C/C++, Go, Rust, C#, Markdown
 
 ## Adding New Servers
 
