@@ -412,6 +412,40 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     return data.data?.[0]?.embedding || [];
   }
 
+  /**
+   * Batch embed multiple texts in a single request.
+   * Much faster than individual embedText() calls.
+   * @param {string[]} texts - Array of texts to embed
+   * @returns {Promise<number[][]>} Array of embeddings in same order as input
+   */
+  async embedBatch(texts) {
+    await this.connect();
+
+    if (!this.config.embeddingModel) {
+      throw new Error('No embedding model configured');
+    }
+
+    if (!texts.length) return [];
+
+    const res = await fetch(`${this.baseUrl}/v1/embeddings`, {
+      method: 'POST',
+      headers: this._getHeaders(),
+      body: JSON.stringify({
+        model: this.config.embeddingModel,
+        input: texts
+      })
+    });
+
+    if (!res.ok) {
+      this._handleHttpError(res, 'Batch embedding failed');
+    }
+
+    const data = await res.json();
+    // Sort by index to ensure order matches input
+    const sorted = (data.data || []).sort((a, b) => a.index - b.index);
+    return sorted.map(d => d.embedding || []);
+  }
+
   getCapabilities() {
     return {
       streaming: true,

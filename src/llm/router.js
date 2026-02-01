@@ -272,6 +272,36 @@ export class LLMRouter {
     return adapter.embedText(text);
   }
 
+  /**
+   * Batch embed multiple texts. Falls back to sequential if adapter doesn't support batch.
+   * @param {string[]} texts - Array of texts to embed
+   * @param {string} providerName - Optional provider override
+   * @returns {Promise<number[][]>} Array of embeddings
+   */
+  async embedBatch(texts, providerName) {
+    const adapter = this.getAdapter(providerName, 'embedding');
+    const capabilities = adapter.getCapabilities();
+    
+    if (!capabilities.embeddings) {
+      const resolvedName = this._resolveProvider(providerName, 'embedding');
+      throw new Error(`Provider "${resolvedName}" does not support embeddings`);
+    }
+    
+    await adapter.connect();
+    
+    // Use batch method if available, otherwise fall back to sequential
+    if (typeof adapter.embedBatch === 'function') {
+      return adapter.embedBatch(texts);
+    }
+    
+    // Fallback: sequential embedding
+    const results = [];
+    for (const text of texts) {
+      results.push(await adapter.embedText(text));
+    }
+    return results;
+  }
+
   async disconnect(providerName) {
     if (providerName) {
       const adapter = this.getAdapter(providerName);

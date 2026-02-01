@@ -3,11 +3,11 @@
     "defaultMachine": "COOLKID",
     "machines": {
       "COOLKID": {
-        "D:\\Work": "\\\\COOLKID\\Work\\Work",
-        "D:\\DEV": "\\\\COOLKID\\DEV"
+        "D:\\Work": "\\\\COOLKID\\Work\\Work"
       },
-      "FATTEN": {
-        "E:\\Projects": "\\\\FATTEN\\Projects"
+      "BADKID": {
+        "D:\\DEV": "D:\\DEV",
+        "D:\\SRV": "D:\\SRV"
       }
     }
   },

@@ -56,6 +56,11 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - **Progress**: Real-time MCP notifications (model loading 1%-100%, generation status)
 - **TTL Management**: Default model has 60-minute idle timeout, other models 10-minute timeout
 - **Error Handling**: Promise lock prevents race conditions, stack traces preserved for debugging
+- **Batch Embeddings**: `/v1/embeddings` accepts array input for batch processing
+  - `embedBatch(texts)` in lmstudio-adapter.js sends array, sorts results by index
+  - `router.embedBatch(texts, provider)` with fallback to sequential if unsupported
+  - Optimal: BATCH_SIZE=50 + PARALLEL_REQUESTS=4 = 2.3x speedup (274 files/sec)
+  - For large indexes (>512MB): use streaming JSON write to avoid "Invalid string length"
 
 ## Deployment & Configuration
 - **Environment**: `.env` file for sensitive config (LM Studio endpoints, embedding model, host/port binding)
@@ -110,10 +115,12 @@ Implementation complete with all planned features:
 - Agent Loop: Max 20 iterations, 50k token budget, loop detection (3x same call)
 - Embeddings: nomic-embed-text-v2-moe 768-dim vectors via LLM router
 - Path Resolution: UNC paths for Windows SMB shares, post-realpath validation
-- Index Format: JSON with mtime-based incremental updates, atomic writes
+- Index Format: JSON with mtime-based incremental updates, streaming atomic writes
+- Streaming JSON: `_writeIndexStreaming()` handles 500MB+ indexes without "Invalid string length" error
 - Code Parsing: Regex-based extraction (functions/classes/imports) - tree-sitter deferred
 - Security: Path traversal rejection, .git/node_modules filtering
 - Glob Support: Full ** pattern support with placeholder-based conversion
+- Batch Indexing: build-index.js uses parallel batch embedding (50 texts × 4 concurrent = 2.3x faster)
 
 **Agent Workflow**:
 1. Dynamic tool selection (search tools if indexed, fs tools otherwise)
@@ -137,4 +144,4 @@ Implementation complete with all planned features:
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
 - **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging
-- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design
+- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization

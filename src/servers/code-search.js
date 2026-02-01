@@ -659,8 +659,58 @@ export class CodeSearchServer {
     await fs.mkdir(path.dirname(indexFile), { recursive: true });
 
     const tempFile = `${indexFile}.tmp.${Date.now()}`;
-    await fs.writeFile(tempFile, JSON.stringify(data, null, 2));
+    
+    // Stream write to avoid "Invalid string length" for large indexes
+    await this._writeIndexStreaming(tempFile, data);
     await fs.rename(tempFile, indexFile);
+  }
+
+  /**
+   * Write index file in streaming fashion to handle large file counts.
+   * Avoids "Invalid string length" error from JSON.stringify on 500MB+ indexes.
+   */
+  async _writeIndexStreaming(filePath, index) {
+    const { createWriteStream } = await import('fs');
+    const stream = createWriteStream(filePath, { encoding: 'utf-8' });
+    
+    const write = (data) => new Promise((resolve, reject) => {
+      if (!stream.write(data)) {
+        stream.once('drain', resolve);
+      } else {
+        resolve();
+      }
+    });
+
+    // Write header fields
+    await write('{\n');
+    await write(`  "version": ${index.version},\n`);
+    await write(`  "workspace": ${JSON.stringify(index.workspace)},\n`);
+    await write(`  "created_at": ${JSON.stringify(index.created_at)},\n`);
+    await write(`  "last_full_build": ${JSON.stringify(index.last_full_build)},\n`);
+    await write(`  "last_refresh": ${JSON.stringify(index.last_refresh)},\n`);
+    await write(`  "file_count": ${index.file_count},\n`);
+    await write(`  "total_size_bytes": ${index.total_size_bytes},\n`);
+    await write(`  "build_in_progress": ${index.build_in_progress},\n`);
+    if (index.lock_acquired_at !== undefined) {
+      await write(`  "lock_acquired_at": ${JSON.stringify(index.lock_acquired_at)},\n`);
+    }
+    await write(`  "files": {\n`);
+
+    // Write files one at a time to avoid string length limit
+    const entries = Object.entries(index.files);
+    for (let i = 0; i < entries.length; i++) {
+      const [key, value] = entries[i];
+      const comma = i < entries.length - 1 ? ',' : '';
+      await write(`    ${JSON.stringify(key)}: ${JSON.stringify(value)}${comma}\n`);
+    }
+
+    await write('  }\n');
+    await write('}\n');
+
+    await new Promise((resolve, reject) => {
+      stream.end(resolve);
+      stream.on('error', reject);
+    });
   }
 
   async _acquireIndexLock(indexFile) {
