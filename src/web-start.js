@@ -4,7 +4,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebServer } from './web/server.js';
 import { MemoryServer } from './servers/memory.js';
-import { LMStudioWSServer } from './servers/lm-studio-ws.js';
+import { LMStudioServer } from './servers/lm-studio.js';
+import { LLMRouter } from './llm/router.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 loadDotEnv({ path: join(__dirname, '..', '.env') });
@@ -29,9 +30,10 @@ if (process.env.WEB_MAX_LOGS) config.web.maxLogs = parseInt(process.env.WEB_MAX_
 
 console.error('Initializing web interface...');
 
-// Initialize servers
-const memoryServer = new MemoryServer(config.servers['memory']);
-const lmStudioServer = new LMStudioWSServer(config.servers['lm-studio']);
+// Initialize LLM Router and servers
+const llmRouter = new LLMRouter(config.llm);
+const memoryServer = new MemoryServer(config.servers['memory'], llmRouter);
+const lmStudioServer = new LMStudioServer(config.servers['lm-studio'], llmRouter);
 
 // Start web server
 const webServer = new WebServer(config.web, memoryServer, lmStudioServer);

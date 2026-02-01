@@ -7,7 +7,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { randomUUID } from 'crypto';
-import { LMStudioWSServer } from './servers/lm-studio-ws.js';
+import { LMStudioServer } from './servers/lm-studio.js';
 import { WebResearchServer } from './servers/web-research.js';
 import { MemoryServer } from './servers/memory.js';
 import { BrowserServer } from './servers/browser.js';
@@ -77,11 +77,11 @@ if (config.llm) {
 // Initialize LM Studio server first (for legacy compatibility and tools)
 let lmStudioServer = null;
 if (config.servers['lm-studio']?.enabled) {
-  lmStudioServer = new LMStudioWSServer(config.servers['lm-studio'], llmRouter);
+  lmStudioServer = new LMStudioServer(config.servers['lm-studio'], llmRouter);
   serverModules.set('lm-studio', lmStudioServer);
   tools.push(...lmStudioServer.getTools());
   if (lmStudioServer.getResources) resources.push(...lmStudioServer.getResources());
-  console.log('✓ LM Studio (WebSocket)');
+  console.log('✓ LM Studio');
 }
 
 if (config.servers['web-research']?.enabled) {
