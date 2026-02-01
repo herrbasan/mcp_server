@@ -209,7 +209,24 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     }
   }
 
-  async predict({ prompt, systemPrompt, maxTokens, temperature, model }) {
+  // JSON Schema for agent tool calls - enforced at token level via llama.cpp grammar
+  static TOOL_CALL_SCHEMA = {
+    type: 'json_schema',
+    json_schema: {
+      name: 'tool_call',
+      strict: true,
+      schema: {
+        type: 'object',
+        properties: {
+          tool: { type: 'string', description: 'Name of the tool to call' },
+          args: { type: 'object', description: 'Arguments to pass to the tool' }
+        },
+        required: ['tool', 'args']
+      }
+    }
+  };
+
+  async predict({ prompt, systemPrompt, maxTokens, temperature, model, responseFormat }) {
     await this.connect();
 
     const available = await this.listModels();
@@ -246,6 +263,14 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
     try {
+      // Use OpenAI-compatible endpoint when structured output is requested
+      // This leverages llama.cpp grammar-based sampling for guaranteed valid JSON
+      if (responseFormat) {
+        return await this._predictStructured({
+          model: selectedModel, prompt, systemPrompt, maxTokens, temperature, responseFormat, controller
+        });
+      }
+
       const res = await fetch(`${this.baseUrl}/api/v1/chat`, {
         method: 'POST',
         headers: this._getHeaders(),
@@ -279,6 +304,36 @@ export class LMStudioAdapter extends BaseLLMAdapter {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  // Structured output via OpenAI-compatible endpoint with JSON schema enforcement
+  async _predictStructured({ model, prompt, systemPrompt, maxTokens, temperature, responseFormat, controller }) {
+    const messages = [];
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'user', content: prompt });
+
+    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: this._getHeaders(),
+      body: JSON.stringify({
+        model,
+        messages,
+        response_format: responseFormat,
+        max_tokens: maxTokens || this.config.maxTokens,
+        ...(temperature !== undefined ? { temperature } : {}),
+        stream: false  // Structured output works best non-streaming
+      }),
+      signal: controller.signal
+    });
+
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      this._handleHttpError(res, `Structured prediction failed${err ? ': ' + err : ''}`);
+    }
+
+    const data = await res.json();
+    this._sendStatus(100, 'Complete');
+    return data.choices?.[0]?.message?.content || '';
   }
 
   async _parseSSEStream(res, signal) {

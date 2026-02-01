@@ -14,7 +14,7 @@ Keep it minimal-dependency and performance-first. For any non-trivial pattern/li
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes 14 tools to VS Code Copilot clients via network.
+Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **24 tools** to VS Code Copilot clients via network.
 
 **Architecture**: StreamableHTTPServerTransport (not legacy SSE)
 - Server: `src/http-server.js` - Ports 3100 (MCP), 3010 (web monitoring)
@@ -23,41 +23,45 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (12 across 3 modules):
-- **Memory**: Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
-- **LM Studio**: WebSocket-based local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
-- **Web Research**: Multi-source web research with iterative refinement (research_topic)
+**Tools** (24 across 6 modules):
+- **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
+- **LM Studio** (4): REST API local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
+- **Web Research** (1): Multi-source web research with iterative refinement (research_topic)
   - 5-phase pipeline: search → select → scrape → synthesize → evaluate
   - Intelligent source selection via local LLM (strict JSON-only prompting)
   - 10 concurrent isolated browser instances for anti-bot resilience
   - SSL certificate error handling, retry logic, rate limiting
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
+- **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
+- **Local Agent** (2): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file)
+- **Code Search** (6): Semantic search for large codebases (refresh_index, get_index_stats, search_files, search_keyword, search_semantic, search_code)
 
 ## LLM Router Architecture
 - **Multi-Provider**: Unified interface for LMStudio, Ollama, Gemini, OpenAI via adapter pattern
 - **Task-Based Routing**: Config defines taskDefaults (embedding, analysis, synthesis, query) mapped to providers
 - **Routing Logic**: explicitProvider > taskType default > global default
 - **Adapters**: BaseLLMAdapter abstract class, provider-specific implementations
+- **Structured Output**: Use `responseFormat` with JSON schema for guaranteed valid JSON (llama.cpp grammar-based sampling)
 - **Current Config**:
   - embedding → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
   - analysis → gemini (source selection, credibility)
   - synthesis → gemini (multi-source synthesis)
   - query → gemini (query_model, get_second_opinion)
+  - agent → lmstudio (local agent tool calls with structured output)
 - **Dimension Compatibility**: All embedding models use 768-dim nomic-embed-text-v2-moe (LMStudio Q4/Q5, Ollama Q8)
-- **cosineSimilarity**: Handles dimension mismatch by returning 0 for incompatible vectors
 
 ## LM Studio Integration
-- **Transport**: WebSocket via custom LMStudioAPI submodule (github.com/herrbasan/LMStudioAPI.git)
+- **Transport**: REST API via `/v1/chat/completions` (OpenAI-compatible) and `/api/v1/*` (native)
+- **Structured Output**: JSON schema enforcement via `response_format` - uses llama.cpp grammar-based sampling
 - **Progress**: Real-time MCP notifications (model loading 1%-100%, generation status)
-- **TTL Management**: Default model (nemotron) has 60-minute idle timeout, other models 10-minute timeout
+- **TTL Management**: Default model has 60-minute idle timeout, other models 10-minute timeout
 - **Error Handling**: Promise lock prevents race conditions, stack traces preserved for debugging
-- **Router Integration**: LMStudioAdapter provides full feature set (progress, TTL, model management) via router.predict()
 
 ## Deployment & Configuration
 - **Environment**: `.env` file for sensitive config (LM Studio endpoints, embedding model, host/port binding)
 - **Config**: `config.json` for non-sensitive settings (models, prompts, timeouts, enable/disable servers)
 - **Start**: `npm run start:http`
-- **Endpoints**: LM_STUDIO_WS_ENDPOINT (ws://localhost:12345), LM_STUDIO_HTTP_ENDPOINT (http://localhost:12345)
+- **Endpoints**: LM_STUDIO_HTTP_ENDPOINT (http://localhost:1234)
 - **Binding**: MCP_HOST/WEB_HOST must be `0.0.0.0` for remote access (not localhost)
 - **Firewall**: OPNsense/Windows Firewall rules for TCP 3100, 3010
 - **Client Config**: VS Code `mcp.json` (not settings.json) with `{"type": "sse", "url": "http://IP:3100/mcp"}`
@@ -70,7 +74,7 @@ Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - **hypotheses**: Untested ideas
 - **context**: Project facts, background info
 
-Domain scoping: Memories can be tagged with optional `domain` field (LMStudioAPI, nui_wc2, LocalVectorDB, etc) for project-specific organization. Use domain parameter in recall/list_memories to filter results.
+Domain scoping: Memories can be tagged with optional `domain` field for project-specific organization. Use domain parameter in recall/list_memories to filter results.
 
 ## Code Style & Philosophy
 - **Language**: Vanilla JavaScript (ES modules) - NO TypeScript
@@ -91,19 +95,44 @@ Domain scoping: Memories can be tagged with optional `domain` field (LMStudioAPI
 - Validate model IDs against available models before use
 - When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
 
-## Upcoming: Local Agent & Code Search
+## Local Agent & Code Search
 
-**Clean state commit**: `8866aff` (Feb 1, 2026) - Pre-implementation baseline
+**Status**: Fully implemented and validated (all tests passing)
 
-Design docs ready, implementation pending:
-- `docs/local-agent-module.md` - Autonomous LLM agent with UNC file access
-- `docs/code-search-module.md` - Tree-sitter + embeddings for large codebases
-- `docs/integration-plan.md` - Full integration roadmap
+Implementation complete with all planned features:
+- **Workspace Resolver**: `src/lib/workspace.js` (166 lines) - UNC path mapping with longest-prefix matching, security validation
+- **Local Agent**: `src/servers/local-agent.js` (662 lines) - Autonomous LLM agent with 2 tools (run_local_agent, retrieve_file)
+- **Code Search**: `src/servers/code-search.js` (711 lines) - Semantic/keyword/file search with 6 tools
+- **Index Builder**: `scripts/build-index.js` (241 lines) - CLI tool for initial index creation
+- **Tests**: 22/22 passing (test-workspace.js, test-modules-init.js, test-glob.js)
 
-Key additions planned:
-- `src/lib/workspace.js` - Shared path resolver (local paths → UNC)
-- `src/servers/local-agent.js` - `run_local_agent` tool
-- `src/servers/code-search.js` - 6 search/indexing tools
+**Technical Details**:
+- Agent Loop: Max 20 iterations, 50k token budget, loop detection (3x same call)
+- Embeddings: nomic-embed-text-v2-moe 768-dim vectors via LLM router
+- Path Resolution: UNC paths for Windows SMB shares, post-realpath validation
+- Index Format: JSON with mtime-based incremental updates, atomic writes
+- Code Parsing: Regex-based extraction (functions/classes/imports) - tree-sitter deferred
+- Security: Path traversal rejection, .git/node_modules filtering
+- Glob Support: Full ** pattern support with placeholder-based conversion
+
+**Agent Workflow**:
+1. Dynamic tool selection (search tools if indexed, fs tools otherwise)
+2. Message→prompt conversion for LLM router compatibility
+3. JSON tool call extraction from LLM responses
+4. Findings aggregation across iterations (NO CODE in summaries)
+5. Complete search→retrieve workflow via retrieve_file tool
+
+**Config Structure**:
+- `config.workspaces`: {defaultMachine, machines: {MACHINE: {localPath: uncPath}}}
+- `config.servers.local-agent`: {enabled, maxTokenBudget, maxIterations, toolCallingFormat}
+- `config.servers.code-search`: {enabled, indexPath}
+- `config.llm.taskDefaults.agent`: Provider for agent predictions (lmstudio/gemini/ollama)
+
+**Known Bugs Fixed**:
+- Agent loop: Findings collection, LLM format mismatch, response parsing, silent errors (5 bugs)
+- Glob patterns: ** replacement clobbering via placeholder technique
+- Environment variables: ${VAR} substitution in build script
+- UNC mapping: Correct share structure (\\MACHINE\Share\Path)
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system

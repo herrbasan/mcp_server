@@ -107,6 +107,38 @@ if (config.servers['browser']?.enabled) {
   tools.push(...s.getTools());
   console.log('✓ Browser');
 }
+
+// Both local-agent and code-search share workspace config
+const workspaceConfig = config.workspaces || {};
+
+if (config.servers['local-agent']?.enabled) {
+  const { LocalAgentServer } = await import('./servers/local-agent.js');
+  const agentConfig = { ...config.servers['local-agent'], workspaces: workspaceConfig };
+  const s = new LocalAgentServer(agentConfig, llmRouter);
+  serverModules.set('local-agent', s);
+  tools.push(...s.getTools());
+  if (s.getPrompts) prompts.push(...s.getPrompts());
+  console.log('✓ Local Agent');
+}
+
+if (config.servers['code-search']?.enabled) {
+  const { CodeSearchServer } = await import('./servers/code-search.js');
+  const searchConfig = { ...config.servers['code-search'], workspaces: workspaceConfig };
+  const s = new CodeSearchServer(searchConfig, llmRouter);
+  serverModules.set('code-search', s);
+  tools.push(...s.getTools());
+  if (s.getPrompts) prompts.push(...s.getPrompts());
+  console.log('✓ Code Search');
+}
+
+// Wire up inter-module communication (Local Agent uses Code Search when available)
+const localAgent = serverModules.get('local-agent');
+const codeSearch = serverModules.get('code-search');
+if (localAgent && codeSearch) {
+  localAgent.setCodeSearchServer(codeSearch);
+  console.log('✓ Local Agent ↔ Code Search integration');
+}
+
 // Start web monitoring interface
 if (config.web?.enabled) {
   const memoryServer = serverModules.get('memory');
@@ -135,10 +167,11 @@ function createMCPServer() {
     server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts }));
     server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       const name = request.params.name;
+      const args = request.params.arguments || {};
       for (const [sName, module] of serverModules) {
         if (module.getPrompt) {
           try {
-            return await module.getPrompt(name);
+            return await module.getPrompt(name, args);
           } catch (err) {
             continue;
           }
@@ -185,9 +218,27 @@ function createMCPServer() {
           globalLogger.log('mcp-tool', name, args, result);
           return result;
         } catch (err) {
-          console.error(`[MCP] Tool error: ${err.message}`);
+          console.error(`[MCP] Tool error in ${name}:`, err.message);
           globalLogger.log('mcp-tool', name, args, null, err);
-          throw err;
+          
+          // CRITICAL: Never throw, always return error response
+          // Throwing breaks MCP connection when client cancels
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                error: err.message,
+                code: err.code || 'TOOL_ERROR',
+                tool: name
+              }, null, 2)
+            }],
+            isError: true
+          };
+        } finally {
+          // Clear progress callback
+          if (module.setProgressCallback) {
+            module.setProgressCallback(null);
+          }
         }
       }
     }

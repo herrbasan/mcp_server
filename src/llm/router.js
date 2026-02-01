@@ -247,10 +247,10 @@ export class LLMRouter {
     return adapter.unloadModel(modelId);
   }
 
-  async predict({ prompt, systemPrompt, maxTokens, temperature, model, provider, taskType = 'analysis' }) {
+  async predict({ prompt, systemPrompt, maxTokens, temperature, model, provider, taskType = 'analysis', responseFormat }) {
     const adapter = this.getAdapter(provider, taskType);
     await adapter.connect();
-    let response = await adapter.predict({ prompt, systemPrompt, maxTokens, temperature, model });
+    let response = await adapter.predict({ prompt, systemPrompt, maxTokens, temperature, model, responseFormat });
     
     if (this.stripThinking && response) {
       response = stripThinkingFromText(response, this.thinkingTags);

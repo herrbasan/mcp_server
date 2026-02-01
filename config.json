@@ -1,4 +1,16 @@
 {
+  "workspaces": {
+    "defaultMachine": "COOLKID",
+    "machines": {
+      "COOLKID": {
+        "D:\\Work": "\\\\COOLKID\\Work\\Work",
+        "D:\\DEV": "\\\\COOLKID\\DEV"
+      },
+      "FATTEN": {
+        "E:\\Projects": "\\\\FATTEN\\Projects"
+      }
+    }
+  },
   "servers": {
     "lm-studio": {
       "_taskType": "query",
@@ -28,6 +40,20 @@
       "idleTimeout": 300000,
       "viewport": { "width": 1280, "height": 800 },
       "description": "Direct browser automation for LLMs - persistent browser with 5min idle timeout"
+    },
+    "local-agent": {
+      "_taskType": "agent",
+      "enabled": true,
+      "maxTokenBudget": 50000,
+      "maxIterations": 20,
+      "model": null,
+      "toolCallingFormat": "json-in-prompt",
+      "description": "Autonomous local LLM agent with file access to remote workspaces via UNC paths"
+    },
+    "code-search": {
+      "enabled": true,
+      "indexPath": "data/indexes",
+      "description": "Semantic code search for large codebases - tree-sitter + embeddings"
     }
   },
   "llm": {
@@ -37,14 +63,16 @@
       "embedding": "lmstudio",
       "analysis": "lmstudio",
       "synthesis": "lmstudio",
-      "query": "lmstudio"
+      "query": "lmstudio",
+      "agent": "lmstudio"
     },
     "_taskMapping": {
       "_comment": "Task defaults are used by the following servers:",
-      "embedding": ["memory: embeddings for semantic search"],
+      "embedding": ["memory: embeddings for semantic search", "code-search: file embeddings"],
       "analysis": ["web-research: source selection and credibility analysis"],
       "synthesis": ["web-research: multi-source content synthesis"],
-      "query": ["lm-studio: query_model and get_second_opinion tools"]
+      "query": ["lm-studio: query_model and get_second_opinion tools"],
+      "agent": ["local-agent: autonomous code analysis with tool calling"]
     },
     "providers": {
       "lmstudio": {
