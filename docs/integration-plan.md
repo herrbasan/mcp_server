@@ -31,7 +31,8 @@
            │     └── Tools: run_local_agent
            │
            └── CodeSearchServer (NEW)
-                 └── Tools: build_index, get_index_stats, search_files, search_keyword, search_semantic, search_code
+                 └── Tools: refresh_index, get_index_stats, search_files, search_keyword, search_semantic, search_code
+                 └── CLI: build_index (full rebuild, not exposed via MCP)
 ```
 
 ## Server Module Interface
@@ -136,7 +137,7 @@ export class CodeSearchServer {
 
   getTools() {
     return [
-      { name: 'build_index', ... },
+      { name: 'refresh_index', ... },  // Incremental only (mtime-based)
       { name: 'get_index_stats', ... },
       { name: 'search_files', ... },
       { name: 'search_keyword', ... },
@@ -145,8 +146,10 @@ export class CodeSearchServer {
     ];
   }
 
+  // Note: build_index is CLI-only (scripts/build-index.js), not exposed via MCP
+
   handlesTool(name) {
-    return ['build_index', 'get_index_stats', 'search_files', 
+    return ['refresh_index', 'get_index_stats', 'search_files', 
             'search_keyword', 'search_semantic', 'search_code'].includes(name);
   }
 }
@@ -158,33 +161,38 @@ Add to `config.json`:
 
 ```json
 {
+  "workspaces": {
+    "defaultMachine": "COOLKID",
+    "machines": {
+      "COOLKID": {
+        "D:\\Work": "\\\\COOLKID\\Work",
+        "D:\\DEV": "\\\\COOLKID\\DEV"
+      },
+      "FATTEN": {
+        "E:\\Projects": "\\\\FATTEN\\Projects"
+      }
+    }
+  },
   "servers": {
     "local-agent": {
       "enabled": true,
-      "defaultMachine": "COOLKID",
-      "machines": {
-        "COOLKID": {
-          "D:\\Work": "\\\\COOLKID\\Work",
-          "D:\\DEV": "\\\\COOLKID\\DEV"
-        },
-        "FATTEN": {
-          "E:\\Projects": "\\\\FATTEN\\Projects"
-        }
-      },
       "maxTokenBudget": 50000,
       "maxIterations": 20,
-      "model": null
+      "model": null,
+      "toolCallingFormat": "json-in-prompt"
     },
     "code-search": {
       "enabled": true,
-      "indexPath": "data/indexes",
-      "embeddingProvider": null
+      "indexPath": "data/indexes"
     }
   }
 }
 ```
 
-**Note**: `machines` config is shared. Code Search uses same `machines` from `local-agent` config (or we move to a top-level `workspaces` key).
+**Design decision**: `workspaces` is TOP-LEVEL because:
+1. Both Local Agent and Code Search need the same machine/share mappings
+2. Avoids config duplication and drift
+3. Clear separation: `workspaces` = WHERE, `servers` = HOW
 
 ## http-server.js Modifications
 
@@ -193,9 +201,13 @@ Add to server initialization section (~line 80-110):
 ```javascript
 // After BrowserServer initialization
 
+// Both modules share workspace config
+const workspaceConfig = config.workspaces || {};
+
 if (config.servers['local-agent']?.enabled) {
   const { LocalAgentServer } = await import('./servers/local-agent.js');
-  const s = new LocalAgentServer(config.servers['local-agent'], llmRouter);
+  const agentConfig = { ...config.servers['local-agent'], workspaces: workspaceConfig };
+  const s = new LocalAgentServer(agentConfig, llmRouter);
   serverModules.set('local-agent', s);
   tools.push(...s.getTools());
   console.log('✓ Local Agent');
@@ -203,15 +215,18 @@ if (config.servers['local-agent']?.enabled) {
 
 if (config.servers['code-search']?.enabled) {
   const { CodeSearchServer } = await import('./servers/code-search.js');
-  // Share workspace config from local-agent if not specified
-  const searchConfig = {
-    ...config.servers['code-search'],
-    machines: config.servers['code-search'].machines || config.servers['local-agent']?.machines
-  };
+  const searchConfig = { ...config.servers['code-search'], workspaces: workspaceConfig };
   const s = new CodeSearchServer(searchConfig, llmRouter);
   serverModules.set('code-search', s);
   tools.push(...s.getTools());
   console.log('✓ Code Search');
+}
+
+// Wire up inter-module communication (Local Agent uses Code Search when available)
+const localAgent = serverModules.get('local-agent');
+const codeSearch = serverModules.get('code-search');
+if (localAgent && codeSearch) {
+  localAgent.setCodeSearchServer(codeSearch);
 }
 ```
 
@@ -262,40 +277,68 @@ This allows routing agent requests to a model that handles tool-calling well (e.
 
 ## Inter-Module Communication
 
-LocalAgentServer needs to query CodeSearchServer. Options:
+LocalAgentServer needs to query CodeSearchServer.
 
-### Option A: Direct Reference (Recommended)
-Pass CodeSearchServer instance to LocalAgentServer:
-
-```javascript
-// In http-server.js
-const codeSearchServer = serverModules.get('code-search');
-const localAgentServer = new LocalAgentServer(config, llmRouter, codeSearchServer);
-```
-
-### Option B: Lookup via serverModules Map
-LocalAgentServer gets reference to serverModules map:
+### Chosen: Post-construction injection via setter
 
 ```javascript
-constructor(config, llmRouter, serverModules) {
-  this.codeSearch = serverModules.get('code-search');
+// In http-server.js (after both modules initialized)
+if (localAgent && codeSearch) {
+  localAgent.setCodeSearchServer(codeSearch);
 }
 ```
 
-### Option C: Internal Tool Calls
-LocalAgentServer calls `codeSearchServer.callTool()` directly:
+**Rationale**:
+- Avoids circular dependency issues
+- LocalAgent works standalone if CodeSearch is disabled
+- Clear optional dependency relationship
+
+### Usage in LocalAgentServer
 
 ```javascript
 async _getAgentTools(basePath) {
+  // Only use search tools if: 1) CodeSearch available, 2) index exists for this workspace
   if (this.codeSearch) {
-    const stats = await this.codeSearch.callTool('get_index_stats', { path: basePath });
-    if (stats.indexed) {
-      return this._getSearchTools(); // Use search tools
+    try {
+      const stats = await this.codeSearch.callTool('get_index_stats', { path: basePath });
+      if (stats.content?.[0]?.text) {
+        const parsed = JSON.parse(stats.content[0].text);
+        if (parsed.exists) {
+          return this._getSearchTools();  // Use semantic search, keyword search, etc.
+        }
+      }
+    } catch (e) {
+      // CodeSearch failed - fall back gracefully
+      console.warn('CodeSearch unavailable, using basic file tools:', e.message);
     }
   }
-  return this._getBasicTools(); // Fall back to fs tools
+  return this._getBasicTools();  // list_dir, read_file, grep, find_files
 }
 ```
+
+## Robustness Invariants
+
+**These MUST hold true at all times. Violations are bugs.**
+
+### Path Security
+1. No path can access files outside configured shares (after symlink resolution)
+2. `..` in any path component is rejected before processing
+3. All UNC paths are validated against allowed shares after `fs.realpath()`
+
+### Data Integrity  
+4. Index files are never partially written (atomic temp+rename)
+5. Index locks are never held >30 minutes (stale lock breaking)
+6. Content hashes are revalidated before enrichment writes
+
+### Resource Limits
+7. Agent loops terminate after `maxIterations` (default 20)
+8. Agent file reads terminate after `maxTokenBudget` (default 50k)
+9. No single file read exceeds 100KB for embedding (truncate)
+
+### Graceful Degradation
+10. If LLM unavailable: indexing fails, search returns unenriched results
+11. If target share unreachable: fail fast with diagnostic, don't retry forever
+12. If CodeSearch unavailable: LocalAgent uses basic file tools
 
 ## File Structure After Implementation
 
@@ -303,7 +346,7 @@ async _getAgentTools(basePath) {
 src/
 ├── http-server.js          # Add local-agent and code-search initialization
 ├── lib/
-│   └── workspace.js        # NEW: Shared path resolver
+│   └── workspace.js        # NEW: Shared path resolver (see local-agent-module.md for algorithm)
 ├── servers/
 │   ├── browser.js
 │   ├── code-analyzer.js
@@ -312,6 +355,8 @@ src/
 │   ├── local-agent.js      # NEW: Autonomous agent
 │   ├── memory.js
 │   └── web-research.js
+├── scripts/
+│   └── build-index.js      # NEW: CLI for full index build
 └── llm/
     └── router.js           # Add 'agent' task type support
 ```
@@ -352,9 +397,14 @@ assert.throws(() => resolver.resolvePath('C:\\Windows\\System32')); // Not allow
 ```
 
 ### Phase 3: Code Search Standalone
+```powershell
+# Initial index build (CLI only, ~20-30min for large codebases)
+node scripts/build-index.js --workspace "D:\DEV\mcp_server"
+```
+
 ```javascript
-// Build index
-{ name: 'build_index', args: { path: 'D:\\DEV\\mcp_server' } }
+// Incremental refresh after making changes (MCP tool, fast)
+{ name: 'refresh_index', args: { path: 'D:\\DEV\\mcp_server' } }
 
 // Search
 { name: 'search_semantic', args: { query: 'memory embedding', path: 'D:\\DEV\\mcp_server' } }

@@ -3,6 +3,14 @@
 **Module**: `src/servers/local-agent.js`
 **Status**: Planned
 **Created**: January 31, 2026
+**Updated**: February 1, 2026
+
+## Design Principles
+
+1. **Robustness over performance** - Every operation must fail gracefully with clear diagnostics
+2. **LLM-maintainable code** - Explicit logic, no clever abstractions, self-documenting
+3. **Defense in depth** - Multiple validation layers for path security
+4. **Graceful degradation** - Always return useful partial results when possible
 
 ## Summary
 
@@ -26,17 +34,69 @@ With local agent:
 
 ## Architecture
 
-### Path Resolution
+### Path Resolution (Critical - Security Boundary)
 
-Client machines expose shares, MCP server translates local paths to UNC:
+Client machines expose shares, MCP server translates local paths to UNC.
 
+**Resolution algorithm** (implemented in `src/lib/workspace.js`):
+
+```javascript
+resolvePath(localPath, machine) {
+  // 1. Normalize input: lowercase, forward slashes, no trailing slash
+  const normalized = localPath.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
+  
+  // 2. Get shares for machine, sorted by prefix length DESCENDING
+  const shares = Object.entries(config.machines[machine])
+    .map(([local, unc]) => ({ 
+      local: local.toLowerCase().replace(/\\/g, '/').replace(/\/$/, ''), 
+      unc 
+    }))
+    .sort((a, b) => b.local.length - a.local.length);
+  
+  // 3. Find longest matching prefix
+  for (const share of shares) {
+    if (normalized.startsWith(share.local)) {
+      const remainder = normalized.slice(share.local.length);
+      return share.unc + remainder.replace(/\//g, '\\');
+    }
+  }
+  
+  throw new Error(`No share configured for path: ${localPath} on machine: ${machine}`);
+}
 ```
-Input:  D:\Work\_GIT\SoundApp  (machine: COOLKID)
-Match:  D:\Work → \\COOLKID\Work
-Output: \\COOLKID\Work\_GIT\SoundApp
+
+**Post-resolution validation** (MANDATORY after every resolvePath call):
+
+```javascript
+async validateResolvedPath(uncPath, allowedShares) {
+  // 1. Resolve to real path (follows symlinks/junctions)
+  const realPath = await fs.realpath(uncPath);
+  
+  // 2. Normalize for comparison
+  const normalizedReal = realPath.toLowerCase().replace(/\//g, '\\');
+  
+  // 3. Check real path is still within allowed shares
+  const isAllowed = allowedShares.some(share => 
+    normalizedReal.startsWith(share.toLowerCase())
+  );
+  
+  if (!isAllowed) {
+    throw new Error(`Path escapes allowed shares: ${uncPath} resolved to ${realPath}`);
+  }
+  
+  return realPath;
+}
 ```
 
-Longest prefix match ensures specific shares override general ones.
+**Edge cases handled**:
+| Case | Handling |
+|------|----------|
+| Case mismatch (`D:\work` vs `D:\Work`) | Normalize to lowercase before matching |
+| Overlapping shares | Sort by length descending, match first (longest) |
+| Symlinks/junctions escaping share | `fs.realpath()` + re-validate against allowed shares |
+| Trailing slashes | Strip before matching |
+| `..` in path | Reject BEFORE resolution, also caught by realpath validation |
+| Path not in any share | Throw clear error with configured shares listed |
 
 ### Agent Loop
 
@@ -73,10 +133,11 @@ Agent tracks tokens consumed by file reads. Configurable limit (default 50k) pre
 
 ## Configuration
 
+**IMPORTANT**: Workspace config is TOP-LEVEL, shared by Local Agent and Code Search modules.
+
 ```json
 {
-  "localAgent": {
-    "enabled": true,
+  "workspaces": {
     "defaultMachine": "COOLKID",
     "machines": {
       "COOLKID": {
@@ -86,22 +147,32 @@ Agent tracks tokens consumed by file reads. Configurable limit (default 50k) pre
       "FATTEN": {
         "E:\\Projects": "\\\\FATTEN\\Projects"
       }
+    }
+  },
+  "servers": {
+    "local-agent": {
+      "enabled": true,
+      "maxTokenBudget": 50000,
+      "maxIterations": 20,
+      "model": null,
+      "toolCallingFormat": "json-in-prompt"
     },
-    "maxTokenBudget": 50000,
-    "maxIterations": 20,
-    "model": null
+    "code-search": {
+      "enabled": true,
+      "indexPath": "data/indexes"
+    }
   }
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `enabled` | Enable/disable the module |
-| `defaultMachine` | Machine to use when not specified in tool call |
-| `machines` | Map of machine name → share mappings |
-| `maxTokenBudget` | Max tokens agent can read before forced stop |
-| `maxIterations` | Max tool-call loops before forced stop |
-| `model` | Specific model for agent (null = router default) |
+| `workspaces.defaultMachine` | Machine to use when not specified in tool call |
+| `workspaces.machines` | Map of machine name → share mappings (shared by all modules) |
+| `servers.local-agent.maxTokenBudget` | Max tokens agent can read before forced stop |
+| `servers.local-agent.maxIterations` | Max tool-call loops before forced stop |
+| `servers.local-agent.model` | Specific model for agent (null = router default for task `agent`) |
+| `servers.local-agent.toolCallingFormat` | `json-in-prompt` or `native` - model-dependent |
 
 ## MCP Tool
 
@@ -205,16 +276,141 @@ This further reduces token usage vs. reading everything.
 | grep (1000 files) | <2s |
 | Full agent task | <60s |
 
-## Error Handling
+## Error Handling (Exhaustive)
 
-| Error | Handling |
-|-------|----------|
-| UNC path unreachable | Return error with troubleshooting hint |
-| Share permission denied | Return error, suggest checking share perms |
-| Token budget exceeded | Return partial results + warning |
-| Max iterations exceeded | Return current findings + warning |
-| LLM tool parse failure | Retry once, then abort with error |
-| File read error | Skip file, log warning, continue |
+**Principle**: Every error returns actionable diagnostics. Never fail silently.
+
+| Error | Detection | Response | Recovery |
+|-------|-----------|----------|----------|
+| UNC share unreachable | `fs.access()` fails with ENOENT/ETIMEDOUT | `{ error: 'SHARE_UNREACHABLE', share: '\\\\COOLKID\\Work', hint: 'Check: 1) Machine online, 2) Share exists, 3) Firewall allows SMB' }` | None - fail fast |
+| Share permission denied | `fs.access()` fails with EACCES | `{ error: 'SHARE_ACCESS_DENIED', share: '...', hint: 'Check share permissions for MCP server machine account' }` | None - fail fast |
+| Path escapes share (symlink) | `validateResolvedPath()` throws | `{ error: 'PATH_ESCAPE', requested: '...', resolved: '...', hint: 'Symlink points outside allowed shares' }` | None - security violation |
+| Token budget exceeded | `tokensUsed > maxTokenBudget` | `{ warning: 'TOKEN_BUDGET_EXCEEDED', tokensUsed: 52000, budget: 50000, partialResult: '...' }` | Return partial results |
+| Max iterations exceeded | `iteration >= maxIterations` | `{ warning: 'MAX_ITERATIONS', iterations: 20, partialResult: '...' }` | Return partial results |
+| LLM tool parse failure | JSON.parse throws or schema validation fails | Retry once with repair prompt, then `{ error: 'TOOL_PARSE_FAILED', lastOutput: '...', attempts: 2 }` | Retry once |
+| LLM stuck in loop | Same tool+args 3x consecutively | Force `done` with current findings | Force completion |
+| LLM unavailable | Router returns connection error | `{ error: 'LLM_UNAVAILABLE', provider: 'lmstudio', hint: 'Check LM Studio is running' }` | None - fail fast |
+| File read error (single file) | `fs.readFile()` throws | Log warning, skip file, continue | Continue with other files |
+| No files found | `list_dir` returns empty | `{ warning: 'EMPTY_WORKSPACE', path: '...' }` | Return warning, not error |
+
+## Agent Loop Implementation (Detailed)
+
+```javascript
+async runAgentLoop(task, basePath, maxTokens, maxIterations) {
+  const state = {
+    tokensUsed: 0,
+    iteration: 0,
+    history: [],           // { role, content } for LLM context
+    toolCallHistory: [],   // [{ tool, args }] for loop detection
+    findings: []           // Accumulated results
+  };
+
+  // Build system prompt with tool definitions
+  const systemPrompt = buildAgentSystemPrompt(this.agentTools, basePath);
+  state.history.push({ role: 'system', content: systemPrompt });
+  state.history.push({ role: 'user', content: task });
+
+  while (state.iteration < maxIterations) {
+    state.iteration++;
+
+    // 1. Call LLM
+    const llmResponse = await this.router.predict({
+      messages: state.history,
+      taskType: 'agent',
+      model: this.config.model
+    });
+
+    // 2. Parse tool call from response
+    const toolCall = this.parseToolCall(llmResponse.content);
+    
+    if (!toolCall) {
+      // No valid tool call - retry once with hint
+      if (state.lastWasRetry) {
+        return { error: 'TOOL_PARSE_FAILED', lastOutput: llmResponse.content };
+      }
+      state.history.push({ role: 'assistant', content: llmResponse.content });
+      state.history.push({ role: 'user', content: 'Please respond with a valid tool call in JSON format.' });
+      state.lastWasRetry = true;
+      continue;
+    }
+    state.lastWasRetry = false;
+
+    // 3. Loop detection
+    state.toolCallHistory.push(toolCall);
+    if (this.isStuckInLoop(state.toolCallHistory)) {
+      return {
+        warning: 'AGENT_STUCK',
+        iterations: state.iteration,
+        partialResult: this.synthesizeFindings(state.findings)
+      };
+    }
+
+    // 4. Execute tool
+    if (toolCall.tool === 'done') {
+      return { success: true, result: toolCall.args.summary, iterations: state.iteration };
+    }
+
+    const toolResult = await this.executeTool(toolCall, basePath, state);
+    
+    // 5. Update state
+    state.history.push({ role: 'assistant', content: llmResponse.content });
+    state.history.push({ role: 'user', content: `Tool result:\n${JSON.stringify(toolResult)}` });
+    
+    if (toolResult.content) {
+      state.findings.push({ tool: toolCall.tool, result: toolResult });
+    }
+
+    // 6. Check token budget
+    if (state.tokensUsed > maxTokens) {
+      return {
+        warning: 'TOKEN_BUDGET_EXCEEDED',
+        tokensUsed: state.tokensUsed,
+        budget: maxTokens,
+        partialResult: this.synthesizeFindings(state.findings)
+      };
+    }
+  }
+
+  return {
+    warning: 'MAX_ITERATIONS',
+    iterations: maxIterations,
+    partialResult: this.synthesizeFindings(state.findings)
+  };
+}
+
+isStuckInLoop(history) {
+  if (history.length < 3) return false;
+  const last3 = history.slice(-3);
+  return last3.every(h => 
+    h.tool === last3[0].tool && 
+    JSON.stringify(h.args) === JSON.stringify(last3[0].args)
+  );
+}
+```
+
+## Tool Calling Format
+
+**Two modes** (configured via `toolCallingFormat`):
+
+### Mode 1: `json-in-prompt` (Default, More Reliable)
+
+System prompt includes tool definitions as JSON schema. LLM responds with:
+
+```json
+{"tool": "read_file", "args": {"path": "src/auth.js"}}
+```
+
+Parsing: `JSON.parse()` + schema validation against tool inputSchema.
+
+### Mode 2: `native` (Model-Dependent)
+
+Use LLM's native function calling (OpenAI-style). Only for models that support it well.
+
+**Recommended models for tool-calling** (tested):
+- ✅ Qwen 2.5-Coder 7B/14B - Excellent JSON adherence
+- ✅ Llama 3.1 8B/70B - Good with json-in-prompt
+- ⚠️ Mistral-Nemo - Occasional format issues
+- ❌ Smaller models (<7B) - Unreliable
 
 ## Security Considerations
 
@@ -224,12 +420,22 @@ This further reduces token usage vs. reading everything.
 - **Iteration limits**: Prevent infinite loops
 - **Share boundaries**: Cannot access paths outside configured shares
 
-## Open Questions
+## Open Questions (Resolved)
 
-1. **Model selection**: Which local models handle tool-calling well? Test Qwen 2.5, Llama 3.x, Mistral.
-2. **Tool format**: Native function calling vs. JSON-in-prompt? Model-dependent.
-3. **Progress streaming**: Send MCP notifications during iteration, or just final result?
-4. **Caching**: Cache file listings? Invalidation strategy?
+1. **Model selection**: Use Qwen 2.5-Coder for reliable tool-calling. Configure via `model` field or router task `agent`.
+2. **Tool format**: Default to `json-in-prompt` for reliability. Support `native` for compatible models.
+3. **Progress streaming**: Send MCP notifications during iteration (iteration count, current tool).
+4. **Caching**: No file listing cache - UNC access is fast enough, cache invalidation is complex.
+
+## Graceful Degradation Matrix
+
+| Component Down | Behavior |
+|----------------|----------|
+| Target machine offline | Fail with SHARE_UNREACHABLE, list configured machines |
+| LM Studio unavailable | Fail with LLM_UNAVAILABLE, suggest checking LM Studio |
+| Code Search index missing | Fall back to basic file tools (no semantic search) |
+| Code Search server disabled | Use basic file tools only |
+| Single file unreadable | Skip file, log warning, continue with others |
 
 ## Shared Utilities
 

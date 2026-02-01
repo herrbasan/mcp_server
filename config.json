@@ -34,7 +34,7 @@
     "defaultProvider": "lmstudio",
     "maxTokens": 32768,
     "taskDefaults": {
-      "embedding": "ollama",
+      "embedding": "lmstudio",
       "analysis": "lmstudio",
       "synthesis": "lmstudio",
       "query": "lmstudio"
