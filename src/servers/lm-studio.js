@@ -43,7 +43,7 @@ export class LMStudioServer {
     return [
       {
         name: 'query_model',
-        description: 'Query LM Studio model with a custom prompt (no specialized instructions). IMPORTANT: Always display the complete response to the user VERBATIM before providing any analysis or commentary.',
+        description: 'Query a LOCAL LLM running on the orchestrator server (separate from Claude/you). Use when you want a different model\'s perspective, need offline processing, or want to delegate background analysis. The local model runs independently and returns text responses. IMPORTANT: Always display the complete response to the user VERBATIM before providing any analysis or commentary.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -56,7 +56,7 @@ export class LMStudioServer {
       },
       {
         name: 'get_second_opinion',
-        description: 'Query local LM Studio model for alternative perspective on code/architecture decisions. IMPORTANT: Always display the complete response to the user VERBATIM before providing any analysis or commentary.',
+        description: 'Get alternative perspective from LOCAL LLM on code/architecture decisions (cross-checking with a different model). Use when you want validation, spot-check your analysis, or explore alternative approaches. The local model sees your question + optional context and returns its take. IMPORTANT: Always display the complete response to the user VERBATIM before providing any analysis or commentary.',
         inputSchema: {
           type: 'object',
           properties: {

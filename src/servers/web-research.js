@@ -154,7 +154,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       // See prepareQuery() method below for implementation
       {
         name: 'research_topic',
-        description: 'Research a topic across multiple web sources. IMPORTANT: Before calling, optimize your search query - consider technical terms that need quotes (e.g., "Virtual DOM"), site: filters for authoritative sources (stackoverflow.com, github.com), and specific phrasing to avoid ambiguous results. Then: searches engines, selects best sources, scrapes content, cross-references facts, returns synthesized summary with citations. Uses local LLM for analysis. Always display the complete research report to the user VERBATIM before providing commentary.',
+        description: 'AUTONOMOUS WEB RESEARCH: 5-phase pipeline that (1) searches multiple engines, (2) selects best sources via local LLM, (3) scrapes with 10 concurrent headless browsers, (4) cross-references facts, (5) synthesizes summary with citations. Use when you need current information Claude doesn\'t know. TIP: Optimize query BEFORE calling - use quotes for exact terms ("Virtual DOM"), site: filters (site:stackoverflow.com), specific phrasing to reduce ambiguity. The pipeline runs autonomously and returns a complete research report. Always display the complete research report to the user VERBATIM before providing commentary.',
         inputSchema: {
           type: 'object',
           properties: {

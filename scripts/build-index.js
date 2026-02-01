@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import dotenv from 'dotenv';
 
+import readline from 'readline';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Load environment variables
@@ -13,14 +15,20 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 /**
  * CLI tool for building full code search index
- * Usage: node scripts/build-index.js --workspace "D:\DEV\mcp_server" [--machine COOLKID]
+ * Usage: 
+ *   node scripts/build-index.js --workspace "BADKID-DEV"   (single workspace)
+ *   node scripts/build-index.js --all                      (all workspaces)
+ *   node scripts/build-index.js --all --force              (all, no confirmation)
  */
 
 async function main() {
   const args = parseArgs();
   
-  if (!args.workspace) {
-    console.error('Usage: node scripts/build-index.js --workspace "path" [--machine name]');
+  if (!args.workspace && !args.all) {
+    console.error('Usage:');
+    console.error('  node scripts/build-index.js --workspace "workspace-name"');
+    console.error('  node scripts/build-index.js --all');
+    console.error('  node scripts/build-index.js --all --force');
     process.exit(1);
   }
 
@@ -42,44 +50,81 @@ async function main() {
   const { WorkspaceResolver } = await import('../src/lib/workspace.js');
   const workspace = new WorkspaceResolver(config.workspaces || {});
 
-  // Resolve path
-  const machine = args.machine || config.workspaces.defaultMachine;
-  console.log(`Machine: ${machine}`);
-  console.log(`Local path: ${args.workspace}`);
-  
-  const uncPath = workspace.resolvePath(args.workspace, machine);
-  console.log(`UNC path: ${uncPath}\n`);
-
-  // Determine index file path
-  const indexPath = config.servers['code-search']?.indexPath || 'data/indexes';
-  const indexFilename = workspace.getIndexPath(args.workspace, machine);
-  const indexFile = path.join(indexPath, indexFilename);
-
-  console.log(`Index file: ${indexFile}\n`);
-
-  // Check if index exists
-  try {
-    await fs.access(indexFile);
-    const answer = await promptUser('Index already exists. Rebuild? (y/N): ');
-    if (answer.toLowerCase() !== 'y') {
-      console.log('Aborted.');
-      process.exit(0);
-    }
-  } catch (err) {
-    // Index doesn't exist, proceed
-  }
-
   // Initialize LLM router for embeddings
   console.log('Initializing LLM router...');
   const { LLMRouter } = await import('../src/llm/router.js');
   const router = new LLMRouter(config.llm);
   console.log('✓ LLM router ready\n');
 
-  // Build index
+  const indexPath = config.servers['code-search']?.indexPath || 'data/indexes';
+
+  // Build all workspaces or single workspace
+  if (args.all) {
+    const workspaces = workspace.getWorkspaces();
+    console.log(`Building indexes for ${workspaces.length} workspaces:\n`);
+    workspaces.forEach(w => console.log(`  - ${w.name}: ${w.uncPath}`));
+    console.log('');
+
+    if (!args.force) {
+      const answer = await promptUser('Proceed with building all indexes? (y/N): ');
+      if (answer.toLowerCase() !== 'y') {
+        console.log('Aborted.');
+        process.exit(0);
+      }
+    }
+
+    for (const w of workspaces) {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`Building index for: ${w.name}`);
+      console.log(`${'='.repeat(60)}\n`);
+      
+      try {
+        await buildIndex(w.name, w.uncPath, indexPath, router);
+        console.log(`✓ ${w.name} complete\n`);
+      } catch (err) {
+        console.error(`✗ ${w.name} failed: ${err.message}\n`);
+      }
+    }
+    
+    console.log('\n🎉 All indexes built!');
+  } else {
+    // Single workspace
+    const workspaceName = args.workspace;
+    console.log(`Workspace: ${workspaceName}`);
+    
+    const uncPath = workspace.getWorkspacePath(workspaceName);
+    console.log(`UNC path: ${uncPath}\n`);
+
+    const indexFile = path.join(indexPath, `${workspaceName}.json`);
+    console.log(`Index file: ${indexFile}\n`);
+
+    // Check if index exists
+    try {
+      await fs.access(indexFile);
+      if (!args.force) {
+        const answer = await promptUser('Index already exists. Rebuild? (y/N): ');
+        if (answer.toLowerCase() !== 'y') {
+          console.log('Aborted.');
+          process.exit(0);
+        }
+      }
+    } catch (err) {
+      // Index doesn't exist, proceed
+    }
+
+    await buildIndex(workspaceName, uncPath, indexPath, router);
+    console.log('\n🎉 Index built successfully!');
+  }
+}
+
+async function buildIndex(workspaceName, uncPath, indexPath, router) {
   const startTime = Date.now();
+  const indexFile = path.join(indexPath, `${workspaceName}.json`);
+  
   const index = {
     version: 2,
-    workspace: uncPath,
+    workspace: workspaceName,
+    uncPath: uncPath,
     created_at: new Date().toISOString(),
     last_full_build: new Date().toISOString(),
     last_refresh: new Date().toISOString(),
@@ -257,15 +302,22 @@ async function writeIndexStreaming(filePath, index) {
 }
 
 async function walkWorkspace(basePath, currentPath, files) {
-  const entries = await fs.readdir(currentPath, { withFileTypes: true });
+  let entries;
+  try {
+    entries = await fs.readdir(currentPath, { withFileTypes: true });
+  } catch (err) {
+    // Skip directories we can't read (permission denied, etc.)
+    return;
+  }
 
   for (const entry of entries) {
     const fullPath = path.join(currentPath, entry.name);
     const relativePath = path.relative(basePath, fullPath);
 
     if (entry.isDirectory()) {
-      // Skip ignored directories
-      if (['.git', 'node_modules', '.next', 'dist', 'build', '.vscode', '__pycache__'].includes(entry.name)) {
+      // Skip ignored directories (includes system folders starting with $)
+      if (['.git', 'node_modules', '.next', 'dist', 'build', '.vscode', '__pycache__'].includes(entry.name) ||
+          entry.name.startsWith('$')) {
         continue;
       }
       await walkWorkspace(basePath, fullPath, files);
@@ -364,22 +416,27 @@ function detectLanguage(filePath) {
 
 function parseArgs() {
   const args = {};
-  for (let i = 2; i < process.argv.length; i += 2) {
-    const key = process.argv[i].replace(/^--/, '');
-    const value = process.argv[i + 1];
-    args[key] = value;
+  for (let i = 2; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if (arg === '--all') {
+      args.all = true;
+    } else if (arg === '--force') {
+      args.force = true;
+    } else if (arg === '--workspace' && process.argv[i + 1]) {
+      args.workspace = process.argv[++i];
+    }
   }
   return args;
 }
 
 function promptUser(question) {
   return new Promise(resolve => {
-    const readline = require('readline').createInterface({
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
     });
-    readline.question(question, answer => {
-      readline.close();
+    rl.question(question, answer => {
+      rl.close();
       resolve(answer);
     });
   });

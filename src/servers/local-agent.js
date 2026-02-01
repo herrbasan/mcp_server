@@ -227,13 +227,13 @@ run_local_agent(
     return [
       {
         name: 'run_local_agent',
-        description: 'Run autonomous local LLM agent with file access to analyze code, find bugs, or answer questions about a codebase. Agent can browse files and search code. Returns summary only - no code in response. Saves Claude context tokens.',
+        description: 'AUTONOMOUS CODE EXPLORATION: Agent running on orchestrator server (separate from you) that explores codebases independently using a configured LLM (could be local like LMStudio/Ollama or cloud like Gemini/OpenAI - see config.llm.taskDefaults.agent). You provide a TASK DESCRIPTION (not file paths), and the agent decides what to search for, which files to read, and when it has enough information. Agent workflow: (1) Searches semantically/by keyword based on your task, (2) Reads relevant files (up to 50k tokens), (3) Re-searches if needed, (4) Returns TEXT SUMMARY only (no code). Use for: "Find memory leaks", "Explain how authentication works", "Check for race conditions". Agent can read thousands of lines of code without polluting YOUR context - you only see the final analysis. Think of it as delegating research to a junior dev who reads the entire codebase and briefs you.',
         inputSchema: {
           type: 'object',
           properties: {
             task: {
               type: 'string',
-              description: 'What the agent should do (e.g., "Find potential security issues", "Explain the architecture", "Check for memory leaks")'
+              description: 'WHAT you want to know, not HOW to find it. Agent autonomously decides search strategy, file selection, and iteration depth. Examples: "Find memory leaks - look for buffers that are allocated but never freed", "Explain the WebSocket connection lifecycle", "Check for SQL injection vulnerabilities". More detailed tasks = better results.'
             },
             path: {
               type: 'string',

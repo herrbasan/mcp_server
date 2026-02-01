@@ -101,15 +101,15 @@ export class BrowserServer {
     return [
       {
         name: 'browser_fetch',
-        description: `Fetch a URL using a real browser. Returns content in the requested format.
+        description: `Fetch URL using a REAL HEADLESS BROWSER (Puppeteer/Chrome) - not HTTP fetch. Executes JavaScript, handles SPA/React apps, waits for dynamic content. Use when simple HTTP fails or need rendered content.
 
 Modes:
-- "text" (default): Clean extracted text + links using Readability. Best for articles, docs, reading content. ~5-50KB output.
-- "html": Raw HTML source. Use when you need DOM structure, tables, forms. ~50-500KB output.
-- "screenshot": Base64 PNG screenshot. Use for visual content, charts, layouts. ~100-500KB output.
-- "markdown": Text converted to markdown with preserved structure.
+- "text" (default): Clean extracted article text via Readability (removes nav/ads/clutter). Best for reading content. ~5-50KB.
+- "html": Raw DOM after JS execution. Use for tables, forms, structured data extraction. ~50-500KB.
+- "screenshot": Base64 PNG image. Use for visual verification, charts, layouts. ~100-500KB.
+- "markdown": Structured markdown conversion.
 
-Use "text" for 90% of cases - it's token-efficient and LLM-friendly.`,
+Use "text" for 90% of cases - token-efficient and LLM-friendly.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -189,7 +189,7 @@ Use "text" for 90% of cases - it's token-efficient and LLM-friendly.`,
       },
       {
         name: 'browser_evaluate',
-        description: 'Execute JavaScript in the page context and return the result. Powerful for extracting structured data.',
+        description: 'Execute JavaScript IN THE PAGE CONTEXT (like browser devtools console) and return the result. Your JS runs inside the loaded page and can access DOM, window, any page variables. Use for: extracting specific data ("return Array.from(document.querySelectorAll(\'h2\')).map(h => h.textContent)"), interacting with page APIs, scraping structured content. More powerful than browser_fetch when you need precise extraction logic.',
         inputSchema: {
           type: 'object',
           properties: {

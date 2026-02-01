@@ -7,19 +7,16 @@ console.log('Test 1: Load config.json');
 const config = JSON.parse(await fs.readFile('config.json', 'utf-8'));
 console.log('✓ Config loaded');
 
-// Test workspaces config
+// Test workspaces config (new simplified format)
 console.log('\nTest 2: Validate workspaces config');
 if (!config.workspaces) {
   throw new Error('Missing workspaces config');
 }
-if (!config.workspaces.defaultMachine) {
-  throw new Error('Missing defaultMachine');
+const workspaceCount = Object.keys(config.workspaces).length;
+if (workspaceCount === 0) {
+  throw new Error('No workspaces configured');
 }
-if (!config.workspaces.machines) {
-  throw new Error('Missing machines config');
-}
-console.log(`✓ Default machine: ${config.workspaces.defaultMachine}`);
-console.log(`✓ Configured machines: ${Object.keys(config.workspaces.machines).join(', ')}`);
+console.log(`✓ Configured workspaces: ${Object.keys(config.workspaces).join(', ')}`);
 
 // Test local-agent config
 console.log('\nTest 3: Validate local-agent config');
@@ -89,6 +86,7 @@ try {
 
 console.log('\n✓ All initialization tests passed!');
 console.log('\nNext steps:');
-console.log('1. Build an index: node scripts/build-index.js --workspace "D:\\DEV\\mcp_server"');
+console.log('1. Build an index: node scripts/build-index.js --workspace "BADKID-DEV"');
+console.log('   Or build all: node scripts/build-index.js --all --force');
 console.log('2. Start server: npm run start:http');
 console.log('3. Test via MCP client');

@@ -1,113 +1,141 @@
 import { WorkspaceResolver } from '../src/lib/workspace.js';
 
-console.log('Testing WorkspaceResolver...\n');
+console.log('Testing WorkspaceResolver (new simplified API)...\n');
 
-// Test config
+// Test config: workspace name -> UNC path
 const config = {
-  defaultMachine: 'COOLKID',
-  machines: {
-    'COOLKID': {
-      'D:\\Work': '\\\\COOLKID\\Work',
-      'D:\\DEV': '\\\\COOLKID\\DEV'
-    },
-    'FATTEN': {
-      'E:\\Projects': '\\\\FATTEN\\Projects'
-    }
-  }
+  'COOLKID-Work': '\\\\COOLKID\\Work',
+  'COOLKID-DEV': '\\\\COOLKID\\DEV',
+  'BADKID-DEV': '\\\\BADKID\\Stuff\\DEV',
+  'BADKID-SRV': '\\\\BADKID\\Stuff\\SRV'
 };
 
 const resolver = new WorkspaceResolver(config);
+let passed = 0;
+let failed = 0;
 
-// Test 1: Basic path resolution
-console.log('Test 1: Basic path resolution');
+// Test 1: Get workspace path
+console.log('Test 1: Get workspace path');
 try {
-  const result = resolver.resolvePath('D:\\DEV\\mcp_server');
-  console.log(`✓ D:\\DEV\\mcp_server -> ${result}`);
-  if (result !== '\\\\COOLKID\\DEV\\mcp_server') {
-    throw new Error(`Expected \\\\COOLKID\\DEV\\mcp_server, got ${result}`);
+  const result = resolver.getWorkspacePath('BADKID-DEV');
+  console.log(`✓ BADKID-DEV -> ${result}`);
+  if (result !== '\\\\BADKID\\Stuff\\DEV') {
+    throw new Error(`Expected \\\\BADKID\\Stuff\\DEV, got ${result}`);
   }
+  passed++;
 } catch (err) {
   console.log(`✗ Error: ${err.message}`);
+  failed++;
 }
 
-// Test 2: Case insensitive matching
-console.log('\nTest 2: Case insensitive matching');
+// Test 2: Unknown workspace throws
+console.log('\nTest 2: Unknown workspace throws');
 try {
-  const result = resolver.resolvePath('d:\\work\\project');
-  console.log(`✓ d:\\work\\project -> ${result}`);
-  if (result !== '\\\\COOLKID\\Work\\project') {
-    throw new Error(`Expected \\\\COOLKID\\Work\\project, got ${result}`);
-  }
+  resolver.getWorkspacePath('NONEXISTENT');
+  console.log('✗ Should have thrown');
+  failed++;
 } catch (err) {
-  console.log(`✗ Error: ${err.message}`);
+  if (err.message.includes('Unknown workspace')) {
+    console.log(`✓ Correctly rejected: ${err.message}`);
+    passed++;
+  } else {
+    console.log(`✗ Wrong error: ${err.message}`);
+    failed++;
+  }
 }
 
-// Test 3: Longest prefix match
-console.log('\nTest 3: Longest prefix match (if overlapping shares existed)');
+// Test 3: Parse file ID
+console.log('\nTest 3: Parse file ID');
 try {
-  const result = resolver.resolvePath('D:\\DEV\\mcp_server\\src');
-  console.log(`✓ D:\\DEV\\mcp_server\\src -> ${result}`);
+  const result = resolver.parseFileId('BADKID-DEV:src/http-server.js');
+  console.log(`✓ Parsed: workspace=${result.workspace}, relativePath=${result.relativePath}`);
+  if (result.workspace !== 'BADKID-DEV' || result.relativePath !== 'src/http-server.js') {
+    throw new Error('Parsed values incorrect');
+  }
+  passed++;
 } catch (err) {
   console.log(`✗ Error: ${err.message}`);
+  failed++;
 }
 
-// Test 4: Different machine
-console.log('\nTest 4: Explicit machine specification');
+// Test 4: Invalid file ID (no colon)
+console.log('\nTest 4: Invalid file ID (no colon)');
 try {
-  const result = resolver.resolvePath('E:\\Projects\\webapp', 'FATTEN');
-  console.log(`✓ E:\\Projects\\webapp [FATTEN] -> ${result}`);
-  if (result !== '\\\\FATTEN\\Projects\\webapp') {
-    throw new Error(`Expected \\\\FATTEN\\Projects\\webapp, got ${result}`);
-  }
+  resolver.parseFileId('BADKID-DEV/src/file.js');
+  console.log('✗ Should have thrown');
+  failed++;
 } catch (err) {
-  console.log(`✗ Error: ${err.message}`);
+  if (err.message.includes('missing')) {
+    console.log(`✓ Correctly rejected: ${err.message}`);
+    passed++;
+  } else {
+    console.log(`✗ Wrong error: ${err.message}`);
+    failed++;
+  }
 }
 
 // Test 5: Path traversal rejection
 console.log('\nTest 5: Path traversal rejection');
 try {
-  const result = resolver.resolvePath('D:\\DEV\\..\\..\\Windows');
-  console.log(`✗ Should have rejected path with ..`);
+  resolver.parseFileId('BADKID-DEV:../etc/passwd');
+  console.log('✗ Should have thrown');
+  failed++;
 } catch (err) {
-  console.log(`✓ Correctly rejected: ${err.message}`);
+  if (err.message.includes('traversal')) {
+    console.log(`✓ Correctly rejected: ${err.message}`);
+    passed++;
+  } else {
+    console.log(`✗ Wrong error: ${err.message}`);
+    failed++;
+  }
 }
 
-// Test 6: Unknown path
-console.log('\nTest 6: Unknown path (not in any share)');
+// Test 6: Resolve file ID to UNC path
+console.log('\nTest 6: Resolve file ID to UNC path');
 try {
-  const result = resolver.resolvePath('C:\\Windows\\System32');
-  console.log(`✗ Should have thrown error for unconfigured path`);
+  const result = resolver.resolveFileId('BADKID-DEV:src/http-server.js');
+  console.log(`✓ BADKID-DEV:src/http-server.js -> ${result}`);
+  // Should be \\BADKID\Stuff\DEV\src\http-server.js
+  if (!result.includes('BADKID') || !result.includes('http-server.js')) {
+    throw new Error(`Unexpected path: ${result}`);
+  }
+  passed++;
 } catch (err) {
-  console.log(`✓ Correctly rejected: ${err.message}`);
+  console.log(`✗ Error: ${err.message}`);
+  failed++;
 }
 
-// Test 7: Unknown machine
-console.log('\nTest 7: Unknown machine');
+// Test 7: Create file ID
+console.log('\nTest 7: Create file ID');
 try {
-  const result = resolver.resolvePath('D:\\DEV\\test', 'UNKNOWN');
-  console.log(`✗ Should have thrown error for unknown machine`);
+  const result = resolver.createFileId('COOLKID-Work', 'project\\src\\main.js');
+  console.log(`✓ Created: ${result}`);
+  if (result !== 'COOLKID-Work:project/src/main.js') {
+    throw new Error(`Expected COOLKID-Work:project/src/main.js, got ${result}`);
+  }
+  passed++;
 } catch (err) {
-  console.log(`✓ Correctly rejected: ${err.message}`);
+  console.log(`✗ Error: ${err.message}`);
+  failed++;
 }
 
-// Test 8: List machines
-console.log('\nTest 8: List machines');
-const machines = resolver.listMachines();
-console.log(`✓ Available machines: ${machines.join(', ')}`);
+// Test 8: Get workspaces list
+console.log('\nTest 8: Get workspaces list');
+try {
+  const workspaces = resolver.getWorkspaces();
+  console.log(`✓ Found ${workspaces.length} workspaces`);
+  workspaces.forEach(w => console.log(`   - ${w.name}: ${w.uncPath}`));
+  if (workspaces.length !== 4) {
+    throw new Error(`Expected 4 workspaces, got ${workspaces.length}`);
+  }
+  passed++;
+} catch (err) {
+  console.log(`✗ Error: ${err.message}`);
+  failed++;
+}
 
-// Test 9: Get shares
-console.log('\nTest 9: Get shares for COOLKID');
-const shares = resolver.getShares('COOLKID');
-console.log(`✓ Shares:`, shares);
+console.log(`\n========================================`);
+console.log(`Tests: ${passed} passed, ${failed} failed`);
+console.log(`========================================`);
 
-// Test 10: Get allowed shares
-console.log('\nTest 10: Get allowed shares (for validation)');
-const allowed = resolver.getAllowedShares('COOLKID');
-console.log(`✓ Allowed UNC prefixes: ${allowed.join(', ')}`);
-
-// Test 11: Index path generation
-console.log('\nTest 11: Index path generation');
-const indexPath = resolver.getIndexPath('D:\\DEV\\mcp_server');
-console.log(`✓ Index path: ${indexPath}`);
-
-console.log('\n✓ All tests passed!');
+process.exit(failed > 0 ? 1 : 0);

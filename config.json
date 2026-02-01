@@ -1,15 +1,8 @@
 {
   "workspaces": {
-    "defaultMachine": "COOLKID",
-    "machines": {
-      "COOLKID": {
-        "D:\\Work": "\\\\COOLKID\\Work\\Work"
-      },
-      "BADKID": {
-        "D:\\DEV": "D:\\DEV",
-        "D:\\SRV": "D:\\SRV"
-      }
-    }
+    "COOLKID-Work": "\\\\COOLKID\\Work",
+    "BADKID-DEV": "\\\\BADKID\\Stuff\\DEV",
+    "BADKID-SRV": "\\\\BADKID\\Stuff\\SRV"
   },
   "servers": {
     "lm-studio": {
