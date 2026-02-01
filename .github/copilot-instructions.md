@@ -91,6 +91,21 @@ Domain scoping: Memories can be tagged with optional `domain` field (LMStudioAPI
 - Validate model IDs against available models before use
 - When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
 
+## Upcoming: Local Agent & Code Search
+
+**Clean state commit**: `8866aff` (Feb 1, 2026) - Pre-implementation baseline
+
+Design docs ready, implementation pending:
+- `docs/local-agent-module.md` - Autonomous LLM agent with UNC file access
+- `docs/code-search-module.md` - Tree-sitter + embeddings for large codebases
+- `docs/integration-plan.md` - Full integration roadmap
+
+Key additions planned:
+- `src/lib/workspace.js` - Shared path resolver (local paths → UNC)
+- `src/servers/local-agent.js` - `run_local_agent` tool
+- `src/servers/code-search.js` - 6 search/indexing tools
+
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
 - **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging
+- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design
