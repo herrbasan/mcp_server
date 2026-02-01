@@ -7,6 +7,30 @@
 
 Code search for large codebases (100k+ files). Fast base index via tree-sitter + embeddings. LLM enrichment is query-driven, not upfront.
 
+## Workspace Integration
+
+Indexes are scoped to workspaces defined in the shared machine/share config:
+
+```json
+{
+  "localAgent": {
+    "machines": {
+      "COOLKID": {
+        "D:\\Work": "\\\\COOLKID\\Work",
+        "D:\\DEV": "\\\\COOLKID\\DEV"
+      }
+    }
+  }
+}
+```
+
+Local paths are resolved to UNC paths for file access. Index stored on MCP server at:
+`data/indexes/{workspace-name}.json`
+
+**Path Resolution**: Shared utility in `src/lib/workspace.js` handles translation from client local paths to server-accessible UNC paths. Longest prefix match ensures specific shares override general ones.
+
+See [Local Agent Module](local-agent-module.md) for path resolution details.
+
 ## Architecture
 
 ### Base Index (Fast, Automatic)
@@ -98,6 +122,11 @@ Triggered when file appears in search results. NOT part of automatic indexing.
 - **Symlink loops**: track visited paths
 - **LLM unavailable**: return results without enrichment
 - **Active editing**: 10-min debounce prevents thrashing
+
+## Related
+
+- [Local Agent Module](local-agent-module.md) - Autonomous agent using search tools
+- [LLM Architecture](llm-architecture.md) - Router and adapter patterns
 
 ## Contributors
 
