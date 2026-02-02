@@ -1,6 +1,6 @@
 # MCP Server Orchestrator
 
-Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes **27 tools** to VS Code Copilot via remote connection.
+Centralized MCP server running as an independent HTTP service (MCP Streamable HTTP at `/mcp`). Manages multiple specialized servers and exposes **26 tools** to VS Code Copilot via remote connection.
 
 ## Features
 
@@ -54,13 +54,20 @@ mcp_server/
 │   │   ├── router.js            # Multi-provider orchestrator
 │   │   ├── index.js             # Public exports
 │   │   └── README.md            # Technical reference
+│   ├── scrapers/                # Web scraping modules (NEW)
+│   │   ├── browser-pool.js      # Persistent browser with lingering tabs
+│   │   ├── google-adapter.js    # Google search adapter
+│   │   ├── duckduckgo-adapter.js # DuckDuckGo search adapter
+│   │   ├── google-search.js     # Legacy Google scraper
+│   │   ├── generic.js           # Fallback scraper
+│   │   └── index.js             # Scraper registry
 │   └── servers/
 │       ├── memory.js            # Persistent semantic memory
 │       ├── lm-studio-ws.js      # WebSocket LM Studio integration
 │       ├── web-research.js      # Multi-source web research
 │       ├── browser.js           # Browser automation
-│       ├── local-agent.js       # Autonomous code analysis agent (NEW)
-│       └── code-search.js       # Semantic code search (NEW)
+│       ├── local-agent.js       # Autonomous code analysis agent
+│       └── code-search.js       # Semantic code search
 ├── scripts/
 │   └── build-index.js           # CLI: Build semantic code index (NEW)
 ├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
@@ -73,7 +80,8 @@ mcp_server/
 │   └── integration-plan.md      # Integration guide (NEW)
 ├── data/
 │   ├── memories.json            # Memory storage (gitignored)
-│   └── indexes/                 # Code search indexes (gitignored, NEW)
+│   ├── chrome-profile/          # Persistent browser profile (gitignored)
+│   └── indexes/                 # Code search indexes (gitignored)
 ├── test/                        # Test scripts
 │   ├── test-llm-router.js       # LLM router test suite
 │   ├── test-workspace.js        # Workspace resolver tests (NEW)
@@ -138,7 +146,7 @@ const localResponse = await router.predict({
 - `embedding` → **lmstudio** (local, 768-dim nomic-embed-text-v2-moe)
 - `analysis` → **gemini** (web research source selection)
 - `synthesis` → **gemini** (web research content synthesis)
-- `query` → **gemini** (query_model, get_second_opinion tools)
+- `query` → **gemini** (query_model tool)
 
 **Dimension Compatibility**: All embedding models standardized on 768-dim nomic-embed-text-v2-moe. Memory system handles dimension mismatches gracefully (returns 0 similarity for incompatible vectors).
 
@@ -184,7 +192,6 @@ Non-sensitive settings (models, prompts, timeouts):
     "lm-studio": {
       "enabled": true,
       "model": "nvidia/nemotron-3-nano",
-      "systemPrompt": "You provide concise second opinions...",
       "temperature": 0.7,
       "maxTokens": 2000
     },
@@ -263,10 +270,10 @@ Non-sensitive settings (models, prompts, timeouts):
 
 **Tools Exposed** (26 total):
 - **Memory** (7): remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes
-- **LM Studio** (4): query_model, get_second_opinion, list_available_models, get_loaded_model
+- **LM Studio** (3): query_model, list_available_models, get_loaded_model
 - **Web Research** (1): research_topic
 - **Browser** (5): browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf
-- **Local Agent** (2): run_local_agent, retrieve_file
+- **Local Agent** (3): run_local_agent, retrieve_file, inspect_code
 - **Code Search** (8): get_workspace_config, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
 
 ## Web Monitoring
@@ -321,8 +328,8 @@ Quality-focused semantic storage with confidence weighting. Memories exist to im
 
 **Confidence System**: Memories gain confidence when reinforced across sessions (+0.1), lose confidence when contradicted (-0.2). High-confidence memories are prioritized in recall.
 
-### LM Studio Server (4 tools)
-WebSocket integration with local LM Studio for model queries and management. Real-time MCP progress notifications show model loading (1%-100%) and generation status.
+### LM Studio Server (3 tools)
+REST API integration with local LM Studio for model queries and management. Real-time MCP progress notifications show model loading (1%-100%) and generation status.
 
 - **`query_model`** - Query model with custom prompt
   - Raw prompt without specialized instructions
@@ -330,12 +337,6 @@ WebSocket integration with local LM Studio for model queries and management. Rea
   - Optional maxTokens parameter (default: 2000)
   - Real-time progress: connection → model loading → generation → complete
   - Auto-unload previous model when switching (enforces single model)
-  
-- **`get_second_opinion`** - Get development perspective
-  - Same as query_model but with specialized system prompt
-  - Use for code/architecture decisions, design trade-offs
-  - Optional context parameter for code snippets
-  - Configured system prompt focuses on performance, maintainability, best practices
   
 - **`list_available_models`** - List all LM Studio models
   - Shows context lengths, loaded status, capabilities
@@ -363,11 +364,11 @@ Fast static analysis for code quality issues and refactoring opportunities.
   - Maintainability: magic number extraction, error handling
 
 ### Web Research (1 tool)
-Automated multi-source research using local LLM for synthesis. Dramatically reduces API costs by doing heavy processing locally.
+Automated multi-source research using local LLM for synthesis and **persistent browser pool** for realistic human-like scraping behavior.
 
 - **`research_topic`** - Comprehensive web research
-  - **Phase 1**: Query multiple search engines (DuckDuckGo, Google, Bing)
-  - **Phase 2**: Local LLM selects most authoritative sources
+  - **Phase 1**: Query multiple search engines via specialized adapters (Google, DuckDuckGo)
+  - **Phase 2**: Local LLM selects most authoritative sources (prioritizes GitHub issues, StackOverflow, docs)
   - **Phase 3**: Parallel Puppeteer scraping (handles JS-rendered content)
   - **Phase 4**: Local LLM cross-references facts, synthesizes report
   - Returns markdown report with citations and source URLs
@@ -375,7 +376,17 @@ Automated multi-source research using local LLM for synthesis. Dramatically redu
   - Use for: library comparisons, technical research, gathering context from multiple sources
   - Cost-effective: 3-4 local LLM calls vs thousands of tokens for you to process raw HTML
 
-**Safety Features**: Hard page limits, total timeout, progress reporting to stderr, graceful degradation if sources fail.
+**Browser Pool Architecture** (NEW):
+- **Persistent Browser**: Reuses single Chrome instance with saved login sessions
+- **Lingering Tabs**: Tabs stay open 10-30s after scraping (realistic human behavior)
+- **Instant Paste**: Simulates Ctrl+V for fast query entry (no typing delays)
+- **Anti-Bot**: Random viewports, realistic user agents, delayed cleanup
+- **Adapters**: Modular search engine implementations (Google, DuckDuckGo)
+  - `src/scrapers/google-adapter.js` - Google search via persistent profile
+  - `src/scrapers/duckduckgo-adapter.js` - DuckDuckGo search (no login needed)
+  - `src/scrapers/browser-pool.js` - Shared browser pool with cleanup task
+
+**Safety Features**: Hard page limits, total timeout, progress reporting to stderr, graceful degradation if sources fail, automatic cleanup of stale tabs.
 
 ## Code Search & Local Agent
 

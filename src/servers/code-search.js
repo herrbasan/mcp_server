@@ -13,6 +13,7 @@ export class CodeSearchServer {
     this.router = llmRouter;
     this.workspace = new WorkspaceResolver(config.workspaces || {});
     this.indexPath = config.indexPath || 'data/indexes';
+    this.progressCallback = null;
     this.indexes = new Map(); // workspace -> loaded index
     this.progressCallback = null;
   }
@@ -319,7 +320,10 @@ export class CodeSearchServer {
 
   handlesTool(name) {
     return [
+      'get_workspace_config',
+      'get_file_info',
       'refresh_index',
+      'refresh_all_indexes',
       'get_index_stats',
       'search_files',
       'search_keyword',

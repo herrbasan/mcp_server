@@ -48,7 +48,7 @@ Keep it minimal-dependency and performance-first. For any non-trivial pattern/li
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **24 tools** to VS Code Copilot clients via network.
+Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **26 tools** to VS Code Copilot clients via network.
 
 **Architecture**: StreamableHTTPServerTransport (not legacy SSE)
 - Server: `src/http-server.js` - Ports 3100 (MCP), 3010 (web monitoring)
@@ -57,17 +57,19 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (27 across 6 modules):
+**Tools** (26 across 6 modules):
 - **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
-- **LM Studio** (4): REST API local model integration (query_model, get_second_opinion, list_available_models, get_loaded_model)
-- **Web Research** (1): Multi-source web research with iterative refinement (research_topic)
+- **LM Studio** (3): REST API local model integration (query_model, list_available_models, get_loaded_model)
+- **Web Research** (1): Multi-source web research with persistent browser pool (research_topic)
   - 5-phase pipeline: search → select → scrape → synthesize → evaluate
-  - Intelligent source selection via local LLM (strict JSON-only prompting)
-  - 10 concurrent isolated browser instances for anti-bot resilience
-  - SSL certificate error handling, retry logic, rate limiting
+  - **Browser Pool**: Persistent Chrome with lingering tabs (10-30s cleanup delay)
+  - **Search Adapters**: Modular Google/DuckDuckGo adapters with instant paste
+  - **Anti-Bot**: Random viewports, realistic delays, saved login sessions
+  - Intelligent source selection via local LLM (prioritizes GitHub issues, StackOverflow, docs)
+  - 10 concurrent page scrapes with SSL error handling, retry logic
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
-- **Local Agent** (2): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file)
+- **Local Agent** (3): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file, inspect_code)
 - **Code Search** (9): Semantic search for large codebases (get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code)
 
 ## Workspace Architecture (For LLMs Using MCP Orchestrator)
@@ -175,7 +177,7 @@ get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
   - embedding → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
   - analysis → gemini (source selection, credibility)
   - synthesis → gemini (multi-source synthesis)
-  - query → gemini (query_model, get_second_opinion)
+  - query → gemini (query_model tool)
   - agent → lmstudio (local agent tool calls with structured output)
 - **Dimension Compatibility**: All embedding models use 768-dim nomic-embed-text-v2-moe (LMStudio Q4/Q5, Ollama Q8)
 
@@ -272,5 +274,5 @@ Implementation complete with all planned features:
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
-- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging
+- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging, browser pool architecture (persistent tabs, search adapters, realistic scraping behavior)
 - **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization

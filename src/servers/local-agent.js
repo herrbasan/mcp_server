@@ -235,20 +235,42 @@ run_local_agent(
               type: 'string',
               description: 'WHAT you want to know, not HOW to find it. Agent autonomously decides search strategy, file selection, and iteration depth. Examples: "Find memory leaks - look for buffers that are allocated but never freed", "Explain the WebSocket connection lifecycle", "Check for SQL injection vulnerabilities". More detailed tasks = better results.'
             },
-            path: {
+            workspace: {
               type: 'string',
-              description: 'Local path to workspace (e.g., D:\\Work\\_GIT\\SoundApp, D:\\DEV\\mcp_server)'
-            },
-            machine: {
-              type: 'string',
-              description: 'Machine name (optional, uses default from config if not specified)'
+              description: 'Workspace name (e.g., "BADKID-DEV", "COOLKID-Work"). Use get_workspace_config to see available workspaces.'
             },
             maxTokens: {
               type: 'number',
               description: 'Token budget for file reads (default: 50000). Higher = more thorough analysis.'
             }
           },
-          required: ['task', 'path']
+          required: ['task', 'workspace']
+        }
+      },
+      {
+        name: 'inspect_code',
+        description: 'FOCUSED CODE ANALYSIS: Analyze a specific file or function with full dependency context. Unlike run_local_agent which explores autonomously, this tool takes a precise target and question. Workflow: (1) Reads target code, (2) Extracts dependencies (imports, function calls), (3) Reads relevant dependencies for context, (4) Asks local LLM your specific question with full context, (5) Returns focused advice. Use for: "Check refreshIndex() for optimization opportunities", "Review _parseToolCall for edge cases", "Suggest improvements to error handling in callTool()". Much faster than full agent - no iteration, just: gather context → answer question.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            target: {
+              type: 'string',
+              description: 'File path or function to analyze. Formats: "src/http-server.js" (whole file), "src/http-server.js:handleRequest" (specific function). Path can include workspace prefix like "BADKID-DEV:src/file.js" or be relative to workspace root.'
+            },
+            question: {
+              type: 'string',
+              description: 'Specific question or analysis task. Examples: "Are there performance optimization opportunities?", "Check for edge cases in error handling", "Suggest how to make this more concise", "Review for potential bugs".'
+            },
+            workspace: {
+              type: 'string',
+              description: 'Workspace name (e.g., "BADKID-DEV", "COOLKID-Work").'
+            },
+            includeDeps: {
+              type: 'boolean',
+              description: 'Whether to analyze dependencies for context (default: true). Set false for faster analysis of standalone functions.'
+            }
+          },
+          required: ['target', 'question', 'workspace']
         }
       },
       {
@@ -277,39 +299,41 @@ run_local_agent(
   }
 
   handlesTool(name) {
-    return name === 'run_local_agent' || name === 'retrieve_file';
+    return name === 'run_local_agent' || name === 'retrieve_file' || name === 'inspect_code';
   }
 
   async callTool(name, args) {
     if (name === 'retrieve_file') {
       return this._retrieveFile(args);
     }
+
+    if (name === 'inspect_code') {
+      return this._inspectCode(args);
+    }
     
     if (name !== 'run_local_agent') {
       throw new Error(`Unknown tool: ${name}`);
     }
 
-    const { task, path: localPath, machine = null, maxTokens = this.maxTokenBudget } = args;
+    const { task, workspace, maxTokens = this.maxTokenBudget } = args;
 
     try {
       this.sendProgress(5, 100, 'Resolving workspace path...');
       
-      // Resolve local path to UNC for file access
-      const uncPath = this.workspace.resolvePath(localPath, machine);
-      const allowedShares = this.workspace.getAllowedShares(machine);
+      // Get UNC path for workspace
+      const uncPath = this.workspace.getWorkspacePath(workspace);
       
       this.sendProgress(10, 100, 'Validating path access...');
       
-      // Validate path is accessible and within allowed shares
-      await this.workspace.validateResolvedPath(uncPath, allowedShares);
+      // Validate workspace path is accessible
+      await this.workspace.validatePath(uncPath, workspace);
 
       this.sendProgress(15, 100, 'Initializing agent...');
 
       // Run agent loop with timeout (5 minutes max)
-      // Pass both localPath (for index lookup) and uncPath (for file operations)
       const timeoutMs = 5 * 60 * 1000;
       const result = await Promise.race([
-        this._runAgentLoop(task, uncPath, allowedShares, maxTokens, localPath, machine),
+        this._runAgentLoop(task, uncPath, workspace, maxTokens),
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Agent timeout after 5 minutes')), timeoutMs)
         )
@@ -394,13 +418,89 @@ run_local_agent(
     }
   }
 
-  async _runAgentLoop(task, basePath, allowedShares, maxTokens, localPath, machine) {
+  async _inspectCode(args) {
+    const { target, question, workspace, includeDeps = true } = args;
+
+    try {
+      // Parse target to extract file path and optional function name
+      let filePath = target;
+      let functionName = null;
+      
+      if (filePath.includes(':')) {
+        const parts = filePath.split(':');
+        if (parts.length === 2 && parts[0] === workspace) {
+          filePath = parts[1];
+        } else if (parts.length === 2) {
+          filePath = parts[0];
+          functionName = parts[1];
+        } else if (parts.length === 3 && parts[0] === workspace) {
+          filePath = parts[1];
+          functionName = parts[2];
+        }
+      }
+
+      // Build focused task for the agent (which we know works!)
+      const fileId = `${workspace}:${filePath}`;
+      let task;
+      
+      if (functionName) {
+        task = `Read the file ${fileId} and find the function "${functionName}". Then answer this question about that specific function: ${question}`;
+        if (!includeDeps) {
+          task += ` Focus only on the function itself, don't analyze its dependencies.`;
+        }
+      } else {
+        task = `Read the file ${fileId} and answer this question about it: ${question}`;
+        if (!includeDeps) {
+          task += ` Focus only on the file itself, don't analyze its dependencies.`;
+        }
+      }
+
+      // Delegate to the agent - it already works perfectly!
+      const uncPath = this.workspace.getWorkspacePath(workspace);
+      const result = await this._runAgentLoop(task, uncPath, workspace, 10000);
+
+      if (result.success) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              target: `${filePath}${functionName ? `:${functionName}` : ''}`,
+              question,
+              analysis: result.result
+            }, null, 2)
+          }]
+        };
+      } else {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: result.error || 'Agent failed',
+              target,
+              details: result
+            }, null, 2)
+          }]
+        };
+      }
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: err.message,
+            code: err.code || 'INSPECT_ERROR',
+            target
+          }, null, 2)
+        }]
+      };
+    }
+  }
+
+  async _runAgentLoop(task, uncPath, workspace, maxTokens) {
     // Context object - passed explicitly to all functions
     const ctx = {
-      basePath,        // UNC path for file operations
-      localPath,       // Local path for index lookup
-      machine,         // Machine name for workspace resolution
-      allowedShares,   // Security: allowed UNC shares
+      basePath: uncPath,        // UNC path for file operations
+      workspace,       // Workspace name for validation and search
       maxTokens,       // Token budget
       maxIterations: this.maxIterations
     };
@@ -459,6 +559,16 @@ run_local_agent(
         return { success: true, result: toolCall.args.summary, iterations: iteration, tokensUsed };
       }
 
+      // Report what the agent is doing
+      const toolDesc = toolCall.tool === 'read_file' ? `Reading ${toolCall.args.path}` :
+                       toolCall.tool === 'search_semantic' ? `Searching: ${toolCall.args.query}` :
+                       toolCall.tool === 'search_keyword' ? `Finding: ${toolCall.args.pattern}` :
+                       toolCall.tool === 'list_dir' ? `Listing ${toolCall.args.path || 'root'}` :
+                       toolCall.tool === 'grep' ? `Grepping: ${toolCall.args.pattern}` :
+                       toolCall.tool === 'find_files' ? `Finding files: ${toolCall.args.glob}` :
+                       `Using ${toolCall.tool}`;
+      this.sendProgress(20 + (iteration / ctx.maxIterations) * 70, 100, `${toolDesc} (${tokensUsed}/${ctx.maxTokens} tokens)`);
+
       // 3d: Execute tool (pure function - all context in params)
       const { result, tokens } = await this._executeTool(toolCall, tools, ctx);
       tokensUsed += tokens;
@@ -479,11 +589,11 @@ run_local_agent(
     return { error: 'MAX_ITERATIONS_REACHED', iterations: ctx.maxIterations };
   }
 
-  // Pure function: localPath + machine → Tool[]
+  // Pure function: workspace → Tool[]
   async _selectTools(ctx) {
     if (!this.codeSearch) return this._getBasicTools();
     
-    const stats = await this.codeSearch.callTool('get_index_stats', { path: ctx.localPath, machine: ctx.machine });
+    const stats = await this.codeSearch.callTool('get_index_stats', { workspace: ctx.workspace });
     const parsed = JSON.parse(stats.content?.[0]?.text || '{}');
     return parsed.exists ? this._getSearchTools() : this._getBasicTools();
   }
@@ -586,10 +696,12 @@ ${toolsJson}
 Rules:
 1. Each response MUST be valid JSON: {"tool": "name", "args": {...}}
 2. Use search tools first, read files only when needed
-3. Call "done" when you have the answer
-4. Stay focused on the user's specific question
+3. When reading files, use the FULL path from search results INCLUDING the workspace prefix (e.g., "BADKID-DEV:mcp_server/src/file.js")
+4. Call "done" when you have the answer
+5. Stay focused on the user's specific question
 
-Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
+Example search: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}
+Example read: {"tool": "read_file", "args": {"path": "BADKID-DEV:mcp_server/src/http-server.js"}}`;
   }
 
   _parseToolCall(content) {
@@ -646,7 +758,16 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
         return { result, tokens: 0 };
       }
       case 'read_file': {
-        const { result, tokens } = await this._readFile(args.path, args.startLine, args.endLine, ctx);
+        // Strip workspace prefix if present (search returns "WORKSPACE:path", but we need just "path")
+        let filePath = args.path;
+        if (filePath && filePath.includes(':')) {
+          // Check if this is a file ID format (workspace:path)
+          const parts = filePath.split(':');
+          if (parts.length === 2 && parts[0] === ctx.workspace) {
+            filePath = parts[1];
+          }
+        }
+        const { result, tokens } = await this._readFile(filePath, args.startLine, args.endLine, ctx);
         return { result, tokens };
       }
       case 'grep': {
@@ -668,7 +789,7 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
       return { error: 'Code search not available' };
     }
 
-    const searchArgs = { ...args, path: ctx.localPath, machine: ctx.machine };
+    const searchArgs = { ...args, workspace: ctx.workspace };
     const result = await this.codeSearch.callTool(`search_${tool.split('_')[1]}`, searchArgs);
     return JSON.parse(result.content[0].text);
   }
@@ -676,7 +797,7 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
   // Pure function: (relativePath, ctx) → result
   async _listDir(relativePath, ctx) {
     const fullPath = path.join(ctx.basePath, relativePath || '.');
-    await this.workspace.validateResolvedPath(fullPath, ctx.allowedShares);
+    await this.workspace.validatePath(fullPath, ctx.workspace);
 
     const entries = await fs.readdir(fullPath, { withFileTypes: true });
     return {
@@ -689,7 +810,7 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
   // Pure function: (relativePath, startLine, endLine, ctx) → { result, tokens }
   async _readFile(relativePath, startLine, endLine, ctx) {
     const fullPath = path.join(ctx.basePath, relativePath);
-    await this.workspace.validateResolvedPath(fullPath, ctx.allowedShares);
+    await this.workspace.validatePath(fullPath, ctx.workspace);
 
     const content = await fs.readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
@@ -712,7 +833,7 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
   // Pure function: (pattern, relativePath, isRegex, ctx) → result
   async _grep(pattern, relativePath, isRegex, ctx) {
     const searchPath = relativePath ? path.join(ctx.basePath, relativePath) : ctx.basePath;
-    await this.workspace.validateResolvedPath(searchPath, ctx.allowedShares);
+    await this.workspace.validatePath(searchPath, ctx.workspace);
 
     const matches = [];
     const regex = isRegex ? new RegExp(pattern, 'gi') : null;
@@ -770,7 +891,7 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
 
   // Pure function: (globPattern, ctx) → result
   async _findFiles(globPattern, ctx) {
-    await this.workspace.validateResolvedPath(ctx.basePath, ctx.allowedShares);
+    await this.workspace.validatePath(ctx.basePath, ctx.workspace);
 
     const matches = [];
     const regex = this._globToRegex(globPattern);
@@ -812,5 +933,129 @@ Example: {"tool": "search_keyword", "args": {"pattern": "SharedArrayBuffer"}}`;
   _globToRegex(glob) {
     const pattern = glob.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.');
     return new RegExp(`^${pattern}$`, 'i');
+  }
+
+  // Helper: Find function in code (simple regex-based)
+  _findFunction(content, functionName) {
+    // Try different function patterns - escape special regex chars in function name
+    const escapedName = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patterns = [
+      new RegExp(`\\b(async\\s+)?function\\s+${escapedName}\\s*\\([^)]*\\)\\s*\\{`, 'g'),
+      new RegExp(`(const|let|var)\\s+${escapedName}\\s*=\\s*(async\\s+)?\\([^)]*\\)\\s*=>`, 'g'),
+      new RegExp(`\\s+(async\\s+)?${escapedName}\\s*\\([^)]*\\)\\s*\\{`, 'g')  // class methods with leading whitespace
+    ];
+
+    for (const pattern of patterns) {
+      const match = pattern.exec(content);
+      if (match) {
+        const startPos = match.index;
+        
+        // Find matching closing brace
+        let depth = 0;
+        let inString = false;
+        let stringChar = null;
+        let endPos = startPos;
+        
+        for (let i = startPos; i < content.length; i++) {
+          const char = content[i];
+          const prevChar = i > 0 ? content[i - 1] : '';
+          
+          if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\\\') {
+            if (!inString) {
+              inString = true;
+              stringChar = char;
+            } else if (char === stringChar) {
+              inString = false;
+              stringChar = null;
+            }
+          }
+          
+          if (!inString) {
+            if (char === '{') depth++;
+            if (char === '}') {
+              depth--;
+              if (depth === 0) {
+                endPos = i + 1;
+                break;
+              }
+            }
+          }
+        }
+        
+        if (endPos > startPos) {
+          const code = content.substring(startPos, endPos);
+          const beforeCode = content.substring(0, startPos);
+          const linesBefore = beforeCode.split('\\n').length;
+          const codeLines = code.split('\\n').length;
+          
+          return {
+            name: functionName,
+            code,
+            range: { start: linesBefore, end: linesBefore + codeLines - 1 }
+          };
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  // Helper: Extract function names from code
+  _extractFunctionNames(content) {
+    const names = new Set();
+    
+    // Function declarations
+    const funcDecl = /(?:async\s+)?function\s+(\w+)\s*\(/g;
+    let match;
+    while ((match = funcDecl.exec(content)) !== null) {
+      names.add(match[1]);
+    }
+    
+    // Arrow functions and methods
+    const arrowFunc = /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\([^)]*\)\s*=>/g;
+    while ((match = arrowFunc.exec(content)) !== null) {
+      names.add(match[1]);
+    }
+    
+    // Class methods
+    const methods = /^\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{/gm;
+    while ((match = methods.exec(content)) !== null) {
+      if (!['if', 'for', 'while', 'switch', 'catch'].includes(match[1])) {
+        names.add(match[1]);
+      }
+    }
+    
+    return Array.from(names);
+  }
+
+  // Helper: Extract dependencies from code
+  _extractDependencies(targetCode, fullFileContent) {
+    const deps = {
+      imports: [],
+      functionCalls: []
+    };
+    
+    // Extract imports from full file
+    const importRegex = /import\s+(?:{([^}]+)}|(\w+))\s+from\s+['"]([^'"]+)['"]/g;
+    let match;
+    while ((match = importRegex.exec(fullFileContent)) !== null) {
+      const imported = match[1] ? match[1].split(',').map(s => s.trim()) : [match[2]];
+      deps.imports.push(...imported);
+    }
+    
+    // Extract function calls from target code
+    const functionCalls = new Set();
+    const callRegex = /\b(\w+)\s*\(/g;
+    while ((match = callRegex.exec(targetCode)) !== null) {
+      const funcName = match[1];
+      // Skip common keywords and built-ins
+      if (!['if', 'for', 'while', 'switch', 'catch', 'return', 'throw', 'new', 'typeof', 'instanceof', 'console', 'setTimeout', 'setInterval', 'parseInt', 'parseFloat', 'JSON', 'Math', 'Object', 'Array', 'String', 'Number', 'Boolean', 'Date', 'Promise', 'Set', 'Map'].includes(funcName)) {
+        functionCalls.add(funcName);
+      }
+    }
+    
+    deps.functionCalls = Array.from(functionCalls);
+    
+    return deps;
   }
 }

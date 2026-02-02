@@ -1,8 +1,8 @@
 {
   "workspaces": {
     "COOLKID-Work": "\\\\COOLKID\\Work",
-    "BADKID-DEV": "\\\\BADKID\\Stuff\\DEV",
-    "BADKID-SRV": "\\\\BADKID\\Stuff\\SRV"
+    "BADKID-DEV": "d:\\DEV",
+    "BADKID-SRV": "d:\\SRV"
   },
   "servers": {
     "lm-studio": {

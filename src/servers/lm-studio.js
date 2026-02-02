@@ -120,18 +120,13 @@ export class LMStudioServer {
   }
 
   handlesTool(name) {
-    return ['query_model', 'get_second_opinion', 'get_loaded_model', 'list_available_models'].includes(name);
+    return ['query_model', 'get_loaded_model', 'list_available_models'].includes(name);
   }
 
   async callTool(name, args) {
     try {
       if (name === 'query_model') {
         return await this._query(args.prompt, args.model, args.maxTokens);
-      }
-      
-      if (name === 'get_second_opinion') {
-        const prompt = args.context ? `${args.context}\n\nQuestion: ${args.question}` : args.question;
-        return await this._query(prompt, args.model, args.maxTokens, this.config.systemPrompt);
       }
       
       if (name === 'list_available_models') {

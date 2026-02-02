@@ -2,6 +2,9 @@ import puppeteer from 'puppeteer';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { ScraperRegistry } from '../scrapers/index.js';
+import { searchGoogle } from '../scrapers/google-adapter.js';
+import { searchDuckDuckGo } from '../scrapers/duckduckgo-adapter.js';
+import { closeSharedPool } from '../scrapers/browser-pool.js';
 
 export class WebResearchServer {
   constructor(config, llmRouter = null) {
@@ -314,7 +317,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async searchMultipleEngines(query, engines, signal) {
-    const searches = engines.map(engine => this.searchEngine(engine, query, signal));
+    const searches = engines.map(engine => this.searchEngineAdapter(engine, query));
     const results = await Promise.allSettled(searches);
     
     const allResults = [];
@@ -338,6 +341,18 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     console.error(`   Total after dedup: ${deduped.length} unique sources`);
     
     return deduped;
+  }
+
+  async searchEngineAdapter(engine, query) {
+    // Use new browser pool adapters for supported engines
+    if (engine === 'google') {
+      return await searchGoogle(query, { headless: true });
+    } else if (engine === 'duckduckgo') {
+      return await searchDuckDuckGo(query, { headless: true });
+    } else {
+      // Fallback to old method for unsupported engines
+      return await this.searchEngine(engine, query);
+    }
   }
 
   async searchEngine(engine, query, signal) {
@@ -378,14 +393,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       }
 
       await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      
-      // Debug: check what we actually got
-      if (engine === 'google') {
-        const pageTitle = await page.title();
-        const bodyText = await page.evaluate(() => document.body.textContent.substring(0, 500));
-        console.error(`   [Google Debug] Title: ${pageTitle}`);
-        console.error(`   [Google Debug] Body preview: ${bodyText.substring(0, 100)}...`);
-      }
       
       const results = await page.evaluate((rs, ls, ts) => {
         const items = [];
@@ -485,18 +492,31 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       });
     }
     
-    const prompt = `You are a strict JSON-only responder.
+    const prompt = `You are a strict JSON-only responder. Your task is to rank URLs by relevance and authority for the query "${query}".
 
-Rank the ${filtered.length} URLs for the query "${query}":
+**High-Priority Sources (rank these FIRST):**
+1. GitHub issues/pull requests (github.com/*/issues, github.com/*/pull) - for bugs, errors, troubleshooting
+2. StackOverflow answers (stackoverflow.com/questions) - for technical problems
+3. Official documentation (docs.*, */documentation/*, */api/*, */reference/*)
+4. Wikipedia (wikipedia.org, *.wikipedia.org) - for general knowledge
+5. Academic papers (arxiv.org, *.edu, *.ac.uk, scholar.google.com)
+6. Technical blogs from known sources (github.blog, stackoverflow.blog)
 
-${filtered.map((r, i) => `${i+1}. ${r.url}`).join('\n')}
+**Medium-Priority:**
+7. GitHub repositories (github.com/*/tree, github.com/*/*) - for code examples
+8. Technical forums (reddit.com/r/*, discourse.*, forum.*)
+9. Developer blogs (dev.to, medium.com, hashnode.com)
 
-Prioritize: docs > papers > tutorials > github > stackoverflow > blogs
-Reject: marketing, news, homepages, app stores
+**Lower-Priority:**
+10. News sites, marketing pages, product homepages
 
-Output ONLY a JSON array of the top ${Math.min(maxPages, filtered.length)} numbers, nothing else, no explanation, no markdown.
+**Reject entirely:** App stores, social media posts, paywalls, spam
 
-Example valid output: [3, 7, 1, 9, 2, 4, 8, 6, 10, 5]
+URLs to rank:
+${filtered.map((r, i) => `${i+1}. ${r.url} - ${r.title.substring(0, 80)}`).join('\n')}
+
+Output ONLY a JSON array of the top ${Math.min(maxPages, filtered.length)} numbers (1-indexed), nothing else.
+Example: [3, 7, 1, 9, 2]
 
 Array:`;
 
@@ -849,7 +869,6 @@ Return JSON only:
     }
     
     // Fallback: high confidence, no follow-up (iteration stops)
-    this.log.warn('Failed to parse evaluation JSON, stopping iteration');
     return { confidence: 85, gaps: [], contradictions: [], followUpQuery: null };
   }
 
