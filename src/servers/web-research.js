@@ -4,11 +4,11 @@ import { JSDOM } from 'jsdom';
 import { ScraperRegistry } from '../scrapers/index.js';
 import { searchGoogle } from '../scrapers/google-adapter.js';
 import { searchDuckDuckGo } from '../scrapers/duckduckgo-adapter.js';
-import { closeSharedPool } from '../scrapers/browser-pool.js';
 
 export class WebResearchServer {
-  constructor(config, llmRouter = null) {
+  constructor(config, llmRouter = null, browserServer = null) {
     this.router = llmRouter;
+    this.browserServer = browserServer; // Shared browser instance
     this.synthesisProvider = config.synthesisProvider || null; // null = use task default
     this.selectionProvider = config.selectionProvider || null;
     this.scraperRegistry = new ScraperRegistry();
@@ -37,7 +37,11 @@ export class WebResearchServer {
 
   sendProgress(progress, total, message) {
     if (this.progressCallback) {
-      this.progressCallback(progress, total, message);
+      try {
+        this.progressCallback(progress, total, message);
+      } catch {
+        // Client disconnected, ignore
+      }
     }
   }
 
@@ -62,64 +66,32 @@ Consider:
 4. Alternative phrasings (how would different experts phrase this?)
 5. Specificity levels (one broad query, one narrow query, one focused on examples/tutorials)
 
-Generate 3-5 search query variants optimized for Google/DuckDuckGo/Bing.
+Generate 3-5 search query variants optimized for Google/DuckDuckGo/Bing.`;
 
-Return ONLY valid JSON (no markdown, no code blocks, no explanation):
-{"queries":[{"query":"exact search string","reasoning":"why this variant"}],"recommended":"query string you recommend most"}`
+    const schema = {
+      type: 'object',
+      properties: {
+        queries: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              reasoning: { type: 'string' }
+            },
+            required: ['query', 'reasoning']
+          }
+        },
+        recommended: { type: 'string' }
+      },
+      required: ['queries', 'recommended']
+    };
 
     try {
-      const response = await this.queryLLM(prompt, null, 1500);
+      const parsed = await this.queryLLM(prompt, null, 1500, schema);
       
-      console.error(`[DEBUG] LLM response length: ${response.length} chars`);
-      
-      // Strategy: Find all potential JSON objects, validate them, take the last valid one
-      // This handles thinking tags, markdown blocks, and other preambles
-      
-      let cleaned = response
-        .replace(/```json\s*/g, '')
-        .replace(/```\s*/g, '')
-        .trim();
-      
-      // Find all {...} blocks
-      const jsonCandidates = [];
-      let depth = 0;
-      let start = -1;
-      
-      for (let i = 0; i < cleaned.length; i++) {
-        if (cleaned[i] === '{') {
-          if (depth === 0) start = i;
-          depth++;
-        } else if (cleaned[i] === '}') {
-          depth--;
-          if (depth === 0 && start >= 0) {
-            jsonCandidates.push(cleaned.substring(start, i + 1));
-            start = -1;
-          }
-        }
-      }
-      
-      console.error(`[DEBUG] Found ${jsonCandidates.length} JSON candidates`);
-      
-      // Try to parse candidates in reverse order (last one first)
-      let parsed = null;
-      for (let i = jsonCandidates.length - 1; i >= 0; i--) {
-        try {
-          const candidate = jsonCandidates[i];
-          const obj = JSON.parse(candidate);
-          
-          // Validate it has the right structure
-          if (obj.queries && Array.isArray(obj.queries) && obj.recommended) {
-            parsed = obj;
-            console.error(`[DEBUG] Successfully parsed candidate ${i + 1}`);
-            break;
-          }
-        } catch (e) {
-          // Try next candidate
-        }
-      }
-      
-      if (!parsed) {
-        throw new Error('No valid JSON with correct structure found');
+      if (!parsed?.queries || !Array.isArray(parsed.queries) || !parsed.recommended) {
+        throw new Error('Invalid response structure');
       }
       
       // Format for user review
@@ -177,8 +149,10 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
 
   async callTool(name, args) {
     // Backpocket: prepare_research_query available via prepareQuery() but not exposed
+    console.error('[WebResearch] callTool entered');
     
     const { query, max_pages = this.maxPages, engines = this.searchEngines } = args;
+    console.error(`[WebResearch] query=${query}, max_pages=${max_pages}, engines=${engines}`);
     
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -344,11 +318,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async searchEngineAdapter(engine, query) {
-    // Use new browser pool adapters for supported engines
+    // Use browser server for supported engines
     if (engine === 'google') {
-      return await searchGoogle(query, { headless: true });
+      return await searchGoogle(query, this.browserServer);
     } else if (engine === 'duckduckgo') {
-      return await searchDuckDuckGo(query, { headless: true });
+      return await searchDuckDuckGo(query, this.browserServer);
     } else {
       // Fallback to old method for unsupported engines
       return await this.searchEngine(engine, query);
@@ -492,7 +466,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       });
     }
     
-    const prompt = `You are a strict JSON-only responder. Your task is to rank URLs by relevance and authority for the query "${query}".
+    const prompt = `Rank URLs by relevance and authority for the query "${query}".
 
 **High-Priority Sources (rank these FIRST):**
 1. GitHub issues/pull requests (github.com/*/issues, github.com/*/pull) - for bugs, errors, troubleshooting
@@ -515,43 +489,39 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
 URLs to rank:
 ${filtered.map((r, i) => `${i+1}. ${r.url} - ${r.title.substring(0, 80)}`).join('\n')}
 
-Output ONLY a JSON array of the top ${Math.min(maxPages, filtered.length)} numbers (1-indexed), nothing else.
-Example: [3, 7, 1, 9, 2]
+Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in order of relevance.`;
 
-Array:`;
-
+    const schema = {
+      type: 'object',
+      properties: {
+        indices: {
+          type: 'array',
+          items: { type: 'number' }
+        }
+      },
+      required: ['indices']
+    };
 
     try {
-      const response = await this.queryLLM(prompt, signal);
+      const response = await this.queryLLM(prompt, signal, 2000, schema);
+      const indices = response?.indices;
       
-      console.error(`   [DEBUG] LLM raw response: ${response.substring(0, 300)}`);
-      
-      // Extract JSON array using regex
-      const arrayMatch = response.match(/\[\s*\d+(?:\s*,\s*\d+)*\s*\]/);
-      
-      if (arrayMatch) {
-        const indices = JSON.parse(arrayMatch[0]);
-        console.error(`   [DEBUG] Parsed array: ${JSON.stringify(indices)}`);
+      if (Array.isArray(indices) && indices.length > 0) {
+        const valid = [];
+        for (const item of indices) {
+          if (typeof item === 'number' && item >= 1 && item <= filtered.length) {
+            valid.push(filtered[item - 1].url);
+          }
+        }
         
-        if (Array.isArray(indices) && indices.length > 0) {
-          const valid = [];
-          
-          for (const item of indices) {
-            if (typeof item === 'number' && item >= 1 && item <= filtered.length) {
-              valid.push(filtered[item - 1].url);
-            }
-          }
-          
-          if (valid.length > 0) {
-            console.error(`   ✓ LLM selected ${valid.length} sources`);
-            return valid.slice(0, maxPages);
-          }
+        if (valid.length > 0) {
+          console.error(`   ✓ LLM selected ${valid.length} sources`);
+          return valid.slice(0, maxPages);
         }
       }
       
-      throw new Error('No valid JSON array found in LLM response');
+      throw new Error('No valid indices in response');
     } catch (err) {
-      // Fallback: take top results if LLM fails
       console.error(`   ⚠️ LLM selection failed (${err.message}), using top filtered results`);
       return filtered.slice(0, maxPages).map(r => r.url);
     }
@@ -591,135 +561,77 @@ Array:`;
   }
 
   async scrapePageIsolated(url, signal) {
-    let browser = null;
-    let killTimer = null;
+    if (!this.browserServer) {
+      throw new Error('Browser server not available for scraping');
+    }
+    
+    const pageHandle = await this.browserServer.getPage();
+    const { page, markUsed, close } = pageHandle;
     
     try {
-      browser = await puppeteer.launch({ 
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-web-security',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--ignore-certificate-errors',
-          '--ignore-certificate-errors-spki-list',
-          '--disable-dev-shm-usage',
-          '--disable-gpu'
-        ]
-      });
-      
-      // Hard kill browser if timeout exceeded
-      killTimer = setTimeout(async () => {
-        console.error(`   ⚠️ Force-killing browser for ${url.substring(0, 60)}...`);
-        if (browser && browser.process()) {
-          const proc = browser.process();
-          try {
-            // Windows-compatible force kill
-            if (process.platform === 'win32') {
-              const { execSync } = await import('child_process');
-              execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
-            } else {
-              proc.kill('SIGKILL');
-            }
-          } catch (e) {
-            // Already dead
-          }
-        }
-      }, this.limits.scrapeTimeout + 1000);
-      
-      const result = await this.scrapePage(browser, url, signal);
-      clearTimeout(killTimer);
+      const result = await this.scrapePage(page, url, signal);
+      markUsed(); // Mark for lingering cleanup
       return result;
-      
     } catch (err) {
       console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
       return null;
     } finally {
-      if (killTimer) clearTimeout(killTimer);
-      if (browser) {
-        try {
-          const closePromise = browser.close();
-          const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2000));
-          await Promise.race([closePromise, timeoutPromise]);
-          
-          // If still running after timeout, force kill (Windows-compatible)
-          if (browser.process() && !browser.process().killed) {
-            const proc = browser.process();
-            if (process.platform === 'win32') {
-              const { execSync } = await import('child_process');
-              try {
-                execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
-              } catch (e) {}
-            } else {
-              proc.kill('SIGKILL');
-            }
-          }
-        } catch (e) {
-          // Force kill on any error
-          try {
-            if (browser.process() && !browser.process().killed) {
-              const proc = browser.process();
-              if (process.platform === 'win32') {
-                const { execSync } = await import('child_process');
-                execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
-              } else {
-                proc.kill('SIGKILL');
-              }
-            }
-          } catch (killErr) {
-            // Already dead, ignore
-          }
-        }
-      }
+      close(); // Release back to browser server for cleanup
     }
   }
 
-  async scrapePage(browser, url, signal) {
-    const page = await browser.newPage();
+  async scrapePage(page, url, signal) {
+    let html = null;
     
     try {
-      // Wrap entire scrape operation in timeout promise
-      const scrapePromise = (async () => {
-        await this.setupStealthMode(page);
-        
-        // Random delay before navigation (100-500ms)
-        await this.randomDelay(100, 500);
-        
-        // Use site-specific scraper if available
-        const html = await this.scraperRegistry.scrapeUrl(url, page);
-        
-        // Extract clean content using Readability
-        const extracted = this.extractReadableContent(html, url);
-        
-        if (!extracted) {
-          console.error(`   ✗ ${url.substring(0, 60)}... (Readability failed)`);
-          return null;
-        }
-        
-        console.error(`   ✓ ${url.substring(0, 60)}...`);
-        
-        return { 
-          url, 
-          content: extracted.textContent,
-          title: extracted.title,
-          excerpt: extracted.excerpt,
-          sections: extracted.sections
-        };
-      })();
+      await this.setupStealthMode(page);
       
-      // Race between scrape and timeout
+      // Random delay before navigation (100-500ms)
+      await this.randomDelay(100, 500);
+      
+      // Try to scrape with timeout, but capture partial content on timeout
+      const scrapePromise = this.scraperRegistry.scrapeUrl(url, page);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Scrape timeout')), this.limits.scrapeTimeout)
       );
       
-      return await Promise.race([scrapePromise, timeoutPromise]);
+      try {
+        html = await Promise.race([scrapePromise, timeoutPromise]);
+      } catch (err) {
+        if (err.message === 'Scrape timeout') {
+          // Timeout - grab whatever HTML is currently loaded
+          console.error(`   ⏱️  ${url.substring(0, 60)}... (timeout, using partial content)`);
+          html = await page.content().catch(() => null);
+        } else {
+          throw err;
+        }
+      }
+      
+      if (!html) {
+        console.error(`   ✗ ${url.substring(0, 60)}... (no content)`);
+        return null;
+      }
+      
+      // Extract clean content using Readability
+      const extracted = this.extractReadableContent(html, url);
+      
+      if (!extracted) {
+        console.error(`   ✗ ${url.substring(0, 60)}... (Readability failed)`);
+        return null;
+      }
+      
+      console.error(`   ✓ ${url.substring(0, 60)}...`);
+      
+      return { 
+        url, 
+        content: extracted.textContent,
+        title: extracted.title,
+        excerpt: extracted.excerpt,
+        sections: extracted.sections
+      };
     } catch (err) {
       console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
       return null;
-    } finally {
-      await page.close().catch(() => {});
     }
   }
   
@@ -815,7 +727,7 @@ Tasks:
 
 Format as clean markdown. Be concise and factual.`;
 
-    const synthesis = await this.queryLLM(prompt, signal, 12288);
+    const synthesis = await this.queryLLM(prompt, signal, 1024);
     return synthesis;
   }
 
@@ -829,47 +741,30 @@ Critically evaluate this synthesis:
 1. What is your confidence this answers the query completely? (0-100)
 2. What important questions remain unanswered?
 3. Are there any contradictions or gaps in the information?
-4. What specific follow-up query would fill the biggest gap?
+4. What specific follow-up query would fill the biggest gap?`;
 
-Return JSON only:
-{
-  "confidence": <number 0-100>,
-  "gaps": [<string>, ...],
-  "contradictions": [<string>, ...],
-  "followUpQuery": "<string or null>"
-}`;
+    const schema = {
+      type: 'object',
+      properties: {
+        confidence: { type: 'number' },
+        gaps: { type: 'array', items: { type: 'string' } },
+        contradictions: { type: 'array', items: { type: 'string' } },
+        followUpQuery: { type: 'string', nullable: true }
+      },
+      required: ['confidence', 'gaps', 'contradictions', 'followUpQuery']
+    };
 
-    const response = await this.queryLLM(prompt, signal, 1024);
-    
-    // Extract JSON using brace-counting (same robust approach as selectBestSources)
-    const candidates = [];
-    let depth = 0, start = -1;
-    
-    for (let i = 0; i < response.length; i++) {
-      if (response[i] === '{') {
-        if (depth === 0) start = i;
-        depth++;
-      } else if (response[i] === '}') {
-        depth--;
-        if (depth === 0 && start >= 0) {
-          candidates.push(response.substring(start, i + 1));
-          start = -1;
-        }
+    try {
+      const response = await this.queryLLM(prompt, signal, 1024, schema);
+      
+      if (typeof response?.confidence === 'number') {
+        return response;
       }
+      throw new Error('Invalid evaluation response');
+    } catch {
+      // Fallback: high confidence, no follow-up (iteration stops)
+      return { confidence: 85, gaps: [], contradictions: [], followUpQuery: null };
     }
-    
-    // Try candidates in reverse (last is usually the valid one)
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      try {
-        const parsed = JSON.parse(candidates[i]);
-        if (typeof parsed.confidence === 'number') {
-          return parsed;
-        }
-      } catch {}
-    }
-    
-    // Fallback: high confidence, no follow-up (iteration stops)
-    return { confidence: 85, gaps: [], contradictions: [], followUpQuery: null };
   }
 
   async mergeSyntheses(originalQuery, firstSynthesis, followUpQuery, secondSynthesis, signal) {
@@ -893,23 +788,33 @@ Return the merged synthesis in markdown.`;
     return await this.queryLLM(prompt, signal, 16384);
   }
 
-  async queryLLM(prompt, signal, maxTokens = 1000) {
+  async queryLLM(prompt, signal, maxTokens = 1000, responseFormat = null) {
     if (!this.router) {
       throw new Error('LLM router not configured for web research');
     }
 
+    console.error(`[WebResearch.queryLLM] router exists: ${!!this.router}, provider: ${this.synthesisProvider}, maxTokens: ${maxTokens}`);
+    console.error(`[WebResearch.queryLLM] prompt length: ${prompt.length}, responseFormat: ${!!responseFormat}`);
+    
     try {
-      // Use synthesis provider (or task default)
+      console.error(`[WebResearch.queryLLM] About to call router.predict`);
       const response = await this.router.predict({
         prompt,
-        provider: this.synthesisProvider,
-        maxTokens,
-        temperature: 0.3,
-        taskType: 'synthesis'
+        responseFormat
       });
       
+      console.error(`[WebResearch.queryLLM] router.predict succeeded`);
+      // If responseFormat was specified, router returns JSON string - parse it
+      if (responseFormat) {
+        try {
+          return JSON.parse(response);
+        } catch {
+          return response; // Fallback to raw if parse fails
+        }
+      }
       return response;
     } catch (err) {
+      console.error(`[WebResearch.queryLLM] router.predict failed: ${err.message}`);
       throw new Error(`LLM query failed: ${err.message}`);
     }
   }

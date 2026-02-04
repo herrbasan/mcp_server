@@ -4,20 +4,23 @@
     "BADKID-DEV": "d:\\DEV",
     "BADKID-SRV": "d:\\SRV"
   },
+  "maintenance": {
+    "enabled": true,
+    "indexRefreshIntervalMs": 900000,
+    "_comment": "indexRefreshIntervalMs: 60000 = 1 minute, 300000 = 5 minutes, 900000 = 15 minutes, 3600000 = 1 hour, 86400000 = 24 hours"
+  },
   "servers": {
-    "lm-studio": {
-      "_taskType": "query",
+    "llm": {
       "enabled": true,
       "systemPrompt": "You provide concise second opinions on development decisions. Focus on performance, maintainability, and best practices.",
       "temperature": 0.7
     },
     "web-research": {
-      "_taskTypes": ["analysis", "synthesis"],
       "enabled": true,
       "maxPages": 10,
       "maxDepth": 2,
       "timeout": 180000,
-      "searchEngines": ["duckduckgo", "bing"],
+      "searchEngines": ["google"],
       "description": "Multi-source web research with local LLM synthesis"
     },
     "memory": {
@@ -32,10 +35,10 @@
       "maxContentSize": 2097152,
       "idleTimeout": 300000,
       "viewport": { "width": 1280, "height": 800 },
+      "userDataDir": "d:\\DEV\\mcp_server\\data\\chrome-profile",
       "description": "Direct browser automation for LLMs - persistent browser with 5min idle timeout"
     },
     "local-agent": {
-      "_taskType": "agent",
       "enabled": true,
       "maxTokenBudget": 50000,
       "maxIterations": 20,
@@ -51,28 +54,13 @@
   },
   "llm": {
     "defaultProvider": "lmstudio",
-    "maxTokens": 32768,
-    "taskDefaults": {
-      "embedding": "lmstudio",
-      "analysis": "lmstudio",
-      "synthesis": "lmstudio",
-      "query": "lmstudio",
-      "agent": "lmstudio"
-    },
-    "_taskMapping": {
-      "_comment": "Task defaults are used by the following servers:",
-      "embedding": ["memory: embeddings for semantic search", "code-search: file embeddings"],
-      "analysis": ["web-research: source selection and credibility analysis"],
-      "synthesis": ["web-research: multi-source content synthesis"],
-      "query": ["lm-studio: query_model and get_second_opinion tools"],
-      "agent": ["local-agent: autonomous code analysis with tool calling"]
-    },
+    "embeddingProvider": "lmstudio",
     "providers": {
       "lmstudio": {
         "enabled": true,
         "type": "lmstudio",
         "endpoint": "${LM_STUDIO_ENDPOINT}",
-        "model": "nvidia/nemotron-3-nano",
+        "model": "${LM_STUDIO_MODEL}",
         "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
         "temperature": 0.7,
         "stripThinking": true,
@@ -84,8 +72,8 @@
       "ollama": {
         "enabled": true,
         "type": "ollama",
-        "endpoint": "http://192.168.0.145:11434",
-        "model": "gemma3:12b",
+        "endpoint": "${OLLAMA_ENDPOINT}",
+        "model": "${OLLAMA_MODEL}",
         "embeddingModel": "nomic-embed-text-v2-moe",
         "temperature": 0.7
       },
@@ -93,7 +81,7 @@
         "enabled": true,
         "type": "gemini",
         "apiKey": "${GEMINI_API_KEY}",
-        "model": "gemini-2.0-flash-exp",
+        "model": "${GEMINI_MODEL}",
         "embeddingModel": "text-embedding-004",
         "temperature": 0.7
       },
