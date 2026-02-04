@@ -1,12 +1,10 @@
-// DuckDuckGo search adapter using browser pool
-import { getSharedPool } from './browser-pool.js';
+// DuckDuckGo search adapter using browser server
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function pasteQuery(page, query) {
-  // Simulate Ctrl+V paste (instant)
   await page.evaluate((q) => {
     const input = document.querySelector('input[name="q"]');
     if (input) {
@@ -14,91 +12,62 @@ async function pasteQuery(page, query) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }
   }, query);
-  
   await sleep(100);
 }
 
 async function extractSearchResults(page) {
-  const results = await page.evaluate(() => {
+  return await page.evaluate(() => {
     const items = [];
-    
-    // DuckDuckGo result selectors
     const resultElements = document.querySelectorAll('[data-testid="result"]');
     
     for (const el of resultElements) {
-      // Title and URL
       const linkEl = el.querySelector('a[data-testid="result-title-a"]');
       const snippetEl = el.querySelector('[data-result="snippet"]');
       
-      if (linkEl) {
-        const url = linkEl.href;
-        
-        // Skip DDG's own links
-        if (url.includes('duckduckgo.com')) {
-          continue;
-        }
-        
+      if (linkEl && !linkEl.href.includes('duckduckgo.com')) {
         items.push({
           title: linkEl.textContent.trim(),
-          url: url,
+          url: linkEl.href,
           snippet: snippetEl ? snippetEl.textContent.trim() : ''
         });
       }
     }
-    
     return items;
   });
-  
-  return results;
 }
 
-export async function searchDuckDuckGo(query, options = {}) {
-  const pool = getSharedPool({
-    headless: options.headless !== false,
-    devtools: options.devtools || false,
-    userDataDir: options.userDataDir || null // DDG doesn't need login
-  });
+export async function searchDuckDuckGo(query, browserServer) {
+  if (!browserServer) {
+    throw new Error('browserServer is required for searchDuckDuckGo');
+  }
   
-  const pageInfo = await pool.createPage();
-  const { page } = pageInfo;
+  const pageHandle = await browserServer.getPage();
+  const { page, markUsed } = pageHandle;
   
   try {
-    // Navigate to DuckDuckGo
     await page.goto('https://duckduckgo.com', { 
       waitUntil: 'networkidle2', 
       timeout: 30000 
     });
     await sleep(200);
     
-    // Click search box
-    const searchBox = await page.waitForSelector('input[name="q"]', { 
-      timeout: 10000 
-    });
+    const searchBox = await page.waitForSelector('input[name="q"]', { timeout: 10000 });
     await searchBox.click({ clickCount: 3 });
     await sleep(50);
     
-    // Paste query
     await pasteQuery(page, query);
     
-    // Submit
+    // Focus input and submit
+    await searchBox.focus();
     await page.keyboard.press('Enter');
-    await page.waitForNavigation({ 
-      waitUntil: 'networkidle2', 
-      timeout: 30000 
-    });
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
     
-    // Extract results
     const results = await extractSearchResults(page);
-    
-    // Mark page as used - will linger then close
-    pool.markUsed(pageInfo);
-    
+    markUsed();
     return results;
     
   } catch (error) {
-    // Close failed page immediately
     await page.close().catch(() => {});
-    pool.pages = pool.pages.filter(p => p !== pageInfo);
     throw error;
   }
 }

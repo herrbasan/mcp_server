@@ -19,10 +19,11 @@ const MIME_TYPES = {
 };
 
 export class WebServer {
-  constructor(config, memoryServer, lmStudioServer) {
+  constructor(config, memoryServer, llmServer, codeSearchServer) {
     this.config = config;
     this.memory = memoryServer;
-    this.lmStudio = lmStudioServer;
+    this.llm = llmServer;
+    this.codeSearch = codeSearchServer;
   }
 
   handleStatic(req, res) {
@@ -31,7 +32,7 @@ export class WebServer {
     
     // Serve from nui_wc2 if path starts with /nui_wc2/
     if (filePath.startsWith('/nui_wc2/')) {
-      fullPath = join(__dirname, '..', '..', filePath);
+      fullPath = join(__dirname, 'public', filePath);
     } else if (filePath.startsWith('/web/public/')) {
       // Serve from web/public folder
       fullPath = join(__dirname, '..', filePath);
@@ -56,6 +57,8 @@ export class WebServer {
   async handleAPI(req, res) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const path = url.pathname;
+    
+    console.log('[WEB] API request:', req.method, path);
 
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -72,11 +75,11 @@ export class WebServer {
       // Memory endpoints
       if (path === '/api/memory/list') {
         const category = url.searchParams.get('category');
-        const memories = category 
-          ? this.memory.memories.memories.filter(m => m.category === category)
-          : this.memory.memories.memories;
+        const domain = url.searchParams.get('domain');
         
-        globalLogger.log('web-api', 'memory/list', { category }, { count: memories.length });
+        const memories = this.memory.getMemories({ category, domain });
+        
+        globalLogger.log('web-api', 'memory/list', { category, domain }, { count: memories.length });
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ memories }));
@@ -131,31 +134,106 @@ export class WebServer {
         return;
       }
 
-      // LM Studio endpoints
-      if (path === '/api/lmstudio/models') {
-        const models = await this.lmStudio.getAvailableModels();
-        globalLogger.log('web-api', 'lmstudio/models', {}, { count: models.length });
+      // LLM endpoints
+      if (path === '/api/llm/models') {
+        const result = await this.llm.callTool('list_available_models', {});
+        globalLogger.log('web-api', 'llm/models', {}, result);
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ models }));
+        res.end(JSON.stringify(result));
         return;
       }
 
-      if (path === '/api/lmstudio/loaded') {
-        const loaded = await this.lmStudio.getLoadedModel();
-        globalLogger.log('web-api', 'lmstudio/loaded', {}, { model: loaded?.id });
+      // Code Search endpoints
+      if (path === '/api/code-search/workspaces') {
+        if (!this.codeSearch) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Code search not available' }));
+          return;
+        }
+        
+        const result = await this.codeSearch.callTool('get_workspace_config', {});
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/workspaces', {}, data);
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ model: loaded }));
+        res.end(JSON.stringify(data));
         return;
       }
 
-      if (path === '/api/lmstudio/query' && req.method === 'POST') {
+      if (path === '/api/code-search/refresh-all' && req.method === 'POST') {
+        const result = await this.codeSearch.callTool('refresh_all_indexes', {});
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/refresh-all', {}, data);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (path === '/api/code-search/refresh' && req.method === 'POST') {
         const body = await this.readBody(req);
-        const { question, context, model } = JSON.parse(body);
+        const { workspace } = JSON.parse(body);
         
-        const result = await this.lmStudio.callTool('get_second_opinion', { question, context, model });
-        globalLogger.log('web-api', 'lmstudio/query', { question, model }, result, result.isError ? new Error('Query failed') : null);
+        const result = await this.codeSearch.callTool('refresh_index', { workspace });
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/refresh', { workspace }, data);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (path === '/api/code-search/stats') {
+        const workspace = url.searchParams.get('workspace');
+        const result = await this.codeSearch.callTool('get_index_stats', { workspace });
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/stats', { workspace }, data);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (path === '/api/code-search/search' && req.method === 'POST') {
+        const body = await this.readBody(req);
+        const { workspace, searchType, query } = JSON.parse(body);
+        
+        let result;
+        if (searchType === 'semantic') {
+          result = await this.codeSearch.callTool('search_semantic', { workspace, query });
+        } else if (searchType === 'keyword') {
+          result = await this.codeSearch.callTool('search_keyword', { workspace, pattern: query });
+        } else if (searchType === 'files') {
+          result = await this.codeSearch.callTool('search_files', { workspace, glob: query });
+        } else if (searchType === 'code') {
+          result = await this.codeSearch.callTool('search_code', { workspace, query });
+        }
+        
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/search', { workspace, searchType, query }, data);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (path === '/api/code-search/file' && req.method === 'POST') {
+        const body = await this.readBody(req);
+        const { workspace, file } = JSON.parse(body);
+        
+        const result = await this.codeSearch.callTool('retrieve_file', { file });
+        const data = JSON.parse(result.content[0].text);
+        globalLogger.log('web-api', 'code-search/file', { workspace, file }, data);
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (path === '/api/llm/loaded') {
+        const result = await this.llm.callTool('get_loaded_model', {});
+        globalLogger.log('web-api', 'llm/loaded', {}, result);
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));

@@ -1,0 +1,76 @@
+<div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; padding: 1rem; gap: 1rem; overflow-y: auto;">
+	<div style="display: flex; justify-content: space-between; align-items: center;">
+		<h2 style="margin: 0;">Code Search</h2>
+		<nui-button type="outline">
+			<button type="button" id="refresh-all-btn">Refresh All Indexes</button>
+		</nui-button>
+	</div>
+
+	<!-- Workspaces Stats -->
+	<section>
+		<h3>Workspaces</h3>
+		<div id="workspaces-list" style="display: grid; gap: 1rem;"></div>
+	</section>
+
+	<!-- Search Interface -->
+	<section style="margin-top: 2rem;">
+		<h3>Search</h3>
+		
+		<div style="display: grid; gap: 1rem; grid-template-columns: 1fr 1fr;">
+			<div>
+				<label>Workspace:</label>
+				<nui-select id="workspace-select">
+					<select id="search-workspace">
+						<option value="*">All workspaces</option>
+					</select>
+				</nui-select>
+			</div>
+			
+			<div>
+				<label>Search Type:</label>
+				<nui-select>
+					<select id="search-type">
+						<option value="semantic">Semantic Search</option>
+						<option value="keyword">Keyword Search</option>
+						<option value="files">File Search (glob)</option>
+						<option value="code">Code Search (hybrid)</option>
+					</select>
+				</nui-select>
+			</div>
+		</div>
+
+		<div style="margin-top: 1rem;">
+			<label>Query:</label>
+			<nui-input-group>
+				<input type="text" id="search-query" placeholder="Enter search query...">
+			</nui-input-group>
+		</div>
+
+		<div style="margin-top: 1rem; display: flex; gap: 1rem;">
+			<nui-button variant="submit">
+				<button type="button" id="search-btn">Search</button>
+			</nui-button>
+			<nui-button type="outline">
+				<button type="button" id="clear-results-btn">Clear Results</button>
+			</nui-button>
+		</div>
+	</section>
+
+	<!-- Search Results -->
+	<section style="margin-top: 2rem;">
+		<h3>Results</h3>
+		<div id="search-results" style="background: var(--nui-surface-variant); border-radius: var(--nui-radius-sm); padding: 1rem; min-height: 10rem;"></div>
+	</section>
+
+	<!-- File Viewer -->
+	<section id="file-viewer-section" style="margin-top: 2rem; display: none;">
+		<h3>File Content</h3>
+		<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+			<div id="file-path" style="font-family: monospace; color: var(--nui-text-secondary);"></div>
+			<nui-button type="outline">
+				<button type="button" id="close-file-btn">Close</button>
+			</nui-button>
+		</div>
+		<pre id="file-content" style="background: var(--nui-surface-variant); padding: 1rem; border-radius: var(--nui-radius-sm); overflow-x: auto; max-height: 30rem; overflow-y: auto;"></pre>
+	</section>
+</div>

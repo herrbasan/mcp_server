@@ -7,13 +7,13 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { randomUUID } from 'crypto';
-import { LMStudioServer } from './servers/lm-studio.js';
+import { createLLMServer } from './servers/llm.js';
 import { WebResearchServer } from './servers/web-research.js';
-import { MemoryServer } from './servers/memory.js';
-import { BrowserServer } from './servers/browser.js';
+import { createMemoryServer } from './servers/memory.js';
+import { createBrowserServer } from './servers/browser.js';
 import { WebServer } from './web/server.js';
 import { globalLogger } from './logger.js';
-import { LLMRouter } from './llm/router.js';
+import { createRouter } from './router/router.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Process managers/Electron often spawn with a different cwd; load .env by absolute path.
@@ -30,9 +30,47 @@ const logProcessEvent = (event, data = {}) => {
   } catch { }
 };
 
-process.on('exit', (code) => logProcessEvent('exit', { code }));
-process.on('SIGINT', () => logProcessEvent('signal', { signal: 'SIGINT' }));
-process.on('SIGTERM', () => logProcessEvent('signal', { signal: 'SIGTERM' }));
+let maintenanceInterval = null;
+let httpServerInstance = null;
+let webServerInstance = null;
+
+const shutdown = async (signal) => {
+  console.log(`\n[SHUTDOWN] Received ${signal}, cleaning up...`);
+  logProcessEvent('signal', { signal });
+  
+  if (maintenanceInterval) {
+    clearInterval(maintenanceInterval);
+    maintenanceInterval = null;
+  }
+  
+  if (webServerInstance?.stop) {
+    try {
+      await webServerInstance.stop();
+      console.log('[SHUTDOWN] Web server stopped');
+    } catch (err) {
+      console.error('[SHUTDOWN] Web server stop error:', err.message);
+    }
+  }
+  
+  if (httpServerInstance) {
+    httpServerInstance.close(() => {
+      console.log('[SHUTDOWN] HTTP server closed');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.error('[SHUTDOWN] Forcing exit after 2s timeout');
+      process.exit(1);
+    }, 2000);
+  } else {
+    process.exit(0);
+  }
+};
+
+process.on('exit', (code) => {
+  logProcessEvent('exit', { code });
+});
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] uncaughtException:', err);
   logProcessEvent('uncaughtException', { message: err?.message, stack: err?.stack });
@@ -46,8 +84,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 // Override config with environment variables if present
-if (process.env.LM_STUDIO_WS_ENDPOINT) config.servers['lm-studio'].endpoint = process.env.LM_STUDIO_WS_ENDPOINT;
-if (process.env.LM_STUDIO_MODEL) config.servers['lm-studio'].model = process.env.LM_STUDIO_MODEL;
 if (process.env.LM_STUDIO_HTTP_ENDPOINT) {
   const baseUrl = process.env.LM_STUDIO_HTTP_ENDPOINT;
   config.servers['web-research'].llmEndpoint = `${baseUrl}/v1/chat/completions`;
@@ -70,22 +106,30 @@ const prompts = [];
 // Initialize LLM Router
 let llmRouter = null;
 if (config.llm) {
-  llmRouter = new LLMRouter(config.llm);
+  llmRouter = await createRouter(config.llm);
   console.log('✓ LLM Router initialized');
 }
 
-// Initialize LM Studio server first (for legacy compatibility and tools)
-let lmStudioServer = null;
-if (config.servers['lm-studio']?.enabled) {
-  lmStudioServer = new LMStudioServer(config.servers['lm-studio'], llmRouter);
-  serverModules.set('lm-studio', lmStudioServer);
-  tools.push(...lmStudioServer.getTools());
-  if (lmStudioServer.getResources) resources.push(...lmStudioServer.getResources());
-  console.log('✓ LM Studio');
+// Initialize Browser server first (needed by web-research)
+let browserServer = null;
+if (config.servers['browser']?.enabled) {
+  browserServer = createBrowserServer(config.servers['browser']);
+  serverModules.set('browser', browserServer);
+  tools.push(...browserServer.getTools());
+  console.log('✓ Browser');
+}
+
+// Initialize LLM server (query tools)
+let llmServer = null;
+if (config.servers['llm']?.enabled) {
+  llmServer = createLLMServer(config.servers['llm'], llmRouter);
+  serverModules.set('llm', llmServer);
+  tools.push(...llmServer.getTools());
+  console.log('✓ LLM');
 }
 
 if (config.servers['web-research']?.enabled) {
-  const s = new WebResearchServer(config.servers['web-research'], llmRouter);
+  const s = new WebResearchServer(config.servers['web-research'], llmRouter, browserServer);
   serverModules.set('web-research', s);
   tools.push(...s.getTools());
   console.log('✓ Web Research');
@@ -93,7 +137,7 @@ if (config.servers['web-research']?.enabled) {
 
 if (config.servers['memory']?.enabled) {
   // Pass LLM router to memory server for embedding
-  const s = new MemoryServer(config.servers['memory'], llmRouter);
+  const s = createMemoryServer(config.servers['memory'], llmRouter);
   serverModules.set('memory', s);
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());
@@ -101,20 +145,15 @@ if (config.servers['memory']?.enabled) {
   console.log('✓ Memory');
 }
 
-if (config.servers['browser']?.enabled) {
-  const s = new BrowserServer(config.servers['browser']);
-  serverModules.set('browser', s);
-  tools.push(...s.getTools());
-  console.log('✓ Browser');
-}
+// Browser server already initialized above (before web-research)
 
 // Both local-agent and code-search share workspace config
 const workspaceConfig = config.workspaces || {};
 
 if (config.servers['local-agent']?.enabled) {
-  const { LocalAgentServer } = await import('./servers/local-agent.js');
+  const { createLocalAgentServer } = await import('./servers/local-agent.js');
   const agentConfig = { ...config.servers['local-agent'], workspaces: workspaceConfig };
-  const s = new LocalAgentServer(agentConfig, llmRouter);
+  const s = createLocalAgentServer(agentConfig, llmRouter);
   serverModules.set('local-agent', s);
   tools.push(...s.getTools());
   if (s.getPrompts) prompts.push(...s.getPrompts());
@@ -122,9 +161,9 @@ if (config.servers['local-agent']?.enabled) {
 }
 
 if (config.servers['code-search']?.enabled) {
-  const { CodeSearchServer } = await import('./servers/code-search.js');
+  const { createCodeSearchServer } = await import('./servers/code-search/server.js');
   const searchConfig = { ...config.servers['code-search'], workspaces: workspaceConfig };
-  const s = new CodeSearchServer(searchConfig, llmRouter);
+  const s = createCodeSearchServer(searchConfig, llmRouter);
   serverModules.set('code-search', s);
   tools.push(...s.getTools());
   if (s.getPrompts) prompts.push(...s.getPrompts());
@@ -142,9 +181,60 @@ if (localAgent && codeSearch) {
 // Start web monitoring interface
 if (config.web?.enabled) {
   const memoryServer = serverModules.get('memory');
-  const webServer = new WebServer(config.web, memoryServer, lmStudioServer);
+  const webServer = new WebServer(config.web, memoryServer, llmServer, codeSearch);
+  webServerInstance = webServer;
   webServer.start();
   console.log('✓ Web Interface');
+}
+
+// Start maintenance cycle for index refresh
+if (config.maintenance?.enabled && codeSearch) {
+  const intervalMs = config.maintenance.indexRefreshIntervalMs || 3600000; // Default 1 hour
+  const intervalMinutes = (intervalMs / 60000).toFixed(1);
+  
+  const runMaintenance = async () => {
+    try {
+      const startTime = Date.now();
+      
+      // Refresh code search indexes
+      const results = await codeSearch.callTool('refresh_all_indexes', { force: false });
+      
+      // Parse and log results concisely
+      if (results?.content?.[0]?.text) {
+        try {
+          const data = JSON.parse(results.content[0].text);
+          if (data.results && Array.isArray(data.results)) {
+            data.results.forEach(r => {
+              if (r.status === 'success') {
+                console.log(`[Maintenance] ${r.workspace} - Added ${r.files_added} / Updated ${r.files_updated} / Removed ${r.files_removed}`);
+              } else if (r.status === 'error') {
+                const errorMsg = r.error?.substring(0, 80) || 'Unknown';
+                console.log(`[Maintenance] ${r.workspace} - Error: ${errorMsg}`);
+              }
+            });
+          }
+        } catch (parseErr) {
+          console.error('[Maintenance] Parse error:', parseErr.message);
+        }
+      } else {
+        console.log('[Maintenance] No index results to display');
+      }
+      
+      // Refresh LLM router metadata (model info, context windows)
+      if (llmRouter?.refreshAllMetadata) {
+        await llmRouter.refreshAllMetadata();
+      }
+      
+      const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[Maintenance] Complete in ${duration}s`);
+    } catch (err) {
+      console.error('[Maintenance] Failed:', err);
+    }
+  };
+  
+  // Don't run immediately on startup - let it wait for first interval
+  maintenanceInterval = setInterval(runMaintenance, intervalMs);
+  console.log(`✓ Maintenance Cycle (refresh indexes every ${intervalMinutes}min)`);
 }
 
 // Factory function to create and configure a new MCP server instance per connection
@@ -205,7 +295,8 @@ function createMCPServer() {
     for (const [sName, module] of serverModules) {
       if (module.handlesTool(name)) {
         if (progressToken && module.setProgressCallback) {
-          module.setProgressCallback((progress, total, message) => {
+        module.setProgressCallback((data) => {
+          const { progress, total, message } = data;
             server.notification({
               method: 'notifications/progress',
               params: { progressToken, progress, total, message }
@@ -397,6 +488,7 @@ httpServer.on('request', async (req, res) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
+  httpServerInstance = httpServer;
   console.log(`🚀 MCP Server listening on http://${HOST}:${PORT}`);
   console.log(`📡 MCP endpoint: http://${HOST}:${PORT}/mcp`);
   if (config.web?.enabled) {

@@ -1,3 +1,12 @@
+// DEPRECATED: Merged into browser.js (src/servers/browser.js)
+// This file is kept for reference but is no longer used.
+// All browser automation now uses the centralized browser.js service.
+//
+// Migration complete (Feb 4, 2026):
+// - google-adapter.js → uses browserServer.getPage()
+// - duckduckgo-adapter.js → uses browserServer.getPage()
+// - web-research.js → uses browserServer.getPage() and fetch()
+
 // Persistent browser pool with lingering tabs for realistic search behavior
 import puppeteer from 'puppeteer';
 

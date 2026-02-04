@@ -87,16 +87,15 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 **Get File Metadata** - After search, get detailed structure before retrieving content:
 ```javascript
 get_file_info({ 
-  file: "BADKID-DEV:src/http-server.js"
+  file: "fc745a690e4db10279c18241a0a572c7"  // Hash ID from search results
 })
-// Returns: functions (with line numbers), classes, imports, exports, language, size
-// Use this to decide which sections to retrieve with partial retrieval
+// Returns: workspace, path, functions (with line numbers), classes, imports, exports
 ```
 
 **Partial File Retrieval** - For large files, retrieve only the lines you need:
 ```javascript
 retrieve_file({ 
-  file: "COOLKID-Work:project/large-file.js",
+  file: "fc745a690e4db10279c18241a0a572c7",
   startLine: 100,   // Optional: start line (1-indexed)
   endLine: 200      // Optional: end line (1-indexed)
 })
@@ -105,17 +104,17 @@ retrieve_file({
 
 **Complete Workflow Example**:
 ```javascript
-// 1. Search finds file with specific functions
+// 1. Search finds file with hash IDs
 const results = search_semantic({ workspace: "BADKID-DEV", query: "HTTP request handling" });
-// Returns: { file: "BADKID-DEV:src/http-server.js", functions: ["handleRequest", "sendResponse"], ... }
+// Returns: { file: "fc745a690e4db10279c18241a0a572c7", functions: ["handleRequest"], ... }
 
 // 2. Get detailed metadata with line numbers
-const info = get_file_info({ file: "BADKID-DEV:src/http-server.js" });
-// Returns: { functions: [{ name: "handleRequest", line: 45 }, { name: "sendResponse", line: 123 }], ... }
+const info = get_file_info({ file: "fc745a690e4db10279c18241a0a572c7" });
+// Returns: { workspace: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
 
-// 3. Retrieve just the function you need (saves tokens!)
+// 3. Retrieve just the function you need
 const content = retrieve_file({ 
-  file: "BADKID-DEV:src/http-server.js",
+  file: "fc745a690e4db10279c18241a0a572c7",
   startLine: 45,
   endLine: 80
 });
@@ -130,11 +129,10 @@ Workspaces are named identifiers mapped to UNC network paths. You don't need to 
 - `BADKID-SRV` - Server/service projects
 
 ### File ID Format
-All search results return file IDs in format `workspace:relative/path`:
-- `BADKID-DEV:src/http-server.js`
-- `COOLKID-Work:project/index.ts`
-
-Pass these directly to `retrieve_file` - no path manipulation needed.
+All search results return **32-character SHA256 hash IDs** (collision-free):
+- Format: `fc745a690e4db10279c18241a0a572c7`
+- Generated from: SHA256(`${workspace}:${filePath}`).slice(0, 32)
+- Pass hash IDs directly to `retrieve_file` and `get_file_info`
 
 ### Search Tools (use workspace name, not paths)
 
@@ -144,7 +142,7 @@ Pass these directly to `retrieve_file` - no path manipulation needed.
 | `search_keyword` | Exact text/regex | File matches | `{ workspace: "BADKID-DEV", pattern: "StreamableHTTP" }` |
 | `search_files` | Glob patterns | File paths | `{ workspace: "BADKID-DEV", glob: "src/**/*.js" }` |
 | `search_code` | Combined search | Enriched results | `{ workspace: "BADKID-DEV", query: "authentication" }` |
-| `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "BADKID-DEV:src/server.js" }` |
+| `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "fc745a690e4db10279c18241a0a572c7" }` |
 
 **Key Feature**: `search_semantic` and `get_file_info` both return function/class names, but `get_file_info` includes **line numbers** for precise partial retrieval.
 
@@ -166,20 +164,82 @@ get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
 ```
 
 **Index Files**: Located at `data/indexes/{workspace}.json`
+**Index Caching**: In-memory cache with auto-reload after maintenance (refresh_index/refresh_all_indexes)
+- ~900MB footprint for all 3 workspaces (0.7% of 128GB RAM)
+- Performance: 100-200ms first load → 5-10ms cached (20-40x faster)
+- Cache management: `clearCache()`, `reloadIndex(workspace)` functions available
 
 ## LLM Router Architecture
-- **Multi-Provider**: Unified interface for LMStudio, Ollama, Gemini, OpenAI via adapter pattern
-- **Task-Based Routing**: Config defines taskDefaults (embedding, analysis, synthesis, query) mapped to providers
-- **Routing Logic**: explicitProvider > taskType default > global default
-- **Adapters**: BaseLLMAdapter abstract class, provider-specific implementations
-- **Structured Output**: Use `responseFormat` with JSON schema for guaranteed valid JSON (llama.cpp grammar-based sampling)
-- **Current Config**:
-  - embedding → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
-  - analysis → gemini (source selection, credibility)
-  - synthesis → gemini (multi-source synthesis)
-  - query → gemini (query_model tool)
-  - agent → lmstudio (local agent tool calls with structured output)
-- **Dimension Compatibility**: All embedding models use 768-dim nomic-embed-text-v2-moe (LMStudio Q4/Q5, Ollama Q8)
+
+**Location**: `src/router/` - Pure functional implementation (no classes)
+
+**Core Files**:
+- `router.js` - Multi-provider orchestrator with context management
+- `adapters/lmstudio.js` - LM Studio HTTP adapter (local)
+- `adapters/ollama.js` - Ollama HTTP adapter with full model management
+- `adapters/gemini.js` - Google Gemini cloud adapter
+- `context-manager.js` - Token estimation and auto-compaction
+- `formatter.js` - Thinking tag stripping, JSON extraction
+- `chunk.js` / `compact.js` / `tokenize.js` - Text processing utilities
+
+**API**:
+```javascript
+import { createRouter } from './src/router/router.js';
+
+const router = await createRouter(config.llm);
+
+// Prediction with task-based routing
+const response = await router.predict({
+  prompt: 'Explain async/await',
+  systemPrompt: 'You are a helpful assistant',
+  taskType: 'query',      // Uses taskDefaults.query provider
+  maxTokens: 500,
+  temperature: 0.7,
+  responseFormat: { schema: {...} }  // Optional JSON schema
+});
+
+// Embeddings
+const vector = await router.embedText('search query');
+const vectors = await router.embedBatch(['text1', 'text2']);
+
+// Model management
+const models = await router.listModels('lmstudio');
+const loaded = await router.getLoadedModel('lmstudio');
+const running = await router.getRunningModels('ollama');  // Ollama only
+const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
+```
+
+**Task-Based Routing** (config.llm.taskDefaults):
+- `embedding` → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
+- `analysis` → gemini (source selection, credibility)
+- `synthesis` → gemini (multi-source synthesis)
+- `query` → gemini (query_model tool)
+- `agent` → lmstudio (local agent with structured output)
+
+**Routing Logic**: explicitProvider > taskType default > defaultProvider
+
+**Structured Output**: Use `responseFormat: { schema: {...} }` for guaranteed valid JSON
+- LMStudio: Full JSON schema via llama.cpp grammar-based sampling
+- Ollama: Full JSON schema via format field
+- Gemini: JSON schema via responseMimeType + responseSchema
+
+**Auto-Compaction**: Router automatically compacts prompts that exceed context window
+- Uses rolling compaction algorithm (chunk → compress → accumulate)
+- Thinking tags (think/analysis/reasoning) stripped from output
+
+**Capabilities by Provider**:
+| Capability | LMStudio | Ollama | Gemini |
+|------------|----------|--------|--------|
+| embeddings | ✅ | ✅ | ✅ |
+| structuredOutput | ✅ | ✅ | ✅ |
+| batch embeddings | ✅ | ✅ | ✅ |
+| modelManagement | ✅ | ✅ | ❌ (cloud) |
+| local | ✅ | configurable | ❌ |
+
+**Environment Variables** (in .env):
+- `LM_STUDIO_ENDPOINT` - LM Studio HTTP endpoint
+- `OLLAMA_ENDPOINT` - Ollama HTTP endpoint
+- `GEMINI_API_KEY` - Google AI API key
 
 ## LM Studio Integration
 - **Transport**: REST API via `/v1/chat/completions` (OpenAI-compatible) and `/api/v1/*` (native)
@@ -202,6 +262,21 @@ get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
 - **Firewall**: OPNsense/Windows Firewall rules for TCP 3100, 3010
 - **Client Config**: VS Code `mcp.json` (not settings.json) with `{"type": "sse", "url": "http://IP:3100/mcp"}`
 
+## Browser Architecture (Feb 4, 2026)
+
+**Consolidated to browser.js** - Single persistent browser with lingering tab support:
+- **browser.js**: Central browser service (used by all modules)
+  - Persistent browser with idle timeout (5 min default)
+  - Lingering tabs (10-30s random delay) for realistic behavior
+  - Exported APIs:
+    - `callTool()` - MCP tools (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
+    - `getPage()` - For custom automation (returns `{ page, markUsed(), close() }`)
+    - `fetch(url)` - Simplified scraping
+- **google-adapter.js**: Uses `browserServer.getPage()` for search
+- **duckduckgo-adapter.js**: Uses `browserServer.getPage()` for search  
+- **web-research.js**: Uses `browserServer.getPage()` and `fetch()` for scraping
+- **Deprecated**: browser-pool.js (fully merged into browser.js)
+
 ## Memory System Philosophy
 Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - **proven**: Evidence-backed approaches that produce good outcomes
@@ -222,6 +297,9 @@ Domain scoping: Memories can be tagged with optional `domain` field for project-
 - **Hardening**: Use promise locks, validate inputs, proper error rollback, URL constructor for endpoints
 
 ## Key Principles
+- **Avoid OOP meta-state**: No classes with scattered `this.*` properties mixing data and behavior
+- **Closures with state are fine**: Functions can capture and maintain local state - that's natural JS
+- **Pass what's needed**: Don't reach for globals, but don't be religious about "pure functions"
 - Use modern ES6+ features (async/await, destructuring, etc.)
 - Keep functions small and focused
 - Avoid over-engineering
@@ -231,27 +309,45 @@ Domain scoping: Memories can be tagged with optional `domain` field for project-
 - Validate model IDs against available models before use
 - When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
 
-## Local Agent & Code Search
+## Code Search Architecture (Feb 4, 2026)
 
-**Status**: Fully implemented and validated (all tests passing)
+**Status**: Production-ready with hash-based file IDs and in-memory caching
 
-Implementation complete with all planned features:
-- **Workspace Resolver**: `src/lib/workspace.js` (166 lines) - UNC path mapping with longest-prefix matching, security validation
-- **Local Agent**: `src/servers/local-agent.js` (662 lines) - Autonomous LLM agent with 2 tools (run_local_agent, retrieve_file)
-- **Code Search**: `src/servers/code-search.js` (711 lines) - Semantic/keyword/file search with 6 tools
-- **Index Builder**: `scripts/build-index.js` (241 lines) - CLI tool for initial index creation
-- **Tests**: 22/22 passing (test-workspace.js, test-modules-init.js, test-glob.js)
+**Module Structure**:
+- `src/servers/code-search/indexer.js` (178 lines) - Centralized utilities
+  - `generateFileId(workspace, filePath)` - SHA256 hash generation (32 chars)
+  - `parseFile`, `walkWorkspace`, `detectLanguage`, `generateEmbeddingText`
+  - `writeIndexStreaming`, `atomicWriteIndex`, `loadIndex`
+- `src/servers/code-search/server.js` (820 lines) - MCP server with 9 tools
+- `src/servers/code-search/build-index.js` (286 lines) - CLI indexing tool
 
-**Technical Details**:
-- Agent Loop: Max 20 iterations, 50k token budget, loop detection (3x same call)
-- Embeddings: nomic-embed-text-v2-moe 768-dim vectors via LLM router
-- Path Resolution: UNC paths for Windows SMB shares, post-realpath validation
-- Index Format: JSON with mtime-based incremental updates, streaming atomic writes
-- Streaming JSON: `_writeIndexStreaming()` handles 500MB+ indexes without "Invalid string length" error
-- Code Parsing: Regex-based extraction (functions/classes/imports) - tree-sitter deferred
-- Security: Path traversal rejection, .git/node_modules filtering
-- Glob Support: Full ** pattern support with placeholder-based conversion
-- Batch Indexing: build-index.js uses parallel batch embedding (50 texts × 4 concurrent = 2.3x faster)
+**File ID System**:
+- 32-character SHA256 hash of `${workspace}:${filePath}`
+- Collision-free for 50K+ files
+- All search tools return hash IDs
+- retrieve_file accepts hash IDs (backward compatible with legacy format)
+
+**Performance**:
+- In-memory caching with auto-reload after maintenance
+- Search: 5-10ms cached (20-40x faster than disk load)
+- Batch embeddings: 50 texts × 4 parallel = 2.3x speedup
+- Streaming JSON write for indexes >512MB
+
+**Workspaces**:
+- COOLKID-Work: 21,717 files (284 MB index)
+- BADKID-DEV: 28,110 files (613 MB index)
+- BADKID-SRV: 791 files (4 MB index)
+
+**Tools**: get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
+
+## Local Agent Architecture
+
+**Status**: Production-ready autonomous code exploration
+
+**Implementation**:
+- `src/lib/workspace.js` (166 lines) - UNC path mapping, security validation
+- `src/servers/local-agent.js` (662 lines) - Autonomous LLM agent with 3 tools
+- Tools: run_local_agent, retrieve_file, inspect_code
 
 **Agent Workflow**:
 1. Dynamic tool selection (search tools if indexed, fs tools otherwise)
@@ -259,20 +355,12 @@ Implementation complete with all planned features:
 3. JSON tool call extraction from LLM responses
 4. Findings aggregation across iterations (NO CODE in summaries)
 5. Complete search→retrieve workflow via retrieve_file tool
+6. Max 20 iterations, 50k token budget, loop detection (3x same call)
 
-**Config Structure**:
-- `config.workspaces`: {defaultMachine, machines: {MACHINE: {localPath: uncPath}}}
-- `config.servers.local-agent`: {enabled, maxTokenBudget, maxIterations, toolCallingFormat}
-- `config.servers.code-search`: {enabled, indexPath}
-- `config.llm.taskDefaults.agent`: Provider for agent predictions (lmstudio/gemini/ollama)
-
-**Known Bugs Fixed**:
-- Agent loop: Findings collection, LLM format mismatch, response parsing, silent errors (5 bugs)
-- Glob patterns: ** replacement clobbering via placeholder technique
-- Environment variables: ${VAR} substitution in build script
-- UNC mapping: Correct share structure (\\MACHINE\Share\Path)
+**Config**: `config.servers.local-agent` - maxTokenBudget, maxIterations, toolCallingFormat
+**Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
 - **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging, browser pool architecture (persistent tabs, search adapters, realistic scraping behavior)
-- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization
+- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization, file ID system, in-memory caching

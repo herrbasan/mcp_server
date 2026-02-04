@@ -1,5 +1,4 @@
-// Google search adapter using browser pool
-import { getSharedPool } from './browser-pool.js';
+// Google search adapter using browser server
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -75,15 +74,13 @@ async function extractSearchResults(page) {
   return results;
 }
 
-export async function searchGoogle(query, options = {}) {
-  const pool = getSharedPool({
-    headless: options.headless !== false,
-    devtools: options.devtools || false,
-    userDataDir: options.userDataDir || 'd:\\DEV\\mcp_server\\data\\chrome-profile'
-  });
+export async function searchGoogle(query, browserServer) {
+  if (!browserServer) {
+    throw new Error('browserServer is required for searchGoogle');
+  }
   
-  const pageInfo = await pool.createPage();
-  const { page } = pageInfo;
+  const pageHandle = await browserServer.getPage();
+  const { page, markUsed } = pageHandle;
   
   try {
     // Navigate to Google
@@ -92,6 +89,19 @@ export async function searchGoogle(query, options = {}) {
       timeout: 30000 
     });
     await sleep(200);
+    
+    // Check if logged in (look for account icon/profile button)
+    const isLoggedIn = await page.evaluate(() => {
+      // Check for Google account avatar/button
+      return !!(document.querySelector('a[aria-label*="Google Account"]') || 
+                document.querySelector('img[alt*="Google Account"]') ||
+                document.querySelector('[data-ogsr-up]'));
+    });
+    
+    if (!isLoggedIn) {
+      console.error('[Google] ⚠️  Not logged in - search quality may be degraded');
+      console.error('[Google] Run browser_login tool to refresh Google session');
+    }
     
     // Click search box
     const searchBox = await page.waitForSelector('textarea[name="q"], input[name="q"]', { 
@@ -114,14 +124,13 @@ export async function searchGoogle(query, options = {}) {
     const results = await extractSearchResults(page);
     
     // Mark page as used - will linger then close
-    pool.markUsed(pageInfo);
+    markUsed();
     
     return results;
     
   } catch (error) {
     // Close failed page immediately
     await page.close().catch(() => {});
-    pool.pages = pool.pages.filter(p => p !== pageInfo);
     throw error;
   }
 }

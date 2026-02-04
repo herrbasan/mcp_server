@@ -1,0 +1,73 @@
+{
+  "purpose": "Main audio playback application for Electron-based music player with support for multiple audio formats, MIDI playback, and real-time pitch/time manipulation",
+  "architecture": "Electron renderer process with modular components including audio contexts, pipeline management, window controls, and IPC communication",
+  "classes": [
+    {
+      "name": "RubberbandPipeline",
+      "purpose": "Handles real-time pitch shifting and time stretching using rubberband library",
+      "methods": [
+        "init()",
+        "connect()",
+        "disconnect()",
+        "setPitch()",
+        "setTempo()",
+        "setOptions()",
+        "reset()"
+      ]
+    }
+  ],
+  "main_functions": [
+    {
+      "name": "init",
+      "purpose": "Initialize application components including audio contexts, configuration handling, and IPC event listeners"
+    },
+    {
+      "name": "appStart",
+      "purpose": "Set up UI elements, event handlers, and initial playback state after initialization"
+    },
+    {
+      "name": "playAudio",
+      "purpose": "Handle playback of different file types (MIDI, tracker modules, FFmpeg-supported formats) with appropriate pipeline selection"
+    },
+    {
+      "name": "switchPipeline",
+      "purpose": "Switch between normal and rubberband audio pipelines for real-time processing"
+    },
+    {
+      "name": "clearAudio",
+      "purpose": "Clean up current audio playback and reset state before switching tracks"
+    }
+  ],
+  "features": [
+    "Multi-format audio support (MIDI, tracker modules, FFmpeg codecs)",
+    "Real-time pitch shifting and time stretching with rubberband library",
+    "Multiple audio pipeline management",
+    "Configurable audio output devices",
+    "Monitoring window integration for waveform analysis",
+    "MIDI soundfont support with user/customizable libraries",
+    "Playlist management with shuffle/loop functionality",
+    "Volume control with keyboard wheel support",
+    "Drag-and-drop file handling",
+    "Theme switching (dark/light mode)"
+  ],
+  "external_dependencies": [
+    "electron ipcRenderer, webUtils",
+    "child_process spawn",
+    "fs/promises",
+    "path",
+    "crypto",
+    "node:os",
+    "electron_helper/helper_new.js",
+    "registry.js",
+    "shortcuts.js",
+    "rubberband-pipeline.js",
+    "waveform_analyzer.js"
+  ],
+  "key_data_structures": [
+    "g - Global state object containing audio contexts, players, configuration, and UI references",
+    "g.config_obj - Configuration manager for persistent settings",
+    "g.windows - Object tracking open windows by type",
+    "g.audioParams - Audio processing parameters (mode, tapeSpeed, pitch, tempo, formant)",
+    "g.midiSettings - MIDI-specific playback settings"
+  ]
+}

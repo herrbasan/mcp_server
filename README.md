@@ -42,19 +42,22 @@ Restart VS Code.
 mcp_server/
 ├── src/
 │   ├── http-server.js           # HTTP server (remote mode)
-│   ├── web-start.js             # Start web UI only
+│   ├── web/
+│   │   ├── start.js                # Start web UI only
 │   ├── lib/
 │   │   └── workspace.js         # UNC path resolver (shared)
-│   ├── llm/                     # LLM Translation Layer
-│   │   ├── base-adapter.js      # Abstract adapter interface
-│   │   ├── lmstudio-adapter.js  # LM Studio WebSocket adapter
-│   │   ├── ollama-adapter.js    # Ollama HTTP adapter
-│   │   ├── gemini-adapter.js    # Google Gemini API adapter
-│   │   ├── copilot-adapter.js   # GitHub Copilot/Azure adapter
+│   ├── router/                  # LLM Router (NEW - functional approach)
 │   │   ├── router.js            # Multi-provider orchestrator
-│   │   ├── index.js             # Public exports
-│   │   └── README.md            # Technical reference
-│   ├── scrapers/                # Web scraping modules (NEW)
+│   │   ├── adapters/
+│   │   │   ├── lmstudio.js      # LM Studio HTTP adapter
+│   │   │   ├── ollama.js        # Ollama HTTP adapter
+│   │   │   └── gemini.js        # Google Gemini cloud adapter
+│   │   ├── context-manager.js   # Token estimation, auto-compaction
+│   │   ├── formatter.js         # Thinking tag stripping, JSON extraction
+│   │   ├── chunk.js             # Text chunking utilities
+│   │   ├── compact.js           # Rolling compaction algorithm
+│   │   └── tokenize.js          # Token estimation
+│   ├── scrapers/                # Web scraping modules
 │   │   ├── browser-pool.js      # Persistent browser with lingering tabs
 │   │   ├── google-adapter.js    # Google search adapter
 │   │   ├── duckduckgo-adapter.js # DuckDuckGo search adapter
@@ -69,90 +72,96 @@ mcp_server/
 │       ├── local-agent.js       # Autonomous code analysis agent
 │       └── code-search.js       # Semantic code search
 ├── scripts/
-│   └── build-index.js           # CLI: Build semantic code index (NEW)
-├── LMStudioAPI/                 # Git submodule (vanilla WebSocket SDK)
+│   └── build-index.js           # CLI: Build semantic code index
 ├── docs/                        # Documentation
-│   ├── llm-translation-layer.md # LLM layer user guide
-│   ├── llm-architecture.md      # Architecture diagrams
-│   ├── llm-implementation-summary.md  # Implementation details
-│   ├── local-agent-module.md    # Agent design (NEW)
-│   ├── code-search-module.md    # Search design (NEW)
-│   └── integration-plan.md      # Integration guide (NEW)
+│   ├── local-agent-module.md    # Agent design
+│   ├── code-search-module.md    # Search design
+│   └── integration-plan.md      # Integration guide
 ├── data/
 │   ├── memories.json            # Memory storage (gitignored)
 │   ├── chrome-profile/          # Persistent browser profile (gitignored)
 │   └── indexes/                 # Code search indexes (gitignored)
 ├── test/                        # Test scripts
-│   ├── test-llm-router.js       # LLM router test suite
-│   ├── test-workspace.js        # Workspace resolver tests (NEW)
-│   └── test-modules-init.js     # Module initialization tests (NEW)
 ├── config.json                  # Server configuration
 ├── package.json
 └── README.md
 ```
 
-## LLM Translation Layer
+## LLM Router
 
-Unified interface for multiple LLM providers with **task-based routing**, consistent API, and automatic provider selection.
+Unified interface for multiple LLM providers with **task-based routing**, auto-compaction, and structured output support.
 
 ### Supported Providers
-- **LM Studio** (local) - Full model management, progress reporting, embeddings
-- **Ollama** (remote) - HTTP interface, embeddings, deployed on Arc A770
-- **Google Gemini** (cloud) - Latest Gemini models, vision, embeddings
-- **OpenAI** (cloud) - GPT-4o, o1 models, Azure-compatible
+- **LM Studio** (local) - HTTP REST API, model management, embeddings, batch processing
+- **Ollama** (local/remote) - HTTP interface, full model management, embeddings
+- **Google Gemini** (cloud) - Gemini models, embeddings, structured output
 
-### Batch Embedding Support
-
-The LM Studio adapter supports batch embedding for faster indexing:
+### Quick Start
 
 ```javascript
-// Single embedding
+import { createRouter } from './src/router/router.js';
+
+const router = await createRouter(config.llm);
+
+// Embeddings use configured provider (default: lmstudio)
 const embedding = await router.embedText('search query');
 
-// Batch embedding (2.3x faster for large indexes)
+// Batch embeddings (2.3x faster for large indexes)
 const embeddings = await router.embedBatch(['text1', 'text2', 'text3']);
-```
 
-**Performance**: BATCH_SIZE=50 + PARALLEL_REQUESTS=4 yields 2.3x speedup (268s→116s for 28k files, 274 files/sec).
-
-### Task-Based Routing
-
-The router automatically selects providers based on task type:
-
-```javascript
-import { LLMRouter } from './src/llm/router.js';
-
-const router = new LLMRouter(config.llm);
-
-// Embeddings use lmstudio (local, fast)
-const embedding = await router.embedText('search query');
-
-// Text generation uses gemini (quality)
+// Text generation with task-based routing
 const response = await router.predict({
   prompt: 'Explain async/await',
   taskType: 'query',  // Uses taskDefaults.query provider
   maxTokens: 500
 });
 
-// Override with explicit provider
-const localResponse = await router.predict({
-  prompt: 'What is quantum computing?',
-  provider: 'lmstudio',  // Force specific provider
-  model: 'nvidia/nemotron-3-nano'
+// Structured output with JSON schema
+const json = await router.predict({
+  prompt: 'Extract: John is 30 from NYC',
+  responseFormat: { 
+    schema: { 
+      type: 'object', 
+      properties: { name: { type: 'string' }, age: { type: 'integer' } }
+    }
+  }
 });
+
+// Model management
+const models = await router.listModels('ollama');
+const running = await router.getRunningModels('ollama');
 ```
 
-**Current Routing** (configured in config.json):
-- `embedding` → **lmstudio** (local, 768-dim nomic-embed-text-v2-moe)
-- `analysis` → **gemini** (web research source selection)
-- `synthesis` → **gemini** (web research content synthesis)
-- `query` → **gemini** (query_model tool)
+### Task-Based Routing
 
-**Dimension Compatibility**: All embedding models standardized on 768-dim nomic-embed-text-v2-moe. Memory system handles dimension mismatches gracefully (returns 0 similarity for incompatible vectors).
+The router automatically selects providers based on task type (configured in config.json):
 
-📖 **Full Documentation**: [docs/llm-translation-layer.md](docs/llm-translation-layer.md)
+| Task | Provider | Use Case |
+|------|----------|----------|
+| `embedding` | lmstudio | Local embeddings (768-dim nomic-embed-text-v2-moe) |
+| `analysis` | gemini | Web research source selection |
+| `synthesis` | gemini | Multi-source content synthesis |
+| `query` | gemini | query_model tool |
+| `agent` | lmstudio | Local agent tool calls |
 
-🏗️ **Architecture**: [docs/llm-architecture.md](docs/llm-architecture.md)
+**Routing Logic**: `explicitProvider > taskType > defaultProvider`
+
+### Capabilities by Provider
+
+| Capability | LMStudio | Ollama | Gemini |
+|------------|----------|--------|--------|
+| embeddings | ✅ | ✅ | ✅ |
+| structuredOutput | ✅ | ✅ | ✅ |
+| batch embeddings | ✅ | ✅ | ✅ |
+| modelManagement | ✅ | ✅ | ❌ |
+| local | ✅ | ✅ | ❌ |
+
+### Auto-Compaction
+
+Router automatically handles prompts exceeding context window:
+- Chunks text at safe boundaries
+- Compresses chunks via rolling compaction
+- Strips thinking tags from output (think/analysis/reasoning)
 
 ## Configuration
 
@@ -160,13 +169,14 @@ const localResponse = await router.predict({
 **Required** - Copy `.env.example` to `.env` and configure:
 
 ```env
-# LM Studio endpoints
-LM_STUDIO_WS_ENDPOINT=ws://localhost:12345
-LM_STUDIO_HTTP_ENDPOINT=http://localhost:12345
+# LM Studio endpoint
+LM_STUDIO_ENDPOINT=http://localhost:12345
+
+# Ollama endpoint
+OLLAMA_ENDPOINT=http://192.168.0.145:11434
 
 # LLM Provider API Keys (for cloud providers)
 GEMINI_API_KEY=your-google-api-key-here
-COPILOT_API_KEY=your-github-copilot-key-here
 
 # Embedding model for memory system
 EMBEDDING_MODEL=text-embedding-nomic-embed-text-v2-moe
@@ -185,25 +195,11 @@ Non-sensitive settings (models, prompts, timeouts):
 ```json
 {
   "servers": {
-    "memory": {
-      "enabled": true,
-      "storePath": "data/memories.json"
-    },
-    "lm-studio": {
-      "enabled": true,
-      "model": "nvidia/nemotron-3-nano",
-      "temperature": 0.7,
-      "maxTokens": 2000
-    },
-    "code-analyzer": {
-      "enabled": true
-    },
-    "web-research": {
-      "enabled": true,
-      "llmModel": "nvidia/nemotron-3-nano",
-      "maxPages": 10,
-      "timeout": 180000
-    }
+    "memory": { "enabled": true },
+    "lm-studio": { "enabled": true },
+    "web-research": { "enabled": true },
+    "local-agent": { "enabled": true },
+    "code-search": { "enabled": true }
   },
   "llm": {
     "defaultProvider": "lmstudio",
@@ -211,40 +207,30 @@ Non-sensitive settings (models, prompts, timeouts):
       "embedding": "lmstudio",
       "analysis": "gemini",
       "synthesis": "gemini",
-      "query": "gemini"
+      "query": "gemini",
+      "agent": "lmstudio"
     },
     "providers": {
       "lmstudio": {
         "enabled": true,
         "type": "lmstudio",
-        "endpoint": "${LM_STUDIO_WS_ENDPOINT}",
-        "model": "nvidia/nemotron-3-nano",
-        "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
-        "maxTokens": 8192
+        "endpoint": "${LM_STUDIO_ENDPOINT}",
+        "model": "qwen3-coder-30b-a3b-instruct",
+        "embeddingModel": "text-embedding-nomic-embed-text-v2-moe"
       },
       "ollama": {
         "enabled": true,
         "type": "ollama",
-        "endpoint": "http://192.168.0.145:11434",
+        "endpoint": "${OLLAMA_ENDPOINT}",
         "model": "gemma3:12b",
-        "embeddingModel": "nomic-embed-text-v2-moe",
-        "maxTokens": 8192
+        "embeddingModel": "nomic-embed-text-v2-moe"
       },
       "gemini": {
         "enabled": true,
         "type": "gemini",
         "apiKey": "${GEMINI_API_KEY}",
-        "model": "gemini-2.0-flash-exp",
-        "embeddingModel": "text-embedding-004",
-        "maxTokens": 8192
-      },
-      "openai": {
-        "enabled": false,
-        "type": "openai",
-        "apiKey": "${OPENAI_API_KEY}",
-        "endpoint": "${LM_STUDIO_HTTP_ENDPOINT}/v1/chat/completions",
-        "model": "gpt-4o",
-        "maxTokens": 8192
+        "model": "gemini-2.5-flash",
+        "embeddingModel": "gemini-embedding-001"
       }
     }
   }
