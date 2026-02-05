@@ -359,7 +359,7 @@ export function createBrowserServer(config = {}) {
     browserLock = (async () => {
       console.error('[Browser] Launching persistent browser...');
       const launchOptions = {
-        headless: false,
+        headless: true,
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',

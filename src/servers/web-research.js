@@ -1,9 +1,8 @@
-import puppeteer from 'puppeteer';
-import { Readability } from '@mozilla/readability';
-import { JSDOM } from 'jsdom';
 import { ScraperRegistry } from '../scrapers/index.js';
 import { searchGoogle } from '../scrapers/google-adapter.js';
 import { searchDuckDuckGo } from '../scrapers/duckduckgo-adapter.js';
+import { extractContent, validateContent } from '../scrapers/content-extractor.js';
+import { StreamingResearchPipeline, prioritizeUrls, shouldTerminateEarly } from '../lib/streaming-research.js';
 
 export class WebResearchServer {
   constructor(config, llmRouter = null, browserServer = null) {
@@ -162,7 +161,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       console.error(`   Limits: ${max_pages} pages, ${this.timeout/1000}s timeout`);
       
       this.sendProgress(0, 5, `Starting research: "${query}"`);
-      const report = await this.researchTopic(query, max_pages, engines, controller.signal);
+      
+      // Use fast streaming mode for 5+ pages to avoid timeout
+      const report = max_pages >= 5 
+        ? await this.researchTopicFast(query, max_pages, engines, controller.signal)
+        : await this.researchTopic(query, max_pages, engines, controller.signal);
       
       return {
         content: [{
@@ -290,17 +293,124 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     return currentSynthesis.text;
   }
 
+  /**
+   * Fast streaming research - optimized for 5-10 pages without timeout
+   * Uses concurrent scraping + early termination + prioritized URLs
+   */
+  async researchTopicFast(query, maxPages = 10, engines, signal) {
+    const startTime = Date.now();
+    console.error(`\n🚀 FAST RESEARCH MODE: "${query}"`);
+    console.error(`   Target: ${maxPages} pages, streaming synthesis`);
+    
+    // Phase 1: Search (parallel)
+    console.error('\n📡 Phase 1: Searching...');
+    const searchResults = await this.searchMultipleEngines(query, engines, signal);
+    
+    if (searchResults.length === 0) {
+      return '❌ No search results found.';
+    }
+    
+    // Phase 2: Prioritize URLs (heuristic, no LLM wait)
+    console.error(`   Prioritizing ${searchResults.length} results...`);
+    const urls = prioritizeUrls(searchResults.map(r => r.url), query);
+    const topUrls = urls.slice(0, maxPages);
+    console.error(`   Top ${topUrls.length} URLs selected for scraping`);
+    
+    // Phase 3: Stream scrape with early termination
+    console.error('\n📄 Phase 2: Streaming scrape & synthesis...');
+    const pipeline = new StreamingResearchPipeline({
+      maxConcurrent: 10,
+      scrapeTimeout: this.limits.scrapeTimeout,
+      maxTotalTime: 45000 // 45s hard limit for scraping
+    });
+    
+    const scrapedContent = [];
+    let synthesis = null;
+    let pageCount = 0;
+    
+    // Create scrape function wrapper
+    const scrapeFn = async (url) => {
+      const result = await this.scrapePageWrapper(url, signal);
+      return result ? { success: true, ...result } : null;
+    };
+    
+    // Stream scrape
+    for await (const update of pipeline.scrapeStreaming(topUrls, scrapeFn, signal)) {
+      if (signal?.aborted) break;
+      
+      if (update.type === 'page') {
+        pageCount = update.count;
+        scrapedContent.push(update.data);
+        this.sendProgress(Math.min(pageCount, 5), 6, `📄 Scraped ${pageCount} pages...`);
+        
+        // Early termination check - do we have enough?
+        if (shouldTerminateEarly(scrapedContent, { 
+          minSources: 3, 
+          minTotalChars: 3000,
+          minHighQualitySources: 2 
+        })) {
+          console.error(`   ✅ Early termination: sufficient content gathered`);
+          break;
+        }
+      }
+    }
+    
+    if (scrapedContent.length === 0) {
+      return '❌ Failed to scrape any content from sources.';
+    }
+    
+    console.error(`   Scraped ${scrapedContent.length} pages in ${Date.now() - startTime}ms`);
+    
+    // Phase 4: Synthesize
+    console.error('\n🔬 Phase 3: Synthesizing...');
+    this.sendProgress(5, 6, '🧠 Synthesizing findings...');
+    synthesis = await this.synthesizeContent(query, scrapedContent, signal);
+    
+    console.error(`\n✅ Research complete in ${Date.now() - startTime}ms\n`);
+    this.sendProgress(6, 6, '✅ Research complete');
+    
+    return synthesis;
+  }
+  
+  /**
+   * Wrapper for scrapePage that returns simpler format
+   */
+  async scrapePageWrapper(url, signal) {
+    try {
+      const pageHandle = await this.browserServer.getPage();
+      const { page, markUsed, close } = pageHandle;
+      
+      try {
+        const result = await this.scrapePage(page, url, signal);
+        markUsed();
+        return result;
+      } finally {
+        close();
+      }
+    } catch (err) {
+      console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
+      return null;
+    }
+  }
+
   async searchMultipleEngines(query, engines, signal) {
+    console.error(`   [DEBUG] Searching with engines: ${engines.join(', ')}`);
     const searches = engines.map(engine => this.searchEngineAdapter(engine, query));
     const results = await Promise.allSettled(searches);
     
     const allResults = [];
     results.forEach((result, i) => {
       if (result.status === 'fulfilled') {
-        console.error(`   ✓ ${engines[i]}: ${result.value.length} results`);
-        allResults.push(...result.value);
+        const engineResults = result.value;
+        console.error(`   ✓ ${engines[i]}: ${engineResults.length} results`);
+        // Log first result source for verification
+        if (engineResults.length > 0) {
+          console.error(`      Sample: ${engineResults[0].url?.substring(0, 50)}... (_engine: ${engineResults[0]._engine})`);
+        }
+        allResults.push(...engineResults);
       } else {
         console.error(`   ⚠️ ${engines[i]} search failed: ${result.reason.message}`);
+        console.error(`   Stack: ${result.reason.stack?.substring(0, 200)}`);
       }
     });
     
@@ -319,14 +429,18 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
 
   async searchEngineAdapter(engine, query) {
     // Use browser server for supported engines
+    let results;
     if (engine === 'google') {
-      return await searchGoogle(query, this.browserServer);
+      results = await searchGoogle(query, this.browserServer);
     } else if (engine === 'duckduckgo') {
-      return await searchDuckDuckGo(query, this.browserServer);
+      results = await searchDuckDuckGo(query, this.browserServer);
     } else {
       // Fallback to old method for unsupported engines
-      return await this.searchEngine(engine, query);
+      results = await this.searchEngine(engine, query);
     }
+    
+    // Tag results with source engine for debugging
+    return results.map(r => ({ ...r, _engine: engine }));
   }
 
   async searchEngine(engine, query, signal) {
@@ -612,22 +726,35 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
         return null;
       }
       
-      // Extract clean content using Readability
-      const extracted = this.extractReadableContent(html, url);
+      // Extract clean content using hardened extractor
+      const extracted = extractContent(html, url, {
+        minLength: 200,
+        maxLength: Math.floor(this.limits.maxMemoryPerPage / 2),
+        charThreshold: 200
+      });
       
-      if (!extracted) {
-        console.error(`   ✗ ${url.substring(0, 60)}... (Readability failed)`);
+      if (!extracted || !extracted.success) {
+        console.error(`   ✗ ${url.substring(0, 60)}... (extraction failed: ${extracted?.error || 'unknown'})`);
         return null;
       }
       
-      console.error(`   ✓ ${url.substring(0, 60)}...`);
+      // Validate content quality
+      const validation = validateContent(extracted, url);
+      if (!validation.valid) {
+        console.error(`   ✗ ${url.substring(0, 60)}... (content invalid: ${validation.reason})`);
+        return null;
+      }
+      
+      console.error(`   ✓ ${url.substring(0, 60)}... (${extracted.strategy})`);
       
       return { 
         url, 
-        content: extracted.textContent,
+        content: extracted.content,
         title: extracted.title,
         excerpt: extracted.excerpt,
-        sections: extracted.sections
+        sections: extracted.sections,
+        strategy: extracted.strategy,
+        stats: extracted.stats
       };
     } catch (err) {
       console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
@@ -635,76 +762,12 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
     }
   }
   
-  extractReadableContent(html, url) {
-    try {
-      const htmlSize = html.length;
-      
-      // Create DOM from HTML
-      const dom = new JSDOM(html, { url });
-      const doc = dom.window.document;
-      
-      // Use Readability to extract main content
-      const reader = new Readability(doc, {
-        charThreshold: 500, // Min chars for valid article
-        nbTopCandidates: 5
-      });
-      
-      const article = reader.parse();
-      
-      if (!article) return null;
-      
-      // Extract section structure from parsed content
-      const contentDom = new JSDOM(article.content);
-      const contentDoc = contentDom.window.document;
-      
-      const sections = [];
-      const headings = contentDoc.querySelectorAll('h1, h2, h3');
-      
-      headings.forEach(heading => {
-        const level = parseInt(heading.tagName[1]);
-        const text = heading.textContent.trim();
-        if (text) {
-          sections.push({ level, heading: text });
-        }
-      });
-      
-      // Extract clean text (strip HTML but preserve structure)
-      const textContent = contentDoc.body.textContent
-        .replace(/\s+/g, ' ')
-        .trim();
-      
-      // Respect memory limit
-      const maxChars = Math.floor(this.limits.maxMemoryPerPage / 2);
-      const truncated = textContent.substring(0, maxChars);
-      
-      const reduction = ((1 - truncated.length / htmlSize) * 100).toFixed(1);
-      console.error(`      Size: ${htmlSize.toLocaleString()} → ${truncated.length.toLocaleString()} chars (${reduction}% smaller)`);
-      
-      if (sections.length > 0) {
-        console.error(`      Sections: ${sections.slice(0, 5).map(s => s.heading).join(' | ')}${sections.length > 5 ? '...' : ''}`);
-      }
-      
-      // Show first 200 chars of extracted content for quality check
-      const preview = truncated.substring(0, 200).replace(/\s+/g, ' ');
-      console.error(`      Preview: ${preview}...`);
-      
-      return {
-        title: article.title,
-        textContent: truncated,
-        excerpt: article.excerpt,
-        sections: sections.slice(0, 20) // Max 20 headings for structure
-      };
-    } catch (err) {
-      console.error(`   Readability extraction failed: ${err.message}`);
-      return null;
-    }
-  }
-
   async synthesizeContent(query, scrapedContent, signal) {
     // Build structured source list with sections
     const sources = scrapedContent.map((s, i) => {
       let text = `--- SOURCE ${i+1}: ${s.url} ---\n`;
       if (s.title) text += `Title: ${s.title}\n`;
+      if (s._engine) text += `Engine: ${s._engine}\n`;
       if (s.sections && s.sections.length > 0) {
         text += `Sections: ${s.sections.map(sec => sec.heading).join(', ')}\n`;
       }

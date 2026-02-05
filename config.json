@@ -20,7 +20,7 @@
       "maxPages": 10,
       "maxDepth": 2,
       "timeout": 180000,
-      "searchEngines": ["google"],
+      "searchEngines": ["google", "duckduckgo"],
       "description": "Multi-source web research with local LLM synthesis"
     },
     "memory": {

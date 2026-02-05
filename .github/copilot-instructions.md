@@ -281,6 +281,31 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 - **web-research.js**: Uses `browserServer.getPage()` and `fetch()` for scraping
 - **Deprecated**: browser-pool.js (fully merged into browser.js)
 
+## Web Research Module (Feb 2026 Overhaul)
+
+Major refactoring completed with significant reliability and performance improvements:
+
+**Content Extraction Hardening:**
+- **4-tier fallback strategy**: Readability → Semantic → Density → Raw fallback
+- **Pre-cleaning**: Removes scripts/styles/nav before DOM parsing (fixed regex bug where `on\w+` matched "content=")
+- **Content validation**: Bot detection, link density checks, minimum length enforcement
+- **Metadata extraction**: Multi-selector fallback for title, description, OG tags
+
+**Search Adapter Fixes:**
+- **Google**: Updated selectors (`.g`, `div[data-hveid]`, `.tF2Cxc`) + faster `domcontentloaded` wait
+- **DuckDuckGo**: Completely rebuilt - now uses direct URL `/?q=QUERY&ia=web` with data-testid selectors (was returning 0 results before)
+
+**Performance Optimizations:**
+- **Streaming research pipeline**: Scrape + synthesize concurrently, early termination when sufficient content found (3+ quality sources)
+- **URL prioritization**: Docs > StackOverflow > GitHub > blogs (heuristic ranking, no LLM wait)
+- **Dual-engine support**: Both Google and DuckDuckGo queried in parallel, deduplicated by URL
+- **Target**: 5-10 pages in ~12s (was timing out at 3-5 pages)
+
+**New Components:**
+- `src/lib/streaming-research.js` - Pipeline for concurrent scraping with progress tracking
+- `src/scrapers/content-extractor.js` - Hardened extraction with 4 strategies
+- `test/test-content-extractor.js` - 23-test suite for extraction validation
+
 ## Memory System Philosophy
 Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - **proven**: Evidence-backed approaches that produce good outcomes
@@ -299,6 +324,19 @@ Domain scoping: Memories can be tagged with optional `domain` field for project-
 - **Style**: Minimal abstractions, direct implementations, no unnecessary complexity
 - **Comments**: Avoid - code should be self-documenting
 - **Hardening**: Use promise locks, validate inputs, proper error rollback, URL constructor for endpoints
+
+## LLM-Optimized Code Design
+Code should be **optimized for maintenance by LLMs**, not by humans. Human readability concerns are secondary. Prioritize patterns that LLMs handle well:
+
+| LLM-Friendly | Avoid |
+|--------------|-------|
+| Clear function boundaries | Deep inheritance chains |
+| Explicit state (visible mutations) | Hidden state in `this.*` properties |
+| Flat structures | Deep hierarchies, decorator patterns |
+| Minimal abstraction layers | Over-DRY code that scatters logic |
+| Complete context in one place | Framework magic/conventions |
+
+**What humans find "unreadable" (dense, compact, inline logic) is often easier for LLMs to reason about because it reduces indirection.** LLMs don't get tired reading long files - they prefer complete context over jumping between 10 files.
 
 ## Key Principles
 - **Avoid OOP meta-state**: No classes with scattered `this.*` properties mixing data and behavior
