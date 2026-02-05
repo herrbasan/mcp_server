@@ -53,7 +53,7 @@
     }
   },
   "llm": {
-    "defaultProvider": "lmstudio",
+    "defaultProvider": "grok",
     "embeddingProvider": "lmstudio",
     "providers": {
       "lmstudio": {
@@ -76,7 +76,7 @@
         "model": "${OLLAMA_MODEL}",
         "embeddingModel": "${OLLAMA_EMBEDDING_MODEL}",
         "temperature": 0.7,
-        "contextWindow": 32768
+        "contextWindow": 16384
       },
       "gemini": {
         "enabled": true,
@@ -84,6 +84,13 @@
         "apiKey": "${GEMINI_API_KEY}",
         "model": "${GEMINI_MODEL}",
         "embeddingModel": "${GEMINI_EMBEDDING_MODEL}",
+        "temperature": 0.7
+      },
+      "grok": {
+        "enabled": true,
+        "type": "grok",
+        "apiKey": "${GROK_API_KEY}",
+        "model": "grok-4-1-fast-non-reasoning",
         "temperature": 0.7
       },
       "openai": {
