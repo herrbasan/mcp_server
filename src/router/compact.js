@@ -1,5 +1,3 @@
-// Rolling compaction: Chunk + PreviousSummary → NewSummary (iteratively)
-
 import { estimateTokens } from './tokenize.js';
 
 export async function compactChunk(chunk, previousSummary, endpoint, modelName, targetTokens) {
@@ -32,7 +30,6 @@ export async function compactChunk(chunk, previousSummary, endpoint, modelName, 
   const summary = data.choices[0].message.content.trim();
   const tokens = estimateTokens(summary).tokens;
   
-  // Validate compression happened
   const inputTokens = estimateTokens(input).tokens;
   if (tokens >= inputTokens) {
     console.error('\n=== COMPACTION FAILURE ===');

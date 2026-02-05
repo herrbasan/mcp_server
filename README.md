@@ -5,8 +5,8 @@ Centralized MCP server running as an independent HTTP service (MCP Streamable HT
 ## Features
 
 - **Remote Architecture**: Independent server accessible over network (Streamable HTTP)
-- **Code Search & Analysis**: Semantic search across remote codebases via UNC paths (NEW)
-- **Autonomous Agent**: Local LLM agent with file access for code analysis (NEW)
+- **Code Search & Retrieval**: Semantic search, file exploration, and smart retrieval (NEW)
+- **Code Inspector**: LLM-based code analysis for files and snippets (NEW)
 - **Web Monitoring**: Real-time log streaming and memory management UI
 - **Single Entry Point**: One MCP server manages multiple specialized servers
 - **Modular Design**: Easy to add/remove server modules
@@ -69,8 +69,10 @@ mcp_server/
 │       ├── lm-studio-ws.js      # WebSocket LM Studio integration
 │       ├── web-research.js      # Multi-source web research
 │       ├── browser.js           # Browser automation
-│       ├── local-agent.js       # Autonomous code analysis agent
-│       └── code-search.js       # Semantic code search
+│       ├── code-inspector.js    # LLM code analysis (inspect_code)
+│       └── code-search/         # Semantic search & retrieval
+│           ├── server.js        # Main search server
+│           └── indexer.js       # Index building utilities
 ├── scripts/
 │   └── build-index.js           # CLI: Build semantic code index
 ├── docs/                        # Documentation
@@ -495,12 +497,12 @@ node scripts/build-index.js --all --force
 
 **With Code Search** (after):
 1. Claude discovers: `get_workspace_config()` → sees available workspaces
-2. Claude searches: `search_semantic({ workspace: "BADKID-DEV", query: "audio player" })`
+2. Claude searches: `search_semantic({ query: "audio player" })` (searches all workspaces, returns hash IDs)
 3. Claude retrieves: `retrieve_file({ file: "BADKID-DEV:src/player.js" })`
 4. Claude context: ~6k tokens
 
 **With Local Agent** (ultra-efficient):
-1. Claude delegates: `run_local_agent({ workspace: "BADKID-DEV", task: "How does the audio player work?" })`
+1. Claude delegates: `inspect_code({ target: "fc745a690e4db10279c18241a0a572c7", question: "How does the audio player work?" })`
 2. Agent (local LLM) explores autonomously using search tools
 3. Claude receives summary only
 4. Claude context: ~500 tokens
@@ -538,7 +540,7 @@ Check index health:
 
 **Workspace Resolution**: Named workspaces map directly to UNC paths
 - `BADKID-DEV` → `\\BADKID\Stuff\DEV`
-- File IDs: `workspace:relative/path` (e.g., `BADKID-DEV:src/http-server.js`)
+- File IDs: 32-character SHA256 hashes (e.g., `fc745a690e4db10279c18241a0a572c7`)
 - Security: Path traversal validation, no escaping workspace root
 
 **Agent Loop** (run_local_agent):

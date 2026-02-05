@@ -1,5 +1,3 @@
-// Text chunking for large data that exceeds context window
-
 import { estimateTokens } from './tokenize.js';
 
 export function chunkText(text, maxTokensPerChunk) {
@@ -11,7 +9,6 @@ export function chunkText(text, maxTokensPerChunk) {
     throw new Error('maxTokensPerChunk must be positive');
   }
 
-  // Conservative: 3 chars per token
   const charsPerChunk = maxTokensPerChunk * 3;
   const numChunks = Math.ceil(text.length / charsPerChunk);
   

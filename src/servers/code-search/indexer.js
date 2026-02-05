@@ -1,20 +1,11 @@
-/**
- * Centralized code indexing utilities
- * Shared by build-index.js and server.js refreshIndex
- */
-
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-
-// ========== FILE ID GENERATION ==========
 
 export function generateFileId(workspace, filePath) {
   const fileKey = `${workspace}:${filePath}`;
   return createHash('sha256').update(fileKey).digest('hex').slice(0, 32);
 }
-
-// ========== LANGUAGE DETECTION ==========
 
 export function detectLanguage(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -35,8 +26,6 @@ export function detectLanguage(filePath) {
   };
   return langMap[ext] || 'unknown';
 }
-
-// ========== CONTENT PARSING ==========
 
 function getLineNumber(content, index) {
   return content.slice(0, index).split('\n').length;
@@ -72,8 +61,6 @@ export function parseFile(content, filePath) {
   return tree;
 }
 
-// ========== WORKSPACE SCANNING ==========
-
 const EXCLUDED_DIRS = ['.git', 'node_modules', '.next', 'dist', 'build', '.vscode', '$RECYCLE.BIN', 'System Volume Information', 'Recovery', '$Recycle.Bin'];
 const INCLUDED_EXTS = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h', '.cs', '.go', '.rs', '.md'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -103,8 +90,6 @@ export async function walkWorkspace(basePath, currentPath, files) {
   }
 }
 
-// ========== EMBEDDING TEXT GENERATION ==========
-
 export function generateEmbeddingText(filePath, tree) {
   let embeddingText = filePath;
   if (tree && (tree.functions.length > 0 || tree.classes.length > 0)) {
@@ -119,8 +104,6 @@ export function generateEmbeddingText(filePath, tree) {
   }
   return embeddingText;
 }
-
-// ========== INDEX I/O ==========
 
 export async function writeIndexStreaming(filePath, index) {
   const { createWriteStream } = await import('fs');

@@ -147,13 +147,13 @@ if (config.servers['memory']?.enabled) {
 
 // Browser server already initialized above (before web-research)
 
-// Both local-agent and code-search share workspace config
+// Both code-inspector and code-search share workspace config
 const workspaceConfig = config.workspaces || {};
 
 if (config.servers['local-agent']?.enabled) {
-  const { createLocalAgentServer } = await import('./servers/local-agent.js');
+  const { createCodeInspectorServer } = await import('./servers/code-inspector.js');
   const agentConfig = { ...config.servers['local-agent'], workspaces: workspaceConfig };
-  const s = createLocalAgentServer(agentConfig, llmRouter);
+  const s = createCodeInspectorServer(agentConfig, llmRouter);
   serverModules.set('local-agent', s);
   tools.push(...s.getTools());
   if (s.getPrompts) prompts.push(...s.getPrompts());
@@ -170,12 +170,12 @@ if (config.servers['code-search']?.enabled) {
   console.log('✓ Code Search');
 }
 
-// Wire up inter-module communication (Local Agent uses Code Search when available)
+// Wire up inter-module communication (Code Inspector uses Code Search when available)
 const localAgent = serverModules.get('local-agent');
 const codeSearch = serverModules.get('code-search');
 if (localAgent && codeSearch) {
   localAgent.setCodeSearchServer(codeSearch);
-  console.log('✓ Local Agent ↔ Code Search integration');
+  console.log('✓ Code Inspector ↔ Code Search integration');
 }
 
 // Start web monitoring interface
@@ -295,11 +295,13 @@ function createMCPServer() {
     for (const [sName, module] of serverModules) {
       if (module.handlesTool(name)) {
         if (progressToken && module.setProgressCallback) {
-        module.setProgressCallback((data) => {
-          const { progress, total, message } = data;
+          module.setProgressCallback((data) => {
+            const { progress, total, message } = data;
             server.notification({
               method: 'notifications/progress',
               params: { progressToken, progress, total, message }
+            }).catch(() => {
+              // Client disconnected, ignore
             });
           });
         }

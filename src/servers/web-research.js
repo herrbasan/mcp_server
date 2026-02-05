@@ -12,7 +12,6 @@ export class WebResearchServer {
     this.selectionProvider = config.selectionProvider || null;
     this.scraperRegistry = new ScraperRegistry();
     
-    // Guardrails (local-first reliability focus)
     this.limits = {
       totalTimeout: config.timeout || config.totalTimeout || 120000,  // 120s total pipeline
       scrapeTimeout: config.scrapeTimeout || 8000,       // 8s per page scrape
@@ -37,7 +36,7 @@ export class WebResearchServer {
   sendProgress(progress, total, message) {
     if (this.progressCallback) {
       try {
-        this.progressCallback(progress, total, message);
+        this.progressCallback({ progress, total, message });
       } catch {
         // Client disconnected, ignore
       }
@@ -45,8 +44,6 @@ export class WebResearchServer {
   }
 
   enhanceQuery(query) {
-    // DISABLED: Over-quoting breaks search engines
-    // Return query as-is to let search engines handle natural language
     return query;
   }
 
@@ -147,7 +144,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async callTool(name, args) {
-    // Backpocket: prepare_research_query available via prepareQuery() but not exposed
     console.error('[WebResearch] callTool entered');
     
     const { query, max_pages = this.maxPages, engines = this.searchEngines } = args;
@@ -162,7 +158,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       
       this.sendProgress(0, 5, `Starting research: "${query}"`);
       
-      // Use fast streaming mode for 5+ pages to avoid timeout
       const report = max_pages >= 5 
         ? await this.researchTopicFast(query, max_pages, engines, controller.signal)
         : await this.researchTopic(query, max_pages, engines, controller.signal);
@@ -293,16 +288,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     return currentSynthesis.text;
   }
 
-  /**
-   * Fast streaming research - optimized for 5-10 pages without timeout
-   * Uses concurrent scraping + early termination + prioritized URLs
-   */
   async researchTopicFast(query, maxPages = 10, engines, signal) {
     const startTime = Date.now();
     console.error(`\n🚀 FAST RESEARCH MODE: "${query}"`);
     console.error(`   Target: ${maxPages} pages, streaming synthesis`);
     
-    // Phase 1: Search (parallel)
     console.error('\n📡 Phase 1: Searching...');
     const searchResults = await this.searchMultipleEngines(query, engines, signal);
     
@@ -310,13 +300,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       return '❌ No search results found.';
     }
     
-    // Phase 2: Prioritize URLs (heuristic, no LLM wait)
     console.error(`   Prioritizing ${searchResults.length} results...`);
     const urls = prioritizeUrls(searchResults.map(r => r.url), query);
     const topUrls = urls.slice(0, maxPages);
     console.error(`   Top ${topUrls.length} URLs selected for scraping`);
     
-    // Phase 3: Stream scrape with early termination
     console.error('\n📄 Phase 2: Streaming scrape & synthesis...');
     const pipeline = new StreamingResearchPipeline({
       maxConcurrent: 10,
@@ -328,13 +316,11 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     let synthesis = null;
     let pageCount = 0;
     
-    // Create scrape function wrapper
     const scrapeFn = async (url) => {
       const result = await this.scrapePageWrapper(url, signal);
       return result ? { success: true, ...result } : null;
     };
     
-    // Stream scrape
     for await (const update of pipeline.scrapeStreaming(topUrls, scrapeFn, signal)) {
       if (signal?.aborted) break;
       
@@ -343,7 +329,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         scrapedContent.push(update.data);
         this.sendProgress(Math.min(pageCount, 5), 6, `📄 Scraped ${pageCount} pages...`);
         
-        // Early termination check - do we have enough?
         if (shouldTerminateEarly(scrapedContent, { 
           minSources: 3, 
           minTotalChars: 3000,
@@ -361,7 +346,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     
     console.error(`   Scraped ${scrapedContent.length} pages in ${Date.now() - startTime}ms`);
     
-    // Phase 4: Synthesize
     console.error('\n🔬 Phase 3: Synthesizing...');
     this.sendProgress(5, 6, '🧠 Synthesizing findings...');
     synthesis = await this.synthesizeContent(query, scrapedContent, signal);
@@ -372,9 +356,6 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     return synthesis;
   }
   
-  /**
-   * Wrapper for scrapePage that returns simpler format
-   */
   async scrapePageWrapper(url, signal) {
     try {
       const pageHandle = await this.browserServer.getPage();
@@ -644,18 +625,19 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
   async scrapePages(urls, signal) {
     const results = [];
     
-    // Scrape with configured concurrency limit
     const concurrency = this.limits.concurrentScrapes;
     for (let i = 0; i < urls.length; i += concurrency) {
       const batch = urls.slice(i, i + concurrency);
+      const batchNum = Math.floor(i / concurrency) + 1;
+      const totalBatches = Math.ceil(urls.length / concurrency);
       
-      // Add random delay between batches to avoid rate limiting
+      this.sendProgress(i, urls.length, `🌐 Scraping batch ${batchNum}/${totalBatches}...`);
+      
       if (i > 0) {
         const batchDelay = 1000 + Math.random() * 2000; // 1-3s between batches
         await new Promise(r => setTimeout(r, batchDelay));
       }
       
-      // Each page gets its own isolated browser instance
       const promises = batch.map(url => this.scrapePageIsolated(url, signal));
       const batchResults = await Promise.allSettled(promises);
       
@@ -684,13 +666,13 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
     
     try {
       const result = await this.scrapePage(page, url, signal);
-      markUsed(); // Mark for lingering cleanup
+      markUsed();
       return result;
     } catch (err) {
       console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
       return null;
     } finally {
-      close(); // Release back to browser server for cleanup
+      close();
     }
   }
 
@@ -703,7 +685,6 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
       // Random delay before navigation (100-500ms)
       await this.randomDelay(100, 500);
       
-      // Try to scrape with timeout, but capture partial content on timeout
       const scrapePromise = this.scraperRegistry.scrapeUrl(url, page);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Scrape timeout')), this.limits.scrapeTimeout)
@@ -713,7 +694,6 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
         html = await Promise.race([scrapePromise, timeoutPromise]);
       } catch (err) {
         if (err.message === 'Scrape timeout') {
-          // Timeout - grab whatever HTML is currently loaded
           console.error(`   ⏱️  ${url.substring(0, 60)}... (timeout, using partial content)`);
           html = await page.content().catch(() => null);
         } else {
@@ -726,7 +706,6 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
         return null;
       }
       
-      // Extract clean content using hardened extractor
       const extracted = extractContent(html, url, {
         minLength: 200,
         maxLength: Math.floor(this.limits.maxMemoryPerPage / 2),
@@ -738,7 +717,6 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
         return null;
       }
       
-      // Validate content quality
       const validation = validateContent(extracted, url);
       if (!validation.valid) {
         console.error(`   ✗ ${url.substring(0, 60)}... (content invalid: ${validation.reason})`);
@@ -851,7 +829,7 @@ Return the merged synthesis in markdown.`;
     return await this.queryLLM(prompt, signal, 16384);
   }
 
-  async queryLLM(prompt, signal, maxTokens = 1000, responseFormat = null) {
+  async queryLLM(prompt, signal, maxTokens = 1000, responseFormat = null, progressMessage = null) {
     if (!this.router) {
       throw new Error('LLM router not configured for web research');
     }
@@ -859,27 +837,22 @@ Return the merged synthesis in markdown.`;
     console.error(`[WebResearch.queryLLM] router exists: ${!!this.router}, provider: ${this.synthesisProvider}, maxTokens: ${maxTokens}`);
     console.error(`[WebResearch.queryLLM] prompt length: ${prompt.length}, responseFormat: ${!!responseFormat}`);
     
-    try {
-      console.error(`[WebResearch.queryLLM] About to call router.predict`);
-      const response = await this.router.predict({
-        prompt,
-        responseFormat
-      });
-      
-      console.error(`[WebResearch.queryLLM] router.predict succeeded`);
-      // If responseFormat was specified, router returns JSON string - parse it
-      if (responseFormat) {
-        try {
-          return JSON.parse(response);
-        } catch {
-          return response; // Fallback to raw if parse fails
-        }
+    console.error(`[WebResearch.queryLLM] About to call router.predict`);
+    const response = await this.router.predict({
+      prompt,
+      responseFormat
+    });
+    
+    console.error(`[WebResearch.queryLLM] router.predict succeeded`);
+    // If responseFormat was specified, router returns JSON string - parse it
+    if (responseFormat) {
+      try {
+        return JSON.parse(response);
+      } catch {
+        return response; // Fallback to raw if parse fails
       }
-      return response;
-    } catch (err) {
-      console.error(`[WebResearch.queryLLM] router.predict failed: ${err.message}`);
-      throw new Error(`LLM query failed: ${err.message}`);
     }
+    return response;
   }
 
   async setupStealthMode(page) {

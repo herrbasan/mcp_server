@@ -1,8 +1,5 @@
-// Gemini adapter: Google AI REST API provider
-// API Reference: https://ai.google.dev/api
-
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const DEFAULT_MODEL = 'gemini-2.0-flash'; // fallback if no model configured
+const DEFAULT_MODEL = 'gemini-2.0-flash';
 
 export function createGeminiAdapter(config) {
   const { apiKey, embeddingModel, embeddingDimensions = 768 } = config;
@@ -26,8 +23,6 @@ export function createGeminiAdapter(config) {
     return response.json();
   }
   
-  // Helper: get first available model that supports generateContent
-  // Prefer stable models (gemini-2.0, gemini-1.5) over experimental
   async function getFirstAvailableModel() {
     const url = `${BASE_URL}/models?key=${apiKey}`;
     const response = await fetch(url);
@@ -39,7 +34,6 @@ export function createGeminiAdapter(config) {
       m.name?.includes('gemini')
     );
     
-    // Prefer stable models: 2.0-flash, 1.5-flash, 1.5-pro, then any
     const preferred = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
     for (const pref of preferred) {
       const match = genModels.find(m => m.name?.includes(pref));
@@ -52,7 +46,6 @@ export function createGeminiAdapter(config) {
   return {
     name: 'gemini',
     
-    // Resolve model: config > first available > default
     async resolveModel() {
       if (model) return model;
       model = await getFirstAvailableModel();
@@ -74,8 +67,7 @@ export function createGeminiAdapter(config) {
         maxOutputTokens: maxTokens || 2048
       };
       
-      // Gemini uses responseMimeType + responseSchema
-      if (schema) {
+        if (schema) {
         generationConfig.responseMimeType = 'application/json';
         generationConfig.responseSchema = schema;
       }
@@ -96,45 +88,43 @@ export function createGeminiAdapter(config) {
       return candidate.content.parts[0].text;
     },
     
-    async embedText(text, taskType = 'RETRIEVAL_DOCUMENT') {
+    async embedText(text, requestedModel, taskType = 'RETRIEVAL_DOCUMENT') {
+      const modelToUse = requestedModel || embeddingModel;
       const body = {
         content: { parts: [{ text }] },
         taskType,
         outputDimensionality: embeddingDimensions
       };
       
-      const data = await apiCall(`models/${embeddingModel}:embedContent`, body);
+      const data = await apiCall(`models/${modelToUse}:embedContent`, body);
       return data.embedding?.values || [];
     },
     
-    async embedBatch(texts, taskType = 'RETRIEVAL_DOCUMENT') {
-      // Use batchEmbedContents endpoint
+    async embedBatch(texts, requestedModel, taskType = 'RETRIEVAL_DOCUMENT') {
+      const modelToUse = requestedModel || embeddingModel;
       const requests = texts.map(text => ({
-        model: `models/${embeddingModel}`,
+        model: `models/${modelToUse}`,
         content: { parts: [{ text }] },
         taskType,
         outputDimensionality: embeddingDimensions
       }));
       
       const body = { requests };
-      const data = await apiCall(`models/${embeddingModel}:batchEmbedContents`, body);
+      const data = await apiCall(`models/${modelToUse}:batchEmbedContents`, body);
       
       return (data.embeddings || []).map(e => e.values);
     },
     
     async getContextWindow() {
-      // Try to fetch actual context window from API
       try {
         const modelInfo = await apiCall(`models/${model}`, null, 'GET');
         if (modelInfo.inputTokenLimit) {
           return modelInfo.inputTokenLimit;
         }
       } catch {
-        // Fallback to hardcoded values based on model name
       }
       
-      // Fallback: Hardcoded values for known model families
-      // gemini-2.5-flash/pro: 1M tokens, gemini-3: 1M tokens
+
       if (model.includes('2.5') || model.includes('3')) return 1048576;
       if (model.includes('2.0')) return 1048576;
       if (model.includes('latest')) return 1048576; // Aliases like flash-latest
@@ -163,7 +153,6 @@ export function createGeminiAdapter(config) {
     },
     
     async getLoadedModel() {
-      // Cloud API - model always "loaded"
       return { id: model, name: model };
     },
     
@@ -180,7 +169,7 @@ export function createGeminiAdapter(config) {
       embeddings: true,
       structuredOutput: true,
       batch: true,
-      modelManagement: false,  // Cloud API, no local model management
+      modelManagement: false,
       local: false
     }
   };

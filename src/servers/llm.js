@@ -1,8 +1,3 @@
-/**
- * LLM Server - Multi-provider query tool
- * Pure functional module using new router architecture
- */
-
 const TOOLS = [
   {
     name: 'query_model',
@@ -22,7 +17,6 @@ const TOOLS = [
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
-// Tool handler - pure function
 async function queryModel(router, config, { prompt, systemPrompt, schema, maxTokens }) {
   const response = await router.predict({
     prompt,
@@ -33,7 +27,6 @@ async function queryModel(router, config, { prompt, systemPrompt, schema, maxTok
   return { content: [{ type: 'text', text: response || '(No response generated)' }] };
 }
 
-// Factory function
 export function createLLMServer(config, router) {
   return {
     getTools: () => TOOLS,

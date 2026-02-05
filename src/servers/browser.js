@@ -1,6 +1,3 @@
-// Browser Server - Direct Puppeteer access for LLMs
-// Persistent browser with idle timeout for performance
-
 import puppeteer from 'puppeteer';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
@@ -115,8 +112,6 @@ Use "text" for 90% of cases - token-efficient and LLM-friendly.`,
     }
   }
 ];
-
-// --- Content extraction (pure functions) ---
 
 function extractHtml(html, maxSize) {
   const truncated = html.substring(0, maxSize);
@@ -250,8 +245,6 @@ function htmlToMarkdown(html, title) {
   return md.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// --- Browser server factory ---
-
 export function createBrowserServer(config = {}) {
   const timeout = config.timeout || 30000;
   const maxContentSize = config.maxContentSize || 2 * 1024 * 1024;
@@ -260,7 +253,6 @@ export function createBrowserServer(config = {}) {
   const idleTimeout = config.idleTimeout || 300000;
   const userDataDir = config.userDataDir || null;
 
-  // Browser state in closure
   let browser = null;
   let browserLock = null;
   let idleTimer = null;
@@ -268,12 +260,12 @@ export function createBrowserServer(config = {}) {
   let lingeringPages = []; // { page, usedAt, closing }
   let cleanupInterval = null;
 
-  const MIN_LINGER_MS = 10000;  // 10 seconds
-  const MAX_LINGER_MS = 30000;  // 30 seconds
-  const CLEANUP_INTERVAL_MS = 5000; // Check every 5 seconds
+  const MIN_LINGER_MS = 10000;
+  const MAX_LINGER_MS = 30000;
+  const CLEANUP_INTERVAL_MS = 5000;
 
   function startCleanupTask() {
-    if (cleanupInterval) return; // Already running
+    if (cleanupInterval) return;
     
     cleanupInterval = setInterval(() => {
       const now = Date.now();
@@ -321,7 +313,6 @@ export function createBrowserServer(config = {}) {
   async function closeBrowser() {
     if (!browser) return;
     
-    // Stop cleanup task
     if (cleanupInterval) {
       clearInterval(cleanupInterval);
       cleanupInterval = null;
@@ -379,7 +370,7 @@ export function createBrowserServer(config = {}) {
       
       browser = await puppeteer.launch(launchOptions);
       console.error('[Browser] Browser ready');
-      startCleanupTask(); // Start cleanup for lingering pages
+      startCleanupTask();
     })();
 
     await browserLock;
@@ -412,8 +403,6 @@ export function createBrowserServer(config = {}) {
       default: return extractText(html, url, maxContentSize);
     }
   }
-
-  // --- Tool handlers ---
 
   async function fetchPage({ url, mode = 'text', waitFor, fullPage = false, viewport }) {
     return withPage(async (page) => {
@@ -510,7 +499,6 @@ export function createBrowserServer(config = {}) {
       }
     },
     
-    // Public API for custom automation (search adapters, web-research)
     async getPage() {
       const b = await getBrowser();
       const page = await b.newPage();
@@ -526,7 +514,7 @@ export function createBrowserServer(config = {}) {
       return {
         page,
         markUsed() {
-          pageInfo.usedAt = Date.now(); // Mark for lingering cleanup
+          pageInfo.usedAt = Date.now();
         },
         close() {
           return closePage(pageInfo);
@@ -534,7 +522,6 @@ export function createBrowserServer(config = {}) {
       };
     },
     
-    // Simplified fetch for web-research scraping
     async fetch(url, options = {}) {
       return withPage(async (page) => {
         await page.goto(url, { 

@@ -1,14 +1,11 @@
-// Scraper registry - matches URLs to specialized scrapers
-
 import { GoogleSearchScraper } from './google-search.js';
 import { GenericScraper } from './generic.js';
 
 export class ScraperRegistry {
   constructor() {
-    // Order matters - first match wins
     this.scrapers = [
       new GoogleSearchScraper(),
-      new GenericScraper()  // Fallback
+      new GenericScraper()
     ];
   }
 
@@ -18,7 +15,7 @@ export class ScraperRegistry {
         return scraper;
       }
     }
-    return this.scrapers[this.scrapers.length - 1]; // Fallback to generic
+    return this.scrapers[this.scrapers.length - 1];
   }
 
   async scrapeUrl(url, page) {

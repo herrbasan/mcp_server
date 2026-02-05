@@ -18,16 +18,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Load environment variables
 dotenv.config({ path: path.join(__dirname, '..', '..', '..', '.env') });
-
-/**
- * CLI tool for building full code search index
- * Usage: 
- *   node scripts/build-index.js --workspace "BADKID-DEV"   (single workspace)
- *   node scripts/build-index.js --all                      (all workspaces)
- *   node scripts/build-index.js --all --force              (all, no confirmation)
- */
 
 async function main() {
   const args = parseArgs();
@@ -43,22 +34,18 @@ async function main() {
   console.log('🔍 Code Search Index Builder');
   console.log('============================\n');
 
-  // Load config and substitute environment variables
   const configPath = path.join(__dirname, '..', '..', '..', 'config.json');
   let configText = await fs.readFile(configPath, 'utf-8');
   
-  // Substitute ${VAR} with process.env.VAR
   configText = configText.replace(/\$\{([^}]+)\}/g, (match, varName) => {
     return process.env[varName] || match;
   });
   
   const config = JSON.parse(configText);
 
-  // Initialize workspace resolver
   const { WorkspaceResolver } = await import('../../lib/workspace.js');
   const workspace = new WorkspaceResolver(config.workspaces || {});
 
-  // Initialize LLM router for embeddings
   console.log('Initializing LLM router...');
   const { createRouter } = await import('../../router/router.js');
   const router = await createRouter(config.llm);
@@ -66,7 +53,6 @@ async function main() {
 
   const indexPath = config.servers['code-search']?.indexPath || 'data/indexes';
 
-  // Build all workspaces or single workspace
   if (args.all) {
     const workspaces = workspace.getWorkspaces();
     console.log(`Building indexes for ${workspaces.length} workspaces:\n`);
@@ -96,7 +82,6 @@ async function main() {
     
     console.log('\n🎉 All indexes built!');
   } else {
-    // Single workspace
     const workspaceName = args.workspace;
     console.log(`Workspace: ${workspaceName}`);
     
@@ -106,7 +91,6 @@ async function main() {
     const indexFile = path.join(indexPath, `${workspaceName}.json`);
     console.log(`Index file: ${indexFile}\n`);
 
-    // Check if index exists
     try {
       await fs.access(indexFile);
       if (!args.force) {
@@ -175,14 +159,12 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
 
   console.log(`\n✓ Parsed ${fileData.length} files\n`);
 
-  // Batch embedding with parallel requests
   const BATCH_SIZE = 50;
   const PARALLEL_REQUESTS = 4;
   
   console.log(`Phase 3: Embedding (batch=${BATCH_SIZE}, parallel=${PARALLEL_REQUESTS})...`);
   const embedStartTime = Date.now();
 
-  // Create batches
   const batches = [];
   for (let i = 0; i < fileData.length; i += BATCH_SIZE) {
     batches.push(fileData.slice(i, i + BATCH_SIZE));
@@ -191,7 +173,6 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
   let embeddedCount = 0;
   const allEmbeddings = new Map(); // filePath -> embedding
 
-  // Process batches in parallel chunks
   for (let i = 0; i < batches.length; i += PARALLEL_REQUESTS) {
     const parallelBatches = batches.slice(i, i + PARALLEL_REQUESTS);
     
@@ -203,7 +184,6 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
       })
     );
 
-    // Collect results
     for (const batchResult of results) {
       for (const { filePath, embedding } of batchResult) {
         allEmbeddings.set(filePath, embedding);
@@ -220,7 +200,6 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
   const embedDuration = ((Date.now() - embedStartTime) / 1000).toFixed(1);
   console.log(`\n✓ Embedded in ${embedDuration}s (${(fileData.length / embedDuration).toFixed(1)} files/s)\n`);
 
-  // Build index
   console.log('Phase 4: Building index...');
   for (const { filePath, metadata, contentHash, tree } of fileData) {
     const fileId = generateFileId(workspaceName, filePath);

@@ -1,5 +1,3 @@
-// Output formatting: thinking tag stripping, JSON extraction, markdown conversion
-
 const DEFAULT_THINKING_TAGS = ['think', 'analysis', 'reasoning'];
 
 function createThinkingStripper(tags = DEFAULT_THINKING_TAGS) {
@@ -109,18 +107,15 @@ export function stripThinking(text, tags = DEFAULT_THINKING_TAGS) {
   return result.trim();
 }
 
-// Extract JSON from text that may contain thinking tags or surrounding text
 export function extractJSON(text) {
   if (!text) return null;
   
-  // Try direct parse first
   try {
     return JSON.parse(text);
   } catch {
     // Continue to extraction attempts
   }
   
-  // Try to find JSON in text (between { } or [ ])
   const jsonMatch = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
   if (jsonMatch) {
     try {
@@ -133,18 +128,15 @@ export function extractJSON(text) {
   return null;
 }
 
-// Format output based on options
 export function formatOutput(text, options = {}) {
   if (!text) return text;
   
   let result = text;
   
-  // Strip thinking tags if requested
   if (options.stripThinking) {
     result = stripThinking(result, options.thinkingTags);
   }
   
-  // Extract JSON if responseFormat specified
   if (options.extractJSON) {
     const json = extractJSON(result);
     return json ? JSON.stringify(json) : result;

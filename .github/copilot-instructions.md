@@ -57,7 +57,7 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (26 across 6 modules):
+**Tools** (30 across 6 modules):
 - **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LM Studio** (3): REST API local model integration (query_model, list_available_models, get_loaded_model)
 - **Web Research** (1): Multi-source web research with persistent browser pool (research_topic)
@@ -68,17 +68,20 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - Intelligent source selection via local LLM (prioritizes GitHub issues, StackOverflow, docs)
   - 10 concurrent page scrapes with SSL error handling, retry logic
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
-  - **Known Issues**: research_topic currently failing with "No content could be synthesized from available sources" error (Feb 5, 2026) - may be issue with search adapters, scraping, or synthesis step
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
-- **Local Agent** (3): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file, inspect_code)
-- **Code Search** (9): Semantic search for large codebases (get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code)
+- **Code Inspector** (1): LLM-based code analysis (inspect_code) - analyze files or code snippets
+- **Code Search** (13): Semantic search and retrieval for large codebases
+  - Discovery: search_semantic, search_keyword, search_files, search_code
+  - Retrieval: retrieve_file, peek_file, get_context
+  - Exploration: get_file_tree, get_function_tree
+  - Index: refresh_index, refresh_all_indexes, get_workspace_config, get_file_info, get_index_stats
 
 ## Workspace Architecture (For LLMs Using MCP Orchestrator)
 
 **YOU ARE A CALLING LLM** - You don't see local files. Use MCP tools to interact with codebases.
 
 **Core Utilities**:
-- `src/lib/workspace.js` - UNC path mapping, security validation (shared by Local Agent and Code Search)
+- `src/lib/workspace.js` - UNC path mapping, security validation (shared by Code Inspector and Code Search)
 
 ### Quick Start Workflow
 ```
@@ -142,22 +145,26 @@ All search results return **32-character SHA256 hash IDs** (collision-free):
 
 | Tool | Use For | Returns | Example |
 |------|---------|---------|---------|
-| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ workspace: "BADKID-DEV", query: "HTTP request handling" }` |
+| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ query: "HTTP request handling" }` (omit workspace to search all) |
 | `search_keyword` | Exact text/regex | File matches | `{ workspace: "BADKID-DEV", pattern: "StreamableHTTP" }` |
 | `search_files` | Glob patterns | File paths | `{ workspace: "BADKID-DEV", glob: "src/**/*.js" }` |
-| `search_code` | Combined search | Enriched results | `{ workspace: "BADKID-DEV", query: "authentication" }` |
+| `search_code` | Combined search | Enriched results | `{ query: "authentication" }` (omit workspace to search all) |
 | `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "fc745a690e4db10279c18241a0a572c7" }` |
 
 **Key Feature**: `search_semantic` and `get_file_info` both return function/class names, but `get_file_info` includes **line numbers** for precise partial retrieval.
 
-### Agent Delegation
-For complex analysis, delegate to local LLM agent:
+### Code Analysis Workflow
+For code analysis, use explicit search → inspect pattern:
 ```javascript
-run_local_agent({
-  workspace: "BADKID-DEV",
-  task: "Explain the HTTP server architecture"
+// Step 1: Find relevant files
+const results = search_semantic({ query: "HTTP server architecture" })
+
+// Step 2: Inspect specific files
+inspect_code({
+  target: results[0].file_id,
+  question: "Explain the HTTP server architecture"
 })
-// Agent explores autonomously, returns summary only (saves your context)
+// Explicit, predictable, saves context
 ```
 
 ### Index Management
@@ -165,6 +172,7 @@ run_local_agent({
 refresh_index({ workspace: "BADKID-DEV" })      // Update single workspace
 refresh_all_indexes()                            // Update all workspaces
 get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
+search_semantic({ query: "auth logic" })         // Search ALL workspaces (omit workspace param)
 ```
 
 **Index Files**: Located at `data/indexes/{workspace}.json`
@@ -408,7 +416,7 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
 
 **Tool Improvements (Feb 5, 2026)**:
-- ✅ **FIXED**: `inspect_code` now supports hash IDs from search results (32-char format). Use either hash IDs or file paths.
+- ✅ **FIXED**: `inspect_code` supports hash IDs from search results (32-char format) WITHOUT workspace parameter - workspace is auto-resolved from the hash. Use either hash IDs (no workspace) or legacy "workspace:path" format.
 - ✅ **FIXED**: `retrieve_file` description updated to accurately reflect hash ID format instead of legacy "workspace:path" format.
 - Both tools maintain backward compatibility with file paths and workspace-prefixed paths.
 

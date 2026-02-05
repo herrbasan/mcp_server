@@ -1,13 +1,9 @@
-// Ollama adapter: pure function-based provider
-// API Reference: https://github.com/ollama/ollama/blob/main/docs/api.md
-
 export function createOllamaAdapter(config) {
   const { httpEndpoint, embeddingModel } = config;
   let model = config.model; // mutable - can be resolved later
   
   const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/.test(httpEndpoint);
   
-  // Helper: get any running model
   async function getAnyRunningModel(endpoint) {
     const response = await fetch(`${endpoint}/api/ps`);
     if (!response.ok) return null;
@@ -15,7 +11,6 @@ export function createOllamaAdapter(config) {
     return data.models?.[0]?.name || null;
   }
   
-  // Helper: get first available model
   async function getFirstAvailableModel(endpoint) {
     const response = await fetch(`${endpoint}/api/tags`);
     if (!response.ok) return null;
@@ -26,7 +21,6 @@ export function createOllamaAdapter(config) {
   return {
     name: 'ollama',
     
-    // Resolve model: running > config > first available
     async resolveModel() {
       if (model) return model;
       model = await getAnyRunningModel(httpEndpoint);
@@ -53,7 +47,6 @@ export function createOllamaAdapter(config) {
       
       if (maxTokens) body.options.num_predict = maxTokens;
       
-      // Ollama accepts raw schema or simple 'json' mode
       if (schema) {
         body.format = schema;
       }
@@ -73,12 +66,12 @@ export function createOllamaAdapter(config) {
       return data.response || '';
     },
     
-    async embedText(text) {
-      // Use newer /api/embed endpoint (supersedes /api/embeddings)
+    async embedText(text, requestedModel) {
+      const modelToUse = requestedModel || embeddingModel;
       const response = await fetch(`${httpEndpoint}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: embeddingModel, input: text })
+        body: JSON.stringify({ model: modelToUse, input: text })
       });
       
       if (!response.ok) {
@@ -90,12 +83,12 @@ export function createOllamaAdapter(config) {
       return data.embeddings?.[0] || [];
     },
     
-    async embedBatch(texts) {
-      // /api/embed supports array input natively
+    async embedBatch(texts, requestedModel) {
+      const modelToUse = requestedModel || embeddingModel;
       const response = await fetch(`${httpEndpoint}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: embeddingModel, input: texts })
+        body: JSON.stringify({ model: modelToUse, input: texts })
       });
       
       if (!response.ok) {
@@ -129,7 +122,6 @@ export function createOllamaAdapter(config) {
       return 8192;
     },
     
-    // GET /api/tags - List local models
     async listModels() {
       const response = await fetch(`${httpEndpoint}/api/tags`);
       if (!response.ok) {
@@ -149,7 +141,6 @@ export function createOllamaAdapter(config) {
       }));
     },
     
-    // GET /api/ps - List running (loaded) models
     async getRunningModels() {
       const response = await fetch(`${httpEndpoint}/api/ps`);
       if (!response.ok) {
@@ -178,7 +169,6 @@ export function createOllamaAdapter(config) {
       return configured || running[0];
     },
     
-    // POST /api/show - Get detailed model info including context_length
     async showModelInfo(modelName) {
       const response = await fetch(`${httpEndpoint}/api/show`, {
         method: 'POST',
@@ -194,7 +184,6 @@ export function createOllamaAdapter(config) {
       return response.json();
     },
     
-    // Load model by sending empty prompt (keeps it in memory)
     async loadModel(modelName, keepAlive = '5m') {
       const response = await fetch(`${httpEndpoint}/api/generate`, {
         method: 'POST',
@@ -213,7 +202,6 @@ export function createOllamaAdapter(config) {
       return response.json();
     },
     
-    // Unload model by setting keep_alive to 0
     async unloadModel(modelName) {
       const response = await fetch(`${httpEndpoint}/api/generate`, {
         method: 'POST',
@@ -232,7 +220,6 @@ export function createOllamaAdapter(config) {
       return response.json();
     },
     
-    // GET /api/version
     async getVersion() {
       const response = await fetch(`${httpEndpoint}/api/version`);
       if (!response.ok) {

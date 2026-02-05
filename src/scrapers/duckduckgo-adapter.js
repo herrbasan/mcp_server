@@ -1,5 +1,3 @@
-// DuckDuckGo search adapter using browser server
-
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -8,7 +6,6 @@ async function extractSearchResults(page) {
   return await page.evaluate(() => {
     const items = [];
     
-    // DuckDuckGo uses data-testid attributes
     document.querySelectorAll('[data-testid="result"]').forEach(el => {
       const linkEl = el.querySelector('[data-testid="result-title-a"]');
       const snippetEl = el.querySelector('[data-result="snippet"]');
@@ -17,7 +14,6 @@ async function extractSearchResults(page) {
         const url = linkEl.href;
         const title = linkEl.textContent.trim();
         
-        // Skip DDG's own links
         if (!url.includes('duckduckgo.com') && title.length > 0) {
           items.push({
             title: title,
@@ -44,7 +40,6 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
   const startTime = Date.now();
   
   try {
-    // Go directly to search results page
     const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}&ia=web`;
     
     await page.goto(searchUrl, { 
@@ -52,7 +47,6 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
       timeout: timeoutMs 
     });
     
-    // Wait for results to load
     await sleep(2000);
     
     const results = await extractSearchResults(page);
@@ -65,7 +59,6 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
   } catch (error) {
     console.error(`[DuckDuckGo] Error: ${error.message}`);
     
-    // Try partial extraction
     try {
       const partial = await extractSearchResults(page);
       if (partial.length > 0) {

@@ -1,5 +1,3 @@
-// Context manager: wraps chunking/compaction logic with clean API
-
 import { estimateTokens } from './tokenize.js';
 import { chunkText, checkFits as checkFitsRaw } from './chunk.js';
 import { rollingCompact } from './compact.js';
@@ -7,7 +5,6 @@ import { rollingCompact } from './compact.js';
 export function createContextManager(config) {
   const { httpEndpoint, model, maxTokens = 1000, temperature = 0.3 } = config;
   
-  // Live reference to context window - updated by router
   let liveContextWindow = config.contextWindow;
   
   return {
@@ -25,11 +22,10 @@ export function createContextManager(config) {
     calculateAvailableTokens(systemPrompt, outputTokens) {
       const systemTokens = systemPrompt ? estimateTokens(systemPrompt).tokens : 0;
       const available = liveContextWindow - systemTokens - outputTokens;
-      return Math.max(available, 1000); // Ensure at least 1000 tokens available
+      return Math.max(available, 1000);
     },
     
     async compact(text, availableTokens) {
-      // Ensure we have reasonable space for chunking
       const safeAvailable = Math.max(availableTokens, 1000);
       const { chunks } = chunkText(text, safeAvailable);
       

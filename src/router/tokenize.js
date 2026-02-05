@@ -1,12 +1,8 @@
-// Tokenization: fast estimation vs accurate LLM-based counting
-
-// Fast: ~3 chars/token (conservative to avoid underestimation)
 export function estimateTokens(text) {
   if (!text) return { tokens: 0 };
   return { tokens: Math.ceil(text.length / 3) };
 }
 
-// Slow: accurate count via LLM chat completion (uses usage.prompt_tokens)
 export async function tokenizeText(text, endpoint, modelName) {
   if (!text) return { tokens: 0 };
   if (!endpoint || !modelName) return { tokens: 0, error: 'Missing endpoint or modelName' };

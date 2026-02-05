@@ -1,5 +1,3 @@
-// Google Search scraper - human-like behavior to avoid detection
-
 export class GoogleSearchScraper {
   constructor() {
     this.name = 'GoogleSearchScraper';
@@ -11,7 +9,6 @@ export class GoogleSearchScraper {
   }
 
   async scrape(url, page) {
-    // Extract search query from URL
     const urlObj = new URL(url);
     const query = urlObj.searchParams.get('q');
     
@@ -19,19 +16,15 @@ export class GoogleSearchScraper {
       throw new Error('No search query found in Google URL');
     }
 
-    // Go to homepage first with English settings
     await page.goto('https://www.google.com?hl=en&gl=us', {
       waitUntil: 'domcontentloaded',
       timeout: 15000
     });
 
-    // Wait for page settle
     await this.randomDelay(800, 1500);
 
-    // Handle cookie dialog
     await this.handleCookieDialog(page);
 
-    // Human-like search behavior
     await this.randomDelay(500, 1200);
     
     const searchBox = await page.$('textarea[name="q"], input[name="q"]');

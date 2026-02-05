@@ -1,8 +1,7 @@
-// Multi-provider LLM router with context management
-
 import { createLMStudioAdapter } from './adapters/lmstudio.js';
 import { createOllamaAdapter } from './adapters/ollama.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
+import { createGrokAdapter } from './adapters/grok.js';
 import { createContextManager } from './context-manager.js';
 import { formatOutput } from './formatter.js';
 import { estimateTokens } from './tokenize.js';
@@ -10,9 +9,8 @@ import { estimateTokens } from './tokenize.js';
 export async function createRouter(config) {
   const adapters = {};
   const contextManagers = {};
-  const metadata = {}; // Cache for model/context window info
+  const metadata = {};
   
-  // Initialize adapters without blocking on model resolution
   for (const [name, providerConfig] of Object.entries(config.providers)) {
     if (!providerConfig.enabled) continue;
     
@@ -65,8 +63,7 @@ export async function createRouter(config) {
         embeddingDimensions: providerConfig.embeddingDimensions || 768
       });
       
-      // Gemini context window is fixed, no need to query
-      metadata[name].contextWindow = 1048576; // 1M tokens
+      metadata[name].contextWindow = 1048576;
       
       contextManagers[name] = createContextManager({
         contextWindow: metadata[name].contextWindow,
@@ -75,18 +72,33 @@ export async function createRouter(config) {
         temperature: 1.0
       });
     }
+    
+    if (providerConfig.type === 'grok') {
+      adapters[name] = createGrokAdapter({
+        apiKey: providerConfig.apiKey,
+        model: providerConfig.model,
+        embeddingModel: providerConfig.embeddingModel
+      });
+      
+      metadata[name].contextWindow = 131072;
+      
+      contextManagers[name] = createContextManager({
+        contextWindow: metadata[name].contextWindow,
+        model: providerConfig.model,
+        maxTokens: 2048,
+        temperature: 0.7
+      });
+    }
   }
   
   const defaultProvider = config.defaultProvider;
   const embeddingProvider = config.embeddingProvider || defaultProvider;
   
-  // Lazy refresh metadata for a provider (TTL: 5 minutes)
   const refreshMetadata = async (providerName) => {
     const meta = metadata[providerName];
     const now = Date.now();
-    const TTL = 5 * 60 * 1000; // 5 minutes
+    const TTL = 5 * 60 * 1000;
     
-    // Skip if recently refreshed or already refreshing
     if (meta.lastRefresh && (now - meta.lastRefresh) < TTL) return;
     if (meta.refreshing) return;
     
@@ -95,13 +107,11 @@ export async function createRouter(config) {
       const adapter = adapters[providerName];
       const providerConfig = config.providers[providerName];
       
-      // Resolve model (what's actually running/loaded)
       if (adapter.resolveModel) {
         await adapter.resolveModel();
         meta.model = adapter.getModel();
       }
       
-      // Get actual context window
       if (adapter.getContextWindow) {
         const contextWindow = await adapter.getContextWindow();
         if (contextWindow && contextWindow > 0) {
@@ -144,7 +154,6 @@ export async function createRouter(config) {
         finalPrompt = await contextManager.compact(prompt, available);
       }
       
-      // Pass schema directly to adapter - each adapter handles its own format requirements
       const rawOutput = await adapter.predict({
         prompt: finalPrompt,
         systemPrompt,
@@ -160,23 +169,23 @@ export async function createRouter(config) {
       });
     },
     
-    async embedText(text, provider) {
+    async embedText(text, provider, model) {
       const providerName = provider || embeddingProvider;
       const adapter = adapters[providerName];
       if (!adapter) throw new Error(`Provider ${providerName} not available`);
       if (!adapter.capabilities.embeddings) throw new Error(`Provider ${providerName} doesn't support embeddings`);
-      return adapter.embedText(text);
+      return adapter.embedText(text, model);
     },
     
-    async embedBatch(texts, provider) {
+    async embedBatch(texts, provider, model) {
       const providerName = provider || embeddingProvider;
       const adapter = adapters[providerName];
       if (!adapter) throw new Error(`Provider ${providerName} not available`);
       
       if (adapter.capabilities.batch && adapter.embedBatch) {
-        return adapter.embedBatch(texts);
+        return adapter.embedBatch(texts, model);
       }
-      return Promise.all(texts.map(t => adapter.embedText(t)));
+      return Promise.all(texts.map(t => adapter.embedText(t, model)));
     },
     
     getProviders() {
@@ -250,19 +259,16 @@ export async function createRouter(config) {
       return adapters[providerName];
     },
     
-    // Manually refresh metadata for all providers (for maintenance loop)
     async refreshAllMetadata() {
       const promises = Object.keys(adapters).map(name => refreshMetadata(name));
       await Promise.allSettled(promises);
     },
     
-    // Get current metadata for a provider
     getMetadata(provider) {
       const providerName = provider || defaultProvider;
       return metadata[providerName];
     },
     
-    // Get all metadata
     getAllMetadata() {
       return { ...metadata };
     }

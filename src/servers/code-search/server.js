@@ -1,8 +1,3 @@
-/**
- * Code Search Server - Fast semantic search for large codebases
- * Pure functional module using router architecture
- */
-
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -17,8 +12,6 @@ import {
   atomicWriteIndex,
   loadIndex
 } from './indexer.js';
-
-// ========== PURE HELPERS ==========
 
 function hash(content) {
   return createHash('sha256').update(content).digest('hex');
@@ -64,8 +57,6 @@ async function generateEmbedding(router, text, tree = null) {
     return new Array(768).fill(0);
   }
 }
-
-// ========== PROMPTS ==========
 
 const PROMPTS = [
   {
@@ -193,21 +184,19 @@ function getPrompt(name, args) {
   throw new Error(`Unknown prompt: ${name}`);
 }
 
-// ========== TOOLS ==========
-
 const TOOLS = [
   {
     name: 'get_workspace_config',
-    description: 'ALWAYS CALL FIRST before any code search operation - discovers available workspaces and their index status. Returns workspace names ("BADKID-DEV", "COOLKID-Work") required by ALL other search tools. Shows which workspaces are indexed and ready. File IDs returned by search tools use "workspace:path" format - pass these IDs directly to retrieve_file without modification. Example: "BADKID-DEV:src/file.js" → retrieve_file({ file: "BADKID-DEV:src/file.js" }).',
+    description: 'ALWAYS CALL FIRST before any code search operation - discovers available workspaces and their index status. Returns workspace names ("BADKID-DEV", "COOLKID-Work") required by ALL other search tools. Shows which workspaces are indexed and ready. File IDs returned by search tools are 32-character SHA256 hashes (e.g., "fc745a690e4db10279c18241a0a572c7") - pass these hash IDs directly to retrieve_file without modification.',
     inputSchema: { type: 'object', properties: {}, required: [] }
   },
   {
     name: 'get_file_info',
-    description: 'Get file metadata with LINE NUMBERS for functions/classes - CRITICAL for efficient partial retrieval. Does NOT return content. MANDATORY WORKFLOW: (1) search_semantic/keyword to find files, (2) get_file_info to see "parseToolCall at line 17", (3) retrieve_file(startLine=17, endLine=43) to fetch just that function. Skipping this wastes 10-500x tokens by retrieving entire files! Returns: functions[], classes[] (with line numbers), imports[], language, size.',
+    description: 'STEP 2 - STRUCTURE: Get function/class line numbers AFTER search, BEFORE retrieval. CRITICAL for token efficiency - use this to find exact line numbers, then retrieve only those lines. Input: hash ID from search. Returns: functions[{name, line}], classes[{name, line}], imports. EXAMPLE: get_file_info("a3f2b1c...") → find "handleRequest at line 45", then retrieve_file("a3f2b1c...", 45, 80). Skipping this wastes 10-500x tokens!',
     inputSchema: {
       type: 'object',
       properties: {
-        file: { type: 'string', description: 'File ID from search results (format: "workspace:path" e.g., "BADKID-DEV:src/http-server.js")' }
+        file: { type: 'string', description: 'File ID from search results - 32-character SHA256 hash (e.g., "fc745a690e4db10279c18241a0a572c7"). Pass the exact hash ID returned by search tools.' }
       },
       required: ['file']
     }
@@ -273,15 +262,15 @@ const TOOLS = [
   },
   {
     name: 'search_semantic',
-    description: 'Find code by MEANING using AI embeddings - best for conceptual searches when you don\'t know exact keywords. Returns file IDs + similarity scores + function/class names (NO line numbers). WORKFLOW: (1) search_semantic("authentication logic"), (2) review results - functions array shows what\'s in each file, (3) get_file_info on promising files to get line numbers, (4) retrieve_file with partial retrieval. USE WHEN: Exploring unfamiliar codebase, searching by concept not name. DON\'T USE: Exact function/class names (use search_keyword), file names (use search_files).',
+    description: 'STEP 1 - DISCOVERY: Find code by MEANING using AI embeddings. Best for conceptual searches when you don\'t know exact keywords. Returns file IDs (32-char hashes) + similarity scores + function/class names. IMPORTANT: Use returned hash IDs directly in get_file_info/retrieve_file/inspect_code - no workspace needed! WORKFLOW: (1) search_semantic("auth logic") → get hash IDs, (2) get_file_info(hash) → get line numbers, (3) retrieve_file(hash, startLine, endLine) → get specific function. Omit workspace to search ALL workspaces.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")' },
+        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV"). If omitted, searches ALL workspaces.' },
         query: { type: 'string', description: 'Natural language description of what you\'re looking for (e.g., "WebSocket connection handling", "memory leak prevention")' },
         limit: { type: 'number', description: 'Max results (default: 10)' }
       },
-      required: ['workspace', 'query']
+      required: ['query']
     }
   },
   {
@@ -290,25 +279,87 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")' },
+        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV"). If omitted, searches ALL workspaces.' },
         query: { type: 'string', description: 'Natural language search query - will search by meaning AND keywords' },
         limit: { type: 'number', description: 'Max results (default: 5)' }
       },
-      required: ['workspace', 'query']
+      required: ['query']
+    }
+  },
+  {
+    name: 'peek_file',
+    description: 'QUICK LOOK: One-step file access for quick previews. Use when you just want to see file content without the full search→info→retrieve workflow. Returns first N lines (default 50). Good for: checking if right file, seeing imports, quick overview. For deep analysis, use the full workflow: search_semantic → get_file_info → retrieve_file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Filename, partial path, or semantic query. Examples: "http-server.js", "src/router", "authentication middleware"' },
+        workspace: { type: 'string', description: 'Workspace name (e.g., "BADKID-DEV"). If omitted, searches all workspaces.' },
+        max_lines: { type: 'number', description: 'Max lines to return (default: 50)' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'get_context',
+    description: 'SMART CONTEXT EXPANSION: Get surrounding lines around a specific line number. Perfect for "show me context around line 245" without manual calculations. Can use fixed radius or auto-expand to function boundaries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'File ID (32-char hash) or "workspace:path" format' },
+        line: { type: 'number', description: 'Target line number (1-indexed)' },
+        radius: { type: 'number', description: 'Number of lines before/after (default: 20). Use "function" to auto-expand to enclosing function boundaries.' },
+        workspace: { type: 'string', description: 'Workspace name (required if using path instead of hash ID)' }
+      },
+      required: ['file', 'line']
+    }
+  },
+  {
+    name: 'get_file_tree',
+    description: 'DIRECTORY EXPLORATION: Get the file tree structure of a workspace. Returns directories and files in a hierarchical format. Useful for exploring unfamiliar codebases without searching.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace: { type: 'string', description: 'Workspace name (e.g., "BADKID-DEV"). If omitted, returns all workspaces.' },
+        path: { type: 'string', description: 'Subdirectory path to explore (default: root). Example: "src/router"' },
+        max_depth: { type: 'number', description: 'Maximum depth to traverse (default: 3)' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'get_function_tree',
+    description: 'SYMBOL OUTLINE: Get function and class metadata from the index without retrieving full file content. Returns names, line numbers, and signatures. Much faster than reading entire files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'File ID (32-char hash) or "workspace:path" format' },
+        workspace: { type: 'string', description: 'Workspace name (required if using path instead of hash ID)' }
+      },
+      required: ['file']
+    }
+  },
+  {
+    name: 'retrieve_file',
+    description: 'STEP 3 - RETRIEVAL: Get file content using hash ID from search. ALWAYS use partial retrieval with startLine/endLine! Input: hash ID (32-char). BEST PRACTICE: (1) search_semantic → hash IDs, (2) get_file_info → line numbers, (3) retrieve_file(hash, startLine, endLine). EXAMPLE: retrieve_file("a3f2b1c...", 245, 280) gets 35 lines instead of 3000+ line file. Token savings: 50-500x!',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'File ID from search results (32-char hash like "a3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6") or legacy format ("BADKID-DEV:src/file.js")' },
+        startLine: { type: 'number', description: 'Start line (1-indexed, inclusive). Use with get_file_info function line numbers to fetch specific functions. Omit to read from beginning.' },
+        endLine: { type: 'number', description: 'End line (1-indexed, inclusive). Omit to read to end. Example: if function is at line 245, use startLine=245, endLine=280 to get just that function.' }
+      },
+      required: ['file']
     }
   }
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
-// ========== FACTORY FUNCTION ==========
-
 export function createCodeSearchServer(config, router) {
   const workspace = new WorkspaceResolver(config.workspaces || {});
   const indexPath = config.indexPath || 'data/indexes';
   let progressCallback = null;
 
-  // In-memory index cache
   const indexCache = new Map();
 
   function sendProgress(progress, total, message) {
@@ -322,19 +373,16 @@ export function createCodeSearchServer(config, router) {
   }
 
   async function loadIndexForWorkspace(workspaceName) {
-    // Return cached if available
     if (indexCache.has(workspaceName)) {
       return indexCache.get(workspaceName);
     }
     
-    // Load from disk
     const indexFile = getIndexFilePath(workspaceName);
     const index = await loadIndex(indexFile);
     if (!index.files) {
       throw new Error('Invalid index: no files found');
     }
     
-    // Cache it
     indexCache.set(workspaceName, index);
     return index;
   }
@@ -387,8 +435,6 @@ export function createCodeSearchServer(config, router) {
       console.error('Failed to release lock:', err.message);
     }
   }
-
-  // ========== TOOL HANDLERS ==========
 
   async function getWorkspaceConfig() {
     const indexDir = path.join(process.cwd(), 'data', 'indexes');
@@ -699,34 +745,49 @@ export function createCodeSearchServer(config, router) {
 
   async function searchKeyword(args) {
     const { workspace: workspaceName, pattern, regex: useRegex = false, limit = 50 } = args;
-    const index = await loadIndexForWorkspace(workspaceName);
-    const uncPath = workspace.getWorkspacePath(workspaceName);
-
+    
+    // If workspace specified, search there; otherwise search all workspaces
+    const workspacesToSearch = workspaceName 
+      ? [workspaceName]
+      : Object.keys(config.workspaces || {});
+    
     const searchRegex = useRegex ? new RegExp(pattern, 'gi') : null;
     const matches = [];
 
-    for (const fileData of Object.values(index.files)) {
+    for (const ws of workspacesToSearch) {
       if (matches.length >= limit) break;
-
+      
       try {
-        const fullPath = path.join(uncPath, fileData.path);
-        const content = await fs.readFile(fullPath, 'utf-8');
-        const lines = content.split('\n');
+        const index = await loadIndexForWorkspace(ws);
+        const uncPath = workspace.getWorkspacePath(ws);
 
-        for (let i = 0; i < lines.length; i++) {
-          const match = useRegex ? searchRegex.test(lines[i]) : lines[i].includes(pattern);
-          if (match) {
-            const trimmed = lines[i].trim();
-            matches.push({
-              file: fileData.id,
-              line: i + 1,
-              content: trimmed.length > 120 ? trimmed.slice(0, 120) + '...' : trimmed,
-              language: fileData.language
-            });
-            if (matches.length >= limit) break;
-          }
+        for (const fileData of Object.values(index.files)) {
+          if (matches.length >= limit) break;
+
+          try {
+            const fullPath = path.join(uncPath, fileData.path);
+            const content = await fs.readFile(fullPath, 'utf-8');
+            const lines = content.split('\n');
+
+            for (let i = 0; i < lines.length; i++) {
+              const match = useRegex ? searchRegex.test(lines[i]) : lines[i].includes(pattern);
+              if (match) {
+                const trimmed = lines[i].trim();
+                matches.push({
+                  file: fileData.id,
+                  line: i + 1,
+                  content: trimmed.length > 120 ? trimmed.slice(0, 120) + '...' : trimmed,
+                  language: fileData.language,
+                  workspace: ws
+                });
+                if (matches.length >= limit) break;
+              }
+            }
+          } catch (err) {}
         }
-      } catch (err) {}
+      } catch (err) {
+        console.warn(`[searchKeyword] Failed to search workspace ${ws}:`, err.message);
+      }
     }
 
     return { content: [{ type: 'text', text: JSON.stringify({ matches, count: matches.length }, null, 2) }] };
@@ -734,27 +795,44 @@ export function createCodeSearchServer(config, router) {
 
   async function searchSemantic(args) {
     const { workspace: workspaceName, query, limit = 10 } = args;
-    const index = await loadIndexForWorkspace(workspaceName);
+    
+    // If workspace specified, search there; otherwise search all workspaces
+    const workspacesToSearch = workspaceName 
+      ? [workspaceName]
+      : Object.keys(config.workspaces || {});
+    
+    const allResults = [];
+    
+    for (const ws of workspacesToSearch) {
+      try {
+        const index = await loadIndexForWorkspace(ws);
 
-    const queryEmbedding = await generateEmbedding(router, query);
+        const queryEmbedding = await generateEmbedding(router, query);
 
-    const results = [];
-    for (const fileData of Object.values(index.files)) {
-      if (!fileData.embedding) continue;
-      
-      const similarity = cosineSimilarity(queryEmbedding, fileData.embedding);
-      results.push({
-        file: fileData.id,
-        similarity,
-        language: fileData.language,
-        size: fileData.size_bytes,
-        functions: fileData.tree?.functions?.map(f => f.name) || [],
-        classes: fileData.tree?.classes?.map(c => c.name) || []
-      });
+        const results = [];
+        for (const fileData of Object.values(index.files)) {
+          if (!fileData.embedding) continue;
+          
+          const similarity = cosineSimilarity(queryEmbedding, fileData.embedding);
+          results.push({
+            file: fileData.id,
+            similarity,
+            language: fileData.language,
+            size: fileData.size_bytes,
+            workspace: ws,
+            functions: fileData.tree?.functions?.map(f => f.name) || [],
+            classes: fileData.tree?.classes?.map(c => c.name) || []
+          });
+        }
+
+        allResults.push(...results);
+      } catch (err) {
+        console.warn(`[searchSemantic] Failed to search workspace ${ws}:`, err.message);
+      }
     }
 
-    results.sort((a, b) => b.similarity - a.similarity);
-    const topResults = results.slice(0, limit);
+    allResults.sort((a, b) => b.similarity - a.similarity);
+    const topResults = allResults.slice(0, limit);
 
     return { content: [{ type: 'text', text: JSON.stringify({ results: topResults, count: topResults.length }, null, 2) }] };
   }
@@ -777,7 +855,370 @@ export function createCodeSearchServer(config, router) {
     };
   }
 
-  // ========== PUBLIC API ==========
+  async function peekFile(args) {
+    const { query, workspace: workspaceName, max_lines = 50 } = args;
+    
+    // If workspace specified, search there; otherwise search all
+    const workspacesToSearch = workspaceName 
+      ? [workspaceName]
+      : Object.keys(config.workspaces || {});
+    
+    let bestMatch = null;
+    
+    // Try exact file match first (fast path)
+    for (const ws of workspacesToSearch) {
+      try {
+        const index = await loadIndexForWorkspace(ws);
+        
+        // Check for exact filename match
+        for (const fileData of Object.values(index.files)) {
+          if (fileData.path.endsWith(query) || fileData.path.includes(query)) {
+            bestMatch = { ...fileData, workspace: ws };
+            break;
+          }
+        }
+        if (bestMatch) break;
+      } catch (e) {}
+    }
+    
+    // If no exact match, try semantic search
+    if (!bestMatch) {
+      for (const ws of workspacesToSearch) {
+        try {
+          const semanticResults = await searchSemantic({ workspace: ws, query, limit: 1 });
+          const results = JSON.parse(semanticResults.content[0].text).results;
+          if (results.length > 0) {
+            const index = await loadIndexForWorkspace(ws);
+            bestMatch = { ...index.files[results[0].file], workspace: ws };
+            break;
+          }
+        } catch (e) {}
+      }
+    }
+    
+    if (!bestMatch) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: `No file found for query: "${query}"` }) }] };
+    }
+    
+    // Retrieve file content
+    try {
+      const uncPath = workspace.getWorkspacePath(bestMatch.workspace);
+      const fullPath = path.join(uncPath, bestMatch.path);
+      const content = await fs.readFile(fullPath, 'utf-8');
+      const lines = content.split('\n');
+      const preview = lines.slice(0, max_lines).join('\n');
+      
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            file_id: bestMatch.id,
+            path: bestMatch.path,
+            workspace: bestMatch.workspace,
+            total_lines: lines.length,
+            preview_lines: Math.min(max_lines, lines.length),
+            content: preview
+          }, null, 2)
+        }]
+      };
+    } catch (err) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: `Failed to read file: ${err.message}` }) }] };
+    }
+  }
+
+  async function getContext(args) {
+    const { file, line, radius = 20, workspace: workspaceName } = args;
+    
+    // Resolve file ID to path
+    let fileId, filePath, wsName;
+    
+    if (file.includes(':')) {
+      const parsed = workspace.parseFileId(file);
+      wsName = parsed.workspace;
+      filePath = parsed.relativePath;
+      const index = await loadIndexForWorkspace(wsName);
+      const match = Object.values(index.files).find(f => f.path === filePath);
+      if (!match) throw new Error(`File not found: ${file}`);
+      fileId = match.id;
+    } else if (/^[a-f0-9]{32}$/i.test(file)) {
+      // Hash ID
+      fileId = file;
+      // Find which workspace has this file
+      for (const ws of Object.keys(config.workspaces || {})) {
+        try {
+          const index = await loadIndexForWorkspace(ws);
+          if (index.files[fileId]) {
+            wsName = ws;
+            filePath = index.files[fileId].path;
+            break;
+          }
+        } catch (e) {}
+      }
+      if (!wsName) throw new Error(`File ID not found: ${file}`);
+    } else {
+      throw new Error('Invalid file ID format');
+    }
+    
+    // Read file and extract context
+    const uncPath = workspace.getWorkspacePath(wsName);
+    const fullPath = path.join(uncPath, filePath);
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    
+    const targetLine = Math.max(1, Math.min(line, lines.length));
+    
+    let startLine, endLine;
+    
+    if (radius === 'function') {
+      // Find enclosing function boundaries
+      const index = await loadIndexForWorkspace(wsName);
+      const fileData = index.files[fileId];
+      
+      if (fileData.tree?.functions) {
+        const enclosingFunc = fileData.tree.functions.find(f => 
+          f.line <= targetLine && (!f.endLine || f.endLine >= targetLine)
+        );
+        
+        if (enclosingFunc) {
+          startLine = enclosingFunc.line;
+          endLine = enclosingFunc.endLine || enclosingFunc.line + 50;
+        }
+      }
+    }
+    
+    // Default to radius if function mode didn't find anything
+    if (!startLine) {
+      startLine = Math.max(1, targetLine - radius);
+      endLine = Math.min(lines.length, targetLine + radius);
+    }
+    
+    const contextLines = lines.slice(startLine - 1, endLine);
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          file_id: fileId,
+          path: filePath,
+          workspace: wsName,
+          target_line: targetLine,
+          context_range: { start: startLine, end: endLine },
+          content: contextLines.join('\n')
+        }, null, 2)
+      }]
+    };
+  }
+
+  async function getFileTree(args) {
+    const { workspace: workspaceName, path: subPath = '', max_depth = 3 } = args;
+    
+    const workspacesToGet = workspaceName 
+      ? [workspaceName]
+      : Object.keys(config.workspaces || {});
+    
+    const result = {};
+    
+    for (const ws of workspacesToGet) {
+      try {
+        const index = await loadIndexForWorkspace(ws);
+        const tree = {};
+        
+        for (const fileData of Object.values(index.files)) {
+          const filePath = fileData.path;
+          
+          if (subPath && !filePath.startsWith(subPath)) continue;
+          
+          const relativePath = subPath ? filePath.slice(subPath.length).replace(/^\\/, '') : filePath;
+          if (!relativePath) continue;
+          
+          const parts = relativePath.split(/[\\/]/).filter(p => p);
+          if (parts.length === 0) continue;
+          
+          let current = tree;
+          for (let i = 0; i < parts.length && i < max_depth; i++) {
+            const part = parts[i];
+            const isFile = i === parts.length - 1;
+            
+            if (isFile) {
+              current[part] = { type: 'file', id: fileData.id, size: fileData.size_bytes };
+            } else {
+              if (!current[part]) current[part] = { type: 'directory', children: {} };
+              current = current[part].children;
+            }
+          }
+        }
+        
+        result[ws] = {
+          path: subPath || 'root',
+          tree,
+          file_count: Object.keys(index.files).length
+        };
+      } catch (err) {
+        result[ws] = { error: err.message };
+      }
+    }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(result, null, 2)
+      }]
+    };
+  }
+
+  async function getFunctionTree(args) {
+    const { file, workspace: workspaceName } = args;
+    
+    let fileId, filePath, wsName;
+    
+    if (file.includes(':')) {
+      // Old format: workspace:path
+      const parsed = workspace.parseFileId(file);
+      wsName = parsed.workspace;
+      filePath = parsed.relativePath;
+      const index = await loadIndexForWorkspace(wsName);
+      const match = Object.values(index.files).find(f => f.path === filePath);
+      if (!match) throw new Error(`File not found: ${file}`);
+      fileId = match.id;
+    } else if (/^[a-f0-9]{32}$/i.test(file)) {
+      fileId = file;
+      for (const ws of Object.keys(config.workspaces || {})) {
+        try {
+          const index = await loadIndexForWorkspace(ws);
+          if (index.files[fileId]) {
+            wsName = ws;
+            filePath = index.files[fileId].path;
+            break;
+          }
+        } catch (e) {}
+      }
+      if (!wsName) throw new Error(`File ID not found: ${file}`);
+    } else {
+      throw new Error('Invalid file ID format');
+    }
+    
+    const index = await loadIndexForWorkspace(wsName);
+    const fileData = index.files[fileId];
+    
+    if (!fileData) {
+      throw new Error(`File data not found for ID: ${fileId}`);
+    }
+    
+    const functions = fileData.tree?.functions?.map(f => ({
+      name: f.name,
+      line: f.line,
+      signature: f.signature || null
+    })) || [];
+    
+    const classes = fileData.tree?.classes?.map(c => ({
+      name: c.name,
+      line: c.line,
+      methods: c.methods?.map(m => ({ name: m.name, line: m.line })) || []
+    })) || [];
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          file_id: fileId,
+          path: filePath,
+          workspace: wsName,
+          language: fileData.language,
+          functions,
+          classes,
+          imports: fileData.tree?.imports?.map(i => i.module) || []
+        }, null, 2)
+      }]
+    };
+  }
+
+  async function retrieveFile(args) {
+    const { file, startLine, endLine } = args;
+
+    try {
+      let fileId, filePath, wsName, uncPath;
+
+      if (file.includes(':')) {
+        const parsed = workspace.parseFileId(file);
+        wsName = parsed.workspace;
+        filePath = parsed.relativePath;
+        uncPath = workspace.getWorkspacePath(wsName);
+        fileId = null; // Will be resolved from index
+      } else if (/^[a-f0-9]{32}$/i.test(file)) {
+        fileId = file;
+        // Find which workspace has this file
+        for (const ws of Object.keys(config.workspaces || {})) {
+          try {
+            const idx = await loadIndexForWorkspace(ws);
+            if (idx.files[fileId]) {
+              wsName = ws;
+              filePath = idx.files[fileId].path;
+              const workspacePath = workspace.getWorkspacePath(wsName);
+              uncPath = path.join(workspacePath, filePath);
+              break;
+            }
+          } catch (e) {}
+        }
+        if (!wsName) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ error: `File ID not found: ${file}`, hint: 'The file may not be indexed. Try running refresh_index first.' }),
+              isError: true
+            }]
+          };
+        }
+      } else {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'Invalid file ID format. Use 32-char hash or "workspace:path" format' }),
+            isError: true
+          }]
+        };
+      }
+
+      await workspace.validatePath(uncPath, wsName);
+
+      const content = await fs.readFile(uncPath, 'utf-8');
+      const lines = content.split('\n');
+
+      const actualStart = startLine ? Math.max(1, startLine) : 1;
+      const actualEnd = endLine ? Math.min(lines.length, endLine) : lines.length;
+
+      const selectedLines = lines.slice(actualStart - 1, actualEnd);
+      const resultContent = selectedLines.join('\n');
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            file_id: fileId || file,
+            workspace: wsName,
+            path: filePath,
+            total_lines: lines.length,
+            retrieved_lines: selectedLines.length,
+            start_line: actualStart,
+            end_line: actualEnd,
+            size: resultContent.length,
+            content: resultContent
+          }, null, 2)
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: err.message,
+            code: err.code || 'RETRIEVE_ERROR',
+            file
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+  }
 
   return {
     getTools: () => TOOLS,
@@ -798,6 +1239,11 @@ export function createCodeSearchServer(config, router) {
         if (name === 'search_keyword') return await searchKeyword(args);
         if (name === 'search_semantic') return await searchSemantic(args);
         if (name === 'search_code') return await searchCode(args);
+        if (name === 'peek_file') return await peekFile(args);
+        if (name === 'get_context') return await getContext(args);
+        if (name === 'get_file_tree') return await getFileTree(args);
+        if (name === 'get_function_tree') return await getFunctionTree(args);
+        if (name === 'retrieve_file') return await retrieveFile(args);
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
       } catch (err) {
         return {
@@ -811,7 +1257,6 @@ export function createCodeSearchServer(config, router) {
     
     setProgressCallback: (callback) => { progressCallback = callback; },
     
-    // Cache management functions
     clearCache: clearIndexCache,
     reloadIndex,
     
@@ -819,5 +1264,4 @@ export function createCodeSearchServer(config, router) {
   };
 }
 
-// Keep old export for backward compatibility during migration
 export { createCodeSearchServer as CodeSearchServer };

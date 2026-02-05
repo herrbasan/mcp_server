@@ -1,15 +1,9 @@
-/**
- * Memory Server - Semantic memory with quality-focused learning
- * Pure functional module using router architecture
- */
-
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Pure helpers
 function chunkText(text, maxChars) {
   const chunks = [];
   for (let i = 0; i < text.length; i += maxChars) {
@@ -212,7 +206,6 @@ const TOOLS = [
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
 
-// Factory function
 export function createMemoryServer(config, router) {
   const storePath = join(__dirname, '..', '..', config.storePath);
   const maxChars = parseInt(process.env.MAX_MEMORY_CHARS) || 1800;
@@ -221,7 +214,6 @@ export function createMemoryServer(config, router) {
   let memories = loadMemories(storePath);
   let progressCallback = null;
   
-  // Tool handlers - pure functions with closure
   async function remember({ text, category, domain }) {
     let processedText = text;
     let finalDomain = domain;
@@ -234,7 +226,6 @@ export function createMemoryServer(config, router) {
       processedText = extracted.text;
     }
     
-    // Check if chunking is needed
     if (processedText.length > maxChars) {
       const chunks = chunkText(processedText, maxChars);
       const memoryIds = [];
@@ -268,7 +259,6 @@ export function createMemoryServer(config, router) {
       };
     }
     
-    // Single memory for small text
     const embedding = await getEmbedding(router, embeddingProvider, maxChars, progressCallback, processedText);
     const memory = {
       id: memories.nextId++,
