@@ -407,6 +407,11 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **Config**: `config.servers.local-agent` - maxTokenBudget, maxIterations, toolCallingFormat
 **Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
 
+**Tool Improvements (Feb 5, 2026)**:
+- ✅ **FIXED**: `inspect_code` now supports hash IDs from search results (32-char format). Use either hash IDs or file paths.
+- ✅ **FIXED**: `retrieve_file` description updated to accurately reflect hash ID format instead of legacy "workspace:path" format.
+- Both tools maintain backward compatibility with file paths and workspace-prefixed paths.
+
 **Known Issues**:
 - **BUG**: `run_local_agent` creates retrieval plans with old-format paths like `"BADKID-DEV:mcp_server/src/router.js"` instead of using search tools to get hash IDs first. Agent should: (1) use search_files/search_keyword/search_semantic to find files, (2) get hash IDs from results, (3) use retrieve_file with hash IDs. Currently fails with "I don't have access to your specific codebase" error.
 

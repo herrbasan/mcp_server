@@ -44,7 +44,7 @@ const TOOLS = [
       properties: {
         target: {
           type: 'string',
-          description: 'File path(s) to analyze. Formats: "src/file.js" (single), "file1.js, file2.js" (multiple comma-separated). Can include workspace prefix like "BADKID-DEV:src/file.js" or be relative to workspace root.'
+          description: 'File path(s) or hash ID(s) to analyze. Formats: "src/file.js" (path), "a3f2b1c4d5e6f7a8" (hash ID from search), "file1.js, file2.js" (multiple comma-separated). Can include workspace prefix like "BADKID-DEV:src/file.js" or be relative to workspace root.'
         },
         question: {
           type: 'string',
@@ -60,13 +60,13 @@ const TOOLS = [
   },
   {
     name: 'retrieve_file',
-    description: 'Get file content - ALWAYS use partial retrieval (startLine/endLine) to save tokens. File IDs from search use "workspace:path" format. BEST PRACTICE: (1) search_semantic to find relevant files, (2) get_file_info to see function locations with line numbers, (3) retrieve_file with startLine/endLine to fetch only needed functions. Example: Function at line 245? Use startLine=245, endLine=280 to get ~35 lines instead of entire file. Token savings: 50-500x for large files!',
+    description: 'Get file content - ALWAYS use partial retrieval (startLine/endLine) to save tokens. File IDs from search use 32-char hash format. BEST PRACTICE: (1) search_semantic to find relevant files, (2) get_file_info to see function locations with line numbers, (3) retrieve_file with startLine/endLine to fetch only needed functions. Example: Function at line 245? Use startLine=245, endLine=280 to get ~35 lines instead of entire file. Token savings: 50-500x for large files!',
     inputSchema: {
       type: 'object',
       properties: {
         file: {
           type: 'string',
-          description: 'File ID from search results (e.g., "BADKID-DEV:src/http-server.js", "COOLKID-Work:project/index.ts")'
+          description: 'File ID from search results (32-char hash like "a3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6") or legacy format ("BADKID-DEV:src/file.js")'
         },
         startLine: {
           type: 'number',
@@ -317,19 +317,42 @@ Be selective - quality over quantity. Focus on code that directly answers the ta
       const files = [];
       
       // Retrieve all files
-      for (let filePath of targets) {
-        // Strip workspace prefix if present (e.g., "BADKID-DEV:src/file.js" -> "src/file.js")
-        if (filePath.includes(':')) {
-          const parts = filePath.split(':');
-          if (parts.length === 2 && parts[0] === workspaceName) {
-            filePath = parts[1];
+      for (let fileId of targets) {
+        let filePath, fullPath, content;
+        
+        // Check if it's a hash ID (32 hex chars, no path separators)
+        if (/^[a-f0-9]{32}$/i.test(fileId) && !fileId.includes('/') && !fileId.includes('\\')) {
+          // Hash ID - resolve via code search
+          if (!codeSearch) {
+            throw new Error('Code search not available - cannot resolve hash IDs. Use file paths instead.');
           }
+          
+          const fileInfoResult = await codeSearch.callTool('get_file_info', { file: fileId });
+          const fileInfo = JSON.parse(fileInfoResult.content[0].text);
+          
+          if (fileInfo.error) {
+            throw new Error(`Failed to resolve file ID ${fileId}: ${fileInfo.error}`);
+          }
+          
+          filePath = fileInfo.path;
+          fullPath = path.join(workspace.getWorkspacePath(fileInfo.workspace), filePath);
+        } else {
+          // File path (with or without workspace prefix)
+          filePath = fileId;
+          
+          // Strip workspace prefix if present (e.g., "BADKID-DEV:src/file.js" -> "src/file.js")
+          if (filePath.includes(':')) {
+            const parts = filePath.split(':');
+            if (parts.length === 2 && parts[0] === workspaceName) {
+              filePath = parts[1];
+            }
+          }
+          
+          fullPath = path.join(uncPath, filePath);
         }
         
-        const fullPath = path.join(uncPath, filePath);
         await workspace.validatePath(fullPath, workspaceName);
-        
-        const content = await fs.readFile(fullPath, 'utf-8');
+        content = await fs.readFile(fullPath, 'utf-8');
         files.push({ path: filePath, content });
       }
       
