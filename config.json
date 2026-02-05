@@ -19,7 +19,7 @@
       "enabled": true,
       "maxPages": 10,
       "maxDepth": 2,
-      "timeout": 180000,
+      "timeout": 300000,
       "searchEngines": ["google", "duckduckgo"],
       "description": "Multi-source web research with local LLM synthesis"
     },
@@ -61,7 +61,7 @@
         "type": "lmstudio",
         "endpoint": "${LM_STUDIO_ENDPOINT}",
         "model": "${LM_STUDIO_MODEL}",
-        "embeddingModel": "text-embedding-nomic-embed-text-v2-moe",
+        "embeddingModel": "${LM_STUDIO_EMBEDDING_MODEL}",
         "temperature": 0.7,
         "stripThinking": true,
         "connectTimeoutMs": 10000,
@@ -74,15 +74,16 @@
         "type": "ollama",
         "endpoint": "${OLLAMA_ENDPOINT}",
         "model": "${OLLAMA_MODEL}",
-        "embeddingModel": "nomic-embed-text-v2-moe",
-        "temperature": 0.7
+        "embeddingModel": "${OLLAMA_EMBEDDING_MODEL}",
+        "temperature": 0.7,
+        "contextWindow": 32768
       },
       "gemini": {
         "enabled": true,
         "type": "gemini",
         "apiKey": "${GEMINI_API_KEY}",
         "model": "${GEMINI_MODEL}",
-        "embeddingModel": "text-embedding-004",
+        "embeddingModel": "${GEMINI_EMBEDDING_MODEL}",
         "temperature": 0.7
       },
       "openai": {
@@ -90,7 +91,8 @@
         "type": "openai",
         "apiKey": "${OPENAI_API_KEY}",
         "endpoint": "${LM_STUDIO_ENDPOINT}/v1/chat/completions",
-        "model": "gpt-4o",
+        "model": "${OPENAI_MODEL}",
+        "embeddingModel": "${OPENAI_EMBEDDING_MODEL}",
         "temperature": 0.7
       }
     }

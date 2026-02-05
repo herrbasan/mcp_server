@@ -123,11 +123,23 @@ export function createGeminiAdapter(config) {
     },
     
     async getContextWindow() {
-      // Gemini models have large context windows
-      // gemini-2.5-flash: 1M tokens, gemini-2.5-pro: 1M tokens
-      // gemini-3-flash-preview: 1M tokens
-      if (model.includes('2.5') || model.includes('3')) return 1000000;
-      if (model.includes('2.0')) return 1000000;
+      // Try to fetch actual context window from API
+      try {
+        const modelInfo = await apiCall(`models/${model}`, null, 'GET');
+        if (modelInfo.inputTokenLimit) {
+          return modelInfo.inputTokenLimit;
+        }
+      } catch {
+        // Fallback to hardcoded values based on model name
+      }
+      
+      // Fallback: Hardcoded values for known model families
+      // gemini-2.5-flash/pro: 1M tokens, gemini-3: 1M tokens
+      if (model.includes('2.5') || model.includes('3')) return 1048576;
+      if (model.includes('2.0')) return 1048576;
+      if (model.includes('latest')) return 1048576; // Aliases like flash-latest
+      if (model.includes('pro')) return 1048576;
+      if (model.includes('flash')) return 1048576;
       return 128000; // Conservative default
     },
     

@@ -108,15 +108,25 @@ export function createOllamaAdapter(config) {
     },
     
     async getContextWindow() {
-      // Get context length from model info
-      const info = await this.showModelInfo(model);
-      if (info?.model_info) {
-        // Look for context_length in model_info (e.g., "llama.context_length": 8192)
-        for (const [key, value] of Object.entries(info.model_info)) {
-          if (key.includes('context_length')) return value;
-        }
+      // Priority 1: Config override (allows limiting context window)
+      if (config.contextWindow && config.contextWindow > 0) {
+        return config.contextWindow;
       }
-      return config.contextWindow || 8192;
+      
+      // Priority 2: Get context length from model info
+      try {
+        const info = await this.showModelInfo(model);
+        if (info?.model_info) {
+          for (const [key, value] of Object.entries(info.model_info)) {
+            if (key.includes('context_length')) return value;
+          }
+        }
+      } catch {
+        // Ignore errors, fall through to default
+      }
+      
+      // Default fallback
+      return 8192;
     },
     
     // GET /api/tags - List local models

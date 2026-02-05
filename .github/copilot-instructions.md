@@ -301,6 +301,11 @@ Major refactoring completed with significant reliability and performance improve
 - **Dual-engine support**: Both Google and DuckDuckGo queried in parallel, deduplicated by URL
 - **Target**: 5-10 pages in ~12s (was timing out at 3-5 pages)
 
+**Embedding Model Configuration:**
+- All providers now have endpoint-specific embedding models (e.g., `LM_STUDIO_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_MODEL`)
+- **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
+- Gemini's `text-embedding-004` model tested and working via API
+
 **New Components:**
 - `src/lib/streaming-research.js` - Pipeline for concurrent scraping with progress tracking
 - `src/scrapers/content-extractor.js` - Hardened extraction with 4 strategies
@@ -409,3 +414,4 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
 - **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging, browser pool architecture (persistent tabs, search adapters, realistic scraping behavior)
 - **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization, file ID system, in-memory caching
+- **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening (4-tier fallback), DuckDuckGo adapter complete rebuild, streaming research pipeline, LLM-optimized code design philosophy, per-provider embedding model configuration
