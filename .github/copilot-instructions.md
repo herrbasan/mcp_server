@@ -68,6 +68,7 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - Intelligent source selection via local LLM (prioritizes GitHub issues, StackOverflow, docs)
   - 10 concurrent page scrapes with SSL error handling, retry logic
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
+  - **Known Issues**: research_topic currently failing with "No content could be synthesized from available sources" error (Feb 5, 2026) - may be issue with search adapters, scraping, or synthesis step
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
 - **Local Agent** (3): Autonomous code analysis with UNC file access (run_local_agent, retrieve_file, inspect_code)
 - **Code Search** (9): Semantic search for large codebases (get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code)
@@ -75,6 +76,9 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 ## Workspace Architecture (For LLMs Using MCP Orchestrator)
 
 **YOU ARE A CALLING LLM** - You don't see local files. Use MCP tools to interact with codebases.
+
+**Core Utilities**:
+- `src/lib/workspace.js` - UNC path mapping, security validation (shared by Local Agent and Code Search)
 
 ### Quick Start Workflow
 ```
@@ -359,6 +363,9 @@ Domain scoping: Memories can be tagged with optional `domain` field for project-
 
 **Config**: `config.servers.local-agent` - maxTokenBudget, maxIterations, toolCallingFormat
 **Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
+
+**Known Issues**:
+- **BUG**: `run_local_agent` creates retrieval plans with old-format paths like `"BADKID-DEV:mcp_server/src/router.js"` instead of using search tools to get hash IDs first. Agent should: (1) use search_files/search_keyword/search_semantic to find files, (2) get hash IDs from results, (3) use retrieve_file with hash IDs. Currently fails with "I don't have access to your specific codebase" error.
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system

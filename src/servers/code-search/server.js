@@ -408,8 +408,8 @@ export function createCodeSearchServer(config, router) {
       })),
       usage: {
         search: "mcp_orchestrator_search_files({ workspace: 'BADKID-DEV', glob: '**/*.js' })",
-        retrieve: "mcp_orchestrator_retrieve_file({ file: 'BADKID-DEV:src/http-server.js' })",
-        note: "Search returns file IDs like 'workspace:relative/path' - pass these directly to retrieve_file"
+        retrieve: "mcp_orchestrator_retrieve_file({ file: 'a3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6' })",
+        note: "Search returns 32-char hash file IDs - pass these directly to retrieve_file and get_file_info"
       }
     };
     
