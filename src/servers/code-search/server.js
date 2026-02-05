@@ -94,28 +94,26 @@ function getPrompt(name, args) {
         role: 'user',
         content: {
           type: 'text',
-          text: `Let's investigate how "${args.feature}" is implemented in ${args.workspace}:
+          text: `Let's investigate how "${args.feature}" is implemented in workspace "${args.workspace}":
 
 **Creative Multi-Tool Workflow:**
 
-1. **Semantic Discovery** - Find conceptually related code:
-   \`search_semantic(path="${args.workspace}", query="${args.feature} implementation patterns", limit=15)\`
+1. **First, explore structure** (if unfamiliar):
+   \`get_file_tree({workspace: "${args.workspace}", max_depth: 2})\`
+   
+2. **Semantic Discovery** - Find conceptually related code:
+   \`search_semantic({workspace: "${args.workspace}", query: "${args.feature} implementation patterns", limit: 15})\`
 
-2. **Keyword Validation** - Verify with exact matches:
-   \`search_keyword(path="${args.workspace}", pattern="${args.feature}", limit=30)\`
+3. **Keyword Validation** - Verify with exact matches:
+   \`search_keyword({workspace: "${args.workspace}", pattern: "${args.feature}", limit: 30})\`
 
-3. **File Pattern Analysis** - Look for naming conventions:
-   \`search_files(path="${args.workspace}", glob="**/*${args.feature.toLowerCase().replace(/\s+/g, '-')}*")\`
+4. **File Pattern Analysis** - Look for naming conventions:
+   \`search_files({workspace: "${args.workspace}", glob: "**/*${args.feature.toLowerCase().replace(/\s+/g, '-')}*"})\`
 
-4. **Retrieve Key Files** - Get full source for top 3 semantic matches:
-   Use \`retrieve_file\` on the highest-scoring files
+5. **Retrieve Key Files** - Get full source for top 3 semantic matches:
+   Use \`retrieve_file\` with the hash IDs from search results
 
-5. **Cross-Reference** - Combine findings:
-   - Files appearing in multiple searches are likely core implementations
-   - Unique semantic matches might be edge cases or experimental code
-   - File patterns reveal architectural organization
-
-**Why this works:** Semantic search finds intent, keywords find usage, file patterns find structure. Together they paint a complete picture.`
+**Workspaces are network shares** - "${args.workspace}" is a mounted share. Use get_file_tree to explore its folder structure first.`
         }
       }]
     };
@@ -187,7 +185,7 @@ function getPrompt(name, args) {
 const TOOLS = [
   {
     name: 'get_workspace_config',
-    description: 'ALWAYS CALL FIRST before any code search operation - discovers available workspaces and their index status. Returns workspace names ("BADKID-DEV", "COOLKID-Work") required by ALL other search tools. Shows which workspaces are indexed and ready. File IDs returned by search tools are 32-character SHA256 hashes (e.g., "fc745a690e4db10279c18241a0a572c7") - pass these hash IDs directly to retrieve_file without modification.',
+    description: 'ALWAYS CALL FIRST - discovers available workspaces (network shares) and their index status. A WORKSPACE is a mounted network share or local directory (e.g., "COOLKID-Work" = "\\\\COOLKID\\Work"). All paths in other tools are RELATIVE to the workspace root. First call with no args to see workspace names, then use get_file_tree({workspace: "NAME"}) to explore folder structure and find your project.',
     inputSchema: { type: 'object', properties: {}, required: [] }
   },
   {
@@ -262,11 +260,11 @@ const TOOLS = [
   },
   {
     name: 'search_semantic',
-    description: 'STEP 1 - DISCOVERY: Find code by MEANING using AI embeddings. Best for conceptual searches when you don\'t know exact keywords. Returns file IDs (32-char hashes) + similarity scores + function/class names. IMPORTANT: Use returned hash IDs directly in get_file_info/retrieve_file/inspect_code - no workspace needed! WORKFLOW: (1) search_semantic("auth logic") → get hash IDs, (2) get_file_info(hash) → get line numbers, (3) retrieve_file(hash, startLine, endLine) → get specific function. Omit workspace to search ALL workspaces.',
+    description: 'STEP 1 - DISCOVERY: Find code by MEANING using AI embeddings. Best for conceptual searches when you don\'t know exact keywords. Returns file IDs (32-char hashes) + similarity scores + function/class names. IMPORTANT: Use returned hash IDs directly in get_file_info/retrieve_file/inspect_code - no workspace needed! WORKFLOW: (1) search_semantic("auth logic") → get hash IDs, (2) get_file_info(hash) → get line numbers, (3) retrieve_file(hash, startLine, endLine) → get specific function. Omit workspace to search ALL workspaces across all network shares.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV"). If omitted, searches ALL workspaces.' },
+        workspace: { type: 'string', description: 'Workspace name (network share) from get_workspace_config (e.g., "COOLKID-Work", "BADKID-DEV"). If omitted, searches ALL workspaces.' },
         query: { type: 'string', description: 'Natural language description of what you\'re looking for (e.g., "WebSocket connection handling", "memory leak prevention")' },
         limit: { type: 'number', description: 'Max results (default: 10)' }
       },
@@ -315,12 +313,12 @@ const TOOLS = [
   },
   {
     name: 'get_file_tree',
-    description: 'DIRECTORY EXPLORATION: Get the file tree structure of a workspace. Returns directories and files in a hierarchical format. Useful for exploring unfamiliar codebases without searching.',
+    description: 'DIRECTORY EXPLORATION: Get the file tree structure of a workspace. Returns directories and files in a hierarchical format. WORKFLOW: (1) Call with just workspace to see root folders, (2) Drill down by specifying path. The path is RELATIVE to the workspace root (network share). Example: workspace "COOLKID-Work" at "\\\\COOLKID\\Work" with path "_GIT/SoundApp" shows "\\\\COOLKID\\Work\\_GIT\\SoundApp" contents.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace: { type: 'string', description: 'Workspace name (e.g., "BADKID-DEV"). If omitted, returns all workspaces.' },
-        path: { type: 'string', description: 'Subdirectory path to explore (default: root). Example: "src/router"' },
+        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "COOLKID-Work")' },
+        path: { type: 'string', description: 'Subdirectory path relative to workspace root (default: root). Example: "_GIT/SoundApp" or "src/router". Use forward or backslashes.' },
         max_depth: { type: 'number', description: 'Maximum depth to traverse (default: 3)' }
       },
       required: []
@@ -1012,6 +1010,11 @@ export function createCodeSearchServer(config, router) {
   async function getFileTree(args) {
     const { workspace: workspaceName, path: subPath = '', max_depth = 3 } = args;
     
+    // Normalize subPath to use forward slashes for consistent matching
+    const normalizedSubPath = subPath ? subPath.replace(/\\/g, '/') : '';
+    // Ensure subPath doesn't end with slash for consistent slicing
+    const trimSubPath = normalizedSubPath.replace(/\/$/, '');
+    
     const workspacesToGet = workspaceName 
       ? [workspaceName]
       : Object.keys(config.workspaces || {});
@@ -1022,13 +1025,20 @@ export function createCodeSearchServer(config, router) {
       try {
         const index = await loadIndexForWorkspace(ws);
         const tree = {};
+        let matchedFileCount = 0;
         
         for (const fileData of Object.values(index.files)) {
-          const filePath = fileData.path;
+          // Normalize file path to forward slashes
+          const filePath = fileData.path.replace(/\\/g, '/');
           
-          if (subPath && !filePath.startsWith(subPath)) continue;
+          if (trimSubPath) {
+            // Check if file is inside the subdirectory (must start with subpath/)
+            if (!filePath.startsWith(trimSubPath + '/')) continue;
+          }
           
-          const relativePath = subPath ? filePath.slice(subPath.length).replace(/^\\/, '') : filePath;
+          matchedFileCount++;
+          
+          const relativePath = trimSubPath ? filePath.slice(trimSubPath.length + 1) : filePath;
           if (!relativePath) continue;
           
           const parts = relativePath.split(/[\\/]/).filter(p => p);
@@ -1051,7 +1061,7 @@ export function createCodeSearchServer(config, router) {
         result[ws] = {
           path: subPath || 'root',
           tree,
-          file_count: Object.keys(index.files).length
+          file_count: matchedFileCount
         };
       } catch (err) {
         result[ws] = { error: err.message };

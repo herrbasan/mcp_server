@@ -127,13 +127,29 @@ const content = retrieve_file({
 });
 ```
 
-### Workspace Model
-Workspaces are named identifiers mapped to UNC network paths. You don't need to know the actual paths - just use workspace names.
+### Workspace Model (Network Shares)
+Workspaces are **mounted network shares** (UNC paths). Think of them as drives - each workspace name maps to a root directory, and your code lives somewhere inside that folder structure.
 
-**Available Workspaces**:
-- `COOLKID-Work` - Main work projects
-- `BADKID-DEV` - Development projects (contains mcp_server)
-- `BADKID-SRV` - Server/service projects
+| Workspace | UNC Path | Description |
+|-----------|----------|-------------|
+| `COOLKID-Work` | `\\COOLKID\Work` | Main dev machine share |
+| `BADKID-DEV` | `d:\DEV` | Local dev drive |
+| `BADKID-SRV` | `d:\SRV` | Local server drive |
+
+**IMPORTANT**: When using `get_file_tree` or searching, paths are **relative to the workspace root**. A project at `\\COOLKID\Work\_GIT\SoundApp` is accessed via `path: "_GIT/SoundApp"` in the `COOLKID-Work` workspace.
+
+**Exploration Workflow**:
+```javascript
+// 1. See available workspaces
+get_workspace_config()  // Returns: COOLKID-Work, BADKID-DEV, etc.
+
+// 2. Explore workspace structure to find your project
+get_file_tree({ workspace: "COOLKID-Work" })  
+// Returns: { Work: { type: "directory", children: { _GIT: {...} } } }
+
+// 3. Drill down to your project
+get_file_tree({ workspace: "COOLKID-Work", path: "Work/_GIT/SoundApp" })
+```
 
 ### File ID Format
 All search results return **32-character SHA256 hash IDs** (collision-free):

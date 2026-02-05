@@ -175,8 +175,8 @@ if (config.servers['code-search']?.enabled) {
 // Wire up inter-module communication (Code Inspector uses Code Search when available)
 const codeInspector = serverModules.get('code-inspector');
 const codeSearch = serverModules.get('code-search');
-if (localAgent && codeSearch) {
-  localAgent.setCodeSearchServer(codeSearch);
+if (codeInspector && codeSearch) {
+  codeInspector.setCodeSearchServer(codeSearch);
   console.log('✓ Code Inspector ↔ Code Search integration');
 }
 
