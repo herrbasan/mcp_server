@@ -373,9 +373,9 @@ async function runTests() {
   // setup with interactive pages - testing basic fetch and evaluate covers core functionality
 
   // ============================================
-  // LOCAL AGENT MODULE (3 tools)
+  // CODE INSPECTOR MODULE (1 tool)
   // ============================================
-  console.log('\n\n🕵️ Phase 6: Local Agent Module (3 tools)');
+  console.log('\n\n🕵️ Phase 6: Code Inspector Module (1 tool)');
 
   if (workspaceName && testFileId) {
     await testTool(
@@ -384,7 +384,6 @@ async function runTests() {
       {
         name: 'inspect_code',
         arguments: {
-          workspace: workspaceName,
           target: testFileId,
           question: 'What is this file about?'
         }

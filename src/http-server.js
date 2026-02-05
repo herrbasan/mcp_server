@@ -150,14 +150,16 @@ if (config.servers['memory']?.enabled) {
 // Both code-inspector and code-search share workspace config
 const workspaceConfig = config.workspaces || {};
 
-if (config.servers['local-agent']?.enabled) {
+// Support both 'code-inspector' (new) and 'local-agent' (deprecated) config keys
+const inspectorConfig = config.servers['code-inspector'] || config.servers['local-agent'];
+if (inspectorConfig?.enabled) {
   const { createCodeInspectorServer } = await import('./servers/code-inspector.js');
-  const agentConfig = { ...config.servers['local-agent'], workspaces: workspaceConfig };
+  const agentConfig = { ...inspectorConfig, workspaces: workspaceConfig };
   const s = createCodeInspectorServer(agentConfig, llmRouter);
-  serverModules.set('local-agent', s);
+  serverModules.set('code-inspector', s);
   tools.push(...s.getTools());
   if (s.getPrompts) prompts.push(...s.getPrompts());
-  console.log('✓ Local Agent');
+  console.log('✓ Code Inspector');
 }
 
 if (config.servers['code-search']?.enabled) {
@@ -171,7 +173,7 @@ if (config.servers['code-search']?.enabled) {
 }
 
 // Wire up inter-module communication (Code Inspector uses Code Search when available)
-const localAgent = serverModules.get('local-agent');
+const codeInspector = serverModules.get('code-inspector');
 const codeSearch = serverModules.get('code-search');
 if (localAgent && codeSearch) {
   localAgent.setCodeSearchServer(codeSearch);

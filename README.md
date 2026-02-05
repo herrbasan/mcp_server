@@ -76,7 +76,7 @@ mcp_server/
 ├── scripts/
 │   └── build-index.js           # CLI: Build semantic code index
 ├── docs/                        # Documentation
-│   ├── local-agent-module.md    # Agent design
+│   ├── code-inspector-module.md # Code inspector design
 │   ├── code-search-module.md    # Search design
 │   └── integration-plan.md      # Integration guide
 ├── data/
@@ -200,7 +200,7 @@ Non-sensitive settings (models, prompts, timeouts):
     "memory": { "enabled": true },
     "lm-studio": { "enabled": true },
     "web-research": { "enabled": true },
-    "local-agent": { "enabled": true },
+    "code-inspector": { "enabled": true },
     "code-search": { "enabled": true }
   },
   "llm": {

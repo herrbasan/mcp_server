@@ -63,7 +63,7 @@ inspect_code({
 - [x] Rename `local-agent.js` → `code-inspector.js`
 - [x] Update `http-server.js` imports
 - [ ] Update tests
-- [ ] Update config.json (rename `local-agent` to `code-inspector` if desired)
+- [x] Update config.json (rename `local-agent` to `code-inspector`)
 
 ---
 

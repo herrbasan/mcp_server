@@ -38,13 +38,9 @@
       "userDataDir": "d:\\DEV\\mcp_server\\data\\chrome-profile",
       "description": "Direct browser automation for LLMs - persistent browser with 5min idle timeout"
     },
-    "local-agent": {
+    "code-inspector": {
       "enabled": true,
-      "maxTokenBudget": 50000,
-      "maxIterations": 20,
-      "model": null,
-      "toolCallingFormat": "json-in-prompt",
-      "description": "Autonomous local LLM agent with file access to remote workspaces via UNC paths"
+      "description": "LLM-based code analysis - analyze files or code snippets with local models"
     },
     "code-search": {
       "enabled": true,
@@ -53,7 +49,7 @@
     }
   },
   "llm": {
-    "defaultProvider": "grok",
+    "defaultProvider": "lmstudio",
     "embeddingProvider": "lmstudio",
     "providers": {
       "lmstudio": {
