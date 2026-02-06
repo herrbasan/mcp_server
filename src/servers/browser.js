@@ -7,108 +7,84 @@ const TOOL_NAMES = new Set(['browser_fetch', 'browser_click', 'browser_fill', 'b
 const TOOLS = [
   {
     name: 'browser_fetch',
-    description: `Fetch URL using a REAL HEADLESS BROWSER (Puppeteer/Chrome) - not HTTP fetch. Executes JavaScript, handles SPA/React apps, waits for dynamic content. Use when simple HTTP fails or need rendered content.
-
-Modes:
-- "text" (default): Clean extracted article text via Readability (removes nav/ads/clutter). Best for reading content. ~5-50KB.
-- "html": Raw DOM after JS execution. Use for tables, forms, structured data extraction. ~50-500KB.
-- "screenshot": Base64 PNG image. Use for visual verification, charts, layouts. ~100-500KB.
-- "markdown": Structured markdown conversion.
-
-Use "text" for 90% of cases - token-efficient and LLM-friendly.`,
+    description: 'Fetch URL with headless browser. Modes: text (default), html, screenshot, markdown. Use waitFor for dynamic content.',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to fetch' },
-        mode: { type: 'string', enum: ['text', 'html', 'screenshot', 'markdown'], description: 'Output format (default: text)' },
-        waitFor: { type: 'string', description: 'CSS selector to wait for before extracting content (optional)' },
-        fullPage: { type: 'boolean', description: 'For screenshot mode: capture full page vs viewport (default: false)' },
-        viewport: {
-          type: 'object',
-          properties: { width: { type: 'number' }, height: { type: 'number' } },
-          description: 'Custom viewport size (default: 1280x800)'
-        }
+        url: { type: 'string' },
+        mode: { type: 'string', enum: ['text', 'html', 'screenshot', 'markdown'] },
+        waitFor: { type: 'string', description: 'CSS selector to wait for' },
+        fullPage: { type: 'boolean' },
+        viewport: { type: 'object', properties: { width: { type: 'number' }, height: { type: 'number' } } }
       },
       required: ['url']
     }
   },
   {
     name: 'browser_click',
-    description: 'Navigate to URL, click an element, and return the resulting page content. Useful for buttons, links, interactive elements.',
+    description: 'Click element on page and return result',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to navigate to' },
-        selector: { type: 'string', description: 'CSS selector of element to click' },
-        waitAfter: { type: 'number', description: 'Milliseconds to wait after click (default: 1000)' },
-        mode: { type: 'string', enum: ['text', 'html', 'screenshot'], description: 'Output format after click (default: text)' }
+        url: { type: 'string' },
+        selector: { type: 'string', description: 'CSS selector' },
+        waitAfter: { type: 'number', description: 'Wait ms after click' },
+        mode: { type: 'string', enum: ['text', 'html', 'screenshot'] }
       },
       required: ['url', 'selector']
     }
   },
   {
     name: 'browser_fill',
-    description: 'Fill form fields and optionally submit. Returns page content after action.',
+    description: 'Fill form fields and optionally submit',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to navigate to' },
-        fields: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              selector: { type: 'string', description: 'CSS selector of input field' },
-              value: { type: 'string', description: 'Value to fill' }
-            },
-            required: ['selector', 'value']
-          },
-          description: 'Array of {selector, value} pairs to fill'
-        },
-        submit: { type: 'string', description: 'CSS selector of submit button to click (optional)' },
-        waitAfter: { type: 'number', description: 'Milliseconds to wait after submit (default: 2000)' },
-        mode: { type: 'string', enum: ['text', 'html', 'screenshot'], description: 'Output format after action (default: text)' }
+        url: { type: 'string' },
+        fields: { type: 'array', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' } } } },
+        submit: { type: 'string', description: 'Submit button selector' },
+        waitAfter: { type: 'number' },
+        mode: { type: 'string', enum: ['text', 'html', 'screenshot'] }
       },
       required: ['url', 'fields']
     }
   },
   {
     name: 'browser_evaluate',
-    description: 'Execute JavaScript IN THE PAGE CONTEXT (like browser devtools console) and return the result. Your JS runs inside the loaded page and can access DOM, window, any page variables. Use for: extracting specific data, interacting with page APIs, scraping structured content.',
+    description: 'Execute JavaScript in page context',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to navigate to' },
-        script: { type: 'string', description: 'JavaScript code to execute (must return a value)' },
-        waitFor: { type: 'string', description: 'CSS selector to wait for before executing (optional)' }
+        url: { type: 'string' },
+        script: { type: 'string', description: 'JS code (must return value)' },
+        waitFor: { type: 'string' }
       },
       required: ['url', 'script']
     }
   },
   {
     name: 'browser_pdf',
-    description: 'Generate a PDF of the page. Returns base64-encoded PDF.',
+    description: 'Generate PDF of page',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to capture as PDF' },
-        format: { type: 'string', enum: ['A4', 'Letter', 'Legal', 'Tabloid'], description: 'Page format (default: A4)' },
-        landscape: { type: 'boolean', description: 'Landscape orientation (default: false)' },
-        printBackground: { type: 'boolean', description: 'Print background graphics (default: true)' }
+        url: { type: 'string' },
+        format: { type: 'string', enum: ['A4', 'Letter', 'Legal', 'Tabloid'] },
+        landscape: { type: 'boolean' },
+        printBackground: { type: 'boolean' }
       },
       required: ['url']
     }
   },
   {
     name: 'browser_login',
-    description: 'Open a browser window to a login page so user can manually authenticate. Browser will stay open with saved session. Use when search engines or sites require login.',
+    description: 'Open browser for manual authentication',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'URL to open for login (default: https://www.google.com)' },
-        message: { type: 'string', description: 'Message to display to user' }
-      },
-      required: []
+        url: { type: 'string' },
+        message: { type: 'string' }
+      }
     }
   }
 ];

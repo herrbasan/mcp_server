@@ -444,3 +444,11 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging, browser pool architecture (persistent tabs, search adapters, realistic scraping behavior)
 - **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization, file ID system, in-memory caching
 - **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening (4-tier fallback), DuckDuckGo adapter complete rebuild, streaming research pipeline, LLM-optimized code design philosophy, per-provider embedding model configuration
+
+
+## Useful Links
+- x.ai Grok API Reference - https://docs.x.ai/developers/api-reference
+- OpenAI API Reference - https://platform.openai.com/docs/api-reference/introduction
+- LM Studio API Reference - https://lmstudio.ai/docs/developer/rest
+- Ollama API Reference - https://docs.ollama.com/quickstart
+- Gemini API Reference - https://ai.google.dev/gemini-api/docs

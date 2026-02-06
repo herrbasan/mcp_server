@@ -5,26 +5,14 @@ import { WorkspaceResolver } from '../lib/workspace.js';
 const TOOLS = [
   {
     name: 'inspect_code',
-    description: 'Quick code analysis - analyze files or direct code snippets with LLM. Supports multiple files (comma-separated) or direct code input. Router handles context window management automatically. WHEN TO USE: Quick questions on 1-3 files OR analyzing code snippets. HOW TO USE: Files: "file1.js, file2.js" OR direct code via "code" parameter.',
+    description: 'Analyze code with LLM. Scope: external files only (for current project, analyze directly). Provide target (hash ID) OR code, not both.',
     inputSchema: {
       type: 'object',
       properties: {
-        target: {
-          type: 'string',
-          description: 'File hash ID(s) from search results to analyze. Format: "a3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6" (32-char SHA256 hash). Multiple files: "hash1,hash2,hash3". Accepts legacy "workspace:path" format for backward compatibility. Either "target" OR "code" must be provided.'
-        },
-        code: {
-          type: 'string',
-          description: 'Direct code snippet to analyze. Useful for external snippets, clipboard content, or generated code. Either "target" OR "code" must be provided.'
-        },
-        question: {
-          type: 'string',
-          description: 'Question to ask about the code. Examples: "Are there any bugs?", "Check for performance issues", "Suggest improvements", "Is this correct?"'
-        },
-        workspace: {
-          type: 'string',
-          description: 'Optional: Workspace name for path-based targets. Not needed for hash IDs - workspace is resolved automatically from the hash.'
-        }
+        target: { type: 'string', description: 'File hash ID(s), comma-separated' },
+        code: { type: 'string', description: 'Direct code snippet' },
+        question: { type: 'string', description: 'Question about the code' },
+        workspace: { type: 'string', description: 'For legacy path format' }
       },
       required: ['question']
     }

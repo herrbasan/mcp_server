@@ -105,103 +105,36 @@ Keep it minimal-dependency and performance-first. For any non-trivial pattern/li
 const TOOLS = [
   {
     name: 'remember',
-    description: 'LLM-managed memory for improving OUTPUT QUALITY. Store evidence-based rules, not user preferences. Categories: proven (demonstrated good outcomes), anti_patterns (caused problems), hypotheses (untested ideas), context (project facts), observed (behavioral patterns). New memories start confidence 0.3.\n\nTRIGGER MOMENTS (store immediately after):\n- Discovering a pattern that solves a problem efficiently\n- Hitting a bug caused by a specific approach (anti_pattern)\n- User provides explicit architectural guidance\n- Performance benchmark reveals insights\n- Code review identifies recurring quality issues\n\nDOMAIN SCOPING: Use the domain field to scope memories to specific projects/codebases (e.g., "LMStudioAPI", "NUI", "LocalVectorDB", "mcp_server"). Project-specific patterns, workflows, and technical decisions should have a domain. Universal programming principles and user preferences should omit domain (null). This enables efficient recall filtered by current working context.',
+    description: 'Store a memory. Categories: proven, anti_patterns, hypotheses, context, observed. Use domain for project-specific memories.',
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'The memory to store - should be actionable for quality improvement' },
-        category: { type: 'string', description: 'Category: proven, anti_patterns, hypotheses, context, or observed' },
-        domain: { type: 'string', description: 'Optional domain/project scope (e.g., "LMStudioAPI", "NUI", "LocalVectorDB"). Use for project-specific memories. Omit for universal principles.' }
+        text: { type: 'string', description: 'Memory content' },
+        category: { type: 'string', description: 'Category' },
+        domain: { type: 'string', description: 'Optional project scope' }
       },
       required: ['text', 'category']
     }
   },
   {
     name: 'recall',
-    description: 'Search quality rules and evidence. Results: [#id] [domain] category (similarity%) confidence-indicator. ✓=proven(0.7+), ~=promising(0.5-0.7), ?=hypothesis(<0.5). Use before generating code to check what approaches have worked or failed.\n\nWHEN TO QUERY:\n- ALWAYS run at session start to prime context (broad query like "common patterns" or domain-specific)\n- Before implementing any feature - check for proven patterns and anti_patterns\n- When encountering unfamiliar problems - search for related experiences\n- After code review feedback - verify alignment with stored quality rules\n\nEFFICIENCY TIP: Filter by domain when working in a specific project context to get relevant memories faster. Example: recall(query="model loading", domain="LMStudioAPI") retrieves only LMStudioAPI-specific patterns, not unrelated projects.',
+    description: 'Search memories. Results show confidence: ✓=proven, ~=promising, ?=hypothesis.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'What to search for' },
+        query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default: 5)' },
-        category: { type: 'string', description: 'Filter by category (optional)' },
-        domain: { type: 'string', description: 'Filter by domain/project (optional). Highly recommended when working in a specific project to avoid noise from other projects.' }
+        category: { type: 'string', description: 'Filter by category' },
+        domain: { type: 'string', description: 'Filter by project' }
       },
       required: ['query']
     }
   },
-  {
-    name: 'forget',
-    description: 'Delete a memory by ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'number', description: 'Memory ID to delete' }
-      },
-      required: ['id']
-    }
-  },
-  {
-    name: 'list_memories',
-    description: 'List all memories or filter by category and/or domain. Use domain filter to see all memories for a specific project.\n\n=== MEMORY SYSTEM USAGE PROTOCOL ===\n1. SESSION START: ALWAYS run list_memories or recall with domain filter to prime context with project-specific patterns\n2. BEFORE IMPLEMENTATION: Query recall for relevant proven patterns and anti_patterns before writing code\n3. AFTER DISCOVERY: Store insights immediately via remember - don\'t wait until session end\n4. SESSION END: User will trigger reflect_on_session when ready; propose updates and ask approval before applying\n\nYou have full agency over this system — query, store, update, delete as needed. Keep code minimal-dependency and performance-first.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        category: { type: 'string', description: 'Filter by category (optional)' },
-        domain: { type: 'string', description: 'Filter by domain/project (optional). Useful for reviewing all memories for current working project.' }
-      }
-    }
-  },
-  {
-    name: 'update_memory',
-    description: 'Update an existing memory by ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'number', description: 'Memory ID to update' },
-        text: { type: 'string', description: 'New text' },
-        category: { type: 'string', description: 'New category (optional)' },
-        domain: { type: 'string', description: 'New domain/project (optional)' }
-      },
-      required: ['id', 'text']
-    }
-  },
-  {
-    name: 'reflect_on_session',
-    description: 'USER-INITIATED ONLY - wait for explicit trigger. Typically at session end after completing significant work.\n\nAnalyze: What approaches worked? What failed? What should be promoted from hypothesis to proven, or flagged as anti_pattern? Focus on OUTPUT QUALITY - did the code we produced meet performance/simplicity standards? Propose evidence-based updates for user approval before applying.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        sessionSummary: { type: 'string', description: 'Summary of what was built, what worked, what did not' }
-      },
-      required: ['sessionSummary']
-    }
-  },
-  {
-    name: 'apply_reflection_changes',
-    description: 'Apply quality-focused updates. Promote hypotheses to proven when validated. Create anti_patterns when approaches caused problems. Goal: accumulate evidence for what produces good outcomes, not what user prefers.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        changes: {
-          type: 'array',
-          description: 'Array of approved changes from reflection',
-          items: {
-            type: 'object',
-            properties: {
-              action: { type: 'string', enum: ['create', 'update', 'reinforce', 'decrease'] },
-              id: { type: 'number', description: 'Memory ID for update/reinforce/decrease' },
-              text: { type: 'string', description: 'Memory text for create/update' },
-              category: { type: 'string', description: 'Category for create/update' },
-              domain: { type: 'string', description: 'Domain/project for create/update (optional)' },
-              reason: { type: 'string', description: 'Reasoning for this change' }
-            }
-          }
-        }
-      },
-      required: ['changes']
-    }
-  }
+  { name: 'forget', description: 'Delete a memory by ID', inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] } },
+  { name: 'list_memories', description: 'List all memories. Filter by category/domain.', inputSchema: { type: 'object', properties: { category: { type: 'string' }, domain: { type: 'string' } } } },
+  { name: 'update_memory', description: 'Update a memory by ID', inputSchema: { type: 'object', properties: { id: { type: 'number' }, text: { type: 'string' }, category: { type: 'string' }, domain: { type: 'string' } }, required: ['id', 'text'] } },
+  { name: 'reflect_on_session', description: 'USER-INITIATED. Analyze session for quality improvements. Returns proposed changes.', inputSchema: { type: 'object', properties: { sessionSummary: { type: 'string' } }, required: ['sessionSummary'] } },
+  { name: 'apply_reflection_changes', description: 'Apply changes from reflection', inputSchema: { type: 'object', properties: { changes: { type: 'array' } }, required: ['changes'] } }
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));

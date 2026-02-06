@@ -185,169 +185,73 @@ function getPrompt(name, args) {
 const TOOLS = [
   {
     name: 'get_workspace_config',
-    description: 'ALWAYS CALL FIRST - discovers available workspaces (network shares) and their index status. A WORKSPACE is a mounted network share or local directory (e.g., "COOLKID-Work" = "\\\\COOLKID\\Work"). All paths in other tools are RELATIVE to the workspace root. First call with no args to see workspace names, then use get_file_tree({workspace: "NAME"}) to explore folder structure and find your project.',
-    inputSchema: { type: 'object', properties: {}, required: [] }
+    description: 'List available workspaces. Scope: external projects only.',
+    inputSchema: { type: 'object', properties: {} }
   },
   {
     name: 'get_file_info',
-    description: 'STEP 2 - STRUCTURE: Get function/class line numbers AFTER search, BEFORE retrieval. CRITICAL for token efficiency - use this to find exact line numbers, then retrieve only those lines. Input: hash ID from search. Returns: functions[{name, line}], classes[{name, line}], imports. EXAMPLE: get_file_info("a3f2b1c...") → find "handleRequest at line 45", then retrieve_file("a3f2b1c...", 45, 80). Skipping this wastes 10-500x tokens!',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', description: 'File ID from search results - 32-character SHA256 hash (e.g., "fc745a690e4db10279c18241a0a572c7"). Pass the exact hash ID returned by search tools.' }
-      },
-      required: ['file']
-    }
+    description: 'Get function/class line numbers from hash ID. Use BEFORE retrieve_file.',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: '32-char hash ID' } }, required: ['file'] }
   },
   {
     name: 'refresh_index',
-    description: 'Incrementally update code search index for a workspace. Fast (seconds) - only processes files changed since last index. Call after making code changes to keep search results current.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV", "COOLKID-Work")' }
-      },
-      required: ['workspace']
-    }
+    description: 'Update index after code changes',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' } }, required: ['workspace'] }
   },
   {
     name: 'refresh_all_indexes',
-    description: 'Refresh indexes for ALL configured workspaces in one call. Useful after bulk changes across multiple projects or when setting up a new environment.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        force: { type: 'boolean', description: 'Force full rebuild instead of incremental update (default: false)' }
-      },
-      required: []
-    }
+    description: 'Update all workspace indexes',
+    inputSchema: { type: 'object', properties: { force: { type: 'boolean' } } }
   },
   {
     name: 'get_index_stats',
-    description: 'Check index health for a workspace: file count, last build time, staleness warnings. Use before searching to verify the index exists and is fresh.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")' }
-      },
-      required: ['workspace']
-    }
+    description: 'Check index health',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' } }, required: ['workspace'] }
   },
   {
     name: 'search_files',
-    description: 'Find files by name/path using glob patterns - fastest file discovery. Returns ONLY file IDs, no content. PATTERNS: "*test*.js" (any test file), "src/**/*.ts" (all TS in src tree), "**/auth*" (auth files anywhere). WORKFLOW: (1) search_files to find candidates, (2) get_file_info for structure, (3) retrieve_file for content. USE WHEN: Know file name/path pattern, exploring directory structure. DON\'T USE: Searching code content (use search_keyword/semantic).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")' },
-        glob: { type: 'string', description: 'Glob pattern: "*auth*.js" (files containing auth), "src/**/*.ts" (all TS in src), "**/*test*" (all test files)' }
-      },
-      required: ['workspace', 'glob']
-    }
+    description: 'Find files by glob pattern. Scope: external workspaces only.',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' }, glob: { type: 'string', description: 'e.g., src/**/*.js' } }, required: ['workspace', 'glob'] }
   },
   {
     name: 'search_keyword',
-    description: 'Fast exact text/regex search - use when you know exact string. Returns file IDs + matching line excerpts. WHEN TO USE: Exact function names "handleRequest", variable references "authToken", error messages, TODOs, specific API calls. REGEX: Set regex=true for patterns like "async function \\w+" or "TODO|FIXME". DON\'T USE: Conceptual searches (use search_semantic), file structure (use get_file_info). Much faster than semantic search when you know exact terms!',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV")' },
-        pattern: { type: 'string', description: 'Search text or regex pattern (e.g., "StreamableHTTP", "async function \\w+", "TODO|FIXME")' },
-        regex: { type: 'boolean', description: 'Treat pattern as regex (default: false). Enable for advanced patterns.' },
-        limit: { type: 'number', description: 'Max results (default: 50)' }
-      },
-      required: ['workspace', 'pattern']
-    }
+    description: 'Text search. Scope: external workspaces only. Use regex=true for patterns.',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' }, pattern: { type: 'string' }, regex: { type: 'boolean' }, limit: { type: 'number' } }, required: ['workspace', 'pattern'] }
   },
   {
     name: 'search_semantic',
-    description: 'STEP 1 - DISCOVERY: Find code by MEANING using AI embeddings. Best for conceptual searches when you don\'t know exact keywords. Returns file IDs (32-char hashes) + similarity scores + function/class names. IMPORTANT: Use returned hash IDs directly in get_file_info/retrieve_file/inspect_code - no workspace needed! WORKFLOW: (1) search_semantic("auth logic") → get hash IDs, (2) get_file_info(hash) → get line numbers, (3) retrieve_file(hash, startLine, endLine) → get specific function. Omit workspace to search ALL workspaces across all network shares.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name (network share) from get_workspace_config (e.g., "COOLKID-Work", "BADKID-DEV"). If omitted, searches ALL workspaces.' },
-        query: { type: 'string', description: 'Natural language description of what you\'re looking for (e.g., "WebSocket connection handling", "memory leak prevention")' },
-        limit: { type: 'number', description: 'Max results (default: 10)' }
-      },
-      required: ['query']
-    }
+    description: 'Semantic search by meaning. Returns hash IDs. Omit workspace to search ALL. Scope: external workspaces only.',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' }, query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] }
   },
   {
     name: 'search_code',
-    description: 'Multi-modal search combining semantic + keyword + file patterns. Returns: file IDs, similarity scores, function/class names, and enriched code snippets. Best for complex queries where you\'re not sure of exact terms. Like search_semantic, includes function/class arrays but no line numbers - use get_file_info for precise locations.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "BADKID-DEV"). If omitted, searches ALL workspaces.' },
-        query: { type: 'string', description: 'Natural language search query - will search by meaning AND keywords' },
-        limit: { type: 'number', description: 'Max results (default: 5)' }
-      },
-      required: ['query']
-    }
+    description: 'Combined semantic + keyword search',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' }, query: { type: 'string' }, limit: { type: 'number' } }, required: ['query'] }
   },
   {
     name: 'peek_file',
-    description: 'QUICK LOOK: One-step file access for quick previews. Use when you just want to see file content without the full search→info→retrieve workflow. Returns first N lines (default 50). Good for: checking if right file, seeing imports, quick overview. For deep analysis, use the full workflow: search_semantic → get_file_info → retrieve_file.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Filename, partial path, or semantic query. Examples: "http-server.js", "src/router", "authentication middleware"' },
-        workspace: { type: 'string', description: 'Workspace name (e.g., "BADKID-DEV"). If omitted, searches all workspaces.' },
-        max_lines: { type: 'number', description: 'Max lines to return (default: 50)' }
-      },
-      required: ['query']
-    }
+    description: 'Quick file preview (first N lines)',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, workspace: { type: 'string' }, max_lines: { type: 'number' } }, required: ['query'] }
   },
   {
     name: 'get_context',
-    description: 'SMART CONTEXT EXPANSION: Get surrounding lines around a specific line number. Perfect for "show me context around line 245" without manual calculations. Can use fixed radius or auto-expand to function boundaries.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', description: 'File ID (32-char hash) or "workspace:path" format' },
-        line: { type: 'number', description: 'Target line number (1-indexed)' },
-        radius: { type: 'number', description: 'Number of lines before/after (default: 20). Use "function" to auto-expand to enclosing function boundaries.' },
-        workspace: { type: 'string', description: 'Workspace name (required if using path instead of hash ID)' }
-      },
-      required: ['file', 'line']
-    }
+    description: 'Get lines around specific line number',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'hash ID' }, line: { type: 'number' }, radius: { type: 'number', description: 'lines before/after' }, workspace: { type: 'string' } }, required: ['file', 'line'] }
   },
   {
     name: 'get_file_tree',
-    description: 'DIRECTORY EXPLORATION: Get the file tree structure of a workspace. Returns directories and files in a hierarchical format. WORKFLOW: (1) Call with just workspace to see root folders, (2) Drill down by specifying path. The path is RELATIVE to the workspace root (network share). Example: workspace "COOLKID-Work" at "\\\\COOLKID\\Work" with path "_GIT/SoundApp" shows "\\\\COOLKID\\Work\\_GIT\\SoundApp" contents.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        workspace: { type: 'string', description: 'Workspace name from get_workspace_config (e.g., "COOLKID-Work")' },
-        path: { type: 'string', description: 'Subdirectory path relative to workspace root (default: root). Example: "_GIT/SoundApp" or "src/router". Use forward or backslashes.' },
-        max_depth: { type: 'number', description: 'Maximum depth to traverse (default: 3)' }
-      },
-      required: []
-    }
+    description: 'Explore directory structure',
+    inputSchema: { type: 'object', properties: { workspace: { type: 'string' }, path: { type: 'string' }, max_depth: { type: 'number' } } }
   },
   {
     name: 'get_function_tree',
-    description: 'SYMBOL OUTLINE: Get function and class metadata from the index without retrieving full file content. Returns names, line numbers, and signatures. Much faster than reading entire files.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', description: 'File ID (32-char hash) or "workspace:path" format' },
-        workspace: { type: 'string', description: 'Workspace name (required if using path instead of hash ID)' }
-      },
-      required: ['file']
-    }
+    description: 'Get function/class outline',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'hash ID' }, workspace: { type: 'string' } }, required: ['file'] }
   },
   {
     name: 'retrieve_file',
-    description: 'STEP 3 - RETRIEVAL: Get file content using hash ID from search. ALWAYS use partial retrieval with startLine/endLine! Input: hash ID (32-char). BEST PRACTICE: (1) search_semantic → hash IDs, (2) get_file_info → line numbers, (3) retrieve_file(hash, startLine, endLine). EXAMPLE: retrieve_file("a3f2b1c...", 245, 280) gets 35 lines instead of 3000+ line file. Token savings: 50-500x!',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', description: 'File ID from search results (32-char hash like "a3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6") or legacy format ("BADKID-DEV:src/file.js")' },
-        startLine: { type: 'number', description: 'Start line (1-indexed, inclusive). Use with get_file_info function line numbers to fetch specific functions. Omit to read from beginning.' },
-        endLine: { type: 'number', description: 'End line (1-indexed, inclusive). Omit to read to end. Example: if function is at line 245, use startLine=245, endLine=280 to get just that function.' }
-      },
-      required: ['file']
-    }
+    description: 'Get file content by hash ID. Use startLine/endLine for partial read. Scope: external workspaces only.',
+    inputSchema: { type: 'object', properties: { file: { type: 'string', description: 'hash ID' }, startLine: { type: 'number' }, endLine: { type: 'number' } }, required: ['file'] }
   }
 ];
 

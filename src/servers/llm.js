@@ -1,14 +1,14 @@
 const TOOLS = [
   {
     name: 'query_model',
-    description: 'Query a LOCAL LLM running on the orchestrator server (separate from Claude/you). Use when you want a different model\'s perspective, need offline processing, or want to delegate background analysis. The local model runs independently and returns text responses. IMPORTANT: Always display the complete response to the user VERBATIM before providing any analysis or commentary.',
+    description: 'Query the local LLM. Use for different perspective or offline processing. Display response verbatim before analysis.',
     inputSchema: {
       type: 'object',
       properties: {
-        prompt: { type: 'string', description: 'The prompt to send to the model' },
-        systemPrompt: { type: 'string', description: 'Optional: system prompt to guide the model (defaults to config)' },
-        schema: { type: 'object', description: 'Optional: JSON schema for structured output. If provided, response will be valid JSON matching this schema.' },
-        maxTokens: { type: 'number', description: 'Optional: maximum tokens to generate. Only use this if you want truncated output - the router automatically calculates optimal length based on model context window. Setting this will limit the response length.' }
+        prompt: { type: 'string', description: 'Prompt to send' },
+        systemPrompt: { type: 'string', description: 'Optional system prompt' },
+        schema: { type: 'object', description: 'Optional JSON schema for structured output' },
+        maxTokens: { type: 'number', description: 'Optional token limit' }
       },
       required: ['prompt']
     }

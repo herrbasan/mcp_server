@@ -11,6 +11,7 @@ import { createLLMServer } from './servers/llm.js';
 import { WebResearchServer } from './servers/web-research.js';
 import { createMemoryServer } from './servers/memory.js';
 import { createBrowserServer } from './servers/browser.js';
+import { createDocsServer } from './servers/docs.js';
 import { WebServer } from './web/server.js';
 import { globalLogger } from './logger.js';
 import { createRouter } from './router/router.js';
@@ -109,6 +110,12 @@ if (config.llm) {
   llmRouter = await createRouter(config.llm);
   console.log('✓ LLM Router initialized');
 }
+
+// Initialize Docs server (always enabled)
+const docsServer = createDocsServer();
+serverModules.set('docs', docsServer);
+tools.push(...docsServer.getTools());
+console.log('✓ Docs');
 
 // Initialize Browser server first (needed by web-research)
 let browserServer = null;

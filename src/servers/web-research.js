@@ -120,23 +120,19 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   getTools() {
-    return [
-      // prepare_research_query - kept in backpocket, not exposed
-      // See prepareQuery() method below for implementation
-      {
-        name: 'research_topic',
-        description: 'AUTONOMOUS WEB RESEARCH: 5-phase pipeline that (1) searches multiple engines, (2) selects best sources via local LLM, (3) scrapes with 10 concurrent headless browsers, (4) cross-references facts, (5) synthesizes summary with citations. Use when you need current information Claude doesn\'t know. TIP: Optimize query BEFORE calling - use quotes for exact terms ("Virtual DOM"), site: filters (site:stackoverflow.com), specific phrasing to reduce ambiguity. The pipeline runs autonomously and returns a complete research report. Always display the complete research report to the user VERBATIM before providing commentary.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Optimized search query (technical terms quoted, site: filters if relevant)' },
-            max_pages: { type: 'number', description: 'Max pages to scrape (default: 10)' },
-            engines: { type: 'array', items: { type: 'string' }, description: 'Search engines to use (google, bing, duckduckgo)' }
-          },
-          required: ['query']
-        }
+    return [{
+      name: 'research_topic',
+      description: 'Research a topic via web search. Multi-phase: search, select sources, scrape, synthesize with citations. Returns complete report.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query (quote terms, use site: filters)' },
+          max_pages: { type: 'number', description: 'Max pages (default: 10)' },
+          engines: { type: 'array', items: { type: 'string' }, description: 'google, duckduckgo, bing' }
+        },
+        required: ['query']
       }
-    ];
+    }];
   }
 
   handlesTool(name) {
