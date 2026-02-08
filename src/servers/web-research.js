@@ -1,8 +1,28 @@
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { ScraperRegistry } from '../scrapers/index.js';
 import { searchGoogle } from '../scrapers/google-adapter.js';
 import { searchDuckDuckGo } from '../scrapers/duckduckgo-adapter.js';
 import { extractContent, validateContent } from '../scrapers/content-extractor.js';
 import { StreamingResearchPipeline, prioritizeUrls, shouldTerminateEarly } from '../lib/streaming-research.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROMPTS = {
+  queryOptimization: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_query_optimization.txt'), 'utf-8'),
+  sourceRanking: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_source_ranking.txt'), 'utf-8'),
+  synthesis: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_synthesis.txt'), 'utf-8'),
+  evaluation: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_evaluation.txt'), 'utf-8'),
+  merge: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_merge.txt'), 'utf-8')
+};
+
+const SYSTEM_PROMPTS = {
+  queryOptimization: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_query_optimization_system.txt'), 'utf-8'),
+  sourceRanking: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_source_ranking_system.txt'), 'utf-8'),
+  synthesis: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_synthesis_system.txt'), 'utf-8'),
+  evaluation: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_evaluation_system.txt'), 'utf-8'),
+  merge: readFileSync(join(__dirname, '..', '..', 'prompts', 'research_merge_system.txt'), 'utf-8')
+};
 
 export class WebResearchServer {
   constructor(config, llmRouter = null, browserServer = null) {
@@ -50,19 +70,7 @@ export class WebResearchServer {
   async prepareQuery(args) {
     const { user_query, context } = args;
     
-    const prompt = `You are a search query optimization expert. Given a user's research question, generate 3-5 highly effective search query variants that will find the most relevant and authoritative sources.
-
-User question: "${user_query}"
-${context ? `\nContext: ${context}` : ''}
-
-Consider:
-1. Technical terminology (e.g., quote multi-word terms like "Virtual DOM")
-2. Domain-specific sites (e.g., add "site:stackoverflow.com" for coding questions)
-3. Disambiguation (add context words to prevent ambiguous results)
-4. Alternative phrasings (how would different experts phrase this?)
-5. Specificity levels (one broad query, one narrow query, one focused on examples/tutorials)
-
-Generate 3-5 search query variants optimized for Google/DuckDuckGo/Bing.`;
+    const prompt = `${PROMPTS.queryOptimization}\n\nUser question: "${user_query}"${context ? `\nContext: ${context}` : ''}`;
 
     const schema = {
       type: 'object',
@@ -84,7 +92,7 @@ Generate 3-5 search query variants optimized for Google/DuckDuckGo/Bing.`;
     };
 
     try {
-      const parsed = await this.queryLLM(prompt, null, 1500, schema);
+      const parsed = await this.queryLLM(prompt, null, 1500, schema, null, 'analysis', SYSTEM_PROMPTS.queryOptimization);
       
       if (!parsed?.queries || !Array.isArray(parsed.queries) || !parsed.recommended) {
         throw new Error('Invalid response structure');
@@ -557,30 +565,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       });
     }
     
-    const prompt = `Rank URLs by relevance and authority for the query "${query}".
-
-**High-Priority Sources (rank these FIRST):**
-1. GitHub issues/pull requests (github.com/*/issues, github.com/*/pull) - for bugs, errors, troubleshooting
-2. StackOverflow answers (stackoverflow.com/questions) - for technical problems
-3. Official documentation (docs.*, */documentation/*, */api/*, */reference/*)
-4. Wikipedia (wikipedia.org, *.wikipedia.org) - for general knowledge
-5. Academic papers (arxiv.org, *.edu, *.ac.uk, scholar.google.com)
-6. Technical blogs from known sources (github.blog, stackoverflow.blog)
-
-**Medium-Priority:**
-7. GitHub repositories (github.com/*/tree, github.com/*/*) - for code examples
-8. Technical forums (reddit.com/r/*, discourse.*, forum.*)
-9. Developer blogs (dev.to, medium.com, hashnode.com)
-
-**Lower-Priority:**
-10. News sites, marketing pages, product homepages
-
-**Reject entirely:** App stores, social media posts, paywalls, spam
-
-URLs to rank:
-${filtered.map((r, i) => `${i+1}. ${r.url} - ${r.title.substring(0, 80)}`).join('\n')}
-
-Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in order of relevance.`;
+    const prompt = `${PROMPTS.sourceRanking}\n\nQuery: "${query}"`;
 
     const schema = {
       type: 'object',
@@ -594,7 +579,7 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
     };
 
     try {
-      const response = await this.queryLLM(prompt, signal, 2000, schema);
+      const response = await this.queryLLM(prompt, signal, 2000, schema, null, 'analysis', SYSTEM_PROMPTS.sourceRanking);
       const indices = response?.indices;
       
       if (Array.isArray(indices) && indices.length > 0) {
@@ -749,36 +734,14 @@ Return the top ${Math.min(maxPages, filtered.length)} indices (1-indexed) in ord
       return text;
     }).join('\n');
     
-    const prompt = `Research query: "${query}"
+    const prompt = `${PROMPTS.synthesis}\n\nResearch query: "${query}"\n\nI've gathered content from ${scrapedContent.length} sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate.\n\n${sources}`;
 
-I've gathered content from ${scrapedContent.length} sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate. Analyze and synthesize this information.
-
-${sources}
-
-Tasks:
-1. Identify key facts that appear in MULTIPLE sources (high confidence)
-2. Note any contradictions or disagreements between sources
-3. Synthesize into a clear, concise summary (500-800 words)
-4. Include citations using [1], [2] notation
-5. Add "Sources:" section at the end with numbered URLs
-
-Format as clean markdown. Be concise and factual.`;
-
-    const synthesis = await this.queryLLM(prompt, signal, 1024);
+    const synthesis = await this.queryLLM(prompt, signal, 1024, null, null, 'synthesis', SYSTEM_PROMPTS.synthesis);
     return synthesis;
   }
 
   async evaluateSynthesis(query, synthesis, signal) {
-    const prompt = `Original research query: "${query}"
-
-Research synthesis:
-${synthesis}
-
-Critically evaluate this synthesis:
-1. What is your confidence this answers the query completely? (0-100)
-2. What important questions remain unanswered?
-3. Are there any contradictions or gaps in the information?
-4. What specific follow-up query would fill the biggest gap?`;
+    const prompt = `${PROMPTS.evaluation}\n\nOriginal research query: "${query}"\n\nResearch synthesis:\n${synthesis}`;
 
     const schema = {
       type: 'object',
@@ -792,7 +755,7 @@ Critically evaluate this synthesis:
     };
 
     try {
-      const response = await this.queryLLM(prompt, signal, 1024, schema);
+      const response = await this.queryLLM(prompt, signal, 1024, schema, null, 'analysis', SYSTEM_PROMPTS.evaluation);
       
       if (typeof response?.confidence === 'number') {
         return response;
@@ -805,38 +768,25 @@ Critically evaluate this synthesis:
   }
 
   async mergeSyntheses(originalQuery, firstSynthesis, followUpQuery, secondSynthesis, signal) {
-    const prompt = `Original research query: "${originalQuery}"
+    const prompt = `${PROMPTS.merge}\n\nOriginal research query: "${originalQuery}"\n\nFirst synthesis:\n${firstSynthesis}\n\nFollow-up query: "${followUpQuery}"\nAdditional findings:\n${secondSynthesis}`;
 
-First synthesis:
-${firstSynthesis}
-
-Follow-up query: "${followUpQuery}"
-Additional findings:
-${secondSynthesis}
-
-Merge these into a single comprehensive synthesis:
-1. Integrate new findings with original
-2. Resolve any contradictions
-3. Maintain clear structure with citations
-4. Keep it concise (800-1200 words)
-
-Return the merged synthesis in markdown.`;
-
-    return await this.queryLLM(prompt, signal, 16384);
+    return await this.queryLLM(prompt, signal, 16384, null, null, 'synthesis', SYSTEM_PROMPTS.merge);
   }
 
-  async queryLLM(prompt, signal, maxTokens = 1000, responseFormat = null, progressMessage = null) {
+  async queryLLM(prompt, signal, maxTokens = 1000, responseFormat = null, progressMessage = null, taskType = 'synthesis', systemPrompt = null) {
     if (!this.router) {
       throw new Error('LLM router not configured for web research');
     }
 
-    console.error(`[WebResearch.queryLLM] router exists: ${!!this.router}, provider: ${this.synthesisProvider}, maxTokens: ${maxTokens}`);
+    console.error(`[WebResearch.queryLLM] router exists: ${!!this.router}, taskType: ${taskType}, maxTokens: ${maxTokens}`);
     console.error(`[WebResearch.queryLLM] prompt length: ${prompt.length}, responseFormat: ${!!responseFormat}`);
     
     console.error(`[WebResearch.queryLLM] About to call router.predict`);
     const response = await this.router.predict({
       prompt,
-      responseFormat
+      systemPrompt: systemPrompt || undefined,
+      responseFormat,
+      taskType
     });
     
     console.error(`[WebResearch.queryLLM] router.predict succeeded`);

@@ -1,0 +1,7 @@
+Merge multiple research syntheses into a single comprehensive synthesis:
+1. Integrate new findings with original
+2. Resolve any contradictions
+3. Maintain clear structure with citations
+4. Keep it concise (800-1200 words)
+
+Return the merged synthesis in markdown format.

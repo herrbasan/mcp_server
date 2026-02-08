@@ -1,7 +1,7 @@
 # MCP Orchestrator - Tools Reference Guide
 
 > **Total Tools**: 30 across 6 modules  
-> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **external workspaces** and **web content**.
+> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **external spaces** and **web content**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
 
@@ -16,7 +16,7 @@
 | [Web Research](#web-research-module) | 1 | Multi-source research pipeline |
 | [Browser](#browser-module) | 6 | Puppeteer browser automation |
 | [Code Inspector](#code-inspector-module) | 1 | LLM-based code analysis (external files only) |
-| [Code Search](#code-search-module) | 14 | Semantic/kw search across workspaces |
+| [Code Search](#code-search-module) | 14 | Semantic/kw search across spaces |
 
 ---
 
@@ -185,18 +185,18 @@ mcp_orchestrator_inspect_code({
 
 ## Code Search Module (14 tools)
 
-> **Scope**: For **external workspaces** only. Use IDE shortcuts (Ctrl+P, F12) for current project.
+> **Scope**: For **external spaces** only. Use IDE shortcuts (Ctrl+P, F12) for current project.
 
 ### The 3-Step Workflow
 
 ```javascript
-// STEP 1: Discover workspaces
-mcp_orchestrator_get_workspace_config()
+// STEP 1: Discover spaces
+mcp_orchestrator_get_spaces_config()
 // Returns: [{ name: "BADKID-DEV", uncPath: "d:\DEV", indexed: true }, ...]
 
 // STEP 2: Search
 mcp_orchestrator_search_semantic({     // By meaning (embeddings)
-  workspace: "BADKID-DEV",              // omit to search ALL workspaces
+  space: "BADKID-DEV",              // omit to search ALL spaces
   query: "HTTP request handling",
   limit: 10
 })
@@ -250,14 +250,14 @@ mcp_orchestrator_get_function_tree({ file: "7b75d9c0..." })
 
 // Directory exploration
 mcp_orchestrator_get_file_tree({
-  workspace: "COOLKID-Work",
+  space: "COOLKID-Work",
   path: "_GIT/SoundApp",  // relative to workspace root
   max_depth: 2
 })
 
 // Index management
-mcp_orchestrator_get_index_stats({ workspace: "BADKID-DEV" })
-mcp_orchestrator_refresh_index({ workspace: "BADKID-DEV" })
+mcp_orchestrator_get_index_stats({ space: "BADKID-DEV" })
+mcp_orchestrator_refresh_index({ space: "BADKID-DEV" })
 mcp_orchestrator_refresh_all_indexes({ force: false })
 ```
 
@@ -267,7 +267,7 @@ mcp_orchestrator_refresh_all_indexes({ force: false })
 
 ### Cross-Project Reference
 ```javascript
-// Reference implementation from another workspace while coding
+// Reference implementation from another space while coding
 mcp_orchestrator_search_semantic({
   workspace: "COOLKID-Work",
   query: "WebSocket connection handler"
@@ -291,7 +291,7 @@ mcp_orchestrator_remember({
 ## File ID Format
 
 - **32-character SHA256 hash**: `7b75d9c08788a8863da8e1654e287b1c`
-- Generated from: `SHA256("workspace:filePath").slice(0, 32)`
+- Generated from: `SHA256("space:filePath").slice(0, 32)`
 - All search tools return hash IDs
 - Pass hash IDs directly to `retrieve_file`, `get_file_info`, `inspect_code`
 
@@ -303,7 +303,7 @@ mcp_orchestrator_remember({
 |----------|------|
 | Current IDE project | IDE shortcuts (Ctrl+P, F12, Ctrl+Click) |
 | Code analysis in current project | Analyze directly (in context) |
-| Other workspaces | Code Search / Inspector |
+| Other spaces | Code Search / Inspector |
 | Web content | Browser / Research |
 
 ---
@@ -328,8 +328,8 @@ mcp_orchestrator_remember({
 | Error | Solution |
 |-------|----------|
 | `File not found in index` | Run `refresh_index` |
-| `No search results` | Check workspace name with `get_workspace_config` |
-| `Hash ID not found` | Search without workspace param |
+| `No search results` | Check space name with `get_spaces_config` |
+| `Hash ID not found` | Search without space param |
 | `Research timeout` | Narrow query, reduce max_pages |
 | `No content synthesized` | Try different engines |
 | `Model not loaded` | Wait 10-30s, retry |

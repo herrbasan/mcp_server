@@ -2,8 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 
-export function generateFileId(workspace, filePath) {
-  const fileKey = `${workspace}:${filePath}`;
+export function generateFileId(space, filePath) {
+  const fileKey = `${space}:${filePath}`;
   return createHash('sha256').update(fileKey).digest('hex').slice(0, 32);
 }
 
@@ -65,7 +65,7 @@ const EXCLUDED_DIRS = ['.git', 'node_modules', '.next', 'dist', 'build', '.vscod
 const INCLUDED_EXTS = ['.js', '.ts', '.jsx', '.tsx', '.py', '.java', '.c', '.cpp', '.h', '.cs', '.go', '.rs', '.md'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-export async function walkWorkspace(basePath, currentPath, files) {
+export async function walkSpace(basePath, currentPath, files) {
   const entries = await fs.readdir(currentPath, { withFileTypes: true });
 
   for (const entry of entries) {
@@ -74,7 +74,7 @@ export async function walkWorkspace(basePath, currentPath, files) {
 
     if (entry.isDirectory()) {
       if (EXCLUDED_DIRS.includes(entry.name)) continue;
-      await walkWorkspace(basePath, fullPath, files);
+      await walkSpace(basePath, fullPath, files);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!INCLUDED_EXTS.includes(ext)) continue;
@@ -119,7 +119,7 @@ export async function writeIndexStreaming(filePath, index) {
 
   await write('{\n');
   await write(`  "version": ${index.version},\n`);
-  await write(`  "workspace": ${JSON.stringify(index.workspace)},\n`);
+  await write(`  "space": ${JSON.stringify(index.space)},\n`);
   await write(`  "created_at": ${JSON.stringify(index.created_at)},\n`);
   await write(`  "last_full_build": ${JSON.stringify(index.last_full_build)},\n`);
   await write(`  "last_refresh": ${JSON.stringify(index.last_refresh)},\n`);

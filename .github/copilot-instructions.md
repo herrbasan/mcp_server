@@ -74,18 +74,18 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - Discovery: search_semantic, search_keyword, search_files, search_code
   - Retrieval: retrieve_file, peek_file, get_context
   - Exploration: get_file_tree, get_function_tree
-  - Index: refresh_index, refresh_all_indexes, get_workspace_config, get_file_info, get_index_stats
+  - Index: refresh_index, refresh_all_indexes, get_spaces_config, get_file_info, get_index_stats
 
-## Workspace Architecture (For LLMs Using MCP Orchestrator)
+## Space Architecture (For LLMs Using MCP Orchestrator)
 
 **YOU ARE A CALLING LLM** - You don't see local files. Use MCP tools to interact with codebases.
 
 **Core Utilities**:
-- `src/lib/workspace.js` - UNC path mapping, security validation (shared by Code Inspector and Code Search)
+- `src/lib/space.js` - UNC path mapping, security validation (shared by Code Inspector and Code Search)
 
 ### Quick Start Workflow
 ```
-1. get_workspace_config()           → Discover available workspaces
+1. get_spaces_config()           → Discover available spaces
 2. search_semantic/keyword/files()  → Find relevant code
 3. get_file_info({ file: "..." })   → Get metadata (functions, classes, imports)
 4. retrieve_file({ file: "..." })   → Get file content using file ID from search
@@ -112,12 +112,12 @@ retrieve_file({
 **Complete Workflow Example**:
 ```javascript
 // 1. Search finds file with hash IDs
-const results = search_semantic({ workspace: "BADKID-DEV", query: "HTTP request handling" });
+const results = search_semantic({ space: "BADKID-DEV", query: "HTTP request handling" });
 // Returns: { file: "fc745a690e4db10279c18241a0a572c7", functions: ["handleRequest"], ... }
 
 // 2. Get detailed metadata with line numbers
 const info = get_file_info({ file: "fc745a690e4db10279c18241a0a572c7" });
-// Returns: { workspace: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
+// Returns: { space: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
 
 // 3. Retrieve just the function you need
 const content = retrieve_file({ 
@@ -127,44 +127,78 @@ const content = retrieve_file({
 });
 ```
 
-### Workspace Model (Network Shares)
-Workspaces are **mounted network shares** (UNC paths). Think of them as drives - each workspace name maps to a root directory, and your code lives somewhere inside that folder structure.
+### Space Model (Code Repositories)
+Spaces are **named root folders** - network shares (UNC paths) or local drives containing code repositories. Think of them as drives - each space name maps to a root directory.
 
-| Workspace | UNC Path | Description |
-|-----------|----------|-------------|
-| `COOLKID-Work` | `\\COOLKID\Work` | Main dev machine share |
+| Space Name | Maps To | Description |
+|------------|---------|-------------|
+| `COOLKID-Work` | `\\COOLKID\Work\Work` | Main dev machine share |
 | `BADKID-DEV` | `d:\DEV` | Local dev drive |
 | `BADKID-SRV` | `d:\SRV` | Local server drive |
 
-**IMPORTANT**: When using `get_file_tree` or searching, paths are **relative to the workspace root**. A project at `\\COOLKID\Work\_GIT\SoundApp` is accessed via `path: "_GIT/SoundApp"` in the `COOLKID-Work` workspace.
+**Terminology Note**: "COOLKID-Work" is a **space name** (configured identifier), NOT a folder name. The share `\\COOLKID\Work` happens to contain a `Work` subfolder, which can be confusing. Always use space names in API calls.
+
+**IMPORTANT**: When using `get_file_tree` or searching, paths are **relative to the space root**. A project at `\\COOLKID\Work\Work\_GIT\SoundApp` is accessed via `space: "COOLKID-Work", path: "Work/_GIT/SoundApp"`.
 
 **Exploration Workflow**:
 ```javascript
-// 1. See available workspaces
-get_workspace_config()  // Returns: COOLKID-Work, BADKID-DEV, etc.
+// 1. See available spaces
+get_spaces_config()  // Returns: COOLKID-Work, BADKID-DEV, etc.
 
-// 2. Explore workspace structure to find your project
-get_file_tree({ workspace: "COOLKID-Work" })  
+// 2. Explore space structure to find your project
+get_file_tree({ space: "COOLKID-Work" })  
 // Returns: { Work: { type: "directory", children: { _GIT: {...} } } }
 
 // 3. Drill down to your project
-get_file_tree({ workspace: "COOLKID-Work", path: "Work/_GIT/SoundApp" })
+get_file_tree({ space: "COOLKID-Work", path: "Work/_GIT/SoundApp" })
 ```
 
 ### File ID Format
 All search results return **32-character SHA256 hash IDs** (collision-free):
 - Format: `fc745a690e4db10279c18241a0a572c7`
-- Generated from: SHA256(`${workspace}:${filePath}`).slice(0, 32)
+- Generated from: SHA256(`${spaceName}:${filePath}`).slice(0, 32)
 - Pass hash IDs directly to `retrieve_file` and `get_file_info`
 
-### Search Tools (use workspace name, not paths)
+### File Path Formats (Recommended)
+When referencing files in `inspect_code` and `query_model`, use these formats in order of preference:
+
+| Format | Example | Status | Use When |
+|--------|---------|--------|----------|
+| **Hash ID** | `fc745a690e4db10279c18241a0a572c7` | ✅ Recommended | You have search results |
+| **SPACE:path** | `BADKID-DEV:src/router.js` | ✅ Recommended | You know the space name and relative path |
+| **Relative + space param** | `src/router.js` + `space: "BADKID-DEV"` | ✅ Works | Clean separation of concerns |
+
+**Complete Workflow Example**:
+```javascript
+// 1. Search finds file with hash IDs
+const results = search_semantic({ space: "BADKID-DEV", query: "HTTP request handling" });
+// Returns: { file: "fc745a690e4db10279c18241a0a572c7", functions: ["handleRequest"], ... }
+
+// 2. Get detailed metadata with line numbers
+const info = get_file_info({ file: "fc745a690e4db10279c18241a0a572c7" });
+// Returns: { space: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
+
+// 3. Retrieve just the function you need
+const content = retrieve_file({ 
+  file: "fc745a690e4db10279c18241a0a572c7",
+  startLine: 45,
+  endLine: 80
+});
+```
+| **Absolute path** | `D:\DEV\project\file.js` | ⚠️ Deprecated | Avoid - fragile auto-detection |
+
+**Terminology note:** "Spaces" are configured root folders (network shares or local drives). The `BADKID-DEV` in the example is a **space name**, not a folder name. Spaces map to paths like `\\BADKID\Stuff\DEV` or `D:\DEV` in config.json.
+
+**Why avoid absolute paths?** Drive letters vs UNC paths, case sensitivity, and network share variations make reliable auto-detection complex. Use `SPACE:path` format instead - it's explicit and unambiguous.
+
+### Search Tools (use space name, not paths)
 
 | Tool | Use For | Returns | Example |
 |------|---------|---------|---------|
-| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ query: "HTTP request handling" }` (omit workspace to search all) |
-| `search_keyword` | Exact text/regex | File matches | `{ workspace: "BADKID-DEV", pattern: "StreamableHTTP" }` |
-| `search_files` | Glob patterns | File paths | `{ workspace: "BADKID-DEV", glob: "src/**/*.js" }` |
-| `search_code` | Combined search | Enriched results | `{ query: "authentication" }` (omit workspace to search all) |
+| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ query: "HTTP request handling" }` (omit space name to search all) |
+| `search_keyword` | Exact text/regex | File matches | `{ space: "BADKID-DEV", pattern: "StreamableHTTP" }` |
+| `search_files` | Glob patterns | File paths | `{ space: "BADKID-DEV", glob: "src/**/*.js" }` |
+| `search_code` | Combined search | Enriched results | `{ query: "authentication" }` (omit space name to search all) |
 | `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "fc745a690e4db10279c18241a0a572c7" }` |
 
 **Key Feature**: `search_semantic` and `get_file_info` both return function/class names, but `get_file_info` includes **line numbers** for precise partial retrieval.
@@ -177,7 +211,7 @@ const results = search_semantic({ query: "HTTP server architecture" })
 
 // Step 2: Inspect specific files
 inspect_code({
-  target: results[0].file_id,
+  files: [results[0].file_id],
   question: "Explain the HTTP server architecture"
 })
 // Explicit, predictable, saves context
@@ -185,17 +219,19 @@ inspect_code({
 
 ### Index Management
 ```javascript
-refresh_index({ workspace: "BADKID-DEV" })      // Update single workspace
-refresh_all_indexes()                            // Update all workspaces
-get_index_stats({ workspace: "BADKID-DEV" })    // Check index health
-search_semantic({ query: "auth logic" })         // Search ALL workspaces (omit workspace param)
+refresh_index({ space: "BADKID-DEV" })      // Update single space
+refresh_all_indexes()                            // Update all spaces
+get_index_stats({ space: "BADKID-DEV" })    // Check index health
+refresh_all_indexes()                            // Update all spaces
+get_index_stats({ space: "BADKID-DEV" })    // Check index health
+search_semantic({ query: "auth logic" })         // Search ALL spaces (omit space param)
 ```
 
-**Index Files**: Located at `data/indexes/{workspace}.json`
+**Index Files**: Located at `data/indexes/{space}.json`
 **Index Caching**: In-memory cache with auto-reload after maintenance (refresh_index/refresh_all_indexes)
-- ~900MB footprint for all 3 workspaces (0.7% of 128GB RAM)
+- ~900MB footprint for all 3 spaces (0.7% of 128GB RAM)
 - Performance: 100-200ms first load → 5-10ms cached (20-40x faster)
-- Cache management: `clearCache()`, `reloadIndex(workspace)` functions available
+- Cache management: `clearCache()`, `reloadIndex(space)` functions available
 
 ## LLM Router Architecture
 
@@ -386,14 +422,14 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 
 **Module Structure**:
 - `src/servers/code-search/indexer.js` (178 lines) - Centralized utilities
-  - `generateFileId(workspace, filePath)` - SHA256 hash generation (32 chars)
-  - `parseFile`, `walkWorkspace`, `detectLanguage`, `generateEmbeddingText`
+  - `generateFileId(space, filePath)` - SHA256 hash generation (32 chars)
+  - `parseFile`, `walkSpace`, `detectLanguage`, `generateEmbeddingText`
   - `writeIndexStreaming`, `atomicWriteIndex`, `loadIndex`
 - `src/servers/code-search/server.js` (820 lines) - MCP server with 9 tools
 - `src/servers/code-search/build-index.js` (286 lines) - CLI indexing tool
 
 **File ID System**:
-- 32-character SHA256 hash of `${workspace}:${filePath}`
+- 32-character SHA256 hash of `${space}:${filePath}`
 - Collision-free for 50K+ files
 - All search tools return hash IDs
 - retrieve_file accepts hash IDs (backward compatible with legacy format)
@@ -404,21 +440,21 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - Batch embeddings: 50 texts × 4 parallel = 2.3x speedup
 - Streaming JSON write for indexes >512MB
 
-**Workspaces**:
+**Spaces**:
 - COOLKID-Work: 21,717 files (284 MB index)
 - BADKID-DEV: 28,110 files (613 MB index)
 - BADKID-SRV: 791 files (4 MB index)
 
-**Tools**: get_workspace_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
+**Tools**: get_spaces_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
 
-## Local Agent Architecture
+## Code Inspector Architecture
 
-**Status**: Production-ready autonomous code exploration
+**Status**: Production-ready LLM-based code analysis
 
 **Implementation**:
-- `src/lib/workspace.js` (166 lines) - UNC path mapping, security validation
-- `src/servers/local-agent.js` (662 lines) - Autonomous LLM agent with 3 tools
-- Tools: run_local_agent, retrieve_file, inspect_code
+- `src/lib/space.js` - UNC path mapping, security validation
+- `src/servers/code-inspector.js` - LLM-based code analysis
+- Tools: inspect_code
 
 **Agent Workflow**:
 1. Dynamic tool selection (search tools if indexed, fs tools otherwise)
@@ -432,12 +468,15 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
 
 **Tool Improvements (Feb 5, 2026)**:
-- ✅ **FIXED**: `inspect_code` supports hash IDs from search results (32-char format) WITHOUT workspace parameter - workspace is auto-resolved from the hash. Use either hash IDs (no workspace) or legacy "workspace:path" format.
-- ✅ **FIXED**: `retrieve_file` description updated to accurately reflect hash ID format instead of legacy "workspace:path" format.
-- Both tools maintain backward compatibility with file paths and workspace-prefixed paths.
+- ✅ **RENAMED**: `local-agent.js` → `code-inspector.js` - Removed autonomous agent, kept explicit `inspect_code` tool
+- ✅ **FIXED**: `inspect_code` supports hash IDs from search results (32-char format) WITHOUT space parameter - space is auto-resolved from the hash
+- ✅ **FIXED**: `retrieve_file` description updated to accurately reflect hash ID format instead of legacy "workspace:path" format
 
-**Known Issues**:
-- **BUG**: `run_local_agent` creates retrieval plans with old-format paths like `"BADKID-DEV:mcp_server/src/router.js"` instead of using search tools to get hash IDs first. Agent should: (1) use search_files/search_keyword/search_semantic to find files, (2) get hash IDs from results, (3) use retrieve_file with hash IDs. Currently fails with "I don't have access to your specific codebase" error.
+**Tool Improvements (Feb 7, 2026)**:
+- ✅ **SIMPLIFIED**: Workspace path resolution - replaced complex suffix-matching with straightforward prefix matching
+- ✅ **DEPRECATED**: Absolute path auto-detection in `inspect_code` and `query_model`. Tools now recommend hash IDs or `WORKSPACE:path` format for reliability
+
+
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
@@ -451,4 +490,4 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - OpenAI API Reference - https://platform.openai.com/docs/api-reference/introduction
 - LM Studio API Reference - https://lmstudio.ai/docs/developer/rest
 - Ollama API Reference - https://docs.ollama.com/quickstart
-- Gemini API Reference - https://ai.google.dev/gemini-api/docs
+- Gemini API Reference - https://ai.google.dev/gemini-api/docs#rest

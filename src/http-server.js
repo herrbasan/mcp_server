@@ -126,14 +126,8 @@ if (config.servers['browser']?.enabled) {
   console.log('✓ Browser');
 }
 
-// Initialize LLM server (query tools)
+// Initialize LLM server (query tools) - after code-search is initialized
 let llmServer = null;
-if (config.servers['llm']?.enabled) {
-  llmServer = createLLMServer(config.servers['llm'], llmRouter);
-  serverModules.set('llm', llmServer);
-  tools.push(...llmServer.getTools());
-  console.log('✓ LLM');
-}
 
 if (config.servers['web-research']?.enabled) {
   const s = new WebResearchServer(config.servers['web-research'], llmRouter, browserServer);
@@ -154,14 +148,14 @@ if (config.servers['memory']?.enabled) {
 
 // Browser server already initialized above (before web-research)
 
-// Both code-inspector and code-search share workspace config
-const workspaceConfig = config.workspaces || {};
+// Both code-inspector and code-search share spaces config
+const spacesConfig = config.spaces || config.workspaces || {};
 
 // Support both 'code-inspector' (new) and 'local-agent' (deprecated) config keys
 const inspectorConfig = config.servers['code-inspector'] || config.servers['local-agent'];
 if (inspectorConfig?.enabled) {
   const { createCodeInspectorServer } = await import('./servers/code-inspector.js');
-  const agentConfig = { ...inspectorConfig, workspaces: workspaceConfig };
+  const agentConfig = { ...inspectorConfig, spaces: spacesConfig };
   const s = createCodeInspectorServer(agentConfig, llmRouter);
   serverModules.set('code-inspector', s);
   tools.push(...s.getTools());
@@ -171,7 +165,7 @@ if (inspectorConfig?.enabled) {
 
 if (config.servers['code-search']?.enabled) {
   const { createCodeSearchServer } = await import('./servers/code-search/server.js');
-  const searchConfig = { ...config.servers['code-search'], workspaces: workspaceConfig };
+  const searchConfig = { ...config.servers['code-search'], spaces: spacesConfig };
   const s = createCodeSearchServer(searchConfig, llmRouter);
   serverModules.set('code-search', s);
   tools.push(...s.getTools());
@@ -179,12 +173,20 @@ if (config.servers['code-search']?.enabled) {
   console.log('✓ Code Search');
 }
 
-// Wire up inter-module communication (Code Inspector uses Code Search when available)
+// Wire up inter-module communication
 const codeInspector = serverModules.get('code-inspector');
 const codeSearch = serverModules.get('code-search');
 if (codeInspector && codeSearch) {
   codeInspector.setCodeSearchServer(codeSearch);
   console.log('✓ Code Inspector ↔ Code Search integration');
+}
+
+// Initialize LLM server (query tools) - after code-search is available
+if (config.servers['llm']?.enabled) {
+  llmServer = createLLMServer(config.servers['llm'], llmRouter, spacesConfig, codeSearch);
+  serverModules.set('llm', llmServer);
+  tools.push(...llmServer.getTools());
+  console.log('✓ LLM');
 }
 
 // Start web monitoring interface
@@ -205,6 +207,19 @@ if (config.maintenance?.enabled && codeSearch) {
     try {
       const startTime = Date.now();
       
+      // Ensure embedding model is loaded before indexing
+      if (llmRouter?.embedText) {
+        try {
+          const testEmbed = await llmRouter.embedText('test');
+          if (!testEmbed || testEmbed.length === 0) {
+            throw new Error('Embedding model not available');
+          }
+        } catch (err) {
+          console.error('[Maintenance] Embedding model not loaded, skipping index refresh:', err.message);
+          return;
+        }
+      }
+      
       // Refresh code search indexes
       const results = await codeSearch.callTool('refresh_all_indexes', { force: false });
       
@@ -215,10 +230,10 @@ if (config.maintenance?.enabled && codeSearch) {
           if (data.results && Array.isArray(data.results)) {
             data.results.forEach(r => {
               if (r.status === 'success') {
-                console.log(`[Maintenance] ${r.workspace} - Added ${r.files_added} / Updated ${r.files_updated} / Removed ${r.files_removed}`);
+                console.log(`[Maintenance] ${r.space} - Added ${r.files_added} / Updated ${r.files_updated} / Removed ${r.files_removed}`);
               } else if (r.status === 'error') {
                 const errorMsg = r.error?.substring(0, 80) || 'Unknown';
-                console.log(`[Maintenance] ${r.workspace} - Error: ${errorMsg}`);
+                console.log(`[Maintenance] ${r.space} - Error: ${errorMsg}`);
               }
             });
           }

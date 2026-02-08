@@ -10,7 +10,7 @@ import {
   generateFileId,
   detectLanguage,
   parseFile,
-  walkWorkspace,
+  walkSpace,
   generateEmbeddingText,
   writeIndexStreaming,
   atomicWriteIndex
@@ -43,20 +43,36 @@ async function main() {
   
   const config = JSON.parse(configText);
 
-  const { WorkspaceResolver } = await import('../../lib/workspace.js');
-  const workspace = new WorkspaceResolver(config.workspaces || {});
+  const { SpaceResolver } = await import('../../lib/space.js');
+  const spaceResolver = new SpaceResolver(config.spaces || config.workspaces || {});
 
   console.log('Initializing LLM router...');
   const { createRouter } = await import('../../router/router.js');
   const router = await createRouter(config.llm);
   console.log('✓ LLM router ready\n');
 
+  // Ensure embedding model is loaded
+  console.log('Loading embedding model...');
+  try {
+    // Test embed to trigger auto-load
+    const testEmbed = await router.embedText('test');
+    if (testEmbed && testEmbed.length > 0) {
+      console.log(`✓ Embedding model loaded (${testEmbed.length}-dim)\n`);
+    } else {
+      throw new Error('Embedding model returned empty result');
+    }
+  } catch (err) {
+    console.error(`✗ Failed to load embedding model: ${err.message}`);
+    console.error('Make sure LM Studio is running with an embedding model available.');
+    process.exit(1);
+  }
+
   const indexPath = config.servers['code-search']?.indexPath || 'data/indexes';
 
   if (args.all) {
-    const workspaces = workspace.getWorkspaces();
-    console.log(`Building indexes for ${workspaces.length} workspaces:\n`);
-    workspaces.forEach(w => console.log(`  - ${w.name}: ${w.uncPath}`));
+    const spaces = spaceResolver.getSpaces();
+    console.log(`Building indexes for ${spaces.length} spaces:\n`);
+    spaces.forEach(s => console.log(`  - ${s.name}: ${s.uncPath}`));
     console.log('');
 
     if (!args.force) {
@@ -67,28 +83,28 @@ async function main() {
       }
     }
 
-    for (const w of workspaces) {
+    for (const s of spaces) {
       console.log(`\n${'='.repeat(60)}`);
-      console.log(`Building index for: ${w.name}`);
+      console.log(`Building index for: ${s.name}`);
       console.log(`${'='.repeat(60)}\n`);
       
       try {
-        await buildIndex(w.name, w.uncPath, indexPath, router);
-        console.log(`✓ ${w.name} complete\n`);
+        await buildIndex(s.name, s.uncPath, indexPath, router);
+        console.log(`✓ ${s.name} complete\n`);
       } catch (err) {
-        console.error(`✗ ${w.name} failed: ${err.message}\n`);
+        console.error(`✗ ${s.name} failed: ${err.message}\n`);
       }
     }
     
     console.log('\n🎉 All indexes built!');
   } else {
-    const workspaceName = args.workspace;
-    console.log(`Workspace: ${workspaceName}`);
+    const spaceName = args.workspace;
+    console.log(`Space: ${spaceName}`);
     
-    const uncPath = workspace.getWorkspacePath(workspaceName);
+    const uncPath = spaceResolver.getSpacePath(spaceName);
     console.log(`UNC path: ${uncPath}\n`);
 
-    const indexFile = path.join(indexPath, `${workspaceName}.json`);
+    const indexFile = path.join(indexPath, `${spaceName}.json`);
     console.log(`Index file: ${indexFile}\n`);
 
     try {
@@ -104,18 +120,18 @@ async function main() {
       // Index doesn't exist, proceed
     }
 
-    await buildIndex(workspaceName, uncPath, indexPath, router);
+    await buildIndex(spaceName, uncPath, indexPath, router);
     console.log('\n🎉 Index built successfully!');
   }
 }
 
-async function buildIndex(workspaceName, uncPath, indexPath, router) {
+async function buildIndex(spaceName, uncPath, indexPath, router) {
   const startTime = Date.now();
-  const indexFile = path.join(indexPath, `${workspaceName}.json`);
+  const indexFile = path.join(indexPath, `${spaceName}.json`);
   
   const index = {
     version: 2,
-    workspace: workspaceName,
+    space: spaceName,
     uncPath: uncPath,
     created_at: new Date().toISOString(),
     last_full_build: new Date().toISOString(),
@@ -126,9 +142,9 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
     files: {}
   };
 
-  console.log('Phase 1: Scanning workspace...');
+  console.log('Phase 1: Scanning space...');
   const files = new Map();
-  await walkWorkspace(uncPath, uncPath, files);
+  await walkSpace(uncPath, uncPath, files);
   console.log(`Found ${files.size} files\n`);
 
   console.log('Phase 2: Reading & parsing files...');
@@ -202,7 +218,7 @@ async function buildIndex(workspaceName, uncPath, indexPath, router) {
 
   console.log('Phase 4: Building index...');
   for (const { filePath, metadata, contentHash, tree } of fileData) {
-    const fileId = generateFileId(workspaceName, filePath);
+    const fileId = generateFileId(spaceName, filePath);
     index.files[fileId] = {
       id: fileId,
       path: filePath,
@@ -238,7 +254,7 @@ function parseArgs() {
       args.all = true;
     } else if (arg === '--force') {
       args.force = true;
-    } else if (arg === '--workspace' && process.argv[i + 1]) {
+    } else if ((arg === '--space' || arg === '--workspace') && process.argv[i + 1]) {
       args.workspace = process.argv[++i];
     }
   }

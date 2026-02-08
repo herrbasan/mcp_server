@@ -1,8 +1,10 @@
 {
-  "workspaces": {
-    "COOLKID-Work": "\\\\COOLKID\\Work",
-    "BADKID-DEV": "d:\\DEV",
-    "BADKID-SRV": "d:\\SRV"
+  "_comment": "SPACES define network shares/machines that can be accessed. Each space maps to UNC paths (for remote access).",
+  "spaces": {
+    "_comment": "Format: MACHINE-Share = Machine name + Share name. Files indexed relative to this root.",
+    "COOLKID-Work": ["\\\\COOLKID\\Work\\Work", "d:\\Work"],
+    "BADKID-DEV": ["\\\\BADKID\\Stuff\\DEV", "d:\\DEV"],
+    "BADKID-SRV": ["\\\\BADKID\\Stuff\\SRV", "d:\\SRV"]
   },
   "maintenance": {
     "enabled": true,
@@ -51,6 +53,13 @@
   "llm": {
     "defaultProvider": "lmstudio",
     "embeddingProvider": "lmstudio",
+    "taskDefaults": {
+      "embedding": "lmstudio",
+      "analysis": "kimi-cli",
+      "synthesis": "kimi-cli",
+      "query": "kimi-cli",
+      "inspect": "kimi-cli"
+    },
     "providers": {
       "lmstudio": {
         "enabled": true,
@@ -87,6 +96,20 @@
         "type": "grok",
         "apiKey": "${GROK_API_KEY}",
         "model": "grok-4-1-fast-non-reasoning",
+        "temperature": 0.7
+      },
+      "kimi": {
+        "enabled": true,
+        "type": "kimi",
+        "apiKey": "${KIMI_API_KEY}",
+        "model": "${KIMI_MODEL}",
+        "temperature": 0.7
+      },
+      "kimi-cli": {
+        "enabled": true,
+        "type": "kimi-cli",
+        "command": "kimi",
+        "model": "kimi-k2.5",
         "temperature": 0.7
       },
       "openai": {

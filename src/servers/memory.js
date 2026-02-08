@@ -134,7 +134,7 @@ const TOOLS = [
   { name: 'list_memories', description: 'List all memories. Filter by category/domain.', inputSchema: { type: 'object', properties: { category: { type: 'string' }, domain: { type: 'string' } } } },
   { name: 'update_memory', description: 'Update a memory by ID', inputSchema: { type: 'object', properties: { id: { type: 'number' }, text: { type: 'string' }, category: { type: 'string' }, domain: { type: 'string' } }, required: ['id', 'text'] } },
   { name: 'reflect_on_session', description: 'USER-INITIATED. Analyze session for quality improvements. Returns proposed changes.', inputSchema: { type: 'object', properties: { sessionSummary: { type: 'string' } }, required: ['sessionSummary'] } },
-  { name: 'apply_reflection_changes', description: 'Apply changes from reflection', inputSchema: { type: 'object', properties: { changes: { type: 'array' } }, required: ['changes'] } }
+  { name: 'apply_reflection_changes', description: 'Apply changes from reflection', inputSchema: { type: 'object', properties: { changes: { type: 'array', items: { type: 'object', properties: { action: { type: 'string', enum: ['create', 'update', 'reinforce', 'decrease'], description: 'Action to perform' }, id: { type: 'number', description: 'Memory ID (for update/reinforce/decrease)' }, text: { type: 'string', description: 'Memory text (for create/update)' }, category: { type: 'string', description: 'Category (for create/update)' }, domain: { type: 'string', description: 'Optional project scope' }, reason: { type: 'string', description: 'Reason for the change' } }, required: ['action'] } } }, required: ['changes'] } }
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));

@@ -84,7 +84,7 @@ Configured in `config.llm.taskDefaults`:
 | `analysis` | gemini | Web research source selection |
 | `synthesis` | gemini | Multi-source content synthesis |
 | `query` | gemini | query_model tool |
-| `agent` | lmstudio | Local agent tool calls |
+| `inspect` | kimi-cli | Code inspection tool |
 
 ## Auto-Compaction
 

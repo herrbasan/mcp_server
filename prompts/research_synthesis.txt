@@ -1,0 +1,10 @@
+I've gathered content from multiple sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate. Analyze and synthesize this information.
+
+Tasks:
+1. Identify key facts that appear in MULTIPLE sources (high confidence)
+2. Note any contradictions or disagreements between sources
+3. Synthesize into a clear, concise summary (500-800 words)
+4. Include citations using [1], [2] notation
+5. Add "Sources:" section at the end with numbered URLs
+
+Format as clean markdown. Be concise and factual.

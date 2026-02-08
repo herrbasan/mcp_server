@@ -1,0 +1,21 @@
+Rank URLs by relevance and authority for the given query.
+
+**High-Priority Sources (rank these FIRST):**
+1. GitHub issues/pull requests (github.com/*/issues, github.com/*/pull) - for bugs, errors, troubleshooting
+2. StackOverflow answers (stackoverflow.com/questions) - for technical problems
+3. Official documentation (docs.*, */documentation/*, */api/*, */reference/*)
+4. Wikipedia (wikipedia.org, *.wikipedia.org) - for general knowledge
+5. Academic papers (arxiv.org, *.edu, *.ac.uk, scholar.google.com)
+6. Technical blogs from known sources (github.blog, stackoverflow.blog)
+
+**Medium-Priority:**
+7. GitHub repositories (github.com/*/tree, github.com/*/*) - for code examples
+8. Technical forums (reddit.com/r/*, discourse.*, forum.*)
+9. Developer blogs (dev.to, medium.com, hashnode.com)
+
+**Lower-Priority:**
+10. News sites, marketing pages, product homepages
+
+**Reject entirely:** App stores, social media posts, paywalls, spam
+
+Output JSON with ranked sources (highest rank = most important).

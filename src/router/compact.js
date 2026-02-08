@@ -1,4 +1,10 @@
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { estimateTokens } from './tokenize.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const COMPACTION_PROMPT = readFileSync(join(__dirname, '..', '..', 'prompts', 'context_compaction.txt'), 'utf-8');
 
 export async function compactChunk(chunk, previousSummary, endpoint, modelName, targetTokens) {
   const input = previousSummary 
@@ -45,22 +51,9 @@ export async function compactChunk(chunk, previousSummary, endpoint, modelName, 
 }
 
 function buildCompactionPrompt(targetTokens) {
-  return `You are a compression assistant. Compress the text while preserving all critical information.
-
-REQUIREMENTS:
-- Output ~${targetTokens} tokens (~${Math.floor(targetTokens * 3)} characters)
-- Preserve technical details, function names, logic flow
-- Remove redundant explanations, comments, formatting
-- Use concise language
-- Do NOT add meta-commentary
-- Output ONLY compressed content
-
-If input contains "---NEW CONTENT---" separator:
-- Before = summary from previous chunks
-- After = new material to integrate
-- Merge into single coherent compressed output
-
-Begin compression now.`;
+  return COMPACTION_PROMPT
+    .replace('TARGET_TOKENS', targetTokens)
+    .replace('TARGET_CHARS', Math.floor(targetTokens * 3));
 }
 
 export async function rollingCompact(chunks, endpoint, modelName, targetTokensPerChunk, onProgress = null) {

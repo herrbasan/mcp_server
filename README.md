@@ -45,7 +45,7 @@ mcp_server/
 │   ├── web/
 │   │   ├── start.js                # Start web UI only
 │   ├── lib/
-│   │   └── workspace.js         # UNC path resolver (shared)
+│   │   └── space.js         # UNC path resolver (shared)
 │   ├── router/                  # LLM Router (NEW - functional approach)
 │   │   ├── router.js            # Multi-provider orchestrator
 │   │   ├── adapters/
@@ -144,7 +144,7 @@ The router automatically selects providers based on task type (configured in con
 | `analysis` | gemini | Web research source selection |
 | `synthesis` | gemini | Multi-source content synthesis |
 | `query` | gemini | query_model tool |
-| `agent` | lmstudio | Local agent tool calls |
+| `inspect` | kimi-cli | Code inspection via inspect_code tool |
 
 **Routing Logic**: `explicitProvider > taskType > defaultProvider`
 
@@ -261,8 +261,8 @@ Non-sensitive settings (models, prompts, timeouts):
 - **LM Studio** (3): query_model, list_available_models, get_loaded_model
 - **Web Research** (1): research_topic
 - **Browser** (5): browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf
-- **Local Agent** (3): run_local_agent, retrieve_file, inspect_code
-- **Code Search** (8): get_workspace_config, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
+- **Code Inspector** (1): inspect_code - LLM-based code analysis
+- **Code Search** (8): get_spaces_config, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
 
 ## Web Monitoring
 
@@ -376,25 +376,25 @@ Automated multi-source research using local LLM for synthesis and **persistent b
 
 **Safety Features**: Hard page limits, total timeout, progress reporting to stderr, graceful degradation if sources fail, automatic cleanup of stale tabs.
 
-## Code Search & Local Agent
+## Code Search & Inspector
 
 ### Overview
-Autonomous code analysis and semantic search across remote codebases via UNC network paths. Enables Claude to delegate code exploration to local LLMs, saving massive amounts of context.
+Semantic code search and LLM-based analysis across remote codebases via UNC network paths. Enables efficient code discovery and analysis without loading files into Claude's context.
 
 **Key Benefits**:
 - **Token Savings**: 80%+ reduction in Claude's context usage for code analysis
 - **Speed**: Semantic search returns results in <1s from pre-built indexes
 - **Scalability**: Handles 100k+ file codebases efficiently
 - **Remote Access**: UNC path resolution for network shares (Windows SMB/CIFS)
-- **Path-Agnostic**: Calling LLMs use workspace names, not paths
+- **Path-Agnostic**: Calling LLMs use space names, not paths
 
 ### Setup
 
-#### 1. Configure Workspaces (config.json)
-Workspaces are named identifiers mapped to UNC paths:
+#### 1. Configure Spaces (config.json)
+Spaces are named root folders (network shares or local drives) mapped to paths:
 ```json
 {
-  "workspaces": {
+  "spaces": {
     "COOLKID-Work": "\\\\COOLKID\\Work",
     "BADKID-DEV": "\\\\BADKID\\Stuff\\DEV",
     "BADKID-SRV": "\\\\BADKID\\Stuff\\SRV"
@@ -404,18 +404,18 @@ Workspaces are named identifiers mapped to UNC paths:
 
 #### 2. Build Initial Index (CLI - one-time, ~20min for large codebases)
 ```bash
-# Single workspace
-node scripts/build-index.js --workspace "BADKID-DEV"
+# Single space
+node scripts/build-index.js --space "BADKID-DEV"
 
-# All workspaces
+# All spaces
 node scripts/build-index.js --all --force
 ```
 
 **What it does**:
-- Scans workspace recursively (skips node_modules, .git, $RECYCLE.BIN, etc.)
+- Scans space recursively (skips node_modules, .git, $RECYCLE.BIN, etc.)
 - Parses code structure (regex-based: functions, classes, imports)
 - Generates embeddings (768-dim via nomic-embed-text-v2-moe)
-- Saves to `data/indexes/{workspace}.json` (~16MB for 650 files)
+- Saves to `data/indexes/{space}.json` (~16MB for 650 files)
 
 #### 3. Use via MCP Tools
 
@@ -474,18 +474,17 @@ node scripts/build-index.js --all --force
 // Returns: Complete file content
 ```
 
-**Local Agent** - Autonomous code analysis:
+**Inspect Code** - LLM-based code analysis:
 ```javascript
 {
-  name: "run_local_agent",
+  name: "inspect_code",
   args: {
-    task: "Explain the HTTP server architecture",
-    workspace: "BADKID-DEV",
-    maxTokens: 20000
+    target: "fc745a690e4db10279c18241a0a572c7",  // hash ID from search
+    question: "Explain the HTTP server architecture"
   }
 }
-// Agent autonomously explores code using search tools
-// Returns: Summary (no code, just analysis)
+// Analyzes specific files with local LLM
+// Returns: Analysis summary
 ```
 
 ### Workflow Example
@@ -501,30 +500,30 @@ node scripts/build-index.js --all --force
 3. Claude retrieves: `retrieve_file({ file: "BADKID-DEV:src/player.js" })`
 4. Claude context: ~6k tokens
 
-**With Local Agent** (ultra-efficient):
-1. Claude delegates: `inspect_code({ target: "fc745a690e4db10279c18241a0a572c7", question: "How does the audio player work?" })`
-2. Agent (local LLM) explores autonomously using search tools
-3. Claude receives summary only
-4. Claude context: ~500 tokens
+**With Code Inspector** (targeted analysis):
+1. Claude searches: `search_semantic({ query: "audio player" })` (returns hash IDs)
+2. Claude inspects: `inspect_code({ target: "fc745a690e4db10279c18241a0a572c7", question: "How does the audio player work?" })`
+3. Local LLM analyzes the specific file
+4. Claude receives: Analysis summary (~500 tokens)
 
 ### Incremental Index Updates
 
-Refresh single workspace:
+Refresh single space:
 ```javascript
 {
   name: "refresh_index",
-  args: { workspace: "BADKID-DEV" }
+  args: { space: "BADKID-DEV" }
 }
 // Fast (seconds) - only re-indexes changed files via mtime comparison
 ```
 
-Refresh all workspaces:
+Refresh all spaces:
 ```javascript
 {
   name: "refresh_all_indexes",
   args: {}
 }
-// Refreshes indexes for all configured workspaces
+// Refreshes indexes for all configured spaces
 ```
 
 Check index health:
@@ -538,21 +537,17 @@ Check index health:
 
 ### Technical Details
 
-**Workspace Resolution**: Named workspaces map directly to UNC paths
+**Space Resolution**: Named spaces map directly to UNC paths
 - `BADKID-DEV` → `\\BADKID\Stuff\DEV`
 - File IDs: 32-character SHA256 hashes (e.g., `fc745a690e4db10279c18241a0a572c7`)
-- Security: Path traversal validation, no escaping workspace root
+- Security: Path traversal validation, no escaping space root
 
-**Agent Loop** (run_local_agent):
-- Max 20 iterations, 50k token budget (configurable)
-- Tools: Dynamically selected based on workspace (search tools if indexed)
-- Loop detection: Auto-stops if 3 consecutive identical calls
-- Returns partial results if limits hit
 
-**Index Format** (JSON at `data/indexes/{workspace}.json`):
+
+**Index Format** (JSON at `data/indexes/{space}.json`):
 ```json
 {
-  "workspace": "BADKID-DEV",
+  "space": "BADKID-DEV",
   "uncPath": "\\\\BADKID\\Stuff\\DEV",
   "created_at": "2026-02-01T08:54:40.243Z",
   "file_count": 647,

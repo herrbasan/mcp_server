@@ -170,10 +170,10 @@ async function runTests() {
   let testFileId = null;
 
   await testTool(
-    'get_workspace_config',
+    'get_spaces_config',
     'tools/call',
     {
-      name: 'get_workspace_config',
+      name: 'get_spaces_config',
       arguments: {}
     },
     (result) => {
@@ -195,7 +195,7 @@ async function runTests() {
       'tools/call',
       {
         name: 'get_index_stats',
-        arguments: { workspace: workspaceName }
+        arguments: { space: workspaceName }
       },
       (result) => result.content?.[0]?.text?.includes('files')
     );
@@ -206,7 +206,7 @@ async function runTests() {
       {
         name: 'search_files',
         arguments: {
-          workspace: workspaceName,
+          space: workspaceName,
           glob: '*.md'
         }
       },
@@ -222,7 +222,7 @@ async function runTests() {
       {
         name: 'search_keyword',
         arguments: {
-          workspace: workspaceName,
+          space: workspaceName,
           pattern: 'function',
           limit: 3
         }
@@ -236,7 +236,7 @@ async function runTests() {
       {
         name: 'search_semantic',
         arguments: {
-          workspace: workspaceName,
+          space: workspaceName,
           query: 'server configuration',
           limit: 3
         }
@@ -261,7 +261,7 @@ async function runTests() {
       {
         name: 'search_code',
         arguments: {
-          workspace: workspaceName,
+          space: workspaceName,
           query: 'export function',
           limit: 3
         }

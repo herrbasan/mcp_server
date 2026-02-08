@@ -109,7 +109,7 @@ function setupEventListeners() {
 				const res = await fetch(`${API_BASE}/api/code-search/refresh`, {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ workspace })
+					body: JSON.stringify({ space })
 				});
 				const data = await res.json();
 				alert(`Index refreshed: ${data.filesIndexed} files`);
@@ -122,7 +122,7 @@ function setupEventListeners() {
 			}
 		} else if (action === 'view-stats') {
 			try {
-				const res = await fetch(`${API_BASE}/api/code-search/stats?workspace=${workspace}`);
+				const res = await fetch(`${API_BASE}/api/code-search/stats?space=${workspace}`);
 				const data = await res.json();
 				alert(`Stats for ${workspace}:\n${JSON.stringify(data, null, 2)}`);
 			} catch (err) {
@@ -175,7 +175,7 @@ async function performSearch() {
 				const res = await fetch(`${API_BASE}/api/code-search/search`, {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ workspace: ws.name, searchType, query })
+					body: JSON.stringify({ space: ws.name, searchType, query })
 				});
 				const data = await res.json();
 				if (data.results && data.results.length > 0) {
@@ -188,7 +188,7 @@ async function performSearch() {
 			const res = await fetch(`${API_BASE}/api/code-search/search`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ workspace, searchType, query })
+				body: JSON.stringify({ space, searchType, query })
 			});
 			const data = await res.json();
 			displayResults(data, searchType);
@@ -242,7 +242,7 @@ async function viewFile(fileId) {
 		const res = await fetch(`${API_BASE}/api/code-search/file`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ workspace, file: fileId })
+			body: JSON.stringify({ space, file: fileId })
 		});
 		
 		const data = await res.json();

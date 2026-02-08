@@ -1,0 +1,7 @@
+Critically evaluate this research synthesis:
+1. What is your confidence that this answers the query completely? (0-100)
+2. What important questions remain unanswered?
+3. Are there any contradictions or gaps in the information?
+4. What specific follow-up query would fill the biggest gap?
+
+Respond with structured JSON containing: confidence (number), gaps (array), contradictions (array), followUpQuery (string or null).
