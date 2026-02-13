@@ -3,6 +3,7 @@ import { createOllamaAdapter } from './adapters/ollama.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
 import { createGrokAdapter } from './adapters/grok.js';
 import { createKimiAdapter } from './adapters/kimi.js';
+import { createGLMAdapter } from './adapters/glm.js';
 import { createKimiCliAdapter } from './adapters/kimi-cli.js';
 import { createContextManager } from './context-manager.js';
 import { formatOutput } from './formatter.js';
@@ -98,6 +99,20 @@ const PROVIDER_FACTORIES = {
     contextManagerConfig: {
       contextWindow: 256000,
       model: config.model || 'kimi-k2.5',
+      maxTokens: 2048,
+      temperature: 0.7
+    }
+  }),
+  
+  glm: (config) => ({
+    adapter: createGLMAdapter({
+      apiKey: config.apiKey,
+      model: config.model
+    }),
+    contextWindow: 131072,
+    contextManagerConfig: {
+      contextWindow: 131072,
+      model: config.model,
       maxTokens: 2048,
       temperature: 0.7
     }

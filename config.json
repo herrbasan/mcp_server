@@ -55,10 +55,10 @@
     "embeddingProvider": "lmstudio",
     "taskDefaults": {
       "embedding": "lmstudio",
-      "analysis": "kimi-cli",
-      "synthesis": "kimi-cli",
-      "query": "kimi-cli",
-      "inspect": "kimi-cli"
+      "analysis": "lmstudio",
+      "synthesis": "lmstudio",
+      "query": "lmstudio",
+      "inspect": "lmstudio"
     },
     "providers": {
       "lmstudio": {
@@ -119,6 +119,13 @@
         "endpoint": "${LM_STUDIO_ENDPOINT}/v1/chat/completions",
         "model": "${OPENAI_MODEL}",
         "embeddingModel": "${OPENAI_EMBEDDING_MODEL}",
+        "temperature": 0.7
+      },
+      "glm": {
+        "enabled": false,
+        "type": "glm",
+        "apiKey": "${GLM_API_KEY}",
+        "model": "${GLM_MODEL}",
         "temperature": 0.7
       }
     }
