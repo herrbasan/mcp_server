@@ -47,6 +47,7 @@ const PROVIDER_FACTORIES = {
   gemini: (config) => ({
     adapter: createGeminiAdapter({
       apiKey: config.apiKey,
+      endpoint: config.endpoint,
       model: config.model,
       embeddingModel: config.embeddingModel || 'gemini-embedding-001',
       embeddingDimensions: config.embeddingDimensions || 768
@@ -63,6 +64,7 @@ const PROVIDER_FACTORIES = {
   grok: (config) => ({
     adapter: createGrokAdapter({
       apiKey: config.apiKey,
+      endpoint: config.endpoint,
       model: config.model,
       embeddingModel: config.embeddingModel
     }),
@@ -78,6 +80,7 @@ const PROVIDER_FACTORIES = {
   kimi: (config) => ({
     adapter: createKimiAdapter({
       apiKey: config.apiKey,
+      endpoint: config.endpoint,
       model: config.model
     }),
     contextWindow: 256000,
@@ -107,7 +110,8 @@ const PROVIDER_FACTORIES = {
   glm: (config) => ({
     adapter: createGLMAdapter({
       apiKey: config.apiKey,
-      model: config.model
+      model: config.model,
+      endpoint: config.endpoint
     }),
     contextWindow: 131072,
     contextManagerConfig: {

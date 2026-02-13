@@ -1,7 +1,8 @@
+const DEFAULT_ENDPOINT = 'https://api.x.ai/v1';
 const DEFAULT_MODEL = 'grok-4-1-fast-non-reasoning';
 
 export function createGrokAdapter(config) {
-  const { apiKey, embeddingModel = 'text-embedding-3-small' } = config;
+  const { apiKey, endpoint = DEFAULT_ENDPOINT, embeddingModel = 'text-embedding-3-small' } = config;
   let model = config.model || DEFAULT_MODEL;
 
   const headers = {
@@ -10,7 +11,7 @@ export function createGrokAdapter(config) {
   };
 
   async function apiPost(path, body) {
-    const response = await fetch(`https://api.x.ai/v1/${path}`, {
+    const response = await fetch(`${endpoint}/${path}`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body)

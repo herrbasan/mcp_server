@@ -1,14 +1,14 @@
-const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const DEFAULT_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_MODEL = 'gemini-2.0-flash';
 
 export function createGeminiAdapter(config) {
-  const { apiKey, embeddingModel, embeddingDimensions = 768 } = config;
+  const { apiKey, endpoint = DEFAULT_ENDPOINT, embeddingModel, embeddingDimensions = 768 } = config;
   let model = config.model; // mutable - can be resolved later
   
   const headers = { 'Content-Type': 'application/json' };
   
-  async function apiCall(endpoint, body) {
-    const url = `${BASE_URL}/${endpoint}?key=${apiKey}`;
+  async function apiCall(apiEndpoint, body) {
+    const url = `${endpoint}/${apiEndpoint}?key=${apiKey}`;
     const response = await fetch(url, {
       method: 'POST',
       headers,
