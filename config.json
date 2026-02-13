@@ -57,7 +57,7 @@
       "embedding": "lmstudio",
       "analysis": "lmstudio",
       "synthesis": "lmstudio",
-      "query": "glm",
+      "query": "lmstudio",
       "inspect": "lmstudio"
     },
     "providers": {
