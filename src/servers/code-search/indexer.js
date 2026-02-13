@@ -118,8 +118,8 @@ export async function writeIndexStreaming(filePath, index) {
   });
 
   await write('{\n');
-  await write(`  "version": ${index.version},\n`);
-  await write(`  "space": ${JSON.stringify(index.space)},\n`);
+  await write(`  "version": ${index.version || 2},\n`);
+  await write(`  "space": ${JSON.stringify(index.space || 'unknown')},\n`);
   await write(`  "created_at": ${JSON.stringify(index.created_at)},\n`);
   await write(`  "last_full_build": ${JSON.stringify(index.last_full_build)},\n`);
   await write(`  "last_refresh": ${JSON.stringify(index.last_refresh)},\n`);

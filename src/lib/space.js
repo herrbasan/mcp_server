@@ -73,7 +73,7 @@ export class SpaceResolver {
    * @returns {{workspace: string, basePath: string, relativePath: string} | null}
    */
   findMatchingSpacePath(absolutePath) {
-    // Normalize input: lowercase, forward slashes to backslashes
+    // Normalize input for matching: lowercase, forward slashes to backslashes
     const normalizedInput = absolutePath.toLowerCase().replace(/\//g, '\\');
     
     // Sort by path length (longest first) to handle nested spaces correctly
@@ -93,9 +93,23 @@ export class SpaceResolver {
     // Find first matching space (longest match wins)
     for (const { name, basePath, normalizedBase, allPaths } of sortedSpaces) {
       if (normalizedInput.startsWith(normalizedBase)) {
-        // Extract relative path
-        let relativePath = normalizedInput.substring(normalizedBase.length);
-        relativePath = relativePath.replace(/^\\/, '').replace(/\\/g, '/');
+        // Extract relative path from ORIGINAL input (preserve case)
+        const normalizedBaseLength = normalizedBase.length;
+        // Find where the base path ends in the original (case-preserved) string
+        // by matching character count, accounting for possible case differences
+        let originalBaseLength = 0;
+        let normalizedIdx = 0;
+        for (let i = 0; i < absolutePath.length && normalizedIdx < normalizedBaseLength; i++) {
+          const origChar = absolutePath[i].toLowerCase();
+          const normChar = normalizedInput[normalizedIdx];
+          if (origChar === normChar || (origChar === '/' && normChar === '\\') || (origChar === '\\' && normChar === '/')) {
+            normalizedIdx++;
+            originalBaseLength = i + 1;
+          }
+        }
+        
+        let relativePath = absolutePath.substring(originalBaseLength);
+        relativePath = relativePath.replace(/^[\\/]/, '').replace(/\\/g, '/');
         
         // Use UNC path (first entry) for actual file access, not the matched local path
         // This allows matching "d:\Work" but accessing via "\\COOLKID\Work\Work"

@@ -182,6 +182,7 @@ function getPrompt(name, args) {
   throw new Error(`Unknown prompt: ${name}`);
 }
 
+// Legacy space-based tools (kept for backward compatibility)
 const TOOLS = [
   {
     name: 'get_spaces_config',
@@ -256,6 +257,123 @@ const TOOLS = [
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map(t => t.name));
+
+// New project-focused codebase_index tools - simpler mental model for LLMs
+const CODEBASE_TOOLS = [
+  {
+    name: 'codebase_index',
+    description: 'Search the local codebase for relevant files. Use this FIRST to understand the project before answering questions about code, architecture, or implementation. PATH MUST BE ABSOLUTE - use the full file path from your editor.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to search for - describe in natural language (e.g., "HTTP routing logic", "authentication middleware", "how errors are handled")'
+        },
+        path: {
+          type: 'string',
+          description: 'ABSOLUTE path to any file in the target project. Used to determine which codebase to search. Example: "d:\\DEV\\mcp_server\\src\\http-server.js" or "\\\\COOLKID\\Work\\project\\file.js". Relative paths like "./src/file.js" will FAIL.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results to return (default: 10)',
+          default: 10
+        }
+      },
+      required: ['query', 'path']
+    }
+  },
+  {
+    name: 'codebase_read',
+    description: 'Read a file from the local codebase. Use after codebase_index to retrieve full content of relevant files. PATH MUST BE ABSOLUTE.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'ABSOLUTE path to the file to read. Example: "d:\\DEV\\mcp_server\\src\\router.js"'
+        },
+        startLine: {
+          type: 'number',
+          description: 'Start reading from this line number (1-indexed, optional)'
+        },
+        endLine: {
+          type: 'number',
+          description: 'Stop reading at this line number (inclusive, optional)'
+        }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'codebase_explore',
+    description: 'Explore the directory structure of the local codebase. Use to understand project layout before searching. PATH MUST BE ABSOLUTE.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'ABSOLUTE path to a directory in the project. Use the project root or any subdirectory. Example: "d:\\DEV\\mcp_server"'
+        },
+        max_depth: {
+          type: 'number',
+          description: 'How many directory levels to traverse (default: 3)',
+          default: 3
+        }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'codebase_grep',
+    description: 'Search within code files for exact text or patterns. Use AFTER codebase_index to efficiently search only relevant files. Example workflow: 1) codebase_index({query: "authentication middleware", path: "..."}) to find candidate files, 2) codebase_grep({pattern: "validateToken|authMiddleware", path: "...", files: [fileId1, fileId2]}) to search within those specific files. PATH MUST BE ABSOLUTE.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Text pattern to search for. Examples: "createRouter" for function names, "import.*lodash" with regex=true for import patterns'
+        },
+        path: {
+          type: 'string',
+          description: 'ABSOLUTE path to any file in the target project. Example: "d:\\DEV\\mcp_server\\src\\http-server.js"'
+        },
+        regex: {
+          type: 'boolean',
+          description: 'Treat pattern as regular expression (default: false)',
+          default: false
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum matches to return (default: 30)',
+          default: 30
+        },
+        files: {
+          type: 'array',
+          description: 'HIGHLY RECOMMENDED: File IDs from codebase_index results. Without this, searches all project files (slow). Example: ["7b75d9c0...", "e41d3240..."]',
+          items: { type: 'string' }
+        }
+      },
+      required: ['pattern', 'path']
+    }
+  },
+  {
+    name: 'codebase_inspect',
+    description: 'Get detailed information about a file: functions, classes, imports, and their line numbers. Use before codebase_read to target specific sections. PATH MUST BE ABSOLUTE.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'ABSOLUTE path to the file to inspect. Example: "d:\\DEV\\mcp_server\\src\\router.js"'
+        }
+      },
+      required: ['path']
+    }
+  }
+];
+
+const CODEBASE_TOOL_NAMES = new Set(CODEBASE_TOOLS.map(t => t.name));
 
 export function createCodeSearchServer(config, router) {
   const spaceResolver = new SpaceResolver(config.spaces || config.workspaces || {});
@@ -531,6 +649,11 @@ export function createCodeSearchServer(config, router) {
         throw err;
       }
 
+      // Ensure space field is set (for indexes created before this field existed)
+      if (!index.space) {
+        index.space = spaceName;
+      }
+      
       sendProgress(20, 100, 'Scanning space...');
 
       const currentFiles = new Map();
@@ -1134,9 +1257,216 @@ export function createCodeSearchServer(config, router) {
     }
   }
 
+  // ===== CODEBASE_INDEX PROXY FUNCTIONS =====
+  // These provide a simpler "local codebase" mental model for LLMs
+  // They accept absolute paths and automatically scope to the correct project
+
+  function resolveProjectFromPath(absolutePath) {
+    // Validate absolute path
+    if (!path.isAbsolute(absolutePath)) {
+      throw new Error(
+        `Path must be absolute. Got: "${absolutePath}". ` +
+        `Use the full file path from your editor (e.g., "d:\\project\\file.js"). ` +
+        `Relative paths like "./src/file.js" are not supported.`
+      );
+    }
+
+    const match = spaceResolver.findMatchingSpacePath(absolutePath);
+    if (!match) {
+      const available = Object.keys(config.spaces || {}).join(', ');
+      throw new Error(
+        `Path not in any indexed space: ${absolutePath}. ` +
+        `Available spaces: ${available}`
+      );
+    }
+
+    // Extract project root (first directory segment after space root)
+    const projectRoot = match.relativePath.split('/')[0];
+    
+    return {
+      space: match.space,
+      basePath: match.basePath,
+      relativePath: match.relativePath,
+      projectRoot
+    };
+  }
+
+  async function codebaseIndex(args) {
+    const { query, path: absolutePath, limit = 10 } = args;
+    
+    const { space, projectRoot } = resolveProjectFromPath(absolutePath);
+    
+    // Scope search to this project only
+    const results = await searchSemantic({ 
+      space, 
+      query, 
+      limit: limit * 3  // Get more since we'll filter
+    });
+    
+    const parsed = JSON.parse(results.content[0].text);
+    
+    // Load index to get file paths from IDs
+    const index = await loadIndexForSpace(space);
+    
+    // Filter to only include files from this project
+    const filtered = parsed.results.filter(r => {
+      const fileData = index.files[r.file];
+      if (!fileData || !fileData.path) return false;
+      return fileData.path.startsWith(projectRoot);
+    }).map(r => ({
+      ...r,
+      path: index.files[r.file].path  // Add path to result
+    }));
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          project: projectRoot,
+          space: space,
+          query: query,
+          results: filtered.slice(0, limit),
+          count: filtered.slice(0, limit).length,
+          note: 'Use codebase_read({path: "<absolute_path>"}) to retrieve file content'
+        }, null, 2)
+      }]
+    };
+  }
+
+  async function codebaseRead(args) {
+    const { path: absolutePath, startLine, endLine } = args;
+    
+    const { space, basePath, relativePath } = resolveProjectFromPath(absolutePath);
+    
+    // Get the index to find the file ID
+    const index = await loadIndexForSpace(space);
+    const fileId = generateFileId(space, relativePath);
+    const fileData = index.files[fileId];
+    
+    if (!fileData) {
+      throw new Error(`File not found in index: ${absolutePath}. Try running refresh_index first.`);
+    }
+    
+    // Delegate to existing retrieveFile
+    return retrieveFile({ 
+      file: fileId, 
+      startLine, 
+      endLine 
+    });
+  }
+
+  async function codebaseExplore(args) {
+    const { path: absolutePath, max_depth = 3 } = args;
+    
+    const { space, basePath, projectRoot } = resolveProjectFromPath(absolutePath);
+    
+    // If path points to a file, use its directory
+    let targetPath = absolutePath;
+    try {
+      const stats = await fs.stat(absolutePath);
+      if (stats.isFile()) {
+        targetPath = path.dirname(absolutePath);
+      }
+    } catch (e) {
+      // Path might not exist on disk, treat as directory hint
+    }
+    
+    // Calculate relative path from space root using the matched base path
+    const relativeFromBase = path.relative(basePath, targetPath).replace(/\\/g, '/');
+    
+    // Scope to project root
+    const subPath = relativeFromBase.startsWith(projectRoot) 
+      ? relativeFromBase 
+      : projectRoot;
+    
+    return getFileTree({ space, path: subPath, max_depth });
+  }
+
+  async function codebaseGrep(args) {
+    const { pattern, path: absolutePath, regex = false, limit = 30, files: fileIds } = args;
+    
+    const { space, basePath, projectRoot } = resolveProjectFromPath(absolutePath);
+    const searchRegex = regex ? new RegExp(pattern, 'gi') : null;
+    const matches = [];
+    
+    // Load index
+    const index = await loadIndexForSpace(space);
+    
+    // Determine which files to search
+    let filesToSearch;
+    if (fileIds && fileIds.length > 0) {
+      // Search specific files (from previous search results)
+      filesToSearch = fileIds.map(id => index.files[id]).filter(Boolean);
+    } else {
+      // Search all files in the project scope
+      filesToSearch = Object.values(index.files).filter(f => 
+        f.path && f.path.startsWith(projectRoot)
+      );
+    }
+    
+    // Search files (limit to avoid timeouts)
+    const searchLimit = Math.min(filesToSearch.length, 100);
+    
+    for (let i = 0; i < searchLimit && matches.length < limit; i++) {
+      const fileData = filesToSearch[i];
+      
+      try {
+        const fullPath = path.join(basePath, fileData.path);
+        const content = await fs.readFile(fullPath, 'utf-8');
+        const lines = content.split('\n');
+        
+        for (let lineIdx = 0; lineIdx < lines.length && matches.length < limit; lineIdx++) {
+          const line = lines[lineIdx];
+          const isMatch = regex 
+            ? searchRegex.test(line) 
+            : line.includes(pattern);
+            
+          if (isMatch) {
+            const trimmed = line.trim();
+            matches.push({
+              file: fileData.id,
+              path: fileData.path,
+              line: lineIdx + 1,
+              content: trimmed.length > 120 ? trimmed.slice(0, 120) + '...' : trimmed,
+              language: fileData.language
+            });
+          }
+        }
+      } catch (err) {
+        // Skip files that can't be read
+      }
+    }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          project: projectRoot,
+          pattern: pattern,
+          regex: regex,
+          searched_files: searchLimit,
+          total_candidates: filesToSearch.length,
+          matches: matches,
+          count: matches.length
+        }, null, 2)
+      }]
+    };
+  }
+
+  async function codebaseInspect(args) {
+    const { path: absolutePath } = args;
+    
+    const { space, relativePath } = resolveProjectFromPath(absolutePath);
+    
+    // Get file ID from path
+    const fileId = generateFileId(space, relativePath);
+    
+    return getFileInfo({ file: fileId });
+  }
+
   return {
-    getTools: () => TOOLS,
-    handlesTool: name => TOOL_NAMES.has(name),
+    getTools: () => [...TOOLS, ...CODEBASE_TOOLS],
+    handlesTool: name => TOOL_NAMES.has(name) || CODEBASE_TOOL_NAMES.has(name),
     
     getPrompts: () => PROMPTS,
     handlesPrompt: name => PROMPT_NAMES.has(name),
@@ -1144,6 +1474,7 @@ export function createCodeSearchServer(config, router) {
     
     async callTool(name, args) {
       try {
+        // Legacy space-based tools
         if (name === 'get_spaces_config') return await getSpacesConfig();
         if (name === 'get_file_info') return await getFileInfo(args);
         if (name === 'refresh_index') return await refreshIndex(args);
@@ -1158,6 +1489,14 @@ export function createCodeSearchServer(config, router) {
         if (name === 'get_file_tree') return await getFileTree(args);
         if (name === 'get_function_tree') return await getFunctionTree(args);
         if (name === 'retrieve_file') return await retrieveFile(args);
+        
+        // New codebase_index tools
+        if (name === 'codebase_index') return await codebaseIndex(args);
+        if (name === 'codebase_read') return await codebaseRead(args);
+        if (name === 'codebase_explore') return await codebaseExplore(args);
+        if (name === 'codebase_grep') return await codebaseGrep(args);
+        if (name === 'codebase_inspect') return await codebaseInspect(args);
+        
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
       } catch (err) {
         return {
