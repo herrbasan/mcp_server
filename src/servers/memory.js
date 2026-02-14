@@ -223,7 +223,7 @@ export function createMemoryServer(config, router) {
     
     let candidates = memories.memories;
     if (category) candidates = candidates.filter(m => m.category === category);
-    if (domain) candidates = candidates.filter(m => m.domain === domain);
+    if (domain) candidates = candidates.filter(m => m.domain && m.domain.toString().trim() === domain.toString().trim());
     
     const scored = candidates.map(m => {
       const conf = m.confidence ?? 0.5;
@@ -271,7 +271,7 @@ export function createMemoryServer(config, router) {
     let list = memories.memories;
     
     if (category) list = list.filter(m => m.category === category);
-    if (domain) list = list.filter(m => m.domain === domain);
+    if (domain) list = list.filter(m => m.domain && m.domain.toString().trim() === domain.toString().trim());
     
     if (!list.length) {
       const filters = [];
@@ -441,7 +441,7 @@ export function createMemoryServer(config, router) {
     getMemories: ({ category, domain } = {}) => {
       let list = memories.memories;
       if (category) list = list.filter(m => m.category === category);
-      if (domain) list = list.filter(m => m.domain === domain);
+      if (domain) list = list.filter(m => m.domain && m.domain.toString().trim() === domain.toString().trim());
       return list;
     },
     

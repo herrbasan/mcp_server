@@ -126,7 +126,7 @@ if (config.servers['browser']?.enabled) {
   console.log('✓ Browser');
 }
 
-// Initialize LLM server (query tools) - after code-search is initialized
+// Initialize LLM server (query tools)
 let llmServer = null;
 
 if (config.servers['web-research']?.enabled) {
@@ -148,42 +148,20 @@ if (config.servers['memory']?.enabled) {
 
 // Browser server already initialized above (before web-research)
 
-// Both code-inspector and code-search share spaces config
-const spacesConfig = config.spaces || config.workspaces || {};
-
 // Support both 'code-inspector' (new) and 'local-agent' (deprecated) config keys
 const inspectorConfig = config.servers['code-inspector'] || config.servers['local-agent'];
 if (inspectorConfig?.enabled) {
   const { createCodeInspectorServer } = await import('./servers/code-inspector.js');
-  const agentConfig = { ...inspectorConfig, spaces: spacesConfig };
-  const s = createCodeInspectorServer(agentConfig, llmRouter);
+  const s = createCodeInspectorServer(inspectorConfig, llmRouter);
   serverModules.set('code-inspector', s);
   tools.push(...s.getTools());
   if (s.getPrompts) prompts.push(...s.getPrompts());
   console.log('✓ Code Inspector');
 }
 
-if (config.servers['code-search']?.enabled) {
-  const { createCodeSearchServer } = await import('./servers/code-search/server.js');
-  const searchConfig = { ...config.servers['code-search'], spaces: spacesConfig };
-  const s = createCodeSearchServer(searchConfig, llmRouter);
-  serverModules.set('code-search', s);
-  tools.push(...s.getTools());
-  if (s.getPrompts) prompts.push(...s.getPrompts());
-  console.log('✓ Code Search');
-}
-
-// Wire up inter-module communication
-const codeInspector = serverModules.get('code-inspector');
-const codeSearch = serverModules.get('code-search');
-if (codeInspector && codeSearch) {
-  codeInspector.setCodeSearchServer(codeSearch);
-  console.log('✓ Code Inspector ↔ Code Search integration');
-}
-
-// Initialize LLM server (query tools) - after code-search is available
+// Initialize LLM server (query tools)
 if (config.servers['llm']?.enabled) {
-  llmServer = createLLMServer(config.servers['llm'], llmRouter, spacesConfig, codeSearch);
+  llmServer = createLLMServer(config.servers['llm'], llmRouter);
   serverModules.set('llm', llmServer);
   tools.push(...llmServer.getTools());
   console.log('✓ LLM');
@@ -192,57 +170,20 @@ if (config.servers['llm']?.enabled) {
 // Start web monitoring interface
 if (config.web?.enabled) {
   const memoryServer = serverModules.get('memory');
-  const webServer = new WebServer(config.web, memoryServer, llmServer, codeSearch);
+  const webServer = new WebServer(config.web, memoryServer, llmServer);
   webServerInstance = webServer;
   webServer.start();
   console.log('✓ Web Interface');
 }
 
-// Start maintenance cycle for index refresh
-if (config.maintenance?.enabled && codeSearch) {
+// Start maintenance cycle
+if (config.maintenance?.enabled) {
   const intervalMs = config.maintenance.indexRefreshIntervalMs || 3600000; // Default 1 hour
   const intervalMinutes = (intervalMs / 60000).toFixed(1);
   
   const runMaintenance = async () => {
     try {
       const startTime = Date.now();
-      
-      // Ensure embedding model is loaded before indexing
-      if (llmRouter?.embedText) {
-        try {
-          const testEmbed = await llmRouter.embedText('test');
-          if (!testEmbed || testEmbed.length === 0) {
-            throw new Error('Embedding model not available');
-          }
-        } catch (err) {
-          console.error('[Maintenance] Embedding model not loaded, skipping index refresh:', err.message);
-          return;
-        }
-      }
-      
-      // Refresh code search indexes
-      const results = await codeSearch.callTool('refresh_all_indexes', { force: false });
-      
-      // Parse and log results concisely
-      if (results?.content?.[0]?.text) {
-        try {
-          const data = JSON.parse(results.content[0].text);
-          if (data.results && Array.isArray(data.results)) {
-            data.results.forEach(r => {
-              if (r.status === 'success') {
-                console.log(`[Maintenance] ${r.space} - Added ${r.files_added} / Updated ${r.files_updated} / Removed ${r.files_removed}`);
-              } else if (r.status === 'error') {
-                const errorMsg = r.error?.substring(0, 80) || 'Unknown';
-                console.log(`[Maintenance] ${r.space} - Error: ${errorMsg}`);
-              }
-            });
-          }
-        } catch (parseErr) {
-          console.error('[Maintenance] Parse error:', parseErr.message);
-        }
-      } else {
-        console.log('[Maintenance] No index results to display');
-      }
       
       // Refresh LLM router metadata (model info, context windows)
       if (llmRouter?.refreshAllMetadata) {

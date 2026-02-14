@@ -2,7 +2,7 @@ import puppeteer from 'puppeteer';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 
-const TOOL_NAMES = new Set(['browser_fetch', 'browser_click', 'browser_fill', 'browser_evaluate', 'browser_pdf', 'browser_login']);
+const TOOL_NAMES = new Set(['browser_fetch', 'browser_click', 'browser_fill', 'browser_evaluate', 'browser_pdf']);
 
 const TOOLS = [
   {
@@ -76,17 +76,6 @@ const TOOLS = [
       required: ['url']
     }
   },
-  {
-    name: 'browser_login',
-    description: 'Open browser for manual authentication',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: { type: 'string' },
-        message: { type: 'string' }
-      }
-    }
-  }
 ];
 
 function extractHtml(html, maxSize) {
@@ -436,30 +425,6 @@ export function createBrowserServer(config = {}) {
     });
   }
 
-  async function loginSession({ url = 'https://www.google.com', message }) {
-    const b = await getBrowser();
-    const page = await b.newPage();
-    activePages++;
-    
-    try {
-      await page.setViewport(defaultViewport);
-      await page.setUserAgent(userAgent);
-      await page.goto(url, { waitUntil: 'networkidle2', timeout });
-      
-      const displayMessage = message || `Browser opened to ${url}. Please log in and close the tab when done. Session will be saved.`;
-      
-      return {
-        content: [{
-          type: 'text',
-          text: `🔐 ${displayMessage}\n\nBrowser window is open and waiting for you to log in.\nThe session will be automatically saved to the profile.\n\nClose the browser tab when finished.`
-        }]
-      };
-    } finally {
-      // Don't close page - let user do it manually
-      // Page will linger and close naturally
-    }
-  }
-
   return {
     getTools: () => TOOLS,
     handlesTool: (name) => TOOL_NAMES.has(name),
@@ -470,7 +435,7 @@ export function createBrowserServer(config = {}) {
         case 'browser_fill': return fillForm(args);
         case 'browser_evaluate': return evaluateScript(args);
         case 'browser_pdf': return generatePdf(args);
-        case 'browser_login': return loginSession(args);
+
         default: throw new Error(`Unknown tool: ${name}`);
       }
     },

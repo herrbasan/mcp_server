@@ -1,7 +1,7 @@
 # MCP Orchestrator - Tools Reference Guide
 
-> **Total Tools**: 30 across 6 modules  
-> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **external spaces** and **web content**.
+> **Total Tools**: 16 across 5 modules  
+> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **web content** and **LLM queries**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
 
@@ -15,8 +15,7 @@
 | [LLM](#llm-module) | 1 | Local model querying |
 | [Web Research](#web-research-module) | 1 | Multi-source research pipeline |
 | [Browser](#browser-module) | 6 | Puppeteer browser automation |
-| [Code Inspector](#code-inspector-module) | 1 | LLM-based code analysis (external files only) |
-| [Code Search](#code-search-module) | 14 | Semantic/kw search across spaces |
+| [Code Inspector](#code-inspector-module) | 1 | LLM-based code analysis |
 
 ---
 
@@ -76,6 +75,8 @@ mcp_orchestrator_query_model({
   maxTokens: 500                     // optional limit
 })
 ```
+
+**File inclusion**: Pass absolute paths in `files` array or embed them in the prompt.
 
 **Common errors**: `Model not loaded` → wait 10-30s, retry
 
@@ -164,13 +165,13 @@ mcp_orchestrator_browser_pdf({
 
 ## Code Inspector Module (1 tool)
 
-> **Scope**: For **external files** only. Analyze current project files directly (no tool needed).
+> **Scope**: Analyze code with LLM for quality issues.
 
 ### `inspect_code`
 ```javascript
-// Analyze file(s) by hash ID from search
+// Analyze files by absolute path
 mcp_orchestrator_inspect_code({
-  target: "fc745a690e4db10279c18241a0a572c7",  // or "hash1,hash2"
+  files: ["D:\\Work\\_GIT\\MyProject\\src\\main.js"],
   question: "What security issues exist?"
 })
 
@@ -181,99 +182,39 @@ mcp_orchestrator_inspect_code({
 })
 ```
 
+**Note**: Only absolute file paths are supported (Windows `D:\...` or UNC `\\server\...` paths).
+
 ---
 
-## Code Search Module (14 tools)
+## Documentation Module (3 tools)
 
-> **Scope**: For **external spaces** only. Use IDE shortcuts (Ctrl+P, F12) for current project.
+> Access MCP orchestrator documentation
 
-### The 3-Step Workflow
+### `list_documents`
+List all available documentation files.
 
 ```javascript
-// STEP 1: Discover spaces
-mcp_orchestrator_get_spaces_config()
-// Returns: [{ name: "BADKID-DEV", uncPath: "d:\DEV", indexed: true }, ...]
-
-// STEP 2: Search
-mcp_orchestrator_search_semantic({     // By meaning (embeddings)
-  space: "BADKID-DEV",              // omit to search ALL spaces
-  query: "HTTP request handling",
-  limit: 10
-})
-// Returns: [{ file: "7b75d9c0...", similarity: 0.89, functions: [...] }, ...]
-
-mcp_orchestrator_search_keyword({      // Exact text/regex
-  workspace: "BADKID-DEV",
-  pattern: "createMCPServer",
-  regex: false                         // set true for regex
-})
-// Returns: [{ file: "7b75d9c0...", line: 243, content: "..." }, ...]
-
-mcp_orchestrator_search_files({        // Glob patterns
-  workspace: "BADKID-DEV",
-  glob: "src/**/*.js"                   // or "**/*auth*"
-})
-
-// STEP 3: Get structure
-mcp_orchestrator_get_file_info({
-  file: "7b75d9c08788a8863da8e1654e287b1c"  // 32-char hash ID
-})
-// Returns: { functions: [{name, line}], classes: [...], imports: [...] }
-
-// STEP 4: Retrieve specific lines
-mcp_orchestrator_retrieve_file({
-  file: "7b75d9c08788a8863da8e1654e287b1c",
-  startLine: 243,
-  endLine: 260
-})
+mcp_orchestrator_list_documents()
+// Returns: { documents: ["orchestrator", "coding-philosophy"], count: 2 }
 ```
 
-### Utility Tools
+### `read_document`
+Read a specific documentation file.
 
 ```javascript
-// Quick preview without full workflow
-mcp_orchestrator_peek_file({
-  query: "http-server.js",
-  workspace: "BADKID-DEV",
-  max_lines: 50
-})
+mcp_orchestrator_read_document({ name: "coding-philosophy" })
+```
 
-// Get context around line
-mcp_orchestrator_get_context({
-  file: "7b75d9c0...",
-  line: 245,
-  radius: 20              // or "function" for auto-expand
-})
+### `get_documentation`
+Get the main orchestrator documentation (equivalent to `read_document({name: "orchestrator"})`).
 
-// Symbol outline
-mcp_orchestrator_get_function_tree({ file: "7b75d9c0..." })
-
-// Directory exploration
-mcp_orchestrator_get_file_tree({
-  space: "COOLKID-Work",
-  path: "_GIT/SoundApp",  // relative to workspace root
-  max_depth: 2
-})
-
-// Index management
-mcp_orchestrator_get_index_stats({ space: "BADKID-DEV" })
-mcp_orchestrator_refresh_index({ space: "BADKID-DEV" })
-mcp_orchestrator_refresh_all_indexes({ force: false })
+```javascript
+mcp_orchestrator_get_documentation()
 ```
 
 ---
 
 ## Common Workflows
-
-### Cross-Project Reference
-```javascript
-// Reference implementation from another space while coding
-mcp_orchestrator_search_semantic({
-  workspace: "COOLKID-Work",
-  query: "WebSocket connection handler"
-})
-// ... get_file_info ... retrieve_file specific lines
-```
 
 ### Research → Implement → Remember
 ```javascript
@@ -286,14 +227,13 @@ mcp_orchestrator_remember({
 })
 ```
 
----
-
-## File ID Format
-
-- **32-character SHA256 hash**: `7b75d9c08788a8863da8e1654e287b1c`
-- Generated from: `SHA256("space:filePath").slice(0, 32)`
-- All search tools return hash IDs
-- Pass hash IDs directly to `retrieve_file`, `get_file_info`, `inspect_code`
+### Query with File Context
+```javascript
+mcp_orchestrator_query_model({
+  prompt: "Review this code for issues",
+  files: ["D:\\project\\src\\api.js"]
+})
+```
 
 ---
 
@@ -302,9 +242,9 @@ mcp_orchestrator_remember({
 | Scenario | Tool |
 |----------|------|
 | Current IDE project | IDE shortcuts (Ctrl+P, F12, Ctrl+Click) |
-| Code analysis in current project | Analyze directly (in context) |
-| Other spaces | Code Search / Inspector |
+| Code analysis | Code Inspector with absolute paths |
 | Web content | Browser / Research |
+| LLM queries | query_model |
 
 ---
 
@@ -312,9 +252,6 @@ mcp_orchestrator_remember({
 
 | Tool | Typical Time |
 |------|--------------|
-| `search_semantic` | 1-2s |
-| `search_keyword` | 2-5s |
-| `retrieve_file` | 50-100ms |
 | `inspect_code` | 2-5s |
 | `query_model` | 0.5-3s |
 | `research_topic` | 12-45s |
@@ -327,9 +264,7 @@ mcp_orchestrator_remember({
 
 | Error | Solution |
 |-------|----------|
-| `File not found in index` | Run `refresh_index` |
-| `No search results` | Check space name with `get_spaces_config` |
-| `Hash ID not found` | Search without space param |
 | `Research timeout` | Narrow query, reduce max_pages |
 | `No content synthesized` | Try different engines |
 | `Model not loaded` | Wait 10-30s, retry |
+| `Path must be absolute` | Use full paths like `D:\project\file.js` |

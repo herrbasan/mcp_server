@@ -43,12 +43,12 @@ mcp_orchestrator_remember({
 
 **Review Process**: User or autonomous agents periodically query `domain="orchestrator_feedback"` memories to extract improvement tasks.
 
-Keep it minimal-dependency and performance-first. For any non-trivial pattern/library, explain what problem it solves here and why it's worth it.
+---
 
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **26 tools** to VS Code Copilot clients via network.
+Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **16 tools** to VS Code Copilot clients via network.
 
 **Architecture**: StreamableHTTPServerTransport (not legacy SSE)
 - Server: `src/http-server.js` - Ports 3100 (MCP), 3010 (web monitoring)
@@ -57,9 +57,9 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (30 across 6 modules):
+**Tools** (16 across 5 modules):
 - **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
-- **LM Studio** (3): REST API local model integration (query_model, list_available_models, get_loaded_model)
+- **LLM** (1): REST API local model integration (query_model)
 - **Web Research** (1): Multi-source web research with persistent browser pool (research_topic)
   - 5-phase pipeline: search → select → scrape → synthesize → evaluate
   - **Browser Pool**: Persistent Chrome with lingering tabs (10-30s cleanup delay)
@@ -70,168 +70,33 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
   - Iterative loop: re-searches if confidence < 80%, max 2 iterations
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
 - **Code Inspector** (1): LLM-based code analysis (inspect_code) - analyze files or code snippets
-- **Code Search** (13): Semantic search and retrieval for large codebases
-  - Discovery: search_semantic, search_keyword, search_files, search_code
-  - Retrieval: retrieve_file, peek_file, get_context
-  - Exploration: get_file_tree, get_function_tree
-  - Index: refresh_index, refresh_all_indexes, get_spaces_config, get_file_info, get_index_stats
+- **Documentation** (3): Access orchestrator docs (get_documentation, list_documents, read_document)
 
-## Space Architecture (For LLMs Using MCP Orchestrator)
+## File Referencing (Absolute Paths Only)
 
-**YOU ARE A CALLING LLM** - You don't see local files. Use MCP tools to interact with codebases.
+**IMPORTANT**: Only absolute file paths are supported in `inspect_code` and `query_model`.
 
-**Core Utilities**:
-- `src/lib/space.js` - UNC path mapping, security validation (shared by Code Inspector and Code Search)
+**Valid formats**:
+- Windows: `D:\Work\_GIT\Project\file.js`
+- UNC: `\\server\share\file.js`
 
-### Quick Start Workflow
-```
-1. get_spaces_config()           → Discover available spaces
-2. search_semantic/keyword/files()  → Find relevant code
-3. get_file_info({ file: "..." })   → Get metadata (functions, classes, imports)
-4. retrieve_file({ file: "..." })   → Get file content using file ID from search
-```
+**Invalid formats** (removed):
+- ❌ Hash IDs: `e8580ad5e276908e773ad9273e57e6c6`
+- ❌ SPACE:path format: `COOLKID-Work:_GIT/file.js`
+- ❌ Relative paths: `src/file.js`
 
-**Get File Metadata** - After search, get detailed structure before retrieving content:
+## Documentation
+
+Documentation is now in `mcp_documentation/` folder:
+- `orchestrator.md` - Tools guide (main reference)
+- `coding-philosophy.md` - Deterministic mind doc
+
+Access via MCP tools:
 ```javascript
-get_file_info({ 
-  file: "fc745a690e4db10279c18241a0a572c7"  // Hash ID from search results
-})
-// Returns: workspace, path, functions (with line numbers), classes, imports, exports
+mcp_orchestrator_list_documents()           // List available docs
+mcp_orchestrator_read_document({name: "orchestrator"})
+mcp_orchestrator_get_documentation()        // Shortcut for orchestrator.md
 ```
-
-**Partial File Retrieval** - For large files, retrieve only the lines you need:
-```javascript
-retrieve_file({ 
-  file: "fc745a690e4db10279c18241a0a572c7",
-  startLine: 100,   // Optional: start line (1-indexed)
-  endLine: 200      // Optional: end line (1-indexed)
-})
-// Returns lines 100-200 instead of entire file (saves tokens!)
-```
-
-**Complete Workflow Example**:
-```javascript
-// 1. Search finds file with hash IDs
-const results = search_semantic({ space: "BADKID-DEV", query: "HTTP request handling" });
-// Returns: { file: "fc745a690e4db10279c18241a0a572c7", functions: ["handleRequest"], ... }
-
-// 2. Get detailed metadata with line numbers
-const info = get_file_info({ file: "fc745a690e4db10279c18241a0a572c7" });
-// Returns: { space: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
-
-// 3. Retrieve just the function you need
-const content = retrieve_file({ 
-  file: "fc745a690e4db10279c18241a0a572c7",
-  startLine: 45,
-  endLine: 80
-});
-```
-
-### Space Model (Code Repositories)
-Spaces are **named root folders** - network shares (UNC paths) or local drives containing code repositories. Think of them as drives - each space name maps to a root directory.
-
-| Space Name | Maps To | Description |
-|------------|---------|-------------|
-| `COOLKID-Work` | `\\COOLKID\Work\Work` | Main dev machine share |
-| `BADKID-DEV` | `d:\DEV` | Local dev drive |
-| `BADKID-SRV` | `d:\SRV` | Local server drive |
-
-**Terminology Note**: "COOLKID-Work" is a **space name** (configured identifier), NOT a folder name. The share `\\COOLKID\Work` happens to contain a `Work` subfolder, which can be confusing. Always use space names in API calls.
-
-**IMPORTANT**: When using `get_file_tree` or searching, paths are **relative to the space root**. A project at `\\COOLKID\Work\Work\_GIT\SoundApp` is accessed via `space: "COOLKID-Work", path: "Work/_GIT/SoundApp"`.
-
-**Exploration Workflow**:
-```javascript
-// 1. See available spaces
-get_spaces_config()  // Returns: COOLKID-Work, BADKID-DEV, etc.
-
-// 2. Explore space structure to find your project
-get_file_tree({ space: "COOLKID-Work" })  
-// Returns: { Work: { type: "directory", children: { _GIT: {...} } } }
-
-// 3. Drill down to your project
-get_file_tree({ space: "COOLKID-Work", path: "Work/_GIT/SoundApp" })
-```
-
-### File ID Format
-All search results return **32-character SHA256 hash IDs** (collision-free):
-- Format: `fc745a690e4db10279c18241a0a572c7`
-- Generated from: SHA256(`${spaceName}:${filePath}`).slice(0, 32)
-- Pass hash IDs directly to `retrieve_file` and `get_file_info`
-
-### File Path Formats (Recommended)
-When referencing files in `inspect_code` and `query_model`, use these formats in order of preference:
-
-| Format | Example | Status | Use When |
-|--------|---------|--------|----------|
-| **Hash ID** | `fc745a690e4db10279c18241a0a572c7` | ✅ Recommended | You have search results |
-| **SPACE:path** | `BADKID-DEV:src/router.js` | ✅ Recommended | You know the space name and relative path |
-| **Relative + space param** | `src/router.js` + `space: "BADKID-DEV"` | ✅ Works | Clean separation of concerns |
-
-**Complete Workflow Example**:
-```javascript
-// 1. Search finds file with hash IDs
-const results = search_semantic({ space: "BADKID-DEV", query: "HTTP request handling" });
-// Returns: { file: "fc745a690e4db10279c18241a0a572c7", functions: ["handleRequest"], ... }
-
-// 2. Get detailed metadata with line numbers
-const info = get_file_info({ file: "fc745a690e4db10279c18241a0a572c7" });
-// Returns: { space: "BADKID-DEV", path: "src/http-server.js", functions: [{ name: "handleRequest", line: 45 }], ... }
-
-// 3. Retrieve just the function you need
-const content = retrieve_file({ 
-  file: "fc745a690e4db10279c18241a0a572c7",
-  startLine: 45,
-  endLine: 80
-});
-```
-| **Absolute path** | `D:\DEV\project\file.js` | ⚠️ Deprecated | Avoid - fragile auto-detection |
-
-**Terminology note:** "Spaces" are configured root folders (network shares or local drives). The `BADKID-DEV` in the example is a **space name**, not a folder name. Spaces map to paths like `\\BADKID\Stuff\DEV` or `D:\DEV` in config.json.
-
-**Why avoid absolute paths?** Drive letters vs UNC paths, case sensitivity, and network share variations make reliable auto-detection complex. Use `SPACE:path` format instead - it's explicit and unambiguous.
-
-### Search Tools (use space name, not paths)
-
-| Tool | Use For | Returns | Example |
-|------|---------|---------|---------|
-| `search_semantic` | Find by meaning | Files with similarity scores + **functions/classes arrays** | `{ query: "HTTP request handling" }` (omit space name to search all) |
-| `search_keyword` | Exact text/regex | File matches | `{ space: "BADKID-DEV", pattern: "StreamableHTTP" }` |
-| `search_files` | Glob patterns | File paths | `{ space: "BADKID-DEV", glob: "src/**/*.js" }` |
-| `search_code` | Combined search | Enriched results | `{ query: "authentication" }` (omit space name to search all) |
-| `get_file_info` | Detailed metadata | **Functions/classes with line numbers**, imports, exports | `{ file: "fc745a690e4db10279c18241a0a572c7" }` |
-
-**Key Feature**: `search_semantic` and `get_file_info` both return function/class names, but `get_file_info` includes **line numbers** for precise partial retrieval.
-
-### Code Analysis Workflow
-For code analysis, use explicit search → inspect pattern:
-```javascript
-// Step 1: Find relevant files
-const results = search_semantic({ query: "HTTP server architecture" })
-
-// Step 2: Inspect specific files
-inspect_code({
-  files: [results[0].file_id],
-  question: "Explain the HTTP server architecture"
-})
-// Explicit, predictable, saves context
-```
-
-### Index Management
-```javascript
-refresh_index({ space: "BADKID-DEV" })      // Update single space
-refresh_all_indexes()                            // Update all spaces
-get_index_stats({ space: "BADKID-DEV" })    // Check index health
-refresh_all_indexes()                            // Update all spaces
-get_index_stats({ space: "BADKID-DEV" })    // Check index health
-search_semantic({ query: "auth logic" })         // Search ALL spaces (omit space param)
-```
-
-**Index Files**: Located at `data/indexes/{space}.json`
-**Index Caching**: In-memory cache with auto-reload after maintenance (refresh_index/refresh_all_indexes)
-- ~900MB footprint for all 3 spaces (0.7% of 128GB RAM)
-- Performance: 100-200ms first load → 5-10ms cached (20-40x faster)
-- Cache management: `clearCache()`, `reloadIndex(space)` functions available
 
 ## LLM Router Architecture
 
@@ -275,10 +140,10 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 
 **Task-Based Routing** (config.llm.taskDefaults):
 - `embedding` → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
-- `analysis` → gemini (source selection, credibility)
-- `synthesis` → gemini (multi-source synthesis)
-- `query` → gemini (query_model tool)
-- `agent` → lmstudio (local agent with structured output)
+- `analysis` → lmstudio
+- `synthesis` → lmstudio
+- `query` → lmstudio
+- `inspect` → lmstudio
 
 **Routing Logic**: explicitProvider > taskType default > defaultProvider
 
@@ -326,7 +191,7 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 - **Firewall**: OPNsense/Windows Firewall rules for TCP 3100, 3010
 - **Client Config**: VS Code `mcp.json` (not settings.json) with `{"type": "sse", "url": "http://IP:3100/mcp"}`
 
-## Browser Architecture (Feb 4, 2026)
+## Browser Architecture
 
 **Consolidated to browser.js** - Single persistent browser with lingering tab support:
 - **browser.js**: Central browser service (used by all modules)
@@ -339,37 +204,29 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 - **google-adapter.js**: Uses `browserServer.getPage()` for search
 - **duckduckgo-adapter.js**: Uses `browserServer.getPage()` for search  
 - **web-research.js**: Uses `browserServer.getPage()` and `fetch()` for scraping
-- **Deprecated**: browser-pool.js (fully merged into browser.js)
 
-## Web Research Module (Feb 2026 Overhaul)
+## Web Research Module
 
 Major refactoring completed with significant reliability and performance improvements:
 
 **Content Extraction Hardening:**
 - **4-tier fallback strategy**: Readability → Semantic → Density → Raw fallback
-- **Pre-cleaning**: Removes scripts/styles/nav before DOM parsing (fixed regex bug where `on\w+` matched "content=")
+- **Pre-cleaning**: Removes scripts/styles/nav before DOM parsing
 - **Content validation**: Bot detection, link density checks, minimum length enforcement
 - **Metadata extraction**: Multi-selector fallback for title, description, OG tags
 
 **Search Adapter Fixes:**
 - **Google**: Updated selectors (`.g`, `div[data-hveid]`, `.tF2Cxc`) + faster `domcontentloaded` wait
-- **DuckDuckGo**: Completely rebuilt - now uses direct URL `/?q=QUERY&ia=web` with data-testid selectors (was returning 0 results before)
+- **DuckDuckGo**: Direct URL `/?q=QUERY&ia=web` with data-testid selectors
 
 **Performance Optimizations:**
 - **Streaming research pipeline**: Scrape + synthesize concurrently, early termination when sufficient content found (3+ quality sources)
 - **URL prioritization**: Docs > StackOverflow > GitHub > blogs (heuristic ranking, no LLM wait)
 - **Dual-engine support**: Both Google and DuckDuckGo queried in parallel, deduplicated by URL
-- **Target**: 5-10 pages in ~12s (was timing out at 3-5 pages)
 
 **Embedding Model Configuration:**
 - All providers now have endpoint-specific embedding models (e.g., `LM_STUDIO_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_MODEL`)
 - **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
-- Gemini's `text-embedding-004` model tested and working via API
-
-**New Components:**
-- `src/lib/streaming-research.js` - Pipeline for concurrent scraping with progress tracking
-- `src/scrapers/content-extractor.js` - Hardened extraction with 4 strategies
-- `test/test-content-extractor.js` - 23-test suite for extraction validation
 
 ## Memory System Philosophy
 Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
@@ -416,74 +273,31 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - Validate model IDs against available models before use
 - When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
 
-## Code Search Architecture (Feb 4, 2026)
-
-**Status**: Production-ready with hash-based file IDs and in-memory caching
-
-**Module Structure**:
-- `src/servers/code-search/indexer.js` (178 lines) - Centralized utilities
-  - `generateFileId(space, filePath)` - SHA256 hash generation (32 chars)
-  - `parseFile`, `walkSpace`, `detectLanguage`, `generateEmbeddingText`
-  - `writeIndexStreaming`, `atomicWriteIndex`, `loadIndex`
-- `src/servers/code-search/server.js` (820 lines) - MCP server with 9 tools
-- `src/servers/code-search/build-index.js` (286 lines) - CLI indexing tool
-
-**File ID System**:
-- 32-character SHA256 hash of `${space}:${filePath}`
-- Collision-free for 50K+ files
-- All search tools return hash IDs
-- retrieve_file accepts hash IDs (backward compatible with legacy format)
-
-**Performance**:
-- In-memory caching with auto-reload after maintenance
-- Search: 5-10ms cached (20-40x faster than disk load)
-- Batch embeddings: 50 texts × 4 parallel = 2.3x speedup
-- Streaming JSON write for indexes >512MB
-
-**Spaces**:
-- COOLKID-Work: 21,717 files (284 MB index)
-- BADKID-DEV: 28,110 files (613 MB index)
-- BADKID-SRV: 791 files (4 MB index)
-
-**Tools**: get_spaces_config, get_file_info, refresh_index, refresh_all_indexes, get_index_stats, search_files, search_keyword, search_semantic, search_code
-
 ## Code Inspector Architecture
 
 **Status**: Production-ready LLM-based code analysis
 
 **Implementation**:
-- `src/lib/space.js` - UNC path mapping, security validation
 - `src/servers/code-inspector.js` - LLM-based code analysis
-- Tools: inspect_code
+- Tool: inspect_code
 
-**Agent Workflow**:
-1. Dynamic tool selection (search tools if indexed, fs tools otherwise)
-2. Message→prompt conversion for LLM router compatibility
-3. JSON tool call extraction from LLM responses
-4. Findings aggregation across iterations (NO CODE in summaries)
-5. Complete search→retrieve workflow via retrieve_file tool
-6. Max 20 iterations, 50k token budget, loop detection (3x same call)
+**File Referencing**: Only absolute paths supported
+- Windows: `D:\project\file.js`
+- UNC: `\\server\share\file.js`
 
-**Config**: `config.servers.local-agent` - maxTokenBudget, maxIterations, toolCallingFormat
-**Provider**: `config.llm.taskDefaults.agent` (lmstudio/gemini/ollama)
+## Historical Changes
 
-**Tool Improvements (Feb 5, 2026)**:
-- ✅ **RENAMED**: `local-agent.js` → `code-inspector.js` - Removed autonomous agent, kept explicit `inspect_code` tool
-- ✅ **FIXED**: `inspect_code` supports hash IDs from search results (32-char format) WITHOUT space parameter - space is auto-resolved from the hash
-- ✅ **FIXED**: `retrieve_file` description updated to accurately reflect hash ID format instead of legacy "workspace:path" format
-
-**Tool Improvements (Feb 7, 2026)**:
-- ✅ **SIMPLIFIED**: Workspace path resolution - replaced complex suffix-matching with straightforward prefix matching
-- ✅ **DEPRECATED**: Absolute path auto-detection in `inspect_code` and `query_model`. Tools now recommend hash IDs or `WORKSPACE:path` format for reliability
-
-
+### Feb 2026 - Code Search Removed
+- Code Search module archived to `_Archive/code-search/`
+- File referencing simplified to absolute paths only
+- Removed hash IDs and SPACE:path format support
+- Tool count: 30 → 16 (removed 14 code-search tools)
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
-- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, LLM source selection debugging, browser pool architecture (persistent tabs, search adapters, realistic scraping behavior)
-- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search design, batch embedding optimization, file ID system, in-memory caching
-- **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening (4-tier fallback), DuckDuckGo adapter complete rebuild, streaming research pipeline, LLM-optimized code design philosophy, per-provider embedding model configuration
-
+- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening
+- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search (now archived)
+- **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening, streaming research pipeline
 
 ## Useful Links
 - x.ai Grok API Reference - https://docs.x.ai/developers/api-reference

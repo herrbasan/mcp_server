@@ -19,11 +19,10 @@ const MIME_TYPES = {
 };
 
 export class WebServer {
-  constructor(config, memoryServer, llmServer, codeSearchServer) {
+  constructor(config, memoryServer, llmServer) {
     this.config = config;
     this.memory = memoryServer;
     this.llm = llmServer;
-    this.codeSearch = codeSearchServer;
   }
 
   handleStatic(req, res) {
@@ -141,93 +140,6 @@ export class WebServer {
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
-        return;
-      }
-
-      // Code Search endpoints
-      if (path === '/api/code-search/spaces') {
-        if (!this.codeSearch) {
-          res.writeHead(503, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Code search not available' }));
-          return;
-        }
-        
-        const result = await this.codeSearch.callTool('get_spaces_config', {});
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/spaces', {}, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-        return;
-      }
-
-      if (path === '/api/code-search/refresh-all' && req.method === 'POST') {
-        const result = await this.codeSearch.callTool('refresh_all_indexes', {});
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/refresh-all', {}, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-        return;
-      }
-
-      if (path === '/api/code-search/refresh' && req.method === 'POST') {
-        const body = await this.readBody(req);
-        const { space } = JSON.parse(body);
-        
-        const result = await this.codeSearch.callTool('refresh_index', { space });
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/refresh', { space }, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-        return;
-      }
-
-      if (path === '/api/code-search/stats') {
-        const space = url.searchParams.get('space');
-        const result = await this.codeSearch.callTool('get_index_stats', { space });
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/stats', { space }, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-        return;
-      }
-
-      if (path === '/api/code-search/search' && req.method === 'POST') {
-        const body = await this.readBody(req);
-        const { space, searchType, query } = JSON.parse(body);
-        
-        let result;
-        if (searchType === 'semantic') {
-          result = await this.codeSearch.callTool('search_semantic', { space, query });
-        } else if (searchType === 'keyword') {
-          result = await this.codeSearch.callTool('search_keyword', { space, pattern: query });
-        } else if (searchType === 'files') {
-          result = await this.codeSearch.callTool('search_files', { space, glob: query });
-        } else if (searchType === 'code') {
-          result = await this.codeSearch.callTool('search_code', { space, query });
-        }
-        
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/search', { space, searchType, query }, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
-        return;
-      }
-
-      if (path === '/api/code-search/file' && req.method === 'POST') {
-        const body = await this.readBody(req);
-        const { space, file } = JSON.parse(body);
-        
-        const result = await this.codeSearch.callTool('retrieve_file', { file });
-        const data = JSON.parse(result.content[0].text);
-        globalLogger.log('web-api', 'code-search/file', { space, file }, data);
-        
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(data));
         return;
       }
 

@@ -45,9 +45,9 @@
       "description": "LLM-based code analysis - analyze files or code snippets with local models"
     },
     "code-search": {
-      "enabled": true,
+      "enabled": false,
       "indexPath": "data/indexes",
-      "description": "Semantic code search for large codebases - tree-sitter + embeddings"
+      "description": "DEPRECATED: Code search has been removed. See _Archive/src/servers/code-search/"
     }
   },
   "llm": {

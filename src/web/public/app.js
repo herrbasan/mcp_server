@@ -60,7 +60,6 @@ const navigationData = [
 		label: 'Management',
 		items: [
 			{ label: 'Memory Management', href: '#page=memories' },
-			{ label: 'Code Search', href: '#page=code-search' },
 			{ label: 'Logs Viewer', href: '#page=logs' }
 		]
 	}
