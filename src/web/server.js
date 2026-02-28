@@ -19,10 +19,12 @@ const MIME_TYPES = {
 };
 
 export class WebServer {
-  constructor(config, memoryServer, llmServer) {
+  constructor(config, memoryServer, llmServer, codebaseServer = null, autoIndexer = null) {
     this.config = config;
     this.memory = memoryServer;
     this.llm = llmServer;
+    this.codebase = codebaseServer;
+    this.autoIndexer = autoIndexer;
   }
 
   handleStatic(req, res) {
@@ -221,6 +223,310 @@ export class WebServer {
         
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
+        return;
+      }
+
+      // Codebase Indexing endpoints
+      if (path === '/api/codebase/config' && req.method === 'GET') {
+        const config = this.codebase ? {
+          dataDir: this.codebase.config.dataDir,
+          embeddingDimension: this.codebase.config.embeddingDimension,
+          embeddingModel: this.codebase.config.embeddingModel,
+          embeddingProvider: this.codebase.config.embeddingProvider || 'lmstudio',
+          maxFileSize: this.codebase.config.maxFileSize
+        } : { error: 'Codebase service not available' };
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(config));
+        return;
+      }
+
+      if (path === '/api/codebase/list' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const codebases = await this.codebase.listCodebases();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ codebases }));
+        return;
+      }
+
+      if (path === '/api/codebase/status' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const codebase = url.searchParams.get('codebase');
+        if (!codebase) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'codebase parameter required' }));
+          return;
+        }
+        
+        const status = await this.codebase.checkCodebaseStatus({ codebase });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(status));
+        return;
+      }
+
+      if (path === '/api/codebase/index' && req.method === 'POST') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const body = await this.readBody(req);
+        const { name, source } = JSON.parse(body);
+        
+        if (!name || !source) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name and source required' }));
+          return;
+        }
+        
+        try {
+          const result = await this.codebase.indexCodebase({ name, source }, (progress) => {
+            console.log(`[Index ${name}] ${progress.message}`);
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      if (path === '/api/codebase/refresh' && req.method === 'POST') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const body = await this.readBody(req);
+        const { name } = JSON.parse(body);
+        
+        if (!name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name required' }));
+          return;
+        }
+        
+        try {
+          const result = await this.codebase.refreshCodebase({ name }, (progress) => {
+            console.log(`[Refresh ${name}] ${progress.message}`);
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      if (path === '/api/codebase/remove' && req.method === 'POST') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const body = await this.readBody(req);
+        const { name } = JSON.parse(body);
+        
+        if (!name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name required' }));
+          return;
+        }
+        
+        try {
+          // Remove from index
+          const result = await this.codebase.removeCodebase({ name });
+          // Also remove from auto-index config so it doesn't get re-created
+          if (this.autoIndexer) {
+            await this.autoIndexer.remove(name);
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      if (path === '/api/codebase/maintenance-stats' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const stats = this.codebase.getMaintenanceStats();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(stats));
+        return;
+      }
+
+      // LLM Analysis endpoints
+      if (path === '/api/codebase/description' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const codebase = url.searchParams.get('codebase');
+        if (!codebase) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'codebase parameter required' }));
+          return;
+        }
+        
+        try {
+          const result = await this.codebase.getCodebaseDescription({ name: codebase });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      if (path === '/api/codebase/analyze' && req.method === 'POST') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const body = await this.readBody(req);
+        const { name } = JSON.parse(body);
+        
+        if (!name) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'name required' }));
+          return;
+        }
+        
+        try {
+          console.log(`[WEB] Starting analysis for ${name}`);
+          const result = await this.codebase.analyzeCodebase({ name }, (progress) => {
+            console.log(`[Analyze ${name}] ${progress.message}`);
+          });
+          console.log(`[WEB] Analysis complete for ${name}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          console.error(`[WEB] Analysis failed for ${name}:`, err);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message, stack: err.stack }));
+        }
+        return;
+      }
+
+      if (path === '/api/codebase/run-maintenance' && req.method === 'POST') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        try {
+          const result = await this.codebase.runMaintenance({});
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      // File tree endpoint
+      if (path === '/api/codebase/file-tree' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const codebase = url.searchParams.get('codebase');
+        if (!codebase) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'codebase parameter required' }));
+          return;
+        }
+        
+        try {
+          const tree = await this.codebase.getFileTree({ codebase });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ tree }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      // Symbols endpoint
+      if (path === '/api/codebase/symbols' && req.method === 'GET') {
+        if (!this.codebase) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Codebase service not available' }));
+          return;
+        }
+        
+        const codebaseName = url.searchParams.get('codebase');
+        if (!codebaseName) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'codebase parameter required' }));
+          return;
+        }
+        
+        try {
+          // Use the prioritized files endpoint to get files, then get symbols
+          const filesResult = await this.codebase.getPrioritizedFiles({ name: codebaseName });
+          const allFiles = filesResult?.prioritized?.high || [];
+          // Add some medium priority files too
+          if (filesResult?.prioritized?.medium) {
+            allFiles.push(...filesResult.prioritized.medium.slice(0, 50));
+          }
+          
+          const symbols = [];
+          
+          for (const filePath of allFiles.slice(0, 100)) { // Limit to first 100 files
+            try {
+              const fileInfo = await this.codebase.getFileInfo({ codebase: codebaseName, path: filePath });
+              if (fileInfo.functions?.length || fileInfo.classes?.length) {
+                symbols.push({
+                  path: filePath,
+                  functions: fileInfo.functions || [],
+                  classes: fileInfo.classes || []
+                });
+              }
+            } catch {
+              // Skip files that can't be read
+            }
+          }
+          
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ symbols }));
+        } catch (err) {
+          console.error('[API] Symbols error:', err);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
         return;
       }
 

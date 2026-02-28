@@ -1,7 +1,7 @@
 # MCP Orchestrator - Tools Reference Guide
 
-> **Total Tools**: 16 across 5 modules  
-> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **web content** and **LLM queries**.
+> **Total Tools**: 19 across 6 modules  
+> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
 
@@ -11,11 +11,197 @@
 
 | Module | Tools | Purpose |
 |--------|-------|---------|
+| [Codebase Indexing](#codebase-indexing-module) | 10 | Search 122 indexed codebases |
 | [Memory](#memory-module) | 7 | Quality-focused semantic memory |
 | [LLM](#llm-module) | 1 | Local model querying |
 | [Web Research](#web-research-module) | 1 | Multi-source research pipeline |
 | [Browser](#browser-module) | 6 | Puppeteer browser automation |
 | [Code Inspector](#code-inspector-module) | 1 | LLM-based code analysis |
+
+---
+
+## Codebase Indexing Module (10 tools)
+
+> **🚀 FAST**: Preloaded at startup (~1-2s for global search across 122 codebases)  
+> **🔍 Scope**: Search across ALL indexed projects (BADKID-*, COOLKID-* prefixes)  
+> **💡 Tip**: Use `analyze: true` to get AI-summarized results (saves 50-90% tokens)
+
+### Quick Decision Guide
+
+| You want to... | Use this tool | Strategy |
+|---------------|---------------|----------|
+| Find how something is implemented | `search_all_codebases` | `semantic` + `analyze: true` |
+| Search a specific codebase | `search_codebase` | `hybrid` (default) |
+| Find exact function/variable names | `grep_codebase` | exact pattern |
+| Quick keyword search | `search_keyword` | FTS5 matching |
+| Conceptual similarity search | `search_semantic` | embedding-based |
+
+### Global Search (Most Common)
+
+#### `search_all_codebases`
+Search across ALL 122 indexed codebases at once. Perfect for finding implementations when you don't know which project has them.
+
+```javascript
+// 🔥 RECOMMENDED: Use analyze:true for exploration
+mcp_orchestrator_search_all_codebases({
+  query: "drag and drop file upload electron",
+  strategy: "semantic",
+  limit: 10,
+  analyze: true           // ← AI summarizes results (saves tokens!)
+})
+
+// Returns structured analysis:
+// {
+//   analysis: {
+//     summary: "Found 5 implementations...",
+//     keyFindings: ["Uses webUtils.getPathForFile()", ...],
+//     relevantFiles: ["js/mixer/main.js - Drag handler", ...],
+//     implementationPatterns: ["Event: dragover/drop", ...]
+//   },
+//   stats: { resultCount: 46, searchType: "..." }
+// }
+```
+
+**When to use `analyze: true`:**
+- ✅ Exploring unknown codebases ("find how X is implemented")
+- ✅ Broad searches with many results
+- ✅ Initial research before diving deep
+- ✅ Getting high-level patterns across projects
+
+**When to SKIP `analyze: true`:**
+- ❌ You need exact line numbers for editing
+- ❌ Feeding results into another automated tool
+- ❌ Very specific search with <5 results
+
+**Include raw results too:**
+```javascript
+mcp_orchestrator_search_all_codebases({
+  query: "drag and drop",
+  analyze: true,
+  includeRaw: true        // ← Get analysis + raw snippets
+})
+```
+
+**Strategies explained:**
+- `semantic` (default) - Natural language, finds conceptually similar code
+- `keyword` - Exact word matching (fastest)
+- `grep` - Live regex search (always current, slower)
+- `hybrid` - Combines semantic + keyword
+
+### Single Codebase Search
+
+#### `search_codebase`
+Search within one specific codebase.
+
+```javascript
+// Basic search
+mcp_orchestrator_search_codebase({
+  codebase: "BADKID-mcp_server",    // Partial names work: "mcp_server"
+  query: "webSocket retry logic",
+  limit: 10
+})
+
+// With analysis
+mcp_orchestrator_search_codebase({
+  codebase: "mcp_server",
+  query: "error handling pattern",
+  analyze: true
+})
+```
+
+#### `search_semantic`
+Pure semantic (embedding) search. Best for conceptual queries.
+
+```javascript
+mcp_orchestrator_search_semantic({
+  codebase: "mcp_server",
+  query: "how does the router handle provider fallback?",
+  limit: 5,
+  analyze: true
+})
+```
+
+#### `search_keyword`
+Fast keyword search using FTS5. Best for exact terms.
+
+```javascript
+mcp_orchestrator_search_keyword({
+  codebase: "mcp_server",
+  query: "StreamableHTTPServerTransport",
+  limit: 20
+})
+```
+
+#### `grep_codebase`
+Live grep with ripgrep. Always current, supports regex.
+
+```javascript
+mcp_orchestrator_grep_codebase({
+  codebase: "mcp_server",
+  pattern: "function.*predict\(",    // Regex supported
+  regex: true,
+  limit: 50,
+  analyze: true                    // Works with analyze too!
+})
+```
+
+### Discovery Tools
+
+#### `list_codebases`
+List all indexed codebases with metadata.
+
+```javascript
+mcp_orchestrator_list_codebases()
+// Returns: [{ name, files, description, hasAnalysis, ... }, ...]
+```
+
+#### `get_file`
+Get file content with staleness check.
+
+```javascript
+mcp_orchestrator_get_file({
+  codebase: "mcp_server",
+  path: "src/http-server.js"
+})
+```
+
+#### `get_file_info`
+Get file structure (functions, classes, imports) without full content.
+
+```javascript
+mcp_orchestrator_get_file_info({
+  codebase: "mcp_server",
+  path: "src/router/router.js"
+})
+```
+
+#### `get_prioritized_files`
+Get files ordered by importance (high/medium/low). Useful for understanding project structure.
+
+```javascript
+mcp_orchestrator_get_prioritized_files({
+  codebase: "mcp_server"
+})
+// Returns: { high: [...], medium: [...], low: [...] }
+```
+
+#### `get_codebase_description`
+Get AI-generated project description.
+
+```javascript
+mcp_orchestrator_get_codebase_description({
+  codebase: "mcp_server"
+})
+```
+
+### Admin Tools (Hidden from LLM)
+
+These are available but filtered from the LLM tool list:
+- `index_codebase` - Add new codebase
+- `refresh_codebase` - Update existing
+- `remove_codebase` - Delete codebase
+- `run_maintenance` - Trigger maintenance cycle
+- `get_maintenance_stats` - View maintenance status
 
 ---
 
@@ -216,6 +402,22 @@ mcp_orchestrator_get_documentation()
 
 ## Common Workflows
 
+### Cross-Project Pattern Discovery
+```javascript
+// Find how different projects implement WebSocket retry
+mcp_orchestrator_search_all_codebases({
+  query: "websocket reconnect exponential backoff",
+  strategy: "semantic",
+  limit: 15,
+  analyze: true
+})
+// Review findings, then inspect specific implementation:
+mcp_orchestrator_get_file({
+  codebase: "Project-Name",
+  path: "src/websocket/client.js"
+})
+```
+
 ### Research → Implement → Remember
 ```javascript
 mcp_orchestrator_research_topic({ query: "WebSocket retry best practices" })
@@ -242,29 +444,20 @@ mcp_orchestrator_query_model({
 | Scenario | Tool |
 |----------|------|
 | Current IDE project | IDE shortcuts (Ctrl+P, F12, Ctrl+Click) |
+| Cross-project search | `search_all_codebases` |
+| Specific codebase | `search_codebase` / `get_file` |
 | Code analysis | Code Inspector with absolute paths |
 | Web content | Browser / Research |
 | LLM queries | query_model |
 
 ---
 
-## Performance Cheat Sheet
+## Performance Notes
 
-| Tool | Typical Time |
-|------|--------------|
-| `inspect_code` | 2-5s |
-| `query_model` | 0.5-3s |
-| `research_topic` | 12-45s |
-| `browser_fetch` | 0.2-2s |
-| `remember` / `recall` | 0.2-0.5s |
-
----
-
-## Troubleshooting
-
-| Error | Solution |
-|-------|----------|
-| `Research timeout` | Narrow query, reduce max_pages |
-| `No content synthesized` | Try different engines |
-| `Model not loaded` | Wait 10-30s, retry |
-| `Path must be absolute` | Use full paths like `D:\project\file.js` |
+| Tool | Typical Time | Notes |
+|------|--------------|-------|
+| `search_all_codebases` | 1-2s | Preloaded at startup |
+| `search_codebase` | <500ms | Single codebase |
+| `grep_codebase` | 1-3s | Live filesystem search |
+| `research_topic` | 12-45s | Depends on pages scraped |
+| `query_model` | 2-10s | Depends on model & tokens |

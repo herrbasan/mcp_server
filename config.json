@@ -23,7 +23,7 @@
       "maxDepth": 2,
       "timeout": 300000,
       "searchEngines": ["google", "duckduckgo"],
-      "description": "Multi-source web research with local LLM synthesis"
+      "description": "Multi-source web research with local LLM synthesis (async job support)"
     },
     "memory": {
       "_taskType": "embedding",
@@ -48,6 +48,19 @@
       "enabled": false,
       "indexPath": "data/indexes",
       "description": "DEPRECATED: Code search has been removed. See _Archive/src/servers/code-search/"
+    },
+    "codebase-indexing": {
+      "enabled": true,
+      "dataDir": "data/codebases",
+      "embeddingDimension": 768,
+      "maxFileSize": 1048576,
+      "description": "Semantic code search using nDB vector database",
+      "maintenance": {
+        "enabled": true,
+        "intervalMs": 3600000,
+        "autoRefresh": true,
+        "staleThresholdMs": 300000
+      }
     }
   },
   "llm": {
@@ -55,10 +68,10 @@
     "embeddingProvider": "lmstudio",
     "taskDefaults": {
       "embedding": "lmstudio",
-      "analysis": "lmstudio",
-      "synthesis": "lmstudio",
-      "query": "lmstudio",
-      "inspect": "lmstudio"
+      "analysis": "minimax",
+      "synthesis": "minimax",
+      "query": "minimax",
+      "inspect": "minimax"
     },
     "providers": {
       "lmstudio": {
@@ -130,6 +143,14 @@
         "apiKey": "${GLM_API_KEY}",
         "endpoint": "${GLM_ENDPOINT}",
         "model": "${GLM_MODEL}",
+        "temperature": 0.7
+      },
+      "minimax": {
+        "enabled": true,
+        "type": "minimax",
+        "apiKey": "${MINIMAX_API_KEY}",
+        "endpoint": "${MINIMAX_ENDPOINT}",
+        "model": "${MINIMAX_MODEL}",
         "temperature": 0.7
       }
     }

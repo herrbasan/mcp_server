@@ -1,0 +1,119 @@
+<link rel="stylesheet" href="/css/pages/codebases-config.css">
+
+<header>
+	<h1>Indexer Configuration</h1>
+	<p>System overview and configuration for semantic code search.</p>
+</header>
+
+<section>
+	<h2>System Overview</h2>
+	<div class="stats-grid">
+		<div class="stat-card">
+			<nui-icon name="database"></nui-icon>
+			<div class="stat-value" id="stat-codebases">-</div>
+			<div class="stat-label">Indexed Codebases</div>
+		</div>
+		<div class="stat-card">
+			<nui-icon name="analytics"></nui-icon>
+			<div class="stat-value" id="stat-files">-</div>
+			<div class="stat-label">Total Files</div>
+		</div>
+		<div class="stat-card">
+			<nui-icon name="model_training"></nui-icon>
+			<div class="stat-value" id="stat-embedding">-</div>
+			<div class="stat-label">Embedding Model</div>
+		</div>
+		<div class="stat-card">
+			<nui-icon name="sync"></nui-icon>
+			<div class="stat-value" id="stat-maintenance">-</div>
+			<div class="stat-label">Maintenance</div>
+		</div>
+	</div>
+</section>
+
+<section>
+	<h2>Configuration</h2>
+	<nui-table class="config-table">
+		<table>
+			<tbody>
+				<tr>
+					<td>Data Directory</td>
+					<td id="config-data-dir">-</td>
+				</tr>
+				<tr>
+					<td>Embedding Dimension</td>
+					<td id="config-dimension">-</td>
+				</tr>
+				<tr>
+					<td>Embedding Provider</td>
+					<td id="config-provider">-</td>
+				</tr>
+				<tr>
+					<td>Embedding Model</td>
+					<td id="config-model">-</td>
+				</tr>
+				<tr>
+					<td>Max File Size</td>
+					<td id="config-max-size">-</td>
+				</tr>
+			</tbody>
+		</table>
+	</nui-table>
+</section>
+
+<script type="nui/page">
+const API_BASE = window.location.origin;
+
+function formatBytes(bytes) {
+	if (bytes === 0) return '0 B';
+	const k = 1024;
+	const sizes = ['B', 'KB', 'MB', 'GB'];
+	const i = Math.floor(Math.log(bytes) / Math.log(k));
+	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+async function loadData() {
+	try {
+		// Load config
+		const configRes = await fetch(`${API_BASE}/api/codebase/config`);
+		if (configRes.ok) {
+			const config = await configRes.json();
+			element.querySelector('#config-data-dir').textContent = config.dataDir || '-';
+			element.querySelector('#config-dimension').textContent = config.embeddingDimension || '-';
+			element.querySelector('#config-provider').textContent = config.embeddingProvider || '-';
+			element.querySelector('#config-model').textContent = config.embeddingModel || '-';
+			element.querySelector('#config-max-size').textContent = formatBytes(config.maxFileSize || 0);
+			
+			const shortModel = config.embeddingModel 
+				? config.embeddingModel.split('-').pop().substring(0, 8)
+				: '-';
+			element.querySelector('#stat-embedding').textContent = shortModel;
+		}
+		
+		// Load codebases for stats
+		const listRes = await fetch(`${API_BASE}/api/codebase/list`);
+		if (listRes.ok) {
+			const data = await listRes.json();
+			const codebases = data.codebases || [];
+			
+			element.querySelector('#stat-codebases').textContent = codebases.length;
+			
+			const totalFiles = codebases.reduce((sum, c) => sum + (c.files || 0), 0);
+			element.querySelector('#stat-files').textContent = totalFiles.toLocaleString();
+			
+			const hasStale = codebases.some(c => c.status === 'stale');
+			const isIndexing = codebases.some(c => c.status === 'indexing');
+			let maintStatus = 'Current';
+			if (isIndexing) maintStatus = 'Indexing';
+			else if (hasStale) maintStatus = 'Stale';
+			element.querySelector('#stat-maintenance').textContent = maintStatus;
+		}
+	} catch (err) {
+		console.error('Failed to load data:', err);
+	}
+}
+
+function init(element, params) {
+	loadData();
+}
+</script>

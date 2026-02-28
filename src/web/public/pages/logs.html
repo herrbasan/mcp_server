@@ -1,3 +1,5 @@
+<link rel="stylesheet" href="/css/pages/logs.css">
+
 <header>
 	<h1>Logs Viewer</h1>
 	<p>Monitor requests and responses from the orchestrator and LM Studio endpoint.</p>
@@ -21,6 +23,118 @@
 <section>
 	<h2>Recent Activity</h2>
 	<div id="logs-list">
-		<p>Loading...</p>
+		<p class="text-secondary">Loading...</p>
 	</div>
 </section>
+
+<script type="nui/page">
+const API_BASE = window.location.origin;
+
+let logs = [];
+let logsEventSource = null;
+
+function startLogStream() {
+	if (logsEventSource) {
+		logsEventSource.close();
+	}
+
+	logsEventSource = new EventSource(`${API_BASE}/api/logs/stream`);
+	
+	logsEventSource.onmessage = (event) => {
+		const data = JSON.parse(event.data);
+		
+		if (data.type === 'initial') {
+			logs = data.logs;
+			renderLogs();
+		} else if (data.type === 'log') {
+			logs.unshift(data.log);
+			if (logs.length > 100) logs.pop();
+			renderLogs();
+		}
+	};
+	
+	logsEventSource.onerror = () => {
+		setTimeout(() => startLogStream(), 5000);
+	};
+}
+
+function stopLogStream() {
+	if (logsEventSource) {
+		logsEventSource.close();
+		logsEventSource = null;
+	}
+}
+
+function escapeHtml(text) {
+	const div = document.createElement('div');
+	div.textContent = text;
+	return div.innerHTML;
+}
+
+function renderLogs() {
+	const container = element.querySelector('#logs-list');
+	if (!container) return;
+
+	if (logs.length === 0) {
+		container.innerHTML = '<p class="text-secondary">No logs available.</p>';
+		return;
+	}
+
+	let html = '';
+	for (const log of logs) {
+		const cssClass = log.error ? 'log-entry error' : 'log-entry';
+		html += `<div class="${cssClass}">`;
+		html += `<div class="log-timestamp">${new Date(log.timestamp).toLocaleString()}</div>`;
+		html += `<div><strong>${log.type}</strong> → ${escapeHtml(log.tool)}</div>`;
+		html += `<details><summary>Request</summary><pre>${escapeHtml(JSON.stringify(log.request, null, 2))}</pre></details>`;
+		if (log.response) {
+			html += `<details><summary>Response</summary><pre>${escapeHtml(JSON.stringify(log.response, null, 2))}</pre></details>`;
+		}
+		if (log.error) {
+			html += `<div class="text-danger"><strong>Error:</strong> ${escapeHtml(log.error.message)}</div>`;
+		}
+		html += '</div>';
+	}
+
+	container.innerHTML = html;
+}
+
+element.addEventListener('click', async (e) => {
+	const btn = e.target.closest('[data-action]');
+	if (!btn) return;
+	
+	const action = btn.dataset.action;
+	
+	if (action === 'refresh-logs') {
+		stopLogStream();
+		startLogStream();
+	}
+	
+	if (action === 'clear-logs') {
+		const confirmed = await nui.components.dialog.confirm('Clear Logs', 'Are you sure you want to clear all logs?');
+		if (confirmed) {
+			await fetch(`${API_BASE}/api/logs/clear`, { method: 'POST' });
+			logs = [];
+			renderLogs();
+		}
+	}
+	
+	if (action === 'toggle-auto-refresh') {
+		if (logsEventSource) {
+			stopLogStream();
+			btn.textContent = 'Auto-Refresh: OFF';
+		} else {
+			startLogStream();
+			btn.textContent = 'Auto-Refresh: ON';
+		}
+	}
+});
+
+function init(element, params) {
+	startLogStream();
+}
+
+function hide() {
+	stopLogStream();
+}
+</script>

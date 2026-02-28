@@ -57,7 +57,7 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - Web UI: Real-time SSE log streaming, memory browser
 - Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
 
-**Tools** (16 across 5 modules):
+**Tools** (19 across 5 modules):
 - **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
 - **LLM** (1): REST API local model integration (query_model)
 - **Web Research** (1): Multi-source web research with persistent browser pool (research_topic)
@@ -71,6 +71,11 @@ Centralized MCP server running as an **independent HTTP service** on remote mach
 - **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
 - **Code Inspector** (1): LLM-based code analysis (inspect_code) - analyze files or code snippets
 - **Documentation** (3): Access orchestrator docs (get_documentation, list_documents, read_document)
+- **Codebase Indexing** (3): LLM-powered project analysis (analyze_codebase, get_codebase_description, get_prioritized_files)
+  - Two-phase LLM analysis: file tree → key files → project summary
+  - Generates human-readable descriptions, identifies entry points
+  - Staleness detection via source file hashing
+  - Prioritized file search (high/medium/low priority)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -139,11 +144,16 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 ```
 
 **Task-Based Routing** (config.llm.taskDefaults):
-- `embedding` → lmstudio (local, fast, nomic-embed-text-v2-moe 768-dim)
-- `analysis` → lmstudio
-- `synthesis` → lmstudio
-- `query` → lmstudio
-- `inspect` → lmstudio
+
+| Task | Default | Used By | Purpose |
+|------|---------|---------|---------|
+| `embedding` | `lmstudio` | `remember`, `recall`, code indexing | Text embeddings for semantic search (NOTE: Uses `embeddingProvider` config, not taskDefaults) |
+| `analysis` | `lmstudio` | `search_codebase`* (analyze mode), `analyze_codebase`, `get_prioritized_files` | LLM analysis of search results and code structure |
+| `synthesis` | `lmstudio` | `research_topic` | Synthesizing research findings into reports |
+| `query` | `lmstudio` | `query_model` | General LLM queries via MCP tool |
+| `inspect` | `lmstudio` | `inspect_code` | Code analysis and review |
+
+\* All search tools (`search_codebase`, `search_semantic`, `search_keyword`, `grep_codebase`, `search_all_codebases`) support `analyze: true` which routes through the `analysis` task.
 
 **Routing Logic**: explicitProvider > taskType default > defaultProvider
 
@@ -169,6 +179,41 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 - `LM_STUDIO_ENDPOINT` - LM Studio HTTP endpoint
 - `OLLAMA_ENDPOINT` - Ollama HTTP endpoint
 - `GEMINI_API_KEY` - Google AI API key
+
+## Tool-to-Task Mapping
+
+Complete mapping of MCP tools to their LLM routing tasks:
+
+| MCP Tool | Task | Router Call | Config Key |
+|----------|------|-------------|------------|
+| `query_model` | `query` | `router.predict({ taskType: 'query' })` | `taskDefaults.query` |
+| `inspect_code` | `inspect` | `router.predict({ taskType: 'inspect' })` | `taskDefaults.inspect` |
+| `research_topic` | `synthesis` | `router.predict({ taskType: 'synthesis' })` | `taskDefaults.synthesis` |
+| `search_codebase`* | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
+| `analyze_codebase` | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
+| `remember` | embedding | `router.embedText()` | `embeddingProvider`** |
+| `recall` | embedding | `router.embedText()` | `embeddingProvider`** |
+| Code indexing | embedding | `router.embedBatch()` | `embeddingProvider`** |
+
+\* All search tools support `analyze: true` parameter which triggers LLM analysis of results.
+
+\*\* Embeddings use `embeddingProvider` (separate config from taskDefaults) because they require specific embedding-capable models.
+
+**Default Configuration**:
+```json
+{
+  "llm": {
+    "embeddingProvider": "lmstudio",
+    "taskDefaults": {
+      "embedding": "lmstudio",
+      "analysis": "lmstudio",
+      "synthesis": "lmstudio",
+      "query": "lmstudio",
+      "inspect": "lmstudio"
+    }
+  }
+}
+```
 
 ## LM Studio Integration
 - **Transport**: REST API via `/v1/chat/completions` (OpenAI-compatible) and `/api/v1/*` (native)
@@ -284,6 +329,169 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **File Referencing**: Only absolute paths supported
 - Windows: `D:\project\file.js`
 - UNC: `\\server\share\file.js`
+
+## LLM-Powered Project Analysis
+
+**Status**: Production-ready
+
+**Implementation**:
+- `src/servers/codebase-indexing/project-analyzer.js` - Two-phase LLM analysis
+- Phase 1: File tree analysis → key file selection (high/medium/low priority)
+- Phase 2: Content analysis → project summary (description, purpose, tech stack)
+
+**Integration with Indexing**:
+- **Manual**: Call `analyze_codebase` tool after indexing
+- **Auto on index**: Set `analyze: true` in `index_codebase` or `refresh_codebase`
+- **list_codebases** now includes: `description`, `hasAnalysis`, `analysisStale`
+
+**Key Features**:
+- **Structured Output**: JSON schema enforcement for reliable parsing
+- **Staleness Detection**: MD5 hashes of source files tracked, auto-detects outdated descriptions
+- **Prioritized Search**: Files ranked by importance for better search relevance
+
+**Web Interface** (`http://localhost:3010`):
+- Codebases list shows description + "Analyzed"/"Analysis Stale" badges
+- Double-click codebase for details overlay with full analysis
+- "Analyze Project" button for unanalyzed codebases
+- "Re-Analyze" button for re-triggering analysis
+- "Analyze Selected" bulk action in list footer
+
+**Storage** (in `metadata.json`):
+```json
+{
+  "llmAnalysis": {
+    "analyzedAt": "2026-02-17T20:00:00Z",
+    "model": "qwen2.5-coder-14b",
+    "description": "MCP orchestrator with semantic memory",
+    "purpose": "Centralized MCP server managing AI tools...",
+    "keyFiles": {
+      "high": ["src/index.js", "README.md"],
+      "medium": ["src/router/router.js"],
+      "low": ["test/"]
+    },
+    "entryPoints": ["src/index.js"],
+    "insights": {
+      "architecture": "modular-mcp-server",
+      "techStack": ["nodejs", "express", "ndb-vector-db"],
+      "keyConcepts": ["embeddings", "mcp-tools"],
+      "coreModules": ["memory", "web-research"]
+    },
+    "sourceHashes": { "README.md": "a1b2c3..." }
+  }
+}
+```
+
+**MCP Tools**:
+- `index_codebase` - Add `analyze: true` to auto-analyze after indexing
+- `refresh_codebase` - Add `analyze: true` to re-analyze if stale
+- `analyze_codebase` - Manual analysis
+- `get_codebase_description` - Get description with staleness check
+- `get_prioritized_files` - Get files ordered by importance
+
+**Web API Endpoints**:
+- `GET /api/codebase/description?codebase={name}` - Get description
+- `POST /api/codebase/analyze` - Trigger analysis `{name}`
+
+**Precise Prompting Strategy**:
+- Uses JSON schema via `responseFormat` parameter
+- LMStudio/Ollama: llama.cpp grammar-based sampling
+- Temperature 0.3 for deterministic results
+- Clear rules in prompts (max file counts, priority definitions)
+
+## Search Result Analysis (Token Cost Reduction)
+
+**Status**: Production-ready
+
+**Purpose**: Use the LOCAL LLM to pre-analyze search results before returning them. This gives you a structured summary ("Found X implementations using Y pattern") instead of 20+ raw code snippets. Saves tokens and gives faster insights.
+
+### When to Use `analyze: true`
+
+| ✅ USE IT | ❌ SKIP IT |
+|-----------|------------|
+| Exploring unknown codebases ("find how X is implemented") | You need exact line numbers for editing |
+| Broad searches with many results (10+ files) | Feeding results into another automated tool |
+| Initial research before diving deep | Very specific search with <5 results |
+| Getting patterns across multiple projects | You want to see all raw matches |
+
+### Basic Usage
+
+```javascript
+// 🔥 RECOMMENDED for exploration
+mcp_orchestrator_search_all_codebases({
+  query: "drag and drop file upload electron",
+  strategy: "semantic",
+  limit: 10,
+  analyze: true           // ← AI summarizes results
+})
+
+// Returns:
+// {
+//   analysis: {
+//     summary: "Found 5 implementations...",
+//     keyFindings: ["Uses webUtils.getPathForFile()", ...],
+//     relevantFiles: ["js/mixer/main.js - Drag handler", ...],
+//     implementationPatterns: ["Event: dragover/drop", ...]
+//   },
+//   stats: { resultCount: 46, ... }
+// }
+```
+
+### Include Raw Results Too
+
+```javascript
+// Get BOTH analysis and raw snippets
+mcp_orchestrator_search_all_codebases({
+  query: "drag and drop",
+  analyze: true,
+  includeRaw: true        // ← Analysis + raw results
+})
+```
+
+Use this when you want the summary for quick understanding, but might need to drill into specific file content later.
+
+### Token Savings
+
+| Result Size | Raw Size | Analyzed | Savings |
+|-------------|----------|----------|---------|
+| Small (5-10 results) | ~2K chars | ~1.5K chars | 10-30% |
+| Medium (15-25 results) | ~8K chars | ~3K chars | 50-70% |
+| Large (30+ results) | ~20K chars | ~4K chars | 70-90% |
+
+Savings increase with result count. Small searches see modest gains; large searches see dramatic reductions.
+
+### How It Works
+
+1. You call search with `analyze: true`
+2. Search runs normally, gets raw results
+3. Local LLM (on orchestrator server) analyzes results
+4. You receive structured summary instead of raw snippets
+5. **Time cost**: +1-2 seconds for LLM analysis
+
+### Supported Tools
+
+All search tools support `analyze`:
+- `search_codebase` - Single codebase
+- `search_semantic` - Semantic/conceptual search
+- `search_keyword` - Keyword search
+- `grep_codebase` - Regex search
+- `search_all_codebases` - Cross-codebase (most useful!)
+
+### Implementation Details
+
+- `src/servers/codebase-indexing/index.js` - `analyzeSearchResults()` method
+- Uses `taskType: 'analysis'` for routing to appropriate LLM
+- 800 token limit, temperature 0.3 for consistent formatting
+- Analysis happens server-side before response
+
+### Testing
+
+```bash
+# Unit test (fast, mocks LLM)
+node test/test-search-analysis-unit.js
+
+# Integration test (requires running server)
+node test/test-search-analysis-integration.js
+```
 
 ## Historical Changes
 

@@ -1,0 +1,60 @@
+/* Codebases Configuration Page Styles */
+
+section {
+	margin-bottom: 1.5rem;
+}
+
+h2 {
+	margin-bottom: 0.75rem;
+	padding-bottom: 0.5rem;
+	border-bottom: 1px solid var(--nui-border-subtle);
+	font-size: 1rem;
+	font-weight: 600;
+}
+
+/* Stats grid */
+.stats-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+	gap: 0.75rem;
+	margin: 0.75rem 0;
+}
+
+.stat-card {
+	background: var(--nui-surface-variant);
+	border-radius: var(--nui-radius-md);
+	padding: 1rem;
+	text-align: center;
+	border: 1px solid var(--nui-border-subtle);
+}
+
+.stat-card nui-icon {
+	font-size: 1.5rem;
+	color: var(--nui-accent);
+	margin-bottom: 0.375rem;
+}
+
+.stat-value {
+	font-size: 1.25rem;
+	font-weight: 700;
+	color: var(--nui-text);
+	margin-bottom: 0.125rem;
+}
+
+.stat-label {
+	font-size: 0.65rem;
+	color: var(--nui-text-secondary);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* Config table */
+.config-table td:first-child {
+	width: 40%;
+	color: var(--nui-text-secondary);
+}
+
+.config-table td:last-child {
+	font-family: monospace;
+	font-size: 0.9rem;
+}

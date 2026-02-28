@@ -12,6 +12,7 @@ import { WebResearchServer } from './servers/web-research.js';
 import { createMemoryServer } from './servers/memory.js';
 import { createBrowserServer } from './servers/browser.js';
 import { createDocsServer } from './servers/docs.js';
+import { CodebaseIndexingService } from './servers/codebase-indexing/index.js';
 import { WebServer } from './web/server.js';
 import { globalLogger } from './logger.js';
 import { createRouter } from './router/router.js';
@@ -42,6 +43,12 @@ const shutdown = async (signal) => {
   if (maintenanceInterval) {
     clearInterval(maintenanceInterval);
     maintenanceInterval = null;
+  }
+  
+  // Stop codebase maintenance
+  const codebaseServer = serverModules.get('codebase-indexing');
+  if (codebaseServer?.stopMaintenance) {
+    codebaseServer.stopMaintenance();
   }
   
   if (webServerInstance?.stop) {
@@ -117,6 +124,78 @@ serverModules.set('docs', docsServer);
 tools.push(...docsServer.getTools());
 console.log('✓ Docs');
 
+// Initialize Codebase Indexing server
+const codebaseConfig = config.servers['codebase-indexing'] || { enabled: true, dataDir: 'data/codebases' };
+if (codebaseConfig.enabled !== false) {
+  // Determine embedding model and dimension from environment based on configured embedding provider
+  const embeddingProvider = config.llm?.embeddingProvider || 'lmstudio';
+  const envVarMap = {
+    lmstudio: 'LM_STUDIO_EMBEDDING_MODEL',
+    ollama: 'OLLAMA_EMBEDDING_MODEL',
+    gemini: 'GEMINI_EMBEDDING_MODEL',
+    openai: 'OPENAI_EMBEDDING_MODEL',
+    grok: 'GROK_EMBEDDING_MODEL',
+    kimi: 'KIMI_EMBEDDING_MODEL'
+  };
+  const envVar = envVarMap[embeddingProvider];
+  const embeddingModel = envVar && process.env[envVar] 
+    ? process.env[envVar]
+    : config.llm?.providers?.[embeddingProvider]?.embeddingModel;
+  
+  if (embeddingModel) {
+    codebaseConfig.embeddingModel = embeddingModel;
+  }
+  
+  // Also get embedding dimension from provider config if available
+  const embeddingDimensions = config.llm?.providers?.[embeddingProvider]?.embeddingDimensions;
+  if (embeddingDimensions) {
+    codebaseConfig.embeddingDimension = embeddingDimensions;
+  }
+  
+  const codebaseServer = new CodebaseIndexingService(codebaseConfig, llmRouter);
+  serverModules.set('codebase-indexing', codebaseServer);
+  
+  // Load auto-indexer config and index configured codebases
+  const { AutoIndexer } = await import('./servers/codebase-indexing/auto-index.js');
+  const autoIndexer = new AutoIndexer(codebaseServer);
+  await autoIndexer.loadConfig();
+  serverModules.set('auto-indexer', autoIndexer);  // Expose to web server
+  
+  // Auto-index on startup (non-blocking)
+  autoIndexer.indexAll().then(results => {
+    const indexed = results.filter(r => r.status === 'indexed').length;
+    const existing = results.filter(r => r.status === 'already_indexed').length;
+    const errors = results.filter(r => r.status === 'error').length;
+    
+    if (indexed > 0) console.log(`[AutoIndexer] Indexed ${indexed} new codebases`);
+    if (existing > 0) console.log(`[AutoIndexer] ${existing} codebases already indexed`);
+    if (errors > 0) console.error(`[AutoIndexer] ${errors} codebases failed to index`);
+  });
+  
+  // Register tools - only expose search/read to LLM
+  // Admin tools (index/remove/refresh/maintenance/list_spaces) are internal
+  const allTools = codebaseServer.getTools();
+  const llmTools = allTools.filter(t => 
+    !['index_codebase', 'remove_codebase', 'refresh_codebase', 'run_maintenance', 'get_maintenance_stats', 'list_spaces'].includes(t.name)
+  );
+  console.log(`✓ Codebase Indexing: ${llmTools.length} tools exposed to LLM`);
+  tools.push(...llmTools);
+  
+  // Preload all codebases into memory (nDB is in-memory, load once from disk)
+  codebaseServer.preloadAll().catch(err => {
+    console.warn('[CodebaseIndexing] Preload failed:', err.message);
+  });
+  
+  // Start maintenance cycle if enabled
+  if (codebaseConfig.maintenance?.enabled !== false) {
+    codebaseServer.startMaintenance();
+    const intervalMin = (codebaseServer.maintenance.config.intervalMs / 60000).toFixed(1);
+    console.log(`✓ Codebase Indexing (auto-refresh every ${intervalMin}min)`);
+  } else {
+    console.log('✓ Codebase Indexing (maintenance disabled)');
+  }
+}
+
 // Initialize Browser server first (needed by web-research)
 let browserServer = null;
 if (config.servers['browser']?.enabled) {
@@ -138,7 +217,12 @@ if (config.servers['web-research']?.enabled) {
 
 if (config.servers['memory']?.enabled) {
   // Pass LLM router to memory server for embedding
-  const s = createMemoryServer(config.servers['memory'], llmRouter);
+  // Merge server config with embeddingProvider from llm config
+  const memoryConfig = {
+    ...config.servers['memory'],
+    embeddingProvider: config.llm?.embeddingProvider || null
+  };
+  const s = createMemoryServer(memoryConfig, llmRouter);
   serverModules.set('memory', s);
   tools.push(...s.getTools());
   if (s.getResources) resources.push(...s.getResources());
@@ -170,7 +254,9 @@ if (config.servers['llm']?.enabled) {
 // Start web monitoring interface
 if (config.web?.enabled) {
   const memoryServer = serverModules.get('memory');
-  const webServer = new WebServer(config.web, memoryServer, llmServer);
+  const codebaseServer = serverModules.get('codebase-indexing');
+  const autoIndexer = serverModules.get('auto-indexer');
+  const webServer = new WebServer(config.web, memoryServer, llmServer, codebaseServer, autoIndexer);
   webServerInstance = webServer;
   webServer.start();
   console.log('✓ Web Interface');
@@ -258,7 +344,7 @@ function createMCPServer() {
     const progressToken = _meta?.progressToken;
     
     for (const [sName, module] of serverModules) {
-      if (module.handlesTool(name)) {
+      if (typeof module.handlesTool === 'function' && module.handlesTool(name)) {
         if (progressToken && module.setProgressCallback) {
           module.setProgressCallback((data) => {
             const { progress, total, message } = data;

@@ -6,6 +6,7 @@ import { searchGoogle } from '../scrapers/google-adapter.js';
 import { searchDuckDuckGo } from '../scrapers/duckduckgo-adapter.js';
 import { extractContent, validateContent } from '../scrapers/content-extractor.js';
 import { StreamingResearchPipeline, prioritizeUrls, shouldTerminateEarly } from '../lib/streaming-research.js';
+import { getGlobalJobManager } from '../lib/async-job-manager.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = {
@@ -54,11 +55,12 @@ export class WebResearchServer {
   }
 
   sendProgress(progress, total, message) {
+    console.error(`[WebResearch] Progress: ${progress}/${total} - ${message}`);
     if (this.progressCallback) {
       try {
         this.progressCallback({ progress, total, message });
-      } catch {
-        // Client disconnected, ignore
+      } catch (err) {
+        console.error(`[WebResearch] Progress callback error: ${err.message}`);
       }
     }
   }
@@ -130,29 +132,159 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   getTools() {
     return [{
       name: 'research_topic',
-      description: 'Research a topic via web search. Multi-phase: search, select sources, scrape, synthesize with citations. Returns complete report.',
+      description: 'Research a topic via web search. Multi-phase: search, select sources, scrape, synthesize with citations. Runs asynchronously by default - returns job_id for polling.',
       inputSchema: {
         type: 'object',
         properties: {
           query: { type: 'string', description: 'Search query (quote terms, use site: filters)' },
           max_pages: { type: 'number', description: 'Max pages (default: 10)' },
-          engines: { type: 'array', items: { type: 'string' }, description: 'google, duckduckgo, bing' }
+          engines: { type: 'array', items: { type: 'string' }, description: 'google, duckduckgo, bing' },
+          async_mode: { type: 'boolean', description: 'If true (default), returns job_id immediately. If false, waits for completion (may timeout).', default: true }
         },
         required: ['query']
+      }
+    }, {
+      name: 'get_research_status',
+      description: 'Check status of an async research job. Poll every ~15 seconds until status is completed or failed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'Job ID returned by research_topic' }
+        },
+        required: ['job_id']
       }
     }];
   }
 
   handlesTool(name) {
-    return name === 'research_topic';
+    return name === 'research_topic' || name === 'get_research_status';
   }
 
   async callTool(name, args) {
-    console.error('[WebResearch] callTool entered');
+    if (name === 'get_research_status') {
+      return this.getResearchStatus(args);
+    }
     
-    const { query, max_pages = this.maxPages, engines = this.searchEngines } = args;
-    console.error(`[WebResearch] query=${query}, max_pages=${max_pages}, engines=${engines}`);
+    return this.startResearch(args);
+  }
+  
+  /**
+   * Start async research job and return job ID immediately
+   */
+  startResearch(args) {
+    const { query, max_pages = this.maxPages, engines = this.searchEngines, async_mode = true } = args;
     
+    console.error(`[WebResearch] Starting research job: "${query}"`);
+    
+    const jobManager = getGlobalJobManager();
+    
+    // If async_mode is false, do synchronous research (legacy behavior)
+    if (!async_mode) {
+      return this.runSynchronousResearch(query, max_pages, engines);
+    }
+    
+    // Create async job
+    const jobId = jobManager.createJob('research', async (onProgress) => {
+      // Set up progress callback for this job
+      // sendProgress passes { progress, total, message }, job manager expects (progress, total, message)
+      this.setProgressCallback((data) => onProgress(data.progress, data.total, data.message));
+      
+      // Initial progress
+      this.sendProgress(0, 100, '📋 Research job created, starting...');
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+      
+      try {
+        const report = max_pages >= 5 
+          ? await this.researchTopicFast(query, max_pages, engines, controller.signal)
+          : await this.researchTopic(query, max_pages, engines, controller.signal);
+        
+        return report;
+      } finally {
+        clearTimeout(timeoutId);
+        this.setProgressCallback(null);
+      }
+    }, { query, max_pages, engines });
+    
+    // Return immediately with job ID
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          status: 'accepted',
+          job_id: jobId,
+          message: `Research job started. Poll with get_research_status(job_id="${jobId}") every ~15 seconds`,
+          query,
+          estimated_time_seconds: Math.ceil(max_pages * 8) // Rough estimate
+        }, null, 2)
+      }]
+    };
+  }
+  
+  /**
+   * Get status of a research job
+   */
+  getResearchStatus(args) {
+    const { job_id } = args;
+    
+    if (!job_id) {
+      return {
+        content: [{ type: 'text', text: 'Error: job_id is required' }],
+        isError: true
+      };
+    }
+    
+    const jobManager = getGlobalJobManager();
+    const job = jobManager.getJob(job_id);
+    
+    if (!job) {
+      return {
+        content: [{ 
+          type: 'text', 
+          text: JSON.stringify({ 
+            status: 'not_found',
+            job_id,
+            message: 'Job not found or expired (jobs are kept for 5 minutes after completion)'
+          }, null, 2)
+        }],
+        isError: true
+      };
+    }
+    
+    // Build response based on status
+    const response = {
+      status: job.status,
+      job_id: job.id,
+      progress: job.progress,
+      message: job.message,
+      query: job.metadata?.query
+    };
+    
+    if (job.status === 'completed') {
+      response.result = job.result;
+      response.completed_at = job.completedAt;
+      response.duration_seconds = Math.round((job.completedAt - job.createdAt) / 1000);
+    } else if (job.status === 'failed') {
+      response.error = job.error;
+      response.failed_at = job.failedAt;
+    } else {
+      // pending or running
+      response.message = `${job.message} (poll again in ~15 seconds)`;
+    }
+    
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(response, null, 2)
+      }]
+    };
+  }
+  
+  /**
+   * Legacy synchronous research (for async_mode=false)
+   */
+  async runSynchronousResearch(query, max_pages, engines) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
     
@@ -175,7 +307,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     } catch (err) {
       if (err.name === 'AbortError') {
         return {
-          content: [{ type: 'text', text: `⏱️ Research timeout (${this.timeout/1000}s). Try narrowing the query.` }],
+          content: [{ type: 'text', text: `⏱️ Research timeout (${this.timeout/1000}s). Try using async_mode=true` }],
           isError: true
         };
       }
@@ -189,6 +321,8 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async researchTopic(query, maxPages, engines, signal) {
+    this.sendProgress(0, 10, '🔍 Initializing research...');
+    
     const visitedUrls = new Set();
     let allScrapedContent = [];
     let currentSynthesis = null;
@@ -293,6 +427,8 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async researchTopicFast(query, maxPages = 10, engines, signal) {
+    this.sendProgress(0, 6, '🚀 Starting fast research mode...');
+    
     const startTime = Date.now();
     console.error(`\n🚀 FAST RESEARCH MODE: "${query}"`);
     console.error(`   Target: ${maxPages} pages, streaming synthesis`);

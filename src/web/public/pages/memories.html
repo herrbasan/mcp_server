@@ -1,1 +1,173 @@
-<nui-list id="memories-list" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0;"></nui-list>
+<link rel="stylesheet" href="/css/pages/memories.css">
+
+<div class="list-wrapper">
+	<nui-list id="memories-list"></nui-list>
+</div>
+
+<script type="nui/page">
+const API_BASE = window.location.origin;
+
+function formatDate(dateStr) {
+	if (!dateStr) return 'N/A';
+	const d = new Date(dateStr);
+	const now = new Date();
+	const diffDays = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+	
+	if (diffDays === 0) return 'Today';
+	if (diffDays === 1) return 'Yesterday';
+	if (diffDays < 7) return `${diffDays}d ago`;
+	if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+	if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+	return `${Math.floor(diffDays / 365)}y ago`;
+}
+
+function fullDateFormat(dateStr) {
+	if (!dateStr) return 'N/A';
+	return new Date(dateStr).toLocaleString();
+}
+
+function escapeHtml(text) {
+	const div = document.createElement('div');
+	div.textContent = text;
+	return div.innerHTML;
+}
+
+let allMemories = [];
+
+async function loadMemories() {
+	const res = await fetch(`${API_BASE}/api/memory/list`);
+	const data = await res.json();
+	allMemories = data.memories;
+	renderMemories();
+}
+
+function renderMemories() {
+	const list = element.querySelector('#memories-list');
+	if (!list) return;
+	
+	list.loadData({
+		data: allMemories,
+		render: (item) => {
+			const conf = item.confidence ?? 0.5;
+			const confClass = conf >= 0.7 ? 'high' : conf >= 0.5 ? 'medium' : 'low';
+			const symbol = conf >= 0.7 ? '✓' : conf >= 0.5 ? '~' : '?';
+			
+			const domainBadge = item.domain 
+				? `<span class="memory-domain">${item.domain}</span>` 
+				: '';
+			
+			const displayText = item.text.length > 120 ? item.text.substring(0, 117) + '...' : item.text;
+			
+			const div = document.createElement('div');
+			div.className = `memory-item category-${item.category}`;
+			div.innerHTML = `
+				<div class="memory-content">
+					<div class="memory-text" title="${escapeHtml(item.text)}">${escapeHtml(displayText)}</div>
+					<div class="memory-meta">
+						<span class="memory-category ${item.category}">${item.category.replace('_', ' ')}</span>
+						${domainBadge}
+						<span class="memory-confidence ${confClass}" title="Confidence: ${(conf * 100).toFixed(0)}%">${symbol} ${(conf * 100).toFixed(0)}%</span>
+						<span title="Observations">👁 ${item.observations || 1}</span>
+						<span class="separator">•</span>
+						<span title="Created: ${fullDateFormat(item.firstSeen)}">📅 ${formatDate(item.firstSeen)}</span>
+						<span title="Modified: ${fullDateFormat(item.lastSeen)}">✏️ ${formatDate(item.lastSeen)}</span>
+						<span class="memory-id">#${item.id}</span>
+					</div>
+				</div>
+				<div class="memory-actions">
+					<nui-button type="outline"><button type="button" data-action="edit-memory" data-id="${item.id}">Edit</button></nui-button>
+					<nui-button variant="danger"><button type="button" data-action="delete-memory" data-id="${item.id}">Del</button></nui-button>
+				</div>
+			`;
+			return div;
+		},
+		search: [
+			{ prop: 'text' },
+			{ prop: 'domain' },
+			{ prop: 'category' }
+		],
+		sort: [
+			{ label: 'ID', prop: 'id', numeric: true },
+			{ label: 'Category', prop: 'category' },
+			{ label: 'Domain', prop: 'domain' },
+			{ label: 'Confidence', prop: 'confidence', numeric: true },
+			{ label: 'Uses', prop: 'observations', numeric: true },
+			{ label: 'Date Created', prop: 'firstSeen', numeric: true },
+			{ label: 'Date Modified', prop: 'lastSeen', numeric: true }
+		],
+		sort_default: 0,
+		footer: {
+			buttons_right: [
+				{
+					label: 'Create Memory',
+					type: 'primary',
+					fnc: async () => {
+						const result = await nui.components.dialog.prompt('Create Memory', 'Enter memory details', {
+							fields: [
+								{ id: 'text', label: 'Text', value: '' },
+								{ id: 'category', label: 'Category', value: 'observed' }
+							]
+						});
+						if (result) {
+							await fetch(`${API_BASE}/api/memory/create`, {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ text: result.text, category: result.category })
+							});
+							await loadMemories();
+						}
+					}
+				},
+				{
+					label: 'Refresh',
+					type: 'outline',
+					fnc: async () => {
+						await loadMemories();
+					}
+				}
+			]
+		}
+	});
+}
+
+// Handle actions
+element.addEventListener('click', async (e) => {
+	const btn = e.target.closest('[data-action]');
+	if (!btn) return;
+	
+	const action = btn.dataset.action;
+	const id = parseInt(btn.dataset.id);
+	
+	if (action === 'edit-memory') {
+		const memory = allMemories.find(m => m.id === id);
+		if (!memory) return;
+		
+		const result = await nui.components.dialog.prompt('Edit Memory', 'Update memory details', {
+			fields: [
+				{ id: 'text', label: 'Text', value: memory.text },
+				{ id: 'category', label: 'Category', value: memory.category }
+			]
+		});
+		if (result) {
+			await fetch(`${API_BASE}/api/memory/${id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ text: result.text, category: result.category })
+			});
+			await loadMemories();
+		}
+	}
+	
+	if (action === 'delete-memory') {
+		const confirmed = await nui.components.dialog.confirm('Delete Memory', 'Are you sure? This cannot be undone.');
+		if (confirmed) {
+			await fetch(`${API_BASE}/api/memory/${id}`, { method: 'DELETE' });
+			await loadMemories();
+		}
+	}
+});
+
+async function init(element, params) {
+	await loadMemories();
+}
+</script>

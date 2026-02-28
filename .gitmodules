@@ -1,3 +1,6 @@
 [submodule "src/web/public/nui_wc2"]
 	path = src/web/public/nui_wc2
 	url = https://github.com/herrbasan/nui_wc2.git
+[submodule "src/lib/nDB"]
+	path = src/lib/nDB
+	url = https://github.com/herrbasan/nDB.git

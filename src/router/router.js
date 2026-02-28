@@ -5,6 +5,7 @@ import { createGrokAdapter } from './adapters/grok.js';
 import { createKimiAdapter } from './adapters/kimi.js';
 import { createGLMAdapter } from './adapters/glm.js';
 import { createKimiCliAdapter } from './adapters/kimi-cli.js';
+import { createMiniMaxAdapter } from './adapters/minimax.js';
 import { createContextManager } from './context-manager.js';
 import { formatOutput } from './formatter.js';
 import { estimateTokens } from './tokenize.js';
@@ -116,6 +117,21 @@ const PROVIDER_FACTORIES = {
     contextWindow: 131072,
     contextManagerConfig: {
       contextWindow: 131072,
+      model: config.model,
+      maxTokens: 2048,
+      temperature: 0.7
+    }
+  }),
+  
+  minimax: (config) => ({
+    adapter: createMiniMaxAdapter({
+      apiKey: config.apiKey,
+      endpoint: config.endpoint,
+      model: config.model
+    }),
+    contextWindow: 204800,
+    contextManagerConfig: {
+      contextWindow: 204800,
       model: config.model,
       maxTokens: 2048,
       temperature: 0.7
