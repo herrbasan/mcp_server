@@ -603,6 +603,10 @@ export class YourServer {
 - @modelcontextprotocol/sdk
 - LM Studio running (if using lm-studio server)
 - Git submodule: LMStudioAPI (auto-cloned with `git submodule update --init`)
+- **ripgrep (rg)** - Optional but recommended for fast code search (`grep_codebase` tool). Falls back to Node.js search if not installed:
+  - Ubuntu/Debian: `sudo apt install ripgrep`
+  - macOS: `brew install ripgrep`
+  - Windows: `winget install BurntSushi.ripgrep` or [download](https://github.com/BurntSushi/ripgrep/releases)
 
 ## Installation
 

@@ -32,9 +32,18 @@
 |---------------|---------------|----------|
 | Find how something is implemented | `search_all_codebases` | `semantic` + `analyze: true` |
 | Search a specific codebase | `search_codebase` | `hybrid` (default) |
-| Find exact function/variable names | `grep_codebase` | exact pattern |
-| Quick keyword search | `search_keyword` | FTS5 matching |
+| Find exact function/variable names | `search_keyword` | FAST indexed search |
+| Quick file path search | `search_keyword` | path matching |
+| Live regex patterns | `grep_codebase` | regex (slower, always current) |
 | Conceptual similarity search | `search_semantic` | embedding-based |
+
+**⚡ Performance Comparison:**
+| Tool | Typical Time | Use When |
+|------|--------------|----------|
+| `search_keyword` | <50ms | Exact names, fast lookups |
+| `search_codebase` (keyword) | <100ms | Hybrid search, general queries |
+| `search_semantic` | 100-200ms | Conceptual understanding |
+| `grep_codebase` | 1-3s | Regex needed, index stale, line numbers required |
 
 ### Global Search (Most Common)
 
@@ -122,28 +131,70 @@ mcp_orchestrator_search_semantic({
 ```
 
 #### `search_keyword`
-Fast keyword search using FTS5. Best for exact terms.
+**FAST indexed keyword search** - Best for exact function names, class names, and identifiers. Searches both file paths AND content.
 
 ```javascript
+// Find function by name (fastest)
 mcp_orchestrator_search_keyword({
   codebase: "mcp_server",
   query: "StreamableHTTPServerTransport",
   limit: 20
 })
+
+// Search content (includes line matches)
+mcp_orchestrator_search_keyword({
+  codebase: "mcp_server",
+  query: "handleRequest",
+  searchContent: true,  // Include content matches
+  limit: 10
+})
+// Returns: { file, path, rank, contentMatches: [{line, content}] }
 ```
+
+**💡 Prefer this over `grep_codebase`** when:
+- Searching for specific function/class names
+- You need fast results (<50ms vs 1-3s)
+- You don't need regex patterns
+- You don't need exact line numbers for editing
 
 #### `grep_codebase`
-Live grep with ripgrep. Always current, supports regex.
+**Live regex search** with ripgrep. Always current (searches filesystem directly). **Use sparingly** - it's 10-50x slower than indexed search.
 
 ```javascript
+// Regex pattern search
 mcp_orchestrator_grep_codebase({
   codebase: "mcp_server",
-  pattern: "function.*predict\(",    // Regex supported
+  pattern: "function.*predict\(",
   regex: true,
-  limit: 50,
-  analyze: true                    // Works with analyze too!
+  limit: 50
+})
+
+// Find files only (1 match per file)
+mcp_orchestrator_grep_codebase({
+  codebase: "mcp_server",
+  pattern: "class.*Router",
+  maxMatchesPerFile: 1  // Fast early termination
+})
+
+// Literal string search (faster than regex)
+mcp_orchestrator_grep_codebase({
+  codebase: "mcp_server",
+  pattern: "handleFileUpload",
+  regex: false,          // Fixed string search
+  caseSensitive: false
 })
 ```
+
+**⚠️ When NOT to use:**
+- ❌ Simple name lookups → Use `search_keyword` (50x faster)
+- ❌ Conceptual searches → Use `search_semantic`
+- ❌ General exploration → Use `search_codebase`
+
+**✅ Use when:**
+- You need regex patterns (`pattern: "async.*function"`)
+- You suspect the index is stale
+- You need exact line numbers for code editing
+- You need case-sensitive exact matches
 
 ### Discovery Tools
 
@@ -456,8 +507,9 @@ mcp_orchestrator_query_model({
 
 | Tool | Typical Time | Notes |
 |------|--------------|-------|
+| `search_keyword` | <50ms | Indexed content search |
 | `search_all_codebases` | 1-2s | Preloaded at startup |
 | `search_codebase` | <500ms | Single codebase |
-| `grep_codebase` | 1-3s | Live filesystem search |
+| `grep_codebase` | 1-3s | Live filesystem search (cached) |
 | `research_topic` | 12-45s | Depends on pages scraped |
 | `query_model` | 2-10s | Depends on model & tokens |

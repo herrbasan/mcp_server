@@ -590,18 +590,19 @@ export class CodebaseIndexingService {
   }
 
   /**
-   * Search by keyword (FTS5)
+   * Search by keyword (path + content)
    */
-  async searchKeyword({ codebase, query, limit = 20 }) {
+  async searchKeyword({ codebase, query, limit = 20, searchContent = true }) {
     const { metadata } = await this._getCodebase(codebase);
     
-    const results = await metadata.searchKeyword(query, limit);
+    const results = await metadata.searchKeyword(query, limit, searchContent);
     
     return {
       results: results.map(r => ({
         file: `${codebase}:${r.path}`,
         path: r.path,
-        rank: r.rank
+        rank: r.rank,
+        contentMatches: r.contentMatches || null
       })),
       count: results.length
     };
@@ -610,10 +611,26 @@ export class CodebaseIndexingService {
   /**
    * Live grep search
    */
-  async grepCodebase({ codebase, pattern, regex = true, limit = 50 }) {
+  async grepCodebase({ 
+    codebase, 
+    pattern, 
+    regex = true, 
+    limit = 50, 
+    maxMatchesPerFile = 5,
+    caseSensitive = false,
+    pathPattern = null,
+    noCache = false
+  }) {
     const { source } = await this._getCodebase(codebase);
     
-    const results = await this.grepSearcher.grep(source, pattern, { regex, limit });
+    const results = await this.grepSearcher.grep(source, pattern, { 
+      regex, 
+      limit, 
+      maxMatchesPerFile,
+      caseSensitive,
+      pathPattern,
+      noCache
+    });
     
     return {
       results: results.map(r => ({
@@ -1209,13 +1226,13 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'search_codebase',
-        description: 'Search within a single codebase. Hybrid strategy (semantic+keyword) works best for most queries. Use analyze:true to get AI-summarized results instead of raw snippets (saves tokens). Codebase name supports partial matching (e.g., "mcp_server" matches "BADKID-mcp_server").',
+        description: 'Primary search tool for single codebase. RECOMMENDED over grep_codebase for most searches. Combines semantic (meaning) + keyword (exact) matching. Use strategy:keyword for fast name lookups, strategy:semantic for concept queries. Use analyze:true to get AI-summarized results (saves 50-90% tokens). Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
             codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
             query: { type: 'string', description: 'Search query (natural language or keywords)' },
-            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid' },
+            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid', description: 'hybrid=best overall, keyword=fast exact match, semantic=conceptual similarity' },
             limit: { type: 'number', default: 10 },
             filter: { 
               type: 'object',
@@ -1229,12 +1246,12 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'search_semantic',
-        description: 'Semantic search - finds conceptually similar code using AI embeddings. Best for "how is X implemented?" style queries. Use analyze:true to get structured summary with key findings and patterns. Codebase name supports partial matching.',
+        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Use analyze:true for structured summary. Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
             codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Natural language query' },
+            query: { type: 'string', description: 'Natural language query describing what you are looking for' },
             limit: { type: 'number', default: 10 },
             filter: { 
               type: 'object',
@@ -1248,13 +1265,14 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'search_keyword',
-        description: 'Fast keyword search using FTS5. Best for exact function names, class names, or specific terms. Returns ranked results. Use analyze:true to get AI summary of findings. Codebase name supports partial matching.',
+        description: 'FAST indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Use analyze:true for AI summary. Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
             codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Keywords to search' },
+            query: { type: 'string', description: 'Keywords to search (function names, class names, etc.)' },
             limit: { type: 'number', default: 20 },
+            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' },
             analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary (reduces token cost for calling LLM)' },
             includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis (increases token usage)' }
           },
@@ -1263,15 +1281,19 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'grep_codebase',
-        description: 'Live regex search using ripgrep. Always current (searches filesystem directly). Best for exact patterns like "function.*predict\\(". Slower than indexed search but 100% current. Use analyze:true to get structured analysis of matches. Codebase name supports partial matching.',
+        description: 'Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Use ONLY when: (1) You need regex patterns like "function.*predict\\(", (2) You need exact line numbers for editing, (3) You suspect index is stale. OTHERWISE prefer search_keyword (faster for names) or search_semantic (for concepts). Slower than indexed search (1-3s vs <200ms). Use analyze:true to get structured analysis. Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
             codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            pattern: { type: 'string', description: 'Search pattern' },
-            regex: { type: 'boolean', default: true },
-            limit: { type: 'number', default: 50 },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. STRONGLY RECOMMENDED for cross-codebase exploration.' },
+            pattern: { type: 'string', description: 'Search pattern (regex or literal string)' },
+            regex: { type: 'boolean', default: true, description: 'Use regex pattern matching. Set to false for literal string search (faster)' },
+            limit: { type: 'number', default: 50, description: 'Max total results to return' },
+            maxMatchesPerFile: { type: 'number', default: 5, description: 'Max matches per file (-1 for unlimited, 1 for "find files only")' },
+            caseSensitive: { type: 'boolean', default: false, description: 'Case-sensitive search' },
+            pathPattern: { type: 'string', description: 'Filter by file path glob (e.g., "*.js", "src/**")' },
+            noCache: { type: 'boolean', default: false, description: 'Skip cache and force fresh search' },
+            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results.' },
             includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down.' }
           },
           required: ['codebase', 'pattern']
@@ -1279,12 +1301,12 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'search_all_codebases',
-        description: '[RECOMMENDED] Search across ALL indexed codebases (122 projects) at once. Perfect for finding "how is X implemented across different projects?" Returns results from all codebases with attribution. Use analyze:true (strongly recommended) to get AI-summarized insights instead of 50+ raw snippets (saves 50-90% tokens). Strategies: semantic (conceptual), keyword (exact), grep (regex), hybrid (default: semantic+keyword).',
+        description: '[RECOMMENDED] Search across ALL indexed codebases at once. Perfect for finding "how is X implemented across different projects?" Strategies: hybrid (default, best overall), semantic (conceptual), keyword (fast exact match). AVOID strategy:grep unless you need regex - it is 10x slower. Use analyze:true (strongly recommended) to get AI-summarized insights instead of 50+ raw snippets (saves 50-90% tokens).',
         inputSchema: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Search query (natural language, keywords, or grep pattern)' },
-            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword', 'grep'], default: 'hybrid', description: 'Search strategy: hybrid (semantic+keyword), semantic (AI embeddings), keyword (FTS5), or grep (live ripgrep)' },
+            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword', 'grep'], default: 'hybrid', description: 'hybrid=best overall (default), keyword=fastest, semantic=conceptual, grep=slow regex (avoid unless needed)' },
             limit: { type: 'number', default: 20, description: 'Total result limit across all codebases' },
             perCodebaseLimit: { type: 'number', default: 5, description: 'Max results per codebase' },
             concurrency: { type: 'number', default: 10, description: 'Number of codebases to search in parallel' },

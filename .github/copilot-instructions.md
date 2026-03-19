@@ -493,7 +493,55 @@ node test/test-search-analysis-unit.js
 node test/test-search-analysis-integration.js
 ```
 
+## Search Tool Selection Guide
+
+**Updated March 2026** - grep_codebase optimized, search_keyword now with content search
+
+| Tool | Speed | Best For | Avoid When |
+|------|-------|----------|------------|
+| `search_keyword` | <50ms | Exact function/class names, fast lookups | Conceptual queries, fuzzy matching |
+| `search_codebase` (hybrid) | <200ms | General search, combines semantic + keyword | You need exact line numbers |
+| `search_semantic` | 100-300ms | "How is X implemented?", conceptual similarity | You need exact matches |
+| `grep_codebase` | 1-3s | Regex patterns, stale index, exact line numbers | Simple name lookups (use keyword!) |
+
+### Why grep_codebase is slower
+- Spawns ripgrep process (fork/exec overhead)
+- Scans filesystem live (no index)
+- **NEW:** Now with result caching (60s TTL, fingerprint invalidation)
+- **NEW:** Early termination when limit reached
+- **NEW:** Multi-threaded ripgrep (`--threads 0`)
+
+### grep_codebase Options (NEW)
+```javascript
+mcp_orchestrator_grep_codebase({
+  codebase: "mcp_server",
+  pattern: "handleRequest",
+  regex: false,              // Literal string (faster)
+  maxMatchesPerFile: 1,      // Find files only
+  caseSensitive: false,
+  pathPattern: "*.js",       // Filter by path
+  noCache: false             // Force fresh search
+})
+```
+
+### search_keyword Content Search (NEW)
+Now searches both file paths AND content with indexed tokenization:
+```javascript
+mcp_orchestrator_search_keyword({
+  codebase: "mcp_server",
+  query: "handleFileUpload",
+  searchContent: true        // Include line matches
+})
+// Returns: { file, path, rank, contentMatches: [{line, content}] }
+```
+
 ## Historical Changes
+
+### March 2026 - Search Optimizations
+- `grep_codebase`: Added result caching, early termination, multi-threading
+- `grep_codebase`: New options `maxMatchesPerFile`, `caseSensitive`, `pathPattern`, `noCache`
+- `search_keyword`: Added true content search with inverted index
+- Tool descriptions updated to guide LLMs toward faster alternatives
 
 ### Feb 2026 - Code Search Removed
 - Code Search module archived to `_Archive/code-search/`
