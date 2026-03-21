@@ -82,8 +82,18 @@ export class Indexer {
       message: totalFiles === 0 ? 'Nothing to index' : `Indexing ${totalFiles} files` 
     });
 
+    // Delete removed files
+    for (const filePath of toDelete) {
+      await metadata.deleteFile(filePath);
+      try {
+        collection.delete(filePath);
+      } catch {
+        // May not exist in collection
+      }
+    }
+
     if (totalFiles === 0) {
-      return { indexed: 0, errors: 0, duration: 0, errorsDetail: [] };
+      return { indexed: 0, errors: 0, duration: Date.now() - startTime, errorsDetail: [] };
     }
 
     // Process files in batches for embeddings
@@ -212,16 +222,6 @@ export class Indexer {
       });
     }
 
-    // Delete removed files
-    for (const filePath of toDelete) {
-      await metadata.deleteFile(filePath);
-      try {
-        collection.delete(filePath);
-      } catch {
-        // May not exist in collection
-      }
-    }
-
     const duration = Date.now() - startTime;
     
     return {
@@ -318,6 +318,8 @@ export class Indexer {
       .replace(/\*\*/g, '{{GLOBSTAR}}')
       .replace(/\*/g, '[^/]*')
       .replace(/\?/g, '.')
+      .replace(/\/\{\{GLOBSTAR\}\}$/, '(?:/.*)?')
+      .replace(/^\{\{GLOBSTAR\}\}\//, '(?:.*/)?')
       .replace(/\{\{GLOBSTAR\}\}/g, '.*');
     
     return new RegExp(`^${regex}$`).test(path);
