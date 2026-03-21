@@ -1,0 +1,19 @@
+{
+    "agent": "llm",
+    "description": "Local LLM integration",
+    "tools": [
+        {
+            "name": "query_model",
+            "description": "Query the local LLM. To include files, use absolute paths.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string" },
+                    "files": { "type": "array", "items": { "type": "string" } },
+                    "systemPrompt": { "type": "string", "description": "Optional system prompt. Overrides the default assistant prompt." }
+                },
+                "required": ["prompt"]
+            }
+        }
+    ]
+}

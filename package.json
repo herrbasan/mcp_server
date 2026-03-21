@@ -1,29 +1,17 @@
 {
-  "name": "mcp-server-orchestrator",
-  "version": "1.0.0",
-  "description": "Centralized MCP server orchestrator for managing multiple MCP servers",
-  "type": "module",
-  "main": "src/http-server.js",
-  "scripts": {
-    "start": "node src/http-server.js",
-    "start:http": "node src/http-server.js",
-    "dev": "node --watch src/http-server.js",
-    "dev:http": "node --watch src/http-server.js"
-  },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "server",
-    "orchestrator"
-  ],
-  "author": "",
-  "license": "MIT",
-  "dependencies": {
-    "@google/generative-ai": "^0.21.0",
-    "@modelcontextprotocol/sdk": "^1.25.2",
-    "@mozilla/readability": "^0.6.0",
-    "dotenv": "^17.2.3",
-    "jsdom": "^27.4.0",
-    "puppeteer": "^24.34.0"
-  }
+    "name": "mcp-server-orchestrator",
+    "version": "2.0.0",
+    "type": "module",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "dev": "node --watch src/server.js"
+    },
+    "dependencies": {
+        "@mozilla/readability": "^0.6.0",
+        "dotenv": "^17.2.3",
+        "express": "^5.2.1",
+        "jsdom": "^29.0.1",
+        "puppeteer": "^24.40.0"
+    }
 }

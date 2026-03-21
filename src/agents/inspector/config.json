@@ -1,0 +1,25 @@
+{
+    "agent": "inspector",
+    "description": "Code analysis and review tools",
+    "tools": [
+        {
+            "name": "inspect_code",
+            "description": "Analyze existing code files iteratively. Finds bugs, explains architecture, or suggests improvements. File paths must be absolute.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Absolute paths of files to inspect (e.g. 'D:\\Project\\src\\main.js')."
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Specific question or analysis request for these files."
+                    }
+                },
+                "required": ["files", "prompt"]
+            }
+        }
+    ]
+}

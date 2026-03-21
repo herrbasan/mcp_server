@@ -1,0 +1,20 @@
+{
+    "agent": "research",
+    "description": "Multi-source web research with persistent browser pool",
+    "dependsOn": ["browser"],
+    "tools": [
+        {
+            "name": "research_topic",
+            "description": "Research a topic via web search. Multi-phase: search, scrape, synthesize with citations.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query (quote terms, use site: filters)" },
+                    "engines": { "type": "array", "items": { "type": "string", "enum": ["google", "duckduckgo", "bing"] } },
+                    "max_pages": { "type": "number", "description": "Max pages (default: 10)" }
+                },
+                "required": ["query"]
+            }
+        }
+    ]
+}

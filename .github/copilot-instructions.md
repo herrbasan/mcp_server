@@ -48,34 +48,14 @@ mcp_orchestrator_remember({
 # MCP Server Orchestrator - Development Guidelines
 
 ## Project Overview
-Centralized MCP server running as an **independent HTTP service** on remote machine (192.168.0.100). Manages multiple specialized servers and exposes **16 tools** to VS Code Copilot clients via network.
 
-**Architecture**: StreamableHTTPServerTransport (not legacy SSE)
-- Server: `src/http-server.js` - Ports 3100 (MCP), 3010 (web monitoring)
-- Transport: Streamable HTTP at `/mcp` with `mcp-session-id` header (stateful sessions)
-- Multi-client: DO NOT share a single transport across clients; create one `StreamableHTTPServerTransport` per session and route requests by `mcp-session-id`
-- Web UI: Real-time SSE log streaming, memory browser
-- Deployment: Remote server, clients connect via `mcp.json` with `type: "sse"`, `url: "http://IP:3100/mcp"`
+Centralized MCP server running as an **independent HTTP service**.
 
-**Tools** (19 across 5 modules):
-- **Memory** (7): Quality-focused semantic memory with confidence ranking (remember, recall, forget, list_memories, update_memory, reflect_on_session, apply_reflection_changes)
-- **LLM** (1): REST API local model integration (query_model)
-- **Web Research** (1): Multi-source web research with persistent browser pool (research_topic)
-  - 5-phase pipeline: search → select → scrape → synthesize → evaluate
-  - **Browser Pool**: Persistent Chrome with lingering tabs (10-30s cleanup delay)
-  - **Search Adapters**: Modular Google/DuckDuckGo adapters with instant paste
-  - **Anti-Bot**: Random viewports, realistic delays, saved login sessions
-  - Intelligent source selection via local LLM (prioritizes GitHub issues, StackOverflow, docs)
-  - 10 concurrent page scrapes with SSL error handling, retry logic
-  - Iterative loop: re-searches if confidence < 80%, max 2 iterations
-- **Browser** (5): Direct browser automation (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
-- **Code Inspector** (1): LLM-based code analysis (inspect_code) - analyze files or code snippets
-- **Documentation** (3): Access orchestrator docs (get_documentation, list_documents, read_document)
-- **Codebase Indexing** (3): LLM-powered project analysis (analyze_codebase, get_codebase_description, get_prioritized_files)
-  - Two-phase LLM analysis: file tree → key files → project summary
-  - Generates human-readable descriptions, identifies entry points
-  - Staleness detection via source file hashing
-  - Prioritized file search (high/medium/low priority)
+**Architecture**: Meta-MCP with nested agent modules
+- Server: src/server.js - Port 3100 (MCP via custom SSE)
+- Transport: Per-session SSE transport mapped by sessionId
+- Gateway: Talks to central LLM Gateway at localhost:3400
+- Agents: src/agents/ - (browser, codebase, docs, inspector, llm, memory, research)
 
 ## File Referencing (Absolute Paths Only)
 

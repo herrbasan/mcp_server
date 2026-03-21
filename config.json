@@ -1,60 +1,48 @@
 {
-  "_comment": "SPACES define network shares/machines that can be accessed. Each space maps to UNC paths (for remote access).",
+  "orchestrator": {
+    "name": "mcp-orchestrator",
+    "version": "2.0.0",
+    "host": "0.0.0.0",
+    "port": 3100
+  },
+  "gateway": {
+    "wsUrl": "ws://localhost:3400/v1/realtime",
+    "httpUrl": "http://localhost:3400"
+  },
+  "models": {
+    "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
+    "query": "glm-chat",
+    "inspect": "glm-chat",
+    "synthesis": "glm-chat",
+    "analysis": "glm-chat",
+    "embed": "lmstudio-embed"
+  },
   "spaces": {
-    "_comment": "Format: MACHINE-Share = Machine name + Share name. Files indexed relative to this root.",
     "COOLKID-Work": ["\\\\COOLKID\\Work\\Work", "d:\\Work"],
     "BADKID-DEV": ["\\\\BADKID\\Stuff\\DEV", "d:\\DEV"],
     "BADKID-SRV": ["\\\\BADKID\\Stuff\\SRV", "d:\\SRV"]
   },
-  "maintenance": {
-    "enabled": true,
-    "indexRefreshIntervalMs": 900000,
-    "_comment": "indexRefreshIntervalMs: 60000 = 1 minute, 300000 = 5 minutes, 900000 = 15 minutes, 3600000 = 1 hour, 86400000 = 24 hours"
-  },
-  "servers": {
-    "llm": {
-      "enabled": true,
-      "systemPrompt": "You provide concise second opinions on development decisions. Focus on performance, maintainability, and best practices.",
-      "temperature": 0.7
-    },
-    "web-research": {
-      "enabled": true,
-      "maxPages": 10,
-      "maxDepth": 2,
-      "timeout": 300000,
-      "searchEngines": ["google", "duckduckgo"],
-      "description": "Multi-source web research with local LLM synthesis (async job support)"
-    },
-    "memory": {
-      "_taskType": "embedding",
-      "enabled": true,
-      "storePath": "data/memories.json",
-      "description": "Persistent semantic memory across sessions"
-    },
+  "agents": {
     "browser": {
-      "enabled": true,
       "timeout": 30000,
       "maxContentSize": 2097152,
       "idleTimeout": 300000,
-      "viewport": { "width": 1280, "height": 800 },
-      "userDataDir": "d:\\DEV\\mcp_server\\data\\chrome-profile",
-      "description": "Direct browser automation for LLMs - persistent browser with 5min idle timeout"
+      "viewport": { "width": 1280, "height": 1800 },
+      "userDataDir": "data/chrome-profile"
     },
-    "code-inspector": {
-      "enabled": true,
-      "description": "LLM-based code analysis - analyze files or code snippets with local models"
+    "memory": {
+      "storePath": "data/memories.json"
     },
-    "code-search": {
-      "enabled": false,
-      "indexPath": "data/indexes",
-      "description": "DEPRECATED: Code search has been removed. See _Archive/src/servers/code-search/"
+    "research": {
+      "maxPages": 10,
+      "maxDepth": 2,
+      "timeout": 300000,
+      "searchEngines": ["google", "duckduckgo"]
     },
-    "codebase-indexing": {
-      "enabled": true,
+    "codebase": {
       "dataDir": "data/codebases",
       "embeddingDimension": 768,
       "maxFileSize": 1048576,
-      "description": "Semantic code search using nDB vector database",
       "maintenance": {
         "enabled": true,
         "intervalMs": 3600000,
@@ -62,107 +50,5 @@
         "staleThresholdMs": 300000
       }
     }
-  },
-  "llm": {
-    "defaultProvider": "lmstudio",
-    "embeddingProvider": "lmstudio",
-    "taskDefaults": {
-      "embedding": "lmstudio",
-      "analysis": "minimax",
-      "synthesis": "minimax",
-      "query": "minimax",
-      "inspect": "minimax"
-    },
-    "providers": {
-      "lmstudio": {
-        "enabled": true,
-        "type": "lmstudio",
-        "endpoint": "${LM_STUDIO_ENDPOINT}",
-        "model": "${LM_STUDIO_MODEL}",
-        "embeddingModel": "${LM_STUDIO_EMBEDDING_MODEL}",
-        "temperature": 0.7,
-        "stripThinking": true,
-        "connectTimeoutMs": 10000,
-        "rpcTimeoutMs": 120000,
-        "defaultModelTtlMs": 3600000,
-        "nonDefaultModelTtlMs": 600000
-      },
-      "ollama": {
-        "enabled": true,
-        "type": "ollama",
-        "endpoint": "${OLLAMA_ENDPOINT}",
-        "model": "${OLLAMA_MODEL}",
-        "embeddingModel": "${OLLAMA_EMBEDDING_MODEL}",
-        "temperature": 0.7,
-        "contextWindow": 16384
-      },
-      "gemini": {
-        "enabled": true,
-        "type": "gemini",
-        "apiKey": "${GEMINI_API_KEY}",
-        "endpoint": "${GEMINI_ENDPOINT}",
-        "model": "${GEMINI_MODEL}",
-        "embeddingModel": "${GEMINI_EMBEDDING_MODEL}",
-        "temperature": 0.7
-      },
-      "grok": {
-        "enabled": true,
-        "type": "grok",
-        "apiKey": "${GROK_API_KEY}",
-        "endpoint": "${GROK_ENDPOINT}",
-        "model": "grok-4-1-fast-non-reasoning",
-        "temperature": 0.7
-      },
-      "kimi": {
-        "enabled": true,
-        "type": "kimi",
-        "apiKey": "${KIMI_API_KEY}",
-        "endpoint": "${KIMI_ENDPOINT}",
-        "model": "${KIMI_MODEL}",
-        "temperature": 0.7
-      },
-      "kimi-cli": {
-        "enabled": true,
-        "type": "kimi-cli",
-        "command": "kimi",
-        "model": "kimi-k2.5",
-        "temperature": 0.7
-      },
-      "openai": {
-        "enabled": false,
-        "type": "openai",
-        "apiKey": "${OPENAI_API_KEY}",
-        "endpoint": "${LM_STUDIO_ENDPOINT}/v1/chat/completions",
-        "model": "${OPENAI_MODEL}",
-        "embeddingModel": "${OPENAI_EMBEDDING_MODEL}",
-        "temperature": 0.7
-      },
-      "glm": {
-        "enabled": true,
-        "type": "glm",
-        "apiKey": "${GLM_API_KEY}",
-        "endpoint": "${GLM_ENDPOINT}",
-        "model": "${GLM_MODEL}",
-        "temperature": 0.7
-      },
-      "minimax": {
-        "enabled": true,
-        "type": "minimax",
-        "apiKey": "${MINIMAX_API_KEY}",
-        "endpoint": "${MINIMAX_ENDPOINT}",
-        "model": "${MINIMAX_MODEL}",
-        "temperature": 0.7
-      }
-    }
-  },
-  "orchestrator": {
-    "name": "mcp-orchestrator",
-    "version": "1.0.0"
-  },
-  "web": {
-    "enabled": true,
-    "host": "localhost",
-    "port": 3010,
-    "maxLogs": 1000
   }
 }

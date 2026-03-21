@@ -1,0 +1,30 @@
+{
+    "agent": "docs",
+    "description": "Access orchestrator documentation",
+    "tools": [
+        {
+            "name": "get_documentation",
+            "description": "Get the main orchestrator documentation (tools guide). Equivalent to read_document({name: 'orchestrator'}).",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "list_documents",
+            "description": "List all available documentation files in the mcp_documentation folder.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "read_document",
+            "description": "Read a specific documentation file by name (without .md extension).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { 
+                        "type": "string", 
+                        "description": "Document name without extension (e.g., 'orchestrator', 'coding-philosophy')" 
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    ]
+}

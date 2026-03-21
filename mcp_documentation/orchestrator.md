@@ -1,6 +1,6 @@
 # MCP Orchestrator - Tools Reference Guide
 
-> **Total Tools**: 19 across 6 modules  
+> **Total Tools**: 38 across 7 agents  
 > **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
@@ -9,14 +9,15 @@
 
 ## Quick Navigation
 
-| Module | Tools | Purpose |
-|--------|-------|---------|
-| [Codebase Indexing](#codebase-indexing-module) | 10 | Search 122 indexed codebases |
+| Agent | Tools | Purpose |
+|-------|-------|---------|
+| [Codebase](#codebase-indexing-module) | 19 | Semantic code search, indexing, analysis |
 | [Memory](#memory-module) | 7 | Quality-focused semantic memory |
-| [LLM](#llm-module) | 1 | Local model querying |
-| [Web Research](#web-research-module) | 1 | Multi-source research pipeline |
-| [Browser](#browser-module) | 6 | Puppeteer browser automation |
-| [Code Inspector](#code-inspector-module) | 1 | LLM-based code analysis |
+| [LLM](#llm-module) | 2 | Local model querying (async) |
+| [Research](#web-research-module) | 1 | Multi-source research pipeline |
+| [Browser](#browser-module) | 5 | Puppeteer browser automation |
+| [Inspector](#code-inspector-module) | 1 | LLM-based code analysis |
+| [Docs](#docs-module) | 3 | Documentation access |
 
 ---
 
