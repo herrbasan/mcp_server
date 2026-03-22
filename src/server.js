@@ -1,5 +1,6 @@
 import fs from 'fs';
 import express from 'express';
+import cors from 'cors';
 import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import { loadAgents } from './agent-loader.js';
@@ -14,6 +15,15 @@ const SERVER_CAPABILITIES = { tools: { listChanged: true } };
 const app = express();
 const PORT = process.env.PORT || 3100;
 const HOST = process.env.HOST || '0.0.0.0';
+
+// CORS middleware - allow all origins for local network access
+const corsOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : true;
+app.use(cors({
+    origin: corsOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept']
+}));
 
 let serverConfig = {};
 if (fs.existsSync('config.json')) serverConfig = JSON.parse(fs.readFileSync('config.json', 'utf8'));
@@ -32,6 +42,9 @@ const globalContext = {
 // Per-session SSE state: Map<sessionId, { res, send }>
 const sessions = new Map();
 
+// Streamable HTTP GET streams: Map<streamId, res>
+const mcpStreams = new Map();
+
 function sseWrite(res, event, data) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -47,12 +60,32 @@ function jsonrpcError(id, code, message) {
 async function start() {
     const { tools, routeToolCall, shutdownAll } = await loadAgents(globalContext);
 
-    // Streamable HTTP transport (MCP 2025-03-26) — for Kimi and other modern clients
+    // Streamable HTTP transport (MCP 2025-03-26) - for Kimi and other modern clients
+    // GET opens a persistent SSE stream for server→client push (spec §6.2.3)
+    app.get('/mcp', (req, res) => {
+        if (!req.headers.accept?.includes('text/event-stream')) {
+            res.status(406).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Not Acceptable: Client must accept text/event-stream' }, id: null });
+            return;
+        }
+        const streamId = randomUUID();
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+        });
+        mcpStreams.set(streamId, res);
+        const keepalive = setInterval(() => res.write(':\n\n'), 15000);
+        res.on('close', () => {
+            clearInterval(keepalive);
+            mcpStreams.delete(streamId);
+        });
+    });
+
     // Client POSTs all JSON-RPC messages here; tool calls respond with SSE for progress support
     app.post('/mcp', express.json(), async (req, res) => {
         const msg = req.body;
 
-        // Notifications have no id — just acknowledge
+        // Notifications have no id - just acknowledge
         if (msg.id === undefined || msg.id === null) {
             res.status(202).send('Accepted');
             return;
@@ -80,7 +113,7 @@ async function start() {
                 const progressToken = msg.params?._meta?.progressToken;
 
                 // Respond with SSE so progress notifications can flow during execution.
-                // Headers are flushed immediately — keepalive pings prevent client timeouts
+                // Headers are flushed immediately - keepalive pings prevent client timeouts
                 // on long-running tools (Kimi has a hardcoded request timeout).
                 res.writeHead(200, {
                     'Content-Type': 'text/event-stream',
@@ -113,7 +146,7 @@ async function start() {
         }
     });
 
-    // Legacy SSE transport — for VS Code Copilot and older clients
+    // Legacy SSE transport - for VS Code Copilot and older clients
     // Client GETs here to open stream, then POSTs to /message?sessionId=...
     app.get('/sse', (req, res) => {
         const sessionId = randomUUID();
@@ -137,7 +170,7 @@ async function start() {
         });
     });
 
-    // POST endpoint — client sends JSON-RPC requests here
+    // POST endpoint - client sends JSON-RPC requests here
     app.post('/message', express.json(), async (req, res) => {
         const sessionId = req.query.sessionId;
         const session = sessions.get(sessionId);
@@ -145,7 +178,7 @@ async function start() {
 
         const msg = req.body;
 
-        // Notifications have no id — acknowledge and don't respond on SSE
+        // Notifications have no id - acknowledge and don't respond on SSE
         if (msg.id === undefined || msg.id === null) {
             res.status(202).send('Accepted');
             return;
