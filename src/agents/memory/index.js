@@ -16,7 +16,7 @@ function chunkText(text, maxChars) {
 }
 
 function extractDomain(text) {
-    const match = text.match(/^PROJECT:\s*([^—\n]+?)\s*—\s*/);
+    const match = text.match(/^PROJECT:\s*([^\-\n]+?)\s*\-\s*/);
     if (match) {
         return {
             domain: match[1].trim(),

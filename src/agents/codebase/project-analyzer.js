@@ -2,8 +2,8 @@
  * Project Analyzer - LLM-powered project analysis
  * 
  * Two-phase analysis:
- * 1. File tree analysis → key file selection
- * 2. Content analysis → project summary
+ * 1. File tree analysis -> key file selection
+ * 2. Content analysis -> project summary
  * 
  * Uses JSON schema enforcement for reliable structured output.
  */

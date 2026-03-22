@@ -162,11 +162,13 @@ export async function loadAgents(globalContext) {
                     if (typeof mod.shutdown === 'function') {
                         console.log(`[Loader] Shutting down agent: ${config.agent}`);
                         await mod.shutdown();
+                        console.log(`[Loader] Agent ${config.agent} shutdown complete`);
                     }
                 } catch (e) {
-                    // Ignore import errors on shutdown if they were somehow deleted
+                    console.warn(`[Loader] Error shutting down agent ${config.agent}: ${e.message}`);
                 }
             }
+            console.log('[Loader] All agents shut down');
         }
     };
 }

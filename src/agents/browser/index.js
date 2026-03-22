@@ -6,33 +6,83 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Browser state tracking
 let browser = null;
 let browserIdleTimer = null;
 const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+let activePages = new Set();
+let isShuttingDown = false;
+
+function log(message) {
+    console.log(`[Browser] ${message}`);
+}
 
 async function getBrowser() {
+    if (isShuttingDown) {
+        throw new Error('Browser is shutting down');
+    }
+    
     if (!browser) {
-        console.log('[Browser] Launching Puppeteer');
-        // Basic anti-bot settings
-        browser = await puppeteer.launch({
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--disable-notifications',
-                '--window-size=1920,1080'
-            ],
-            userDataDir: path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile')
-        });
+        log('Launching Puppeteer...');
+        try {
+            // Basic anti-bot settings
+            browser = await puppeteer.launch({
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-notifications',
+                    '--window-size=1920,1080'
+                ],
+                userDataDir: path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile')
+            });
+            
+            // Listen for disconnect events
+            browser.on('disconnected', () => {
+                log('Browser disconnected event received');
+                browser = null;
+                activePages.clear();
+            });
+            
+            // Listen for target created/destroyed to track pages
+            browser.on('targetcreated', (target) => {
+                if (target.type() === 'page') {
+                    log(`Page created: ${target.url()}`);
+                }
+            });
+            
+            browser.on('targetdestroyed', (target) => {
+                if (target.type() === 'page') {
+                    log(`Page destroyed: ${target.url()}`);
+                    activePages.delete(target);
+                }
+            });
+            
+            log(`Browser launched successfully (PID: ${browser.process()?.pid})`);
+        } catch (err) {
+            log(`Failed to launch browser: ${err.message}`);
+            throw err;
+        }
     }
 
-    if (browserIdleTimer) clearTimeout(browserIdleTimer);
+    // Reset idle timer
+    if (browserIdleTimer) {
+        clearTimeout(browserIdleTimer);
+        browserIdleTimer = null;
+    }
+    
     browserIdleTimer = setTimeout(async () => {
-        if (browser) {
-            console.log('[Browser] Idle timeout reached, closing.');
-            await browser.close();
+        if (browser && !isShuttingDown) {
+            log(`Idle timeout (${BROWSER_IDLE_TIMEOUT}ms) reached, closing browser`);
+            try {
+                await browser.close();
+                log('Browser closed due to idle timeout');
+            } catch (err) {
+                log(`Error closing idle browser: ${err.message}`);
+            }
             browser = null;
+            activePages.clear();
         }
     }, BROWSER_IDLE_TIMEOUT);
 
@@ -45,39 +95,75 @@ export async function init() {
         async getPage() {
             const b = await getBrowser();
             const page = await b.newPage();
+            const pageId = Math.random().toString(36).substring(2, 8);
+            
+            // Track the page
+            activePages.add(page);
+            log(`New page opened [${pageId}], total active: ${activePages.size}`);
+            
             // Stealth evasion basics
             await page.setExtraHTTPHeaders({
                 'Accept-Language': 'en-US,en;q=0.9'
             });
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+            
             let isClosed = false;
+            
             return {
                 page,
+                pageId,
                 markUsed() {
-                    // Reset idle
+                    if (isShuttingDown) return;
+                    // Reset idle timer
                     if (browserIdleTimer) clearTimeout(browserIdleTimer);
                     browserIdleTimer = setTimeout(async () => {
-                        if (browser) await browser.close();
-                        browser = null;
+                        if (browser && !isShuttingDown) {
+                            log('Idle timeout reached, closing browser');
+                            await browser.close();
+                            browser = null;
+                            activePages.clear();
+                        }
                     }, BROWSER_IDLE_TIMEOUT);
                 },
                 async close(delay = 0) {
-                    if (isClosed) return;
+                    if (isClosed) {
+                        log(`Page [${pageId}] already closed, skipping`);
+                        return;
+                    }
                     isClosed = true;
+                    
+                    const doClose = async () => {
+                        try {
+                            if (page.isClosed()) {
+                                log(`Page [${pageId}] was already closed`);
+                            } else {
+                                await page.close();
+                                log(`Page [${pageId}] closed, remaining active: ${activePages.size - 1}`);
+                            }
+                            activePages.delete(page);
+                        } catch (err) {
+                            log(`Error closing page [${pageId}]: ${err.message}`);
+                            activePages.delete(page);
+                        }
+                    };
+                    
                     if (delay > 0) {
-                        setTimeout(() => page.close().catch(() => {}), delay);
+                        log(`Page [${pageId}] scheduled to close in ${delay}ms`);
+                        setTimeout(doClose, delay);
                     } else {
-                        await page.close().catch(() => {});
+                        await doClose();
                     }
                 }
             };
         },
         async fetch(url, options = {}) {
             // Internal wrapper used by research
-            const { page, markUsed, close } = await this.getPage();
+            const { page, markUsed, close, pageId } = await this.getPage();
             try {
+                log(`[${pageId}] Fetching: ${url}`);
                 await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
                 const html = await page.content();
+                log(`[${pageId}] Fetched ${html.length} bytes`);
                 return html;
             } finally {
                 markUsed();
@@ -88,12 +174,81 @@ export async function init() {
 }
 
 export async function shutdown() {
-    if (browserIdleTimer) clearTimeout(browserIdleTimer);
-    if (browser) {
-        console.log('[Browser] Shutting down');
-        await browser.close().catch(() => {});
-        browser = null;
+    if (isShuttingDown) {
+        log('Shutdown already in progress, waiting...');
+        return;
     }
+    
+    isShuttingDown = true;
+    log('Shutdown initiated');
+    
+    // Clear idle timer
+    if (browserIdleTimer) {
+        clearTimeout(browserIdleTimer);
+        browserIdleTimer = null;
+        log('Idle timer cleared');
+    }
+    
+    if (!browser) {
+        log('No browser instance to shut down');
+        isShuttingDown = false;
+        return;
+    }
+    
+    const pid = browser.process()?.pid;
+    log(`Closing browser (PID: ${pid}, active pages: ${activePages.size})...`);
+    
+    try {
+        // First, try to close all active pages gracefully
+        if (activePages.size > 0) {
+            log(`Closing ${activePages.size} active pages...`);
+            const closePromises = [];
+            for (const page of activePages) {
+                if (!page.isClosed()) {
+                    closePromises.push(
+                        page.close().catch(err => {
+                            log(`Error closing page during shutdown: ${err.message}`);
+                        })
+                    );
+                }
+            }
+            await Promise.all(closePromises);
+            log('All pages closed');
+        }
+        
+        // Then close the browser
+        log('Closing browser process...');
+        await browser.close();
+        log(`Browser (PID: ${pid}) closed successfully`);
+        
+    } catch (err) {
+        log(`Error during shutdown: ${err.message}`);
+        
+        // Force kill if needed
+        try {
+            const proc = browser?.process();
+            if (proc) {
+                log(`Force killing browser process ${proc.pid}...`);
+                proc.kill('SIGTERM');
+                
+                // Give it a moment, then SIGKILL if needed
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                if (!proc.killed) {
+                    proc.kill('SIGKILL');
+                    log('Process force killed');
+                } else {
+                    log('Process terminated gracefully');
+                }
+            }
+        } catch (killErr) {
+            log(`Error killing process: ${killErr.message}`);
+        }
+    }
+    
+    browser = null;
+    activePages.clear();
+    isShuttingDown = false;
+    log('Shutdown complete');
 }
 
 // Result formatting utils
@@ -134,8 +289,9 @@ async function formatResult(page, mode, url) {
 export async function browser_fetch(args, context) {
     const { url, mode = 'text', waitFor, viewport } = args;
     const bridge = await init();
-    const { page, markUsed, close } = await bridge.getPage();
+    const { page, markUsed, close, pageId } = await bridge.getPage();
     try {
+        log(`[${pageId}] browser_fetch: ${url}`);
         if (viewport) await page.setViewport(viewport);
         
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
@@ -152,8 +308,9 @@ export async function browser_fetch(args, context) {
 export async function browser_click(args, context) {
     const { url, selector, waitAfter, mode = 'text' } = args;
     const bridge = await init();
-    const { page, markUsed, close } = await bridge.getPage();
+    const { page, markUsed, close, pageId } = await bridge.getPage();
     try {
+        log(`[${pageId}] browser_click: ${url}, selector: ${selector}`);
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector(selector);
         await page.click(selector);
@@ -168,8 +325,9 @@ export async function browser_click(args, context) {
 export async function browser_fill(args, context) {
     const { url, fields, submit, waitAfter, mode = 'text' } = args;
     const bridge = await init();
-    const { page, markUsed, close } = await bridge.getPage();
+    const { page, markUsed, close, pageId } = await bridge.getPage();
     try {
+        log(`[${pageId}] browser_fill: ${url}, fields: ${fields.map(f => f.selector).join(', ')}`);
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         for (const f of fields) {
             await page.waitForSelector(f.selector);
@@ -190,8 +348,9 @@ export async function browser_fill(args, context) {
 export async function browser_evaluate(args, context) {
     const { url, script, waitFor } = args;
     const bridge = await init();
-    const { page, markUsed, close } = await bridge.getPage();
+    const { page, markUsed, close, pageId } = await bridge.getPage();
     try {
+        log(`[${pageId}] browser_evaluate: ${url}`);
         await page.goto(url, { waitUntil: 'domcontentloaded' });
         if (waitFor) await page.waitForSelector(waitFor).catch(()=>{});
         
@@ -211,8 +370,9 @@ export async function browser_evaluate(args, context) {
 export async function browser_pdf(args, context) {
     const { url, format = 'A4', landscape = false, printBackground = true } = args;
     const bridge = await init();
-    const { page, markUsed, close } = await bridge.getPage();
+    const { page, markUsed, close, pageId } = await bridge.getPage();
     try {
+        log(`[${pageId}] browser_pdf: ${url}`);
         await page.goto(url, { waitUntil: 'networkidle2' });
         const pdfFile = await page.pdf({ format, landscape, printBackground });
         return {

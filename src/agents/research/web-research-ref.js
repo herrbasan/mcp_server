@@ -122,7 +122,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       return {
         content: [{ 
           type: 'text', 
-          text: `❌ Query preparation failed: ${err.message}\n\nFalling back to basic enhancement: "${this.enhanceQuery(user_query)}"` 
+          text: `[ERROR] Query preparation failed: ${err.message}\n\nFalling back to basic enhancement: "${this.enhanceQuery(user_query)}"` 
         }],
         isError: true
       };
@@ -190,7 +190,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       this.setProgressCallback((data) => onProgress(data.progress, data.total, data.message));
       
       // Initial progress
-      this.sendProgress(0, 100, '📋 Research job created, starting...');
+      this.sendProgress(0, 100, '[INIT] Research job created, starting...');
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeout);
@@ -289,7 +289,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
     
     try {
-      console.error(`\n🔍 Research: "${query}"`);
+      console.error(`\n[Research] "${query}"`);
       console.error(`   Limits: ${max_pages} pages, ${this.timeout/1000}s timeout`);
       
       this.sendProgress(0, 5, `Starting research: "${query}"`);
@@ -307,12 +307,12 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     } catch (err) {
       if (err.name === 'AbortError') {
         return {
-          content: [{ type: 'text', text: `⏱️ Research timeout (${this.timeout/1000}s). Try using async_mode=true` }],
+          content: [{ type: 'text', text: `[TIMEOUT] Research timeout (${this.timeout/1000}s). Try using async_mode=true` }],
           isError: true
         };
       }
       return {
-        content: [{ type: 'text', text: `❌ Research error: ${err.message}` }],
+        content: [{ type: 'text', text: `[ERROR] Research error: ${err.message}` }],
         isError: true
       };
     } finally {
@@ -321,7 +321,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
 
   async researchTopic(query, maxPages, engines, signal) {
-    this.sendProgress(0, 10, '🔍 Initializing research...');
+    this.sendProgress(0, 10, '[INIT] Initializing research...');
     
     const visitedUrls = new Set();
     let allScrapedContent = [];
@@ -330,7 +330,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     
     while (iteration < this.limits.maxIterations) {
       console.error(`\n${'='.repeat(60)}`);
-      console.error(`🔄 ITERATION ${iteration + 1}/${this.limits.maxIterations}`);
+      console.error(`[ITERATION ${iteration + 1}/${this.limits.maxIterations}]`);
       console.error(`${'='.repeat(60)}`);
       
       const iterPhase = iteration * 5;
@@ -340,7 +340,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       const iterationQuery = iteration === 0 ? query : currentSynthesis.followUpQuery;
       const enhancedQuery = this.enhanceQuery(iterationQuery);
       
-      console.error(`\n🔍 Query: "${iterationQuery}"`);
+      console.error(`\n[Query] "${iterationQuery}"`);
       if (enhancedQuery !== iterationQuery) {
         console.error(`   Enhanced to: "${enhancedQuery}"`);
       }
@@ -348,7 +348,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       
       // Phase 1: Search engines
       console.error('\n📡 Phase 1: Searching...');
-      this.sendProgress(iterPhase + 1, 10, '🔍 Searching across engines...');
+      this.sendProgress(iterPhase + 1, 10, '[SEARCH] Searching across engines...');
       const searchResults = await this.searchMultipleEngines(enhancedQuery, engines, signal);
       
       // Filter out visited URLs
@@ -362,7 +362,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
 
       // Phase 2: LLM selects best sources
       console.error('\n🤖 Phase 2: Selecting best sources...');
-      this.sendProgress(iterPhase + 2, 10, `📋 Selecting best ${maxPages} sources...`);
+      this.sendProgress(iterPhase + 2, 10, `[SELECT] Selecting best ${maxPages} sources...`);
       const selectedUrls = await this.selectBestSources(iterationQuery, unvisitedResults, maxPages, signal);
       console.error(`   Selected ${selectedUrls.length} URLs to scrape`);
 
@@ -377,7 +377,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       allScrapedContent.push(...newContent);
 
       if (allScrapedContent.length === 0) {
-        return '❌ Failed to scrape any content. Sources may be blocked or unavailable.';
+        return '[ERROR] Failed to scrape any content. Sources may be blocked or unavailable.';
       }
 
       // Phase 4: Cross-reference and synthesize
@@ -387,22 +387,22 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       
       // Phase 5: Self-evaluation (only if not final iteration)
       if (iteration < this.limits.maxIterations - 1) {
-        console.error('\n🎯 Phase 5: Self-evaluation...');
-        this.sendProgress(iterPhase + 5, 10, '🎯 Evaluating synthesis quality...');
+        console.error('\n[EVAL] Phase 5: Self-evaluation...');
+        this.sendProgress(iterPhase + 5, 10, '[EVAL] Evaluating synthesis quality...');
         const evaluation = await this.evaluateSynthesis(query, synthesis, signal);
         
         console.error(`   Confidence: ${evaluation.confidence}%`);
         console.error(`   Gaps: ${evaluation.gaps.length > 0 ? evaluation.gaps.join('; ') : 'none'}`);
         
         if (evaluation.confidence >= 80) {
-          console.error(`   ✅ Confidence threshold met, research complete`);
+          console.error(`   [DONE] Confidence threshold met, research complete`);
           currentSynthesis = { text: synthesis, ...evaluation };
           break;
         }
         
         if (evaluation.followUpQuery) {
-          console.error(`   🔄 Follow-up: "${evaluation.followUpQuery}"`);
-          this.sendProgress(iterPhase + 5, 10, `🔄 Follow-up: "${evaluation.followUpQuery}"`);
+          console.error(`   [Follow-up] "${evaluation.followUpQuery}"`);
+          this.sendProgress(iterPhase + 5, 10, `[Follow-up] "${evaluation.followUpQuery}"`);
           currentSynthesis = { text: synthesis, ...evaluation };
           iteration++;
         } else {
@@ -416,28 +416,28 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       }
     }
     
-    console.error('\n✅ Research complete\n');
-    this.sendProgress(10, 10, '✅ Research complete');
+    console.error('\n[DONE] Research complete\n');
+    this.sendProgress(10, 10, '[DONE] Research complete');
     
     if (!currentSynthesis || !currentSynthesis.text) {
-      return '❌ Research failed: No content could be synthesized from available sources.';
+      return '[ERROR] Research failed: No content could be synthesized from available sources.';
     }
     
     return currentSynthesis.text;
   }
 
   async researchTopicFast(query, maxPages = 10, engines, signal) {
-    this.sendProgress(0, 6, '🚀 Starting fast research mode...');
+    this.sendProgress(0, 6, '[FAST] Starting fast research mode...');
     
     const startTime = Date.now();
-    console.error(`\n🚀 FAST RESEARCH MODE: "${query}"`);
+    console.error(`\n[FAST MODE] "${query}"`);
     console.error(`   Target: ${maxPages} pages, streaming synthesis`);
     
     console.error('\n📡 Phase 1: Searching...');
     const searchResults = await this.searchMultipleEngines(query, engines, signal);
     
     if (searchResults.length === 0) {
-      return '❌ No search results found.';
+      return '[ERROR] No search results found.';
     }
     
     console.error(`   Prioritizing ${searchResults.length} results...`);
@@ -474,14 +474,14 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
           minTotalChars: 3000,
           minHighQualitySources: 2 
         })) {
-          console.error(`   ✅ Early termination: sufficient content gathered`);
+          console.error(`   [DONE] Early termination: sufficient content gathered`);
           break;
         }
       }
     }
     
     if (scrapedContent.length === 0) {
-      return '❌ Failed to scrape any content from sources.';
+      return '[ERROR] Failed to scrape any content from sources.';
     }
     
     console.error(`   Scraped ${scrapedContent.length} pages in ${Date.now() - startTime}ms`);
@@ -490,8 +490,8 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     this.sendProgress(5, 6, '🧠 Synthesizing findings...');
     synthesis = await this.synthesizeContent(query, scrapedContent, signal);
     
-    console.error(`\n✅ Research complete in ${Date.now() - startTime}ms\n`);
-    this.sendProgress(6, 6, '✅ Research complete');
+    console.error(`\n[DONE] Research complete in ${Date.now() - startTime}ms\n`);
+    this.sendProgress(6, 6, '[DONE] Research complete');
     
     return synthesis;
   }
@@ -509,7 +509,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         close();
       }
     } catch (err) {
-      console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
+      console.error(`   [FAIL] ${url.substring(0, 60)}... (${err.message})`);
       return null;
     }
   }
@@ -523,14 +523,14 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     results.forEach((result, i) => {
       if (result.status === 'fulfilled') {
         const engineResults = result.value;
-        console.error(`   ✓ ${engines[i]}: ${engineResults.length} results`);
+        console.error(`   [OK] ${engines[i]}: ${engineResults.length} results`);
         // Log first result source for verification
         if (engineResults.length > 0) {
           console.error(`      Sample: ${engineResults[0].url?.substring(0, 50)}... (_engine: ${engineResults[0]._engine})`);
         }
         allResults.push(...engineResults);
       } else {
-        console.error(`   ⚠️ ${engines[i]} search failed: ${result.reason.message}`);
+        console.error(`   [WARN] ${engines[i]} search failed: ${result.reason.message}`);
         console.error(`   Stack: ${result.reason.stack?.substring(0, 200)}`);
       }
     });
@@ -688,7 +688,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     
     console.error(`   [DEBUG] Pre-filter: ${searchResults.length} → ${filtered.length} sources`);
     if (filtered.length === 0) {
-      console.error('   ⚠️ All sources filtered out, falling back to top results');
+      console.error('   [WARN] All sources filtered out, falling back to top results');
       return searchResults.slice(0, maxPages).map(r => r.url);
     }
     
@@ -727,14 +727,14 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         }
         
         if (valid.length > 0) {
-          console.error(`   ✓ LLM selected ${valid.length} sources`);
+          console.error(`   [OK] LLM selected ${valid.length} sources`);
           return valid.slice(0, maxPages);
         }
       }
       
       throw new Error('No valid indices in response');
     } catch (err) {
-      console.error(`   ⚠️ LLM selection failed (${err.message}), using top filtered results`);
+      console.error(`   [WARN] LLM selection failed (${err.message}), using top filtered results`);
       return filtered.slice(0, maxPages).map(r => r.url);
     }
   }
@@ -761,10 +761,10 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       batchResults.forEach((result, idx) => {
         if (result.status === 'fulfilled' && result.value) {
           results.push(result.value);
-          console.error(`   ✓ Scraped: ${batch[idx]} (${Math.round(result.value.content.length / 1024)}KB)`);
+          console.error(`   [OK] Scraped: ${batch[idx]} (${Math.round(result.value.content.length / 1024)}KB)`);
         } else {
           const reason = result.reason?.message || result.reason || 'Unknown error';
-          console.error(`   ✗ Failed: ${batch[idx]}`);
+          console.error(`   [FAIL] Failed: ${batch[idx]}`);
           console.error(`      Reason: ${reason}`);
         }
       });
@@ -786,7 +786,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       markUsed();
       return result;
     } catch (err) {
-      console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
+      console.error(`   [FAIL] ${url.substring(0, 60)}... (${err.message})`);
       return null;
     } finally {
       close();
@@ -811,7 +811,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         html = await Promise.race([scrapePromise, timeoutPromise]);
       } catch (err) {
         if (err.message === 'Scrape timeout') {
-          console.error(`   ⏱️  ${url.substring(0, 60)}... (timeout, using partial content)`);
+          console.error(`   [TIMEOUT] ${url.substring(0, 60)}... (timeout, using partial content)`);
           html = await page.content().catch(() => null);
         } else {
           throw err;
@@ -819,7 +819,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       }
       
       if (!html) {
-        console.error(`   ✗ ${url.substring(0, 60)}... (no content)`);
+        console.error(`   [FAIL] ${url.substring(0, 60)}... (no content)`);
         return null;
       }
       
@@ -830,17 +830,17 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       });
       
       if (!extracted || !extracted.success) {
-        console.error(`   ✗ ${url.substring(0, 60)}... (extraction failed: ${extracted?.error || 'unknown'})`);
+        console.error(`   [FAIL] ${url.substring(0, 60)}... (extraction failed: ${extracted?.error || 'unknown'})`);
         return null;
       }
       
       const validation = validateContent(extracted, url);
       if (!validation.valid) {
-        console.error(`   ✗ ${url.substring(0, 60)}... (content invalid: ${validation.reason})`);
+        console.error(`   [FAIL] ${url.substring(0, 60)}... (content invalid: ${validation.reason})`);
         return null;
       }
       
-      console.error(`   ✓ ${url.substring(0, 60)}... (${extracted.strategy})`);
+      console.error(`   [OK] ${url.substring(0, 60)}... (${extracted.strategy})`);
       
       return { 
         url, 
@@ -852,7 +852,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         stats: extracted.stats
       };
     } catch (err) {
-      console.error(`   ✗ ${url.substring(0, 60)}... (${err.message})`);
+      console.error(`   [FAIL] ${url.substring(0, 60)}... (${err.message})`);
       return null;
     }
   }

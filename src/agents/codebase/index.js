@@ -174,7 +174,7 @@ export class CodebaseIndexingService {
    * Supports:
    * - Absolute path: "D:\\Projects\\MyApp" or "\\\server\\share\\project"
    * - Space + project: { space: "COOLKID-Work", project: "MyApp" }
-   *   → Resolves to first accessible path from space config
+   *   -> Resolves to first accessible path from space config
    */
   async resolveSourcePath(args) {
     // If absolute source path provided, use it directly

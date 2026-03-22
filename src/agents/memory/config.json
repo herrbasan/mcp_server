@@ -18,7 +18,7 @@
         },
         {
             "name": "recall",
-            "description": "Search memories. Results show confidence: ✓=proven, ~=promising, ?=hypothesis.",
+            "description": "Search memories. Results show confidence: [v]=proven, ~=promising, ?=hypothesis.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

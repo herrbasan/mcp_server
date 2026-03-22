@@ -49,7 +49,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                             pendingRequests.delete(request_id);
                         }
                     }
-                    // chat.progress (routing, context_stats) — informational, no action needed
+                    // chat.progress (routing, context_stats) - informational, no action needed
                 }
                 
                 // Handle direct JSON-RPC error responses (e.g. bad request before stream starts)
