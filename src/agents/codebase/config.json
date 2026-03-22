@@ -20,6 +20,7 @@
     },
     {
       "name": "index_codebase",
+      "adminOnly": true,
       "description": "Index a new codebase for semantic search. Provide either \"source\" (absolute path) OR \"space\" (configured space name).",
       "inputSchema": {
         "type": "object",
@@ -349,6 +350,7 @@
     },
     {
       "name": "refresh_codebase",
+      "adminOnly": true,
       "description": "Incremental refresh of codebase index",
       "inputSchema": {
         "type": "object",
@@ -369,6 +371,7 @@
     },
     {
       "name": "remove_codebase",
+      "adminOnly": true,
       "description": "Remove a codebase and all its data",
       "inputSchema": {
         "type": "object",
@@ -421,6 +424,7 @@
     },
     {
       "name": "run_maintenance",
+      "adminOnly": true,
       "description": "Manually trigger maintenance cycle to refresh stale codebases",
       "inputSchema": {
         "type": "object",
@@ -434,6 +438,7 @@
     },
     {
       "name": "get_maintenance_stats",
+      "adminOnly": true,
       "description": "Get maintenance statistics and status",
       "inputSchema": {
         "type": "object",
@@ -442,6 +447,7 @@
     },
     {
       "name": "analyze_codebase",
+      "adminOnly": true,
       "description": "Run LLM analysis to generate project description and identify key files. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",

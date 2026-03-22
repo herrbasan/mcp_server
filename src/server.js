@@ -58,7 +58,55 @@ function jsonrpcError(id, code, message) {
 }
 
 async function start() {
-    const { tools, routeToolCall, shutdownAll } = await loadAgents(globalContext);
+    const { tools, adminTools, routeToolCall, shutdownAll } = await loadAgents(globalContext);
+
+    // Admin API - localhost only, no auth needed (loopback-scoped)
+    const isLoopback = (addr) => addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+    const adminOnly = (req, res, next) => {
+        if (!isLoopback(req.socket.remoteAddress)) {
+            res.status(403).json({ error: 'Forbidden: admin API is localhost-only' });
+            return;
+        }
+        next();
+    };
+
+    const deepMerge = (target, source) => {
+        const result = { ...target };
+        for (const key of Object.keys(source)) {
+            if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) && target[key] && typeof target[key] === 'object')
+                result[key] = deepMerge(target[key], source[key]);
+            else result[key] = source[key];
+        }
+        return result;
+    };
+
+    // GET /api/tools - all tools (public + admin-only)
+    app.get('/api/tools', adminOnly, (req, res) => {
+        res.json({ tools: [...tools, ...adminTools] });
+    });
+
+    // POST /api/tools/call - call any tool by name (including admin-only)
+    app.post('/api/tools/call', adminOnly, express.json(), async (req, res) => {
+        const { name, args = {} } = req.body || {};
+        if (!name) { res.status(400).json({ error: 'name required' }); return; }
+        const result = await routeToolCall(name, args, globalContext);
+        res.json(result);
+    });
+
+    // GET /api/config - read current config
+    app.get('/api/config', adminOnly, (req, res) => {
+        res.json(globalContext.config);
+    });
+
+    // PATCH /api/config - deep-merge update config (persists to config.json)
+    app.patch('/api/config', adminOnly, express.json(), (req, res) => {
+        const patch = req.body;
+        if (!patch || typeof patch !== 'object') { res.status(400).json({ error: 'body must be a JSON object' }); return; }
+        const updated = deepMerge(globalContext.config, patch);
+        fs.writeFileSync('config.json', JSON.stringify(updated, null, 2), 'utf8');
+        globalContext.config = updated;
+        res.json({ ok: true, config: updated });
+    });
 
     // Streamable HTTP transport (MCP 2025-03-26) - for Kimi and other modern clients
     // GET opens a persistent SSE stream for server→client push (spec §6.2.3)

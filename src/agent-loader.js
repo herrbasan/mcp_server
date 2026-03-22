@@ -8,6 +8,7 @@ export async function loadAgents(globalContext) {
     const agentsDir = path.join(__dirname, 'agents');
     const agentConfigs = new Map();
     const allTools = [];
+    const adminTools = [];
     const routeMap = new Map();
 
     if (!fs.existsSync(agentsDir)) {
@@ -118,16 +119,18 @@ export async function loadAgents(globalContext) {
                 console.error(`[Loader] Agent ${config.agent} is missing exported handler for tool: ${tool.name}`);
                 process.exit(1);
             }
-            allTools.push(tool);
+            if (tool.adminOnly) adminTools.push(tool);
+            else allTools.push(tool);
             routeMap.set(tool.name, { agentName: config.agent, handler });
         }
     }
 
-    console.log(`[Loader] Loaded ${sortedAgents.length} agents, ${allTools.length} tools total.`);
+    console.log(`[Loader] Loaded ${sortedAgents.length} agents, ${allTools.length} tools (${adminTools.length} admin-only).`);
 
     // 4. Return unified interfaces
     return {
         tools: allTools,
+        adminTools,
         async routeToolCall(name, args, requestContext) {
             const route = routeMap.get(name);
             if (!route) {
