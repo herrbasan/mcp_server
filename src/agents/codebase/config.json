@@ -54,7 +54,7 @@
     },
     {
       "name": "search_codebase",
-      "description": "Primary search tool for single codebase. RECOMMENDED over grep_codebase for most searches. Combines semantic (meaning) + keyword (exact) matching. Use strategy:keyword for fast name lookups, strategy:semantic for concept queries. Use analyze:true to get AI-summarized results (saves 50-90% tokens). Codebase name supports partial matching.",
+      "description": "[RECOMMENDED] Primary focused search tool for a single codebase. Very fast. Combines semantic (meaning) + keyword (exact) matching. ALWAYS use this first before falling back to search_all_codebases. Use strategy:keyword for fast exact name lookups, strategy:semantic for conceptual queries. Use analyze:true to get an AI-summarized response (saves tokens). Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -150,7 +150,7 @@
     },
     {
       "name": "search_keyword",
-      "description": "FAST indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Use analyze:true for AI summary. Codebase name supports partial matching.",
+      "description": "[FASTEST] Indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -190,7 +190,7 @@
     },
     {
       "name": "grep_codebase",
-      "description": "Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Use ONLY when: (1) You need regex patterns like \"function.*predict\\(\", (2) You need exact line numbers for editing, (3) You suspect index is stale. OTHERWISE prefer search_keyword (faster for names) or search_semantic (for concepts). Slower than indexed search (1-3s vs <200ms). Use analyze:true to get structured analysis. Codebase name supports partial matching.",
+      "description": "Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Slowest single-codebase search. Use ONLY when: (1) You need complex regex patterns, (2) You need exact line numbers for editing, (3) You strongly suspect the index is stale. OTHERWISE prefer search_keyword (faster for exact names) or search_semantic (for concepts). Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -250,7 +250,7 @@
     },
     {
       "name": "search_all_codebases",
-      "description": "[RECOMMENDED] Search across ALL indexed codebases at once. Perfect for finding \"how is X implemented across different projects?\" Strategies: hybrid (default, best overall), semantic (conceptual), keyword (fast exact match). AVOID strategy:grep unless you need regex - it is 10x slower. Use analyze:true (strongly recommended) to get AI-summarized insights instead of 50+ raw snippets (saves 50-90% tokens).",
+      "description": "[AVOID IF POSSIBLE] Slowest search method. Search across ALL indexed codebases at once. ONLY use this as a last resort when focused searches on individual codebases have failed, or for extremely broad queries like \"how is X implemented across different projects?\" Use analyze:true to get AI-summarized insights instead of raw snippets.",
       "inputSchema": {
         "type": "object",
         "properties": {

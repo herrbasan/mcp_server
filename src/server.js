@@ -1,12 +1,20 @@
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import cors from 'cors';
 import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
-import { loadAgents } from './agent-loader.js';
-import { createGatewayClient } from './gateway-client.js';
+import { createLogger, interceptConsole } from './utils/logger.js';
 
 dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logger = createLogger({ logsDir: path.join(__dirname, '../logs'), sessionPrefix: 'mcp' });
+interceptConsole(logger);
+
+import { loadAgents } from './agent-loader.js';
+import { createGatewayClient } from './gateway-client.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'mcp-server-orchestrator', version: '2.0.0' };
@@ -198,7 +206,7 @@ async function start() {
     // Client GETs here to open stream, then POSTs to /message?sessionId=...
     app.get('/sse', (req, res) => {
         const sessionId = randomUUID();
-        console.log(`[MCP] New session: ${sessionId}`);
+        logger.info(`New session`, { sessionId }, 'MCP');
 
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
@@ -213,7 +221,7 @@ async function start() {
         sessions.set(sessionId, { res, send });
 
         res.on('close', () => {
-            console.log(`[MCP] Session disconnected: ${sessionId}`);
+            logger.info(`Session disconnected`, { sessionId }, 'MCP');
             sessions.delete(sessionId);
         });
     });
@@ -280,8 +288,8 @@ async function start() {
     });
 
     const server = app.listen(PORT, HOST, () => {
-        console.log(`[MCP] Server running at http://${HOST}:${PORT}`);
-        console.log(`[MCP] SSE endpoint at http://${HOST}:${PORT}/sse`);
+        logger.info(`Server running at http://${HOST}:${PORT}`, null, 'MCP');
+        logger.info(`SSE endpoint at http://${HOST}:${PORT}/sse`, null, 'MCP');
     });
 
     // Keepalive comment lines to prevent proxy/client timeouts
@@ -292,7 +300,7 @@ async function start() {
     }, 30000);
 
     process.on('SIGINT', async () => {
-        console.log('\n[SHUTDOWN] Exiting gracefully...');
+        logger.info('Exiting gracefully...', null, 'SHUTDOWN');
         clearInterval(keepalive);
         server.close();
         for (const [, session] of sessions) session.res.end();
@@ -303,6 +311,6 @@ async function start() {
 }
 
 start().catch(err => {
-    console.error('[FATAL] Failed to start server:', err);
+    logger.error('Failed to start server', err, null, 'FATAL');
     process.exit(1);
 });

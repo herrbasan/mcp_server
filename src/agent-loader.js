@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getLogger } from './utils/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logger = getLogger();
 
 export async function loadAgents(globalContext) {
     const agentsDir = path.join(__dirname, 'agents');
@@ -27,13 +29,13 @@ export async function loadAgents(globalContext) {
         try {
             const config = JSON.parse(configStr);
             if (!config.agent || !Array.isArray(config.tools)) {
-                console.warn(`[Loader] Invalid config in ${folder}, skipping.`);
+                logger.warn(`Invalid config in ${folder}, skipping.`, null, 'Loader');
                 continue;
             }
             config._folder = folder;
             agentConfigs.set(config.agent, config);
         } catch (e) {
-            console.error(`[Loader] Failed to parse config.json in ${folder}`, e);
+            logger.error(`Failed to parse config.json in ${folder}`, e, null, 'Loader');
         }
     }
 
@@ -53,7 +55,7 @@ export async function loadAgents(globalContext) {
                 if (agentConfigs.has(dep)) {
                     visit(dep);
                 } else {
-                    console.warn(`[Loader] Agent ${agentName} depends on unknown agent: ${dep}`);
+                    logger.warn(`Agent ${agentName} depends on unknown agent: ${dep}`, null, 'Loader');
                 }
             }
         }
@@ -69,7 +71,7 @@ export async function loadAgents(globalContext) {
     // 3. Import and initialize
     for (const config of sortedAgents) {
         const folder = config._folder;
-        console.log(`[Loader] Initializing agent: ${config.agent}`);
+        logger.info(`Initializing agent: ${config.agent}`, null, 'Loader');
         
         // Auto-load prompts
         const promptsDir = path.join(agentsDir, folder, 'prompts');
@@ -89,7 +91,7 @@ export async function loadAgents(globalContext) {
         try {
             mod = await import(indexUrl);
         } catch (e) {
-            console.error(`[Loader] Failed to import ${folder}/index.js`, e);
+            logger.error(`Failed to import ${folder}/index.js`, e, null, 'Loader');
             process.exit(1); // Hard fail
         }
 
@@ -104,7 +106,7 @@ export async function loadAgents(globalContext) {
                 const instance = await mod.init(localContext);
                 globalContext.agents.set(config.agent, instance);
             } catch (e) {
-                console.error(`[Loader] Failed to initialize agent ${config.agent}`, e);
+                logger.error(`Failed to initialize agent ${config.agent}`, e, null, 'Loader');
                 process.exit(1); // Hard fail
             }
         } else {
@@ -116,7 +118,7 @@ export async function loadAgents(globalContext) {
             if (!tool.name) continue;
             const handler = mod[tool.name];
             if (typeof handler !== 'function') {
-                console.error(`[Loader] Agent ${config.agent} is missing exported handler for tool: ${tool.name}`);
+                logger.error(`Agent ${config.agent} is missing exported handler for tool: ${tool.name}`, null, null, 'Loader');
                 process.exit(1);
             }
             if (tool.adminOnly) adminTools.push(tool);
@@ -125,7 +127,7 @@ export async function loadAgents(globalContext) {
         }
     }
 
-    console.log(`[Loader] Loaded ${sortedAgents.length} agents, ${allTools.length} tools (${adminTools.length} admin-only).`);
+    logger.info(`Loaded ${sortedAgents.length} agents, ${allTools.length} tools (${adminTools.length} admin-only).`, null, 'Loader');
 
     // 4. Return unified interfaces
     return {
@@ -146,10 +148,14 @@ export async function loadAgents(globalContext) {
                 prompts: requestContext.prompts.get(route.agentName) || {}
             };
 
+            logger.info(`Executing tool ${name}...`, { args }, `Agent:${route.agentName}`);
+
             try {
-                return await route.handler(args, localScopeCtx);
+                const result = await route.handler(args, localScopeCtx);
+                logger.info(`Tool ${name} completed successfully`, null, `Agent:${route.agentName}`);
+                return result;
             } catch (err) {
-                console.error(`[Agent:${route.agentName}] Error in ${name}:`, err);
+                logger.error(`Error in ${name}:`, err, null, `Agent:${route.agentName}`);
                 return {
                     content: [{ type: "text", text: `Error: ${err.message}` }],
                     isError: true
@@ -163,15 +169,15 @@ export async function loadAgents(globalContext) {
                     const indexUrl = `file://${path.join(agentsDir, folder, 'index.js').replace(/\\/g, '/')}`;
                     const mod = await import(indexUrl);
                     if (typeof mod.shutdown === 'function') {
-                        console.log(`[Loader] Shutting down agent: ${config.agent}`);
+                        logger.info(`Shutting down agent: ${config.agent}`, null, 'Loader');
                         await mod.shutdown();
-                        console.log(`[Loader] Agent ${config.agent} shutdown complete`);
+                        logger.info(`Agent ${config.agent} shutdown complete`, null, 'Loader');
                     }
                 } catch (e) {
-                    console.warn(`[Loader] Error shutting down agent ${config.agent}: ${e.message}`);
+                    logger.warn(`Error shutting down agent ${config.agent}: ${e.message}`, null, 'Loader');
                 }
             }
-            console.log('[Loader] All agents shut down');
+            logger.info('All agents shut down', null, 'Loader');
         }
     };
 }

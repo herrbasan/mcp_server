@@ -1,4 +1,7 @@
 import { randomUUID } from 'crypto';
+import { getLogger } from './utils/logger.js';
+
+const logger = getLogger();
 
 export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
     let ws = null;
@@ -8,14 +11,19 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
     // Map<requestId, { resolve, reject, onDelta, response } >
     const pendingRequests = new Map();
 
+    function summarizeText(text, maxLength = 120) {
+        if (!text) return '';
+        return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
+    }
+
     function connect() {
         if (isClosed) return;
         
-        console.log(`[Gateway] Connecting to WebSocket: ${wsUrl}`);
+        logger.info(`Connecting to WebSocket: ${wsUrl}`, null, 'Gateway');
         ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
-            console.log('[Gateway] WebSocket connected');
+            logger.info('WebSocket connected', null, 'Gateway');
             reconnectAttempts = 0;
         };
 
@@ -30,13 +38,51 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                         const req = pendingRequests.get(request_id);
                         if (req) {
                             const content = choices?.[0]?.delta?.content || '';
+                            req.deltaCount = (req.deltaCount || 0) + 1;
+                            req.totalChars = (req.totalChars || 0) + content.length;
+                            const deltaMeta = {
+                                requestId: request_id,
+                                deltaCount: req.deltaCount,
+                                totalChars: req.totalChars,
+                                chunkChars: content.length,
+                                elapsedMs: Date.now() - req.startedAt,
+                                hasContent: Boolean(content)
+                            };
+                            if (content && !req.loggedFirstDelta) {
+                                req.loggedFirstDelta = true;
+                                logger.debug(`[Gateway] First delta for ${request_id}`, {
+                                    preview: summarizeText(content),
+                                    chars: content.length
+                                });
+                            } else if (content && (req.deltaCount % 25 === 0)) {
+                                logger.debug(`[Gateway] Delta chunk ${req.deltaCount} for ${request_id}`, {
+                                    totalChars: req.totalChars,
+                                    chunkChars: content.length,
+                                    preview: summarizeText(content, 60)
+                                });
+                            }
+                            if (req.onDelta) { 
+                                // Explicit check that it is being passed
+                                req.onDelta(content, deltaMeta); 
+                            }
                             if (content) req.response.content += content;
-                            if (req.onDelta) req.onDelta(content);
+                        }
+                    } else if (msg.method === 'chat.progress') {
+                        const { request_id, phase, context } = msg.params;
+                        const req = pendingRequests.get(request_id);
+                        if (req && req.onProgress) {
+                            req.onProgress(phase, context);
                         }
                     } else if (msg.method === 'chat.done') {
                         const { request_id, cancelled } = msg.params;
                         const req = pendingRequests.get(request_id);
                         if (req) {
+                            logger.debug(`[Gateway] chat.done for ${request_id}`, {
+                                cancelled,
+                                durationMs: Date.now() - req.startedAt,
+                                deltaCount: req.deltaCount || 0,
+                                totalChars: req.totalChars || 0
+                            });
                             req.response.cancelled = cancelled;
                             req.resolve(req.response);
                             pendingRequests.delete(request_id);
@@ -45,6 +91,12 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                         const { request_id, error } = msg.params;
                         const req = pendingRequests.get(request_id);
                         if (req) {
+                            logger.debug(`[Gateway] chat.error for ${request_id}`, {
+                                durationMs: Date.now() - req.startedAt,
+                                deltaCount: req.deltaCount || 0,
+                                totalChars: req.totalChars || 0,
+                                error: error?.message || String(error)
+                            });
                             req.reject(new Error(error?.message || String(error)));
                             pendingRequests.delete(request_id);
                         }
@@ -61,7 +113,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                     }
                 }
             } catch (err) {
-                console.error('[Gateway] Failed to parse message:', err);
+                logger.error('Failed to parse message:', err, null, 'Gateway');
             }
         };
 
@@ -75,13 +127,13 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
 
             const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
             reconnectAttempts++;
-            console.log(`[Gateway] WebSocket disconnected. Reconnecting in ${delay}ms...`);
+            logger.info(`WebSocket disconnected. Reconnecting in ${delay}ms...`, null, 'Gateway');
             setTimeout(connect, delay);
         };
 
         ws.onerror = (err) => {
             // Error is handled mostly by close, just log
-            console.error('[Gateway] WebSocket error');
+            logger.error('WebSocket error', err, null, 'Gateway');
         };
     }
 
@@ -125,15 +177,32 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             return response.content;
         },
 
-        async chat({ model, messages, systemPrompt, maxTokens, temperature, responseFormat, onDelta }) {
+        async chat({ model, messages, systemPrompt, maxTokens, temperature, responseFormat, onDelta, onProgress }) {
             const id = randomUUID();
             // Prepend system prompt as a system message if provided
             const fullMessages = systemPrompt
                 ? [{ role: 'system', content: systemPrompt }, ...messages]
                 : messages;
             return new Promise((resolve, reject) => {
-                pendingRequests.set(id, { resolve, reject, onDelta, response: { content: '' } });
+                pendingRequests.set(id, {
+                    resolve,
+                    reject,
+                    onDelta,
+                    onProgress,
+                    response: { content: '' },
+                    startedAt: Date.now(),
+                    deltaCount: 0,
+                    totalChars: 0,
+                    loggedFirstDelta: false
+                });
                 try {
+                    logger.debug(`[Gateway] Sending chat.create for ${id}`, {
+                        model,
+                        messageCount: fullMessages.length,
+                        promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),
+                        stream: true,
+                        hasResponseFormat: Boolean(responseFormat)
+                    });
                     send({
                         jsonrpc: "2.0",
                         id,
@@ -144,7 +213,8 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                             max_tokens: maxTokens,
                             temperature,
                             response_format: responseFormat,
-                            strip_thinking: true
+                            strip_thinking: true,
+                            stream: true
                         }
                     });
                 } catch (err) {
