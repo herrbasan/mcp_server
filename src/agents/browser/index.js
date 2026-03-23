@@ -26,6 +26,35 @@ function log(message) {
     console.log(`[Browser] ${message}`);
 }
 
+// Retry helper with exponential backoff
+async function withRetry(fn, options = {}) {
+    const { maxRetries = 3, baseDelay = 500, onRetry } = options;
+    let lastError;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn(attempt);
+        } catch (err) {
+            lastError = err;
+
+            // Don't retry on hard errors
+            if (err.message.includes('Session not found') ||
+                err.message.includes('sessionId is required') ||
+                err.message.includes('Navigation failed') && attempt === 0) {
+                throw err;
+            }
+
+            if (attempt < maxRetries) {
+                const delay = baseDelay * Math.pow(2, attempt);
+                if (onRetry) onRetry(attempt + 1, maxRetries + 1, err.message, delay);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+
+    throw lastError;
+}
+
 async function getBrowser() {
     if (isShuttingDown) {
         throw new Error('Browser is shutting down');
@@ -425,13 +454,27 @@ export async function browser_session_create(args, context) {
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     }
 
+    // Set up console message capture for this session
+    const consoleBuffer = [];
+    page.on('console', msg => {
+        consoleBuffer.push({
+            type: msg.type(),
+            text: msg.text(),
+            location: msg.location()
+        });
+    });
+    page.on('pageerror', err => {
+        consoleBuffer.push({ type: 'error', text: err.message });
+    });
+
     const session = {
         sessionId,
         page,
         createdAt: new Date().toISOString(),
         lastActivity: new Date(),
         viewport,
-        idleTimer: null
+        idleTimer: null,
+        consoleBuffer
     };
     sessions.set(sessionId, session);
     activePages.add(page);
@@ -480,7 +523,7 @@ export async function browser_session_close(args, context) {
 }
 
 export async function browser_session_goto(args, context) {
-    const { sessionId, url, waitFor, timeout = 30000 } = args;
+    const { sessionId, url, waitFor, timeout = 30000, retries = 2 } = args;
     const { progress } = context;
 
     if (!sessionId) {
@@ -495,19 +538,26 @@ export async function browser_session_goto(args, context) {
     await ensurePageForSession(session);
     resetSessionIdleTimer(sessionId);
 
-    if (progress) progress(`Navigating to ${url}...`, 20, 100);
-
     try {
-        await session.page.goto(url, { waitUntil: 'networkidle2', timeout });
+        return await withRetry(async (attempt) => {
+            if (progress) progress(`Navigating to ${url}...${attempt > 0 ? ` (retry ${attempt})` : ''}`, 20, 100);
 
-        if (waitFor) {
-            if (progress) progress(`Waiting for ${waitFor}...`, 50, 100);
-            await session.page.waitForSelector(waitFor, { timeout: 15000 }).catch(() => {});
-        }
+            await session.page.goto(url, { waitUntil: 'networkidle2', timeout });
 
-        if (progress) progress('Navigation complete', 100, 100);
+            if (waitFor) {
+                if (progress) progress(`Waiting for ${waitFor}...`, 50, 100);
+                await session.page.waitForSelector(waitFor, { timeout: 15000 }).catch(() => {});
+            }
 
-        return { content: [{ type: "text", text: `Navigated to: ${url}` }] };
+            if (progress) progress('Navigation complete', 100, 100);
+            return { content: [{ type: "text", text: `Navigated to: ${url}` }] };
+        }, {
+            maxRetries: retries,
+            baseDelay: 1000,
+            onRetry: (attempt, total, err, delay) => {
+                if (progress) progress(`Retry ${attempt}/${total} after ${delay}ms: ${err.message}`, 20, 100);
+            }
+        });
     } catch (err) {
         return { content: [{ type: "text", text: `Navigation failed: ${err.message}` }], isError: true };
     }
@@ -532,7 +582,7 @@ export async function browser_session_content(args, context) {
 }
 
 export async function browser_session_click(args, context) {
-    const { sessionId, selector, waitAfter, mode = 'text' } = args;
+    const { sessionId, selector, waitAfter, mode = 'text', retries = 2 } = args;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -547,17 +597,19 @@ export async function browser_session_click(args, context) {
     resetSessionIdleTimer(sessionId);
 
     try {
-        await session.page.waitForSelector(selector);
-        await session.page.click(selector);
-        if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
-        return await formatResult(session.page, mode, session.page.url());
+        return await withRetry(async (_attempt) => {
+            await session.page.waitForSelector(selector);
+            await session.page.click(selector);
+            if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
+            return await formatResult(session.page, mode, session.page.url());
+        }, { maxRetries: retries, baseDelay: 300 });
     } catch (err) {
         return { content: [{ type: "text", text: `Click failed: ${err.message}` }], isError: true };
     }
 }
 
 export async function browser_session_fill(args, context) {
-    const { sessionId, fields, submit, waitAfter, mode = 'text' } = args;
+    const { sessionId, fields, submit, waitAfter, mode = 'text', retries = 2 } = args;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -572,16 +624,18 @@ export async function browser_session_fill(args, context) {
     resetSessionIdleTimer(sessionId);
 
     try {
-        for (const f of fields) {
-            await session.page.waitForSelector(f.selector);
-            await session.page.type(f.selector, f.value || '');
-        }
-        if (submit) {
-            await session.page.click(submit);
-            await session.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
-        }
-        if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
-        return await formatResult(session.page, mode, session.page.url());
+        return await withRetry(async (_attempt) => {
+            for (const f of fields) {
+                await session.page.waitForSelector(f.selector);
+                await session.page.type(f.selector, f.value || '');
+            }
+            if (submit) {
+                await session.page.click(submit);
+                await session.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
+            }
+            if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
+            return await formatResult(session.page, mode, session.page.url());
+        }, { maxRetries: retries, baseDelay: 500 });
     } catch (err) {
         return { content: [{ type: "text", text: `Fill failed: ${err.message}` }], isError: true };
     }
@@ -633,6 +687,218 @@ export async function browser_session_scroll(args, context) {
     await session.page.evaluate((y) => window.scrollBy(0, y), scrollY);
 
     return { content: [{ type: "text", text: `Scrolled ${direction} ${amount}px` }] };
+}
+
+export async function browser_session_type(args, context) {
+    const { sessionId, selector, text, delay = 0, keystrokes } = args;
+
+    if (!sessionId) {
+        return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+        return { content: [{ type: "text", text: `Session not found: ${sessionId}` }], isError: true };
+    }
+
+    await ensurePageForSession(session);
+    resetSessionIdleTimer(sessionId);
+
+    try {
+        if (selector) {
+            await session.page.waitForSelector(selector);
+            await session.page.focus(selector);
+        }
+
+        if (text) {
+            await session.page.keyboard.type(text, { delay });
+        }
+
+        if (keystrokes && keystrokes.length > 0) {
+            for (const key of keystrokes) {
+                await session.page.keyboard.press(key);
+            }
+        }
+
+        return { content: [{ type: "text", text: `Typed${selector ? ` into ${selector}` : ''}: ${text || keystrokes.join(', ')}` }] };
+    } catch (err) {
+        return { content: [{ type: "text", text: `Type failed: ${err.message}` }], isError: true };
+    }
+}
+
+export async function browser_session_inspect(args, context) {
+    const { sessionId, selector, screenshot = false } = args;
+
+    if (!sessionId) {
+        return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+        return { content: [{ type: "text", text: `Session not found: ${sessionId}` }], isError: true };
+    }
+
+    await ensurePageForSession(session);
+    resetSessionIdleTimer(sessionId);
+
+    try {
+        await session.page.waitForSelector(selector, { timeout: 5000 });
+    } catch {
+        return { content: [{ type: "text", text: `Selector not found: ${selector}` }], isError: true };
+    }
+
+    try {
+        const info = await session.page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return { error: 'Element not found' };
+
+            const rect = el.getBoundingClientRect();
+            const visible = rect.width > 0 && rect.height > 0;
+
+            return {
+                tag: el.tagName.toLowerCase(),
+                id: el.id || null,
+                classes: el.className ? Array.from(el.classList) : [],
+                attributes: Array.from(el.attributes).reduce((acc, attr) => {
+                    acc[attr.name] = attr.value;
+                    return acc;
+                }, {}),
+                text: el.innerText || el.textContent || '',
+                innerHTML: el.innerHTML.substring(0, 500),
+                position: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                visible,
+                disabled: el.disabled || el.getAttribute('aria-disabled') === 'true'
+            };
+        }, selector);
+
+        let result = `Element: <${info.tag}>${info.id ? `#${info.id}` : ''}\n`;
+        result += `Classes: ${info.classes.join('.') || '(none)'}\n`;
+        result += `Visible: ${info.visible}, Disabled: ${info.disabled}\n`;
+        result += `Position: {x:${info.position.x}, y:${info.position.y}, w:${info.position.width}, h:${info.position.height}}\n`;
+        result += `Attributes: ${JSON.stringify(info.attributes)}\n`;
+        result += `Text: "${info.text.substring(0, 200)}"\n`;
+        result += `InnerHTML: ${info.innerHTML.substring(0, 200)}...`;
+
+        const content = [{ type: "text", text: result }];
+
+        if (screenshot) {
+            const screenshot_ = await session.page.evaluate((sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return null;
+                const rect = el.getBoundingClientRect();
+                return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+            }, selector);
+
+            if (screenshot_) {
+                const img = await session.page.screenshot({
+                    encoding: 'base64',
+                    clip: screenshot_
+                });
+                content.push({ type: "image", data: img, mimeType: "image/png" });
+            }
+        }
+
+        return { content };
+    } catch (err) {
+        return { content: [{ type: "text", text: `Inspect failed: ${err.message}` }], isError: true };
+    }
+}
+
+export async function browser_session_console(args, _context) {
+    const { sessionId } = args;
+
+    if (!sessionId) {
+        return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+        return { content: [{ type: "text", text: `Session not found: ${sessionId}` }], isError: true };
+    }
+
+    await ensurePageForSession(session);
+    resetSessionIdleTimer(sessionId);
+
+    const messages = session.consoleBuffer.splice(0); // Drain and return
+
+    if (messages.length === 0) {
+        return { content: [{ type: "text", text: "No console messages captured" }] };
+    }
+
+    const lines = messages.map(m => `[${m.type}] ${m.text}`);
+    return { content: [{ type: "text", text: `Console messages (${messages.length}):\n\n${lines.join('\n')}` }] };
+}
+
+export async function browser_session_wait(args, context) {
+    const { sessionId, selectors, text, urlPattern, condition, timeout = 15000 } = args;
+
+    if (!sessionId) {
+        return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
+    }
+
+    const session = sessions.get(sessionId);
+    if (!session) {
+        return { content: [{ type: "text", text: `Session not found: ${sessionId}` }], isError: true };
+    }
+
+    await ensurePageForSession(session);
+    resetSessionIdleTimer(sessionId);
+
+    const startTime = Date.now();
+
+    try {
+        // Selector OR logic
+        if (selectors && selectors.length > 0) {
+            const msg = selectors.length === 1
+                ? `Waiting for: ${selectors[0]}`
+                : `Waiting for any: ${selectors.join(' | ')}`;
+            if (context.progress) context.progress(msg, 30, 100);
+
+            // Wait for first selector to match
+            const promises = selectors.map(sel =>
+                session.page.waitForSelector(sel, { timeout, hidden: false })
+                    .then(() => sel)
+                    .catch(() => null)
+            );
+            const result = await Promise.race(promises);
+            if (!result) {
+                return { content: [{ type: "text", text: `Timeout waiting for selectors: ${selectors.join(', ')}` }], isError: true };
+            }
+            return { content: [{ type: "text", text: `Selector matched: ${result} after ${Date.now() - startTime}ms` }] };
+        }
+
+        // Text content waiting
+        if (text) {
+            if (context.progress) context.progress(`Waiting for text: "${text.substring(0, 50)}"`, 30, 100);
+            await session.page.waitForFunction(
+                (searchText) => document.body.innerText.includes(searchText),
+                { timeout, arguments: [text] }
+            );
+            return { content: [{ type: "text", text: `Text found after ${Date.now() - startTime}ms` }] };
+        }
+
+        // URL pattern matching
+        if (urlPattern) {
+            if (context.progress) context.progress(`Waiting for URL: ${urlPattern}`, 30, 100);
+            const regex = new RegExp(urlPattern);
+            await session.page.waitForFunction(
+                (_pat) => regex.test(window.location.href),
+                { timeout, arguments: [urlPattern] }
+            );
+            return { content: [{ type: "text", text: `URL matched after ${Date.now() - startTime}ms` }] };
+        }
+
+        // Custom JS condition
+        if (condition) {
+            if (context.progress) context.progress(`Waiting for condition`, 30, 100);
+            await session.page.waitForFunction(new Function('return ' + condition), { timeout });
+            return { content: [{ type: "text", text: `Condition met after ${Date.now() - startTime}ms` }] };
+        }
+
+        return { content: [{ type: "text", text: "No wait condition specified" }], isError: true };
+    } catch (err) {
+        return { content: [{ type: "text", text: `Wait failed: ${err.message}` }], isError: true };
+    }
 }
 
 export async function browser_session_metadata(args, context) {

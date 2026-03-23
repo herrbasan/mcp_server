@@ -85,14 +85,15 @@
         },
         {
             "name": "browser_session_goto",
-            "description": "Navigate to a URL. Requires sessionId from browser_session_create. Returns confirmation with the URL navigated to.",
+            "description": "Navigate to a URL. Requires sessionId from browser_session_create. Returns confirmation with the URL navigated to. Has built-in retry with exponential backoff for flaky loads.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "sessionId": { "type": "string" },
                     "url": { "type": "string" },
                     "waitFor": { "type": "string", "description": "CSS selector to wait for after navigation" },
-                    "timeout": { "type": "number", "description": "Navigation timeout in ms (default 30000)" }
+                    "timeout": { "type": "number", "description": "Navigation timeout in ms (default 30000)" },
+                    "retries": { "type": "number", "description": "Max retries on failure (default 2)" }
                 },
                 "required": ["sessionId", "url"]
             }
@@ -111,21 +112,22 @@
         },
         {
             "name": "browser_session_click",
-            "description": "Click an element by CSS selector. Returns page content after the click (use mode to get screenshot or text). Requires sessionId from browser_session_create.",
+            "description": "Click an element by CSS selector. Returns page content after the click (use mode to get screenshot or text). Requires sessionId from browser_session_create. Has built-in retry for flaky elements.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "sessionId": { "type": "string" },
                     "selector": { "type": "string" },
                     "waitAfter": { "type": "number" },
-                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
+                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] },
+                    "retries": { "type": "number", "description": "Max retries on failure (default 2)" }
                 },
                 "required": ["sessionId", "selector"]
             }
         },
         {
             "name": "browser_session_fill",
-            "description": "Fill form fields and optionally submit. Each field has a CSS selector and value. If submit selector is provided, clicks it after filling. Returns page content. Requires sessionId from browser_session_create.",
+            "description": "Fill form fields and optionally submit. Each field has a CSS selector and value. If submit selector is provided, clicks it after filling. Returns page content. Requires sessionId from browser_session_create. Has built-in retry for flaky forms.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -133,7 +135,8 @@
                     "fields": { "type": "array", "items": { "type": "object", "properties": { "selector": { "type": "string" }, "value": { "type": "string" } } } },
                     "submit": { "type": "string" },
                     "waitAfter": { "type": "number" },
-                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
+                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] },
+                    "retries": { "type": "number", "description": "Max retries on failure (default 2)" }
                 },
                 "required": ["sessionId", "fields"]
             }
@@ -160,6 +163,61 @@
                     "sessionId": { "type": "string" },
                     "direction": { "type": "string", "enum": ["up", "down"] },
                     "amount": { "type": "number", "description": "Pixels to scroll (default 500)" }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_type",
+            "description": "Type text into a focused element or simulate keystrokes. Sends key events character-by-character, which triggers input validators and dynamic form handlers better than direct value setting. Use for CAPTCHAs, autocomplete, or sites that validate on key events.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "selector": { "type": "string", "description": "CSS selector to focus before typing (optional - if omitted, types into currently focused element)" },
+                    "text": { "type": "string", "description": "Text to type" },
+                    "delay": { "type": "number", "description": "Delay between keystrokes in ms (default 0, use 50-100 for slow sites)" },
+                    "keystrokes": { "type": "array", "description": "Special key presses: Enter, Tab, Escape, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Backspace, Delete, Home, End, PageUp, PageDown", "items": { "type": "string" } }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_inspect",
+            "description": "Get detailed info about an element: tag, attributes, text content, position, visibility, and an optional sub-screenshot cropped to the element. Useful for debugging selectors and understanding element state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "selector": { "type": "string" },
+                    "screenshot": { "type": "boolean", "description": "Include sub-screenshot of element (default false)" }
+                },
+                "required": ["sessionId", "selector"]
+            }
+        },
+        {
+            "name": "browser_session_console",
+            "description": "Get console messages and errors captured from the page JavaScript since last call or session start. Buffers messages per session. Returns all accumulated messages and clears the buffer.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_wait",
+            "description": "Enhanced waiting with multiple options: wait for CSS selector (with OR logic for multiple), text content in page, URL pattern matching, or custom condition via JS. More flexible than waitFor in goto.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "selectors": { "type": "array", "description": "CSS selectors - waits for ANY to appear (OR logic)" },
+                    "text": { "type": "string", "description": "Text to wait for in page content" },
+                    "urlPattern": { "type": "string", "description": "Regex pattern to match against current URL" },
+                    "condition": { "type": "string", "description": "JS expression that must evaluate to truthy" },
+                    "timeout": { "type": "number", "description": "Max wait in ms (default 15000)" }
                 },
                 "required": ["sessionId"]
             }

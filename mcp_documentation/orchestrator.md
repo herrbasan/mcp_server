@@ -234,7 +234,7 @@ mcp_orchestrator_research_topic({
 
 ---
 
-## Browser Module (11 tools)
+## Browser Module (17 tools)
 
 Headless browser (Puppeteer) with persistent sessions for multi-step workflows.
 
@@ -336,6 +336,37 @@ mcp_orchestrator_browser_session_list()
 // 10. Close session
 mcp_orchestrator_browser_session_close({
   sessionId: "a1b2c3d4-..."
+})
+
+// 11. Type text / send keystrokes (character-by-character, triggers key events)
+mcp_orchestrator_browser_session_type({
+  sessionId: "a1b2c3d4-...",
+  selector: "#search",         // optional: focuses element first
+  text: "hello world",
+  delay: 50,                   // ms between keystrokes
+  keystrokes: ["Enter"]       // or: ["Tab", "ArrowDown", "Escape"]
+})
+
+// 12. Inspect element (tag, attributes, text, position, visibility, screenshot)
+mcp_orchestrator_browser_session_inspect({
+  sessionId: "a1b2c3d4-...",
+  selector: "#username",
+  screenshot: true             // include cropped element screenshot
+})
+
+// 13. Get captured console messages (clears buffer after reading)
+mcp_orchestrator_browser_session_console({
+  sessionId: "a1b2c3d4-..."
+})
+
+// 14. Enhanced waiting (OR selectors, text, URL pattern, or JS condition)
+mcp_orchestrator_browser_session_wait({
+  sessionId: "a1b2c3d4-...",
+  selectors: [".success", ".error", "#result"],  // OR logic - any match
+  // OR: text: "Thank you for your order"
+  // OR: urlPattern: "/checkout/success"          // regex
+  // OR: condition: "document.querySelector('.loading').style.display === 'none'"
+  timeout: 15000
 })
 ```
 
