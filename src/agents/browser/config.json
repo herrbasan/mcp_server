@@ -1,6 +1,7 @@
 {
     "agent": "browser",
     "description": "Persistent headless browser automation",
+    "defaultViewport": { "width": 1280, "height": 1280 },
     "tools": [
         {
             "name": "browser_fetch",
@@ -12,38 +13,13 @@
                     "mode": { "type": "string", "enum": ["text", "html", "screenshot", "markdown"] },
                     "waitFor": { "type": "string", "description": "CSS selector to wait for" },
                     "fullPage": { "type": "boolean" },
-                    "viewport": { "type": "object", "properties": { "width": { "type": "number" }, "height": { "type": "number" } } }
+                    "viewport": {
+                        "type": "object",
+                        "description": "Override default viewport size. Defaults to 1920x1080.",
+                        "properties": { "width": { "type": "number" }, "height": { "type": "number" } }
+                    }
                 },
                 "required": ["url"]
-            }
-        },
-        {
-            "name": "browser_click",
-            "description": "Click element on page and return result",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "selector": { "type": "string", "description": "CSS selector" },
-                    "waitAfter": { "type": "number", "description": "Wait ms after click" },
-                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
-                },
-                "required": ["url", "selector"]
-            }
-        },
-        {
-            "name": "browser_fill",
-            "description": "Fill form fields and optionally submit",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "fields": { "type": "array", "items": { "type": "object", "properties": { "selector": { "type": "string" }, "value": { "type": "string" } } } },
-                    "submit": { "type": "string", "description": "Submit button selector" },
-                    "waitAfter": { "type": "number" },
-                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
-                },
-                "required": ["url", "fields"]
             }
         },
         {
@@ -71,6 +47,132 @@
                     "printBackground": { "type": "boolean" }
                 },
                 "required": ["url"]
+            }
+        },
+        {
+            "name": "browser_session_create",
+            "description": "Create a persistent browser session. Returns a sessionId in the response text. Use this sessionId in all subsequent browser_session_* calls (goto, content, click, fill, evaluate, scroll, metadata, close). Example: call this first, then use browser_session_goto with the returned sessionId.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "viewport": {
+                        "type": "object",
+                        "description": "Override default viewport size",
+                        "properties": { "width": { "type": "number" }, "height": { "type": "number" } }
+                    },
+                    "userAgent": { "type": "string", "description": "Custom user agent string" }
+                }
+            }
+        },
+        {
+            "name": "browser_session_list",
+            "description": "List all active browser sessions",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "browser_session_close",
+            "description": "Close a specific browser session",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string", "description": "Session ID to close" }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_goto",
+            "description": "Navigate to a URL. Requires sessionId from browser_session_create. Returns confirmation with the URL navigated to.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "url": { "type": "string" },
+                    "waitFor": { "type": "string", "description": "CSS selector to wait for after navigation" },
+                    "timeout": { "type": "number", "description": "Navigation timeout in ms (default 30000)" }
+                },
+                "required": ["sessionId", "url"]
+            }
+        },
+        {
+            "name": "browser_session_content",
+            "description": "Get page content. mode 'text' extracts readable text, 'screenshot' returns base64 image, 'html' returns raw HTML, 'markdown' returns markdown-formatted content. Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["text", "html", "markdown", "screenshot"] }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_click",
+            "description": "Click an element by CSS selector. Returns page content after the click (use mode to get screenshot or text). Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "selector": { "type": "string" },
+                    "waitAfter": { "type": "number" },
+                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
+                },
+                "required": ["sessionId", "selector"]
+            }
+        },
+        {
+            "name": "browser_session_fill",
+            "description": "Fill form fields and optionally submit. Each field has a CSS selector and value. If submit selector is provided, clicks it after filling. Returns page content. Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "fields": { "type": "array", "items": { "type": "object", "properties": { "selector": { "type": "string" }, "value": { "type": "string" } } } },
+                    "submit": { "type": "string" },
+                    "waitAfter": { "type": "number" },
+                    "mode": { "type": "string", "enum": ["text", "html", "screenshot"] }
+                },
+                "required": ["sessionId", "fields"]
+            }
+        },
+        {
+            "name": "browser_session_evaluate",
+            "description": "Execute JavaScript in the page context. Script must return a value (string, number, or JSON-serializable object). Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "script": { "type": "string" },
+                    "waitFor": { "type": "string" }
+                },
+                "required": ["sessionId", "script"]
+            }
+        },
+        {
+            "name": "browser_session_scroll",
+            "description": "Scroll the page. direction 'down' or 'up', amount in pixels (default 500). Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" },
+                    "direction": { "type": "string", "enum": ["up", "down"] },
+                    "amount": { "type": "number", "description": "Pixels to scroll (default 500)" }
+                },
+                "required": ["sessionId"]
+            }
+        },
+        {
+            "name": "browser_session_metadata",
+            "description": "Get current page metadata: URL, title, and viewport dimensions. Useful to verify navigation succeeded. Requires sessionId from browser_session_create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string" }
+                },
+                "required": ["sessionId"]
             }
         }
     ]

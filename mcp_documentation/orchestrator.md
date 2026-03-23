@@ -1,6 +1,6 @@
 # MCP Orchestrator - Tools Reference Guide
 
-> **Total Tools**: 38 across 7 agents  
+> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.  
 > **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
@@ -9,118 +9,95 @@
 
 ## Quick Navigation
 
-| Agent | Tools | Purpose |
-|-------|-------|---------|
-| [Codebase](#codebase-indexing-module) | 19 | Semantic code search, indexing, analysis |
-| [Memory](#memory-module) | 7 | Quality-focused semantic memory |
-| [LLM](#llm-module) | 2 | Local model querying (async) |
-| [Research](#web-research-module) | 1 | Multi-source research pipeline |
-| [Browser](#browser-module) | 5 | Puppeteer browser automation |
-| [Inspector](#code-inspector-module) | 1 | LLM-based code analysis |
-| [Docs](#docs-module) | 3 | Documentation access |
+| Agent | Purpose |
+|-------|---------|
+| [Codebase](#codebase-indexing-module) | Semantic code search, indexing |
+| [Memory](#memory-module) | Quality-focused semantic memory |
+| [LLM](#llm-module) | Local model querying |
+| [Research](#web-research-module) | Multi-source research pipeline |
+| [Browser](#browser-module) | Headless browser with persistent sessions |
+| [Inspector](#code-inspector-module) | LLM-based code analysis |
+| [Docs](#docs-module) | Documentation access |
 
 ---
 
-## Codebase Indexing Module (10 tools)
+## Codebase Indexing Module
 
-> **🚀 FAST**: Preloaded at startup (~1-2s for global search across 122 codebases)  
-> **🔍 Scope**: Search across ALL indexed projects (BADKID-*, COOLKID-* prefixes)  
-> **💡 Tip**: Use `analyze: true` to get AI-summarized results (saves 50-90% tokens)
+**Decision Guide:**
 
-### Quick Decision Guide
+| You want to... | Use this |
+|----------------|---------|
+| Search a specific codebase you know | `search_codebase` |
+| Find exact function/class names | `search_keyword` |
+| Conceptual/similarity search | `search_semantic` |
+| Live regex, stale index, or line numbers | `grep_codebase` |
+| Don't know which codebase has it | `search_all_codebases` (last resort) |
 
-| You want to... | Use this tool | Strategy |
-|---------------|---------------|----------|
-| Find how something is implemented | `search_all_codebases` | `semantic` + `analyze: true` |
-| Search a specific codebase | `search_codebase` | `hybrid` (default) |
-| Find exact function/variable names | `search_keyword` | FAST indexed search |
-| Quick file path search | `search_keyword` | path matching |
-| Live regex patterns | `grep_codebase` | regex (slower, always current) |
-| Conceptual similarity search | `search_semantic` | embedding-based |
+**⚡ Performance:**
+| Tool | Speed | Best For |
+|------|-------|----------|
+| `search_keyword` | <50ms | Exact names |
+| `search_codebase` | <200ms | Focused search |
+| `search_semantic` | 100-300ms | Conceptual |
+| `search_all_codebases` | 2-5s | **Use rarely** |
+| `grep_codebase` | 1-3s | Regex, live search |
 
-**⚡ Performance Comparison:**
-| Tool | Typical Time | Use When |
-|------|--------------|----------|
-| `search_keyword` | <50ms | Exact names, fast lookups |
-| `search_codebase` (keyword) | <100ms | Hybrid search, general queries |
-| `search_semantic` | 100-200ms | Conceptual understanding |
-| `grep_codebase` | 1-3s | Regex needed, index stale, line numbers required |
-
-### Global Search (Most Common)
-
-#### `search_all_codebases`
-Search across ALL 122 indexed codebases at once. Perfect for finding implementations when you don't know which project has them.
+### `search_codebase`
+Search within a specific codebase. **Preferred approach** - be specific about which codebase.
 
 ```javascript
-// 🔥 RECOMMENDED: Use analyze:true for exploration
-mcp_orchestrator_search_all_codebases({
-  query: "drag and drop file upload electron",
-  strategy: "semantic",
-  limit: 10,
-  analyze: true           // ← AI summarizes results (saves tokens!)
-})
-
-// Returns structured analysis:
-// {
-//   analysis: {
-//     summary: "Found 5 implementations...",
-//     keyFindings: ["Uses webUtils.getPathForFile()", ...],
-//     relevantFiles: ["js/mixer/main.js - Drag handler", ...],
-//     implementationPatterns: ["Event: dragover/drop", ...]
-//   },
-//   stats: { resultCount: 46, searchType: "..." }
-// }
-```
-
-**When to use `analyze: true`:**
-- ✅ Exploring unknown codebases ("find how X is implemented")
-- ✅ Broad searches with many results
-- ✅ Initial research before diving deep
-- ✅ Getting high-level patterns across projects
-
-**When to SKIP `analyze: true`:**
-- ❌ You need exact line numbers for editing
-- ❌ Feeding results into another automated tool
-- ❌ Very specific search with <5 results
-
-**Include raw results too:**
-```javascript
-mcp_orchestrator_search_all_codebases({
-  query: "drag and drop",
-  analyze: true,
-  includeRaw: true        // ← Get analysis + raw snippets
-})
-```
-
-**Strategies explained:**
-- `semantic` (default) - Natural language, finds conceptually similar code
-- `keyword` - Exact word matching (fastest)
-- `grep` - Live regex search (always current, slower)
-- `hybrid` - Combines semantic + keyword
-
-### Single Codebase Search
-
-#### `search_codebase`
-Search within one specific codebase.
-
-```javascript
-// Basic search
 mcp_orchestrator_search_codebase({
-  codebase: "BADKID-mcp_server",    // Partial names work: "mcp_server"
-  query: "webSocket retry logic",
+  codebase: "my-project",      // Use the project name
+  query: "webSocket retry",
   limit: 10
 })
+```
 
-// With analysis
-mcp_orchestrator_search_codebase({
-  codebase: "mcp_server",
-  query: "error handling pattern",
-  analyze: true
+### `search_keyword`
+**Fast exact-match search** for function names, class names, identifiers.
+
+```javascript
+mcp_orchestrator_search_keyword({
+  codebase: "my-project",
+  query: "StreamableHTTPServerTransport"
 })
 ```
 
-#### `search_semantic`
-Pure semantic (embedding) search. Best for conceptual queries.
+### `search_semantic`
+Conceptual/similarity search using embeddings.
+
+```javascript
+mcp_orchestrator_search_semantic({
+  codebase: "my-project",
+  query: "how does the router handle failures?"
+})
+```
+
+### `grep_codebase`
+Live regex search. Slower but always current.
+
+```javascript
+mcp_orchestrator_grep_codebase({
+  codebase: "my-project",
+  pattern: "async.*function",
+  regex: true
+})
+```
+
+### `search_all_codebases`
+**⚠️ Last resort** - searches ALL indexed codebases. Slow and expensive. Only use when you genuinely don't know which codebase contains what you're looking for.
+
+```javascript
+// AVOID unless necessary
+mcp_orchestrator_search_all_codebases({
+  query: "drag and drop implementation"
+})
+```
+
+**Do this instead:**
+1. Use `list_codebases` to find relevant projects
+2. Use `search_codebase` on specific projects
+3. Use `search_keyword` for exact matches
 
 ```javascript
 mcp_orchestrator_search_semantic({
@@ -161,99 +138,13 @@ mcp_orchestrator_search_keyword({
 #### `grep_codebase`
 **Live regex search** with ripgrep. Always current (searches filesystem directly). **Use sparingly** - it's 10-50x slower than indexed search.
 
-```javascript
-// Regex pattern search
-mcp_orchestrator_grep_codebase({
-  codebase: "mcp_server",
-  pattern: "function.*predict\(",
-  regex: true,
-  limit: 50
-})
-
-// Find files only (1 match per file)
-mcp_orchestrator_grep_codebase({
-  codebase: "mcp_server",
-  pattern: "class.*Router",
-  maxMatchesPerFile: 1  // Fast early termination
-})
-
-// Literal string search (faster than regex)
-mcp_orchestrator_grep_codebase({
-  codebase: "mcp_server",
-  pattern: "handleFileUpload",
-  regex: false,          // Fixed string search
-  caseSensitive: false
-})
-```
-
-**⚠️ When NOT to use:**
-- ❌ Simple name lookups → Use `search_keyword` (50x faster)
-- ❌ Conceptual searches → Use `search_semantic`
-- ❌ General exploration → Use `search_codebase`
-
-**✅ Use when:**
-- You need regex patterns (`pattern: "async.*function"`)
-- You suspect the index is stale
-- You need exact line numbers for code editing
-- You need case-sensitive exact matches
-
-### Discovery Tools
-
-#### `list_codebases`
-List all indexed codebases with metadata.
+### `get_file` / `get_file_info`
+Retrieve file content or structure from a codebase.
 
 ```javascript
-mcp_orchestrator_list_codebases()
-// Returns: [{ name, files, description, hasAnalysis, ... }, ...]
+mcp_orchestrator_get_file({ codebase: "my-project", path: "src/main.js" })
+mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
 ```
-
-#### `get_file`
-Get file content with staleness check.
-
-```javascript
-mcp_orchestrator_get_file({
-  codebase: "mcp_server",
-  path: "src/http-server.js"
-})
-```
-
-#### `get_file_info`
-Get file structure (functions, classes, imports) without full content.
-
-```javascript
-mcp_orchestrator_get_file_info({
-  codebase: "mcp_server",
-  path: "src/router/router.js"
-})
-```
-
-#### `get_prioritized_files`
-Get files ordered by importance (high/medium/low). Useful for understanding project structure.
-
-```javascript
-mcp_orchestrator_get_prioritized_files({
-  codebase: "mcp_server"
-})
-// Returns: { high: [...], medium: [...], low: [...] }
-```
-
-#### `get_codebase_description`
-Get AI-generated project description.
-
-```javascript
-mcp_orchestrator_get_codebase_description({
-  codebase: "mcp_server"
-})
-```
-
-### Admin Tools (Hidden from LLM)
-
-These are available but filtered from the LLM tool list:
-- `index_codebase` - Add new codebase
-- `refresh_codebase` - Update existing
-- `remove_codebase` - Delete codebase
-- `run_maintenance` - Trigger maintenance cycle
-- `get_maintenance_stats` - View maintenance status
 
 ---
 
@@ -343,46 +234,28 @@ mcp_orchestrator_research_topic({
 
 ---
 
-## Browser Module (6 tools)
+## Browser Module (11 tools)
 
-Real headless browser (Puppeteer). Modes: `text` (default), `html`, `screenshot`, `markdown`
+Headless browser (Puppeteer) with persistent sessions for multi-step workflows.
 
-### `browser_fetch`
+### One-shot Tools (create page per call)
+
 ```javascript
 // Text extraction (default) - clean article content
 mcp_orchestrator_browser_fetch({ url: "https://example.com" })
 
-// Screenshot
+// Screenshot with custom viewport options
 mcp_orchestrator_browser_fetch({
   url: "https://example.com",
   mode: "screenshot",
-  fullPage: true
+  fullPage: true,
+  viewport: { width: 1280, height: 720 }
 })
 
 // Wait for dynamic content
 mcp_orchestrator_browser_fetch({
   url: "https://spa-app.com",
-  waitFor: ".data-loaded"     // CSS selector
-})
-```
-
-### `browser_click` / `browser_fill` / `browser_evaluate` / `browser_pdf`
-```javascript
-// Click element
-mcp_orchestrator_browser_click({
-  url: "https://example.com",
-  selector: "button.load-more",
-  waitAfter: 2000
-})
-
-// Fill form
-mcp_orchestrator_browser_fill({
-  url: "https://example.com/login",
-  fields: [
-    { selector: "#username", value: "user" },
-    { selector: "#password", value: "pass" }
-  ],
-  submit: "button[type='submit']"
+  waitFor: ".data-loaded"
 })
 
 // Execute JS in page context
@@ -394,10 +267,79 @@ mcp_orchestrator_browser_evaluate({
 // Generate PDF
 mcp_orchestrator_browser_pdf({
   url: "https://example.com",
-  format: "A4",           // or Letter, Legal, Tabloid
+  format: "A4",
   landscape: true
 })
 ```
+
+### Session Tools (persistent page across calls)
+
+**Workflow**: Create session → Navigate/interact → Get content → Close
+
+```javascript
+// 1. Create session (returns sessionId in response text)
+mcp_orchestrator_browser_session_create()
+// → "Session created: a1b2c3d4-..."
+
+// 2. Navigate to URL
+mcp_orchestrator_browser_session_goto({
+  sessionId: "a1b2c3d4-...",
+  url: "https://example.com/login",
+  waitFor: "#username"      // optional: wait for selector
+})
+
+// 3. Fill form and submit
+mcp_orchestrator_browser_session_fill({
+  sessionId: "a1b2c3d4-...",
+  fields: [
+    { selector: "#username", value: "user@example.com" },
+    { selector: "#password", value: "secret123" }
+  ],
+  submit: "#login-button"
+})
+
+// 4. Click element
+mcp_orchestrator_browser_session_click({
+  sessionId: "a1b2c3d4-...",
+  selector: "#next-button",
+  waitAfter: 1000
+})
+
+// 5. Scroll page
+mcp_orchestrator_browser_session_scroll({
+  sessionId: "a1b2c3d4-...",
+  direction: "down",
+  amount: 500
+})
+
+// 6. Execute JS
+mcp_orchestrator_browser_session_evaluate({
+  sessionId: "a1b2c3d4-...",
+  script: "document.title"
+})
+
+// 7. Get page content
+mcp_orchestrator_browser_session_content({
+  sessionId: "a1b2c3d4-...",
+  mode: "text"              // text | html | markdown | screenshot
+})
+
+// 8. Get page metadata
+mcp_orchestrator_browser_session_metadata({
+  sessionId: "a1b2c3d4-..."
+})
+// → URL, title, viewport
+
+// 9. List active sessions
+mcp_orchestrator_browser_session_list()
+
+// 10. Close session
+mcp_orchestrator_browser_session_close({
+  sessionId: "a1b2c3d4-..."
+})
+```
+
+**Session lifecycle**: 10 min idle timeout per session. Browser stays open while sessions exist.
 
 ---
 

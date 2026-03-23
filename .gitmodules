@@ -4,3 +4,6 @@
 [submodule "src/lib/nDB"]
 	path = src/lib/nDB
 	url = https://github.com/herrbasan/nDB.git
+[submodule "src/nLogger"]
+	path = src/nLogger
+	url = https://github.com/herrbasan/nLogger.git
