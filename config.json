@@ -11,11 +11,12 @@
   },
   "models": {
     "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "glm-chat",
-    "inspect": "glm-chat",
-    "synthesis": "glm-chat",
-    "analysis": "glm-chat",
-    "embed": "lmstudio-embed"
+    "query": "lmstudio-chat",
+    "inspect": "lmstudio-chat",
+    "synthesis": "lmstudio-chat",
+    "analysis": "lmstudio-chat",
+    "embed": "lmstudio-embed",
+    "vision": "kimi-chat"
   },
   "spaces": {
     "COOLKID-Work": ["\\\\COOLKID\\Work\\Work", "d:\\Work"],
@@ -49,6 +50,10 @@
         "autoRefresh": true,
         "staleThresholdMs": 300000
       }
+    },
+    "vision": {
+      "ttlMinutes": 30,
+      "mediaServiceUrl": "http://localhost:3500"
     }
   }
 }

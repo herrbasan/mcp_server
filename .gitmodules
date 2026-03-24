@@ -7,3 +7,6 @@
 [submodule "src/nLogger"]
 	path = src/nLogger
 	url = https://github.com/herrbasan/nLogger.git
+[submodule "src/vendor/MediaService"]
+	path = src/vendor/MediaService
+	url = https://github.com/herrbasan/MediaService.git

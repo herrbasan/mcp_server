@@ -1,0 +1,125 @@
+{
+    "agent": "vision",
+    "description": "Vision analysis tool for iterative image analysis with drill-down focus capabilities",
+    "tools": [
+        {
+            "name": "vision_create_session",
+            "description": "Create a new image session for analysis. Returns a session_id to use with vision_analyze. The session stores the original image and accumulates analyses over time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "image_url": {
+                        "type": "string",
+                        "description": "Image URL (remote or data URL). Either this or image_data is required."
+                    },
+                    "image_data": {
+                        "type": "string",
+                        "description": "Base64-encoded image data. Alternative to image_url."
+                    },
+                    "image_mime_type": {
+                        "type": "string",
+                        "description": "MIME type (e.g., 'image/jpeg', 'image/png'). Required if using image_data."
+                    }
+                },
+                "oneOf": [
+                    { "required": ["image_url"] },
+                    { "required": ["image_data", "image_mime_type"] }
+                ]
+            }
+        },
+        {
+            "name": "vision_analyze",
+            "description": "Analyze an image. Previous analyses are included as context, enabling ever-sharpening detail. Use 'focus' to zoom into specific regions for higher resolution analysis of that area.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID from vision_create_session"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "What to analyze. Examples: 'Describe everything', 'What is the person wearing?', 'Read the text on the sign'"
+                    },
+                    "focus": {
+                        "type": "object",
+                        "description": "Optional: Region to focus on for higher resolution analysis",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "Free text focus: 'top-left corner', 'person on the left', 'the sign in the background'"
+                            },
+                            "grid": {
+                                "type": "object",
+                                "description": "Grid-based focus: divide image into cols x rows, analyze specific cells",
+                                "properties": {
+                                    "cols": { "type": "number", "description": "Number of columns (e.g., 2 for 2x2 grid)" },
+                                    "rows": { "type": "number", "description": "Number of rows (e.g., 2 for 2x2 grid)" },
+                                    "cells": { "type": "array", "items": { "type": "number" }, "description": "Cell indices to analyze (0=top-left, read left-to-right, top-to-bottom)" }
+                                }
+                            },
+                            "region": {
+                                "type": "object",
+                                "description": "Normalized pixel region for precise cropping",
+                                "properties": {
+                                    "left": { "type": "number", "minimum": 0, "maximum": 1 },
+                                    "top": { "type": "number", "minimum": 0, "maximum": 1 },
+                                    "right": { "type": "number", "minimum": 0, "maximum": 1 },
+                                    "bottom": { "type": "number", "minimum": 0, "maximum": 1 }
+                                }
+                            },
+                            "centerCrop": {
+                                "oneOf": [
+                                    { "type": "number", "description": "Crop to center N% (e.g., 50 = keep center 50%)" },
+                                    { "type": "object", "description": "Asymmetric center crop", "properties": { "widthPercent": { "type": "number" }, "heightPercent": { "type": "number" } } }
+                                ]
+                            }
+                        }
+                    },
+                    "include_context": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Whether to include previous analyses as context"
+                    }
+                },
+                "required": ["session_id"]
+            }
+        },
+        {
+            "name": "vision_close_session",
+            "description": "Close an image session and free memory. Sessions auto-expire after 30 minutes of inactivity, but this frees resources immediately.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID to close"
+                    }
+                },
+                "required": ["session_id"]
+            }
+        },
+        {
+            "name": "vision_list_sessions",
+            "description": "List all active image sessions",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "vision_get_session",
+            "description": "Get details about a session including accumulated analyses",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID to inspect"
+                    }
+                },
+                "required": ["session_id"]
+            }
+        }
+    ]
+}
