@@ -57,11 +57,13 @@ const CONTENT_ANALYSIS_SCHEMA = {
   properties: {
     description: {
       type: 'string',
-      description: 'One-sentence summary of what the project does (under 120 chars)'
+      description: 'One-sentence summary of what the project does (under 200 chars)',
+      maxLength: 300
     },
     purpose: {
       type: 'string',
-      description: 'Detailed explanation of the project\'s purpose and goals (2-3 sentences)'
+      description: 'Detailed explanation of the project\'s purpose and goals (2-3 sentences)',
+      maxLength: 8000
     },
     architecture: {
       type: 'string',
@@ -282,6 +284,7 @@ Guidelines:
     systemPrompt,
     taskType: 'synthesis',
     temperature: 0.3,
+    maxTokens: 8192,
     responseFormat: CONTENT_ANALYSIS_SCHEMA
   });
 

@@ -16,7 +16,7 @@ export class CodebaseMaintenance {
     this.service = service;
     this.config = {
       enabled: true,
-      intervalMs: 3600000, // 1 hour default
+      intervalMs: 900000, // 15 minutes default
       autoRefresh: true,
       staleThresholdMs: 300000, // 5 minutes - consider index stale if file changed this recently
       ...config
@@ -161,7 +161,7 @@ export class CodebaseMaintenance {
     // Run incremental refresh
     console.log(`[CodebaseMaintenance] ${codebaseName}: ${toAdd.length} added, ${toUpdate.length} updated, ${toDelete.length} deleted`);
     
-    await this.service.refreshCodebase({ name: codebaseName }, (progress) => {
+    await this.service.refreshCodebase({ name: codebaseName, analyze: true }, (progress) => {
       // Silent progress - only log errors
       if (progress.phase === 'error') {
         console.error(`[CodebaseMaintenance] ${codebaseName}: ${progress.message}`);

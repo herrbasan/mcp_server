@@ -1541,6 +1541,8 @@ export async function init(context) {
     });
     // Try to preload but don't crash on failure
     serviceInstance.preloadAll().catch(err => console.error('[CodebaseIndexing] Preload failed:', err.message));
+    // Start periodic maintenance cycle
+    serviceInstance.startMaintenance();
     return serviceInstance;
 }
 
