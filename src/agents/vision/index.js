@@ -6,8 +6,8 @@ let mediaClient;
 let modelMaxDimension = 2048; // Default fallback
 
 export async function init(context) {
-  const ttlMinutes = context.config.ttlMinutes ?? 30;
-  const mediaServiceUrl = context.config.mediaServiceUrl ?? 'http://localhost:3500';
+  const ttlMinutes = context.config.agents?.vision?.ttlMinutes ?? 30;
+  const mediaServiceUrl = context.config.agents?.vision?.mediaServiceUrl ?? 'http://localhost:3500';
   const gatewayUrl = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
 
   fleetingMemory = createFleetingMemory({ ttlMinutes });
