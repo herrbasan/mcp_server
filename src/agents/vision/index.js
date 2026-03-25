@@ -20,36 +20,7 @@ export async function shutdown() {
   }
 }
 
-async function optimizeImage(base64Data, mediaServiceUrl) {
-  try {
-    const response = await fetch(`${mediaServiceUrl}/v1/optimize/image`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        base64: base64Data,
-        max_dimension: 1024,  // Max pixels to fit model context
-        format: 'jpeg',
-        quality: 85,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Optimization failed: ${response.status}`);
-    }
-
-    const result = await response.json();
-    return {
-      data: result.base64,
-      mimeType: `image/${result.format}`,
-      width: result.width,
-      height: result.height,
-    };
-  } catch (error) {
-    throw new Error(`image_optimization_failed: ${error.message}`);
-  }
-}
-
-async function fetchImageAsBase64(url, mediaServiceUrl) {
+async function fetchImageAsBase64(url) {
   try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -59,10 +30,13 @@ async function fetchImageAsBase64(url, mediaServiceUrl) {
     const buffer = Buffer.from(arrayBuffer);
 
     const contentType = response.headers.get('content-type') || 'image/jpeg';
-    const base64 = `data:${contentType};base64,${buffer.toString('base64')}`;
-
-    // Always optimize: resize to fit model + transcode to JPEG
-    return await optimizeImage(base64, mediaServiceUrl);
+    const base64 = buffer.toString('base64');
+    return {
+      data: `data:${contentType};base64,${base64}`,
+      mimeType: contentType,
+      width: null,
+      height: null,
+    };
   } catch (error) {
     throw new Error(`image_fetch_failed: ${error.message}`);
   }
@@ -103,8 +77,7 @@ function buildAnalysisPrompt(query, focus, previousContext) {
 }
 
 export async function vision_create_session(args, context) {
-  const { gateway, progress, config } = context;
-  const mediaServiceUrl = config.mediaServiceUrl ?? 'http://localhost:3500';
+  const { gateway, progress } = context;
   let { image_url, image_data, image_mime_type } = args;
 
   progress?.('Processing image...', 10, 100);
@@ -112,7 +85,7 @@ export async function vision_create_session(args, context) {
   let imageResult;
 
   if (image_url) {
-    imageResult = await fetchImageAsBase64(image_url, mediaServiceUrl);
+    imageResult = await fetchImageAsBase64(image_url);
     image_data = imageResult.data;
     image_mime_type = imageResult.mimeType;
   } else if (image_data) {
@@ -125,9 +98,7 @@ export async function vision_create_session(args, context) {
     if (!image_data.startsWith('data:')) {
       image_data = `data:${image_mime_type};base64,${image_data}`;
     }
-    // Optimize: resize + transcode to JPEG
-    progress?.('Optimizing image...', 30, 100);
-    imageResult = await optimizeImage(image_data, mediaServiceUrl);
+    imageResult = { data: image_data, mimeType: image_mime_type };
   } else {
     return {
       content: [{ type: 'text', text: 'Error: Either image_url or image_data is required' }],

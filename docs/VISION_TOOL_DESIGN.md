@@ -54,7 +54,7 @@ A vision analysis tool that allows non-vision LLMs to analyze images through an 
 ```typescript
 interface ImageSession {
   id: string;                    // e.g., "img_1234567890_abc123"
-  imageData: string;             // base64 encoded, optimized to max 1024px, JPEG
+  imageData: string;             // base64 encoded original image (full resolution)
   imageMimeType: string;         // e.g., "image/jpeg"
   originalWidth: number;         // Original image dimensions
   originalHeight: number;
@@ -360,9 +360,9 @@ const VISION_TASK = 'vision'; // Routed to kimi-chat via LLM Gateway
 
 export async function vision_create_session(args, context) {
   // 1. Fetch image if URL provided
-  // 2. Optimize via MediaService: resize to max 1024px, transcode to JPEG
-  // 3. Store optimized image in FleetingMemory
-  // 4. Return session_id
+  // 2. Store original (full resolution) in FleetingMemory
+  // 3. Return session_id
+  // Note: LLM Gateway handles resize/transcode to fit model limits
 }
 
 export async function vision_analyze(args, context) {
@@ -418,6 +418,33 @@ function buildAnalysisPrompt(query, focus, previousContext) {
   return prompt;
 }
 ```
+
+### LLM Gateway Image Processing
+
+The LLM Gateway handles image conformance to model limits automatically via its integrated MediaService:
+
+- **Original stored**: Sessions store the full-resolution original image
+- **Gateway auto-processes**: When sending to the vision model, the Gateway:
+  - Fetches the base64 image
+  - Resizes to fit model context limits (using `image_processing.resize`)
+  - Transcodes to optimal format (using `image_processing.transcode`)
+
+**Current behavior**: Gateway uses default `image_processing` settings (`resize: "auto"`, `transcode: "jpg"`).
+
+**For full control**: Pass explicit `image_processing` options when calling `gateway.chat()`:
+```javascript
+gateway.chat({
+  model,
+  messages,
+  image_processing: {
+    resize: 1024,  // explicit max pixels
+    transcode: 'jpg',
+    quality: 85
+  }
+});
+```
+
+**Crop workflow**: When a focus region is specified, MediaService crops at full resolution before sending to Gateway. This ensures zoomed regions maintain detail.
 
 ## Configuration
 
