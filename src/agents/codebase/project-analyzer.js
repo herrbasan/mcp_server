@@ -57,13 +57,13 @@ const CONTENT_ANALYSIS_SCHEMA = {
   properties: {
     description: {
       type: 'string',
-      description: 'One-sentence summary of what the project does (under 200 chars)',
-      maxLength: 300
+      description: 'One-sentence summary of what the project does (under 120 chars)',
+      maxLength: 150
     },
     purpose: {
       type: 'string',
-      description: 'Detailed explanation of the project\'s purpose and goals (2-3 sentences)',
-      maxLength: 8000
+      description: 'Brief explanation of the project\'s purpose and goals (2-3 sentences, under 300 chars)',
+      maxLength: 400
     },
     architecture: {
       type: 'string',
@@ -261,30 +261,38 @@ RULES:
 
 Return ONLY valid JSON matching the schema.`;
 
-  const systemPrompt = `You are a technical documentation expert. Analyze source code and create clear, accurate project summaries.
+  const systemPrompt = `You are a technical documentation expert. Analyze source code and create CONCISE, accurate project summaries.
 
 You MUST return valid JSON with this exact structure:
 {
-  "description": "Short one-sentence summary",
-  "purpose": "Detailed explanation of project goals",
+  "description": "Short one-sentence summary (max 120 chars)",
+  "purpose": "Brief 2-3 sentence explanation of what this project does (max 300 chars)",
   "architecture": "monolithic|microservices|modular|serverless|layered",
   "techStack": ["nodejs", "express", "postgresql"],
   "keyConcepts": ["authentication", "caching", "webhooks"],
   "coreModules": ["api", "database", "workers"]
 }
 
+CRITICAL CONSTRAINTS:
+- description: ONE sentence, max 120 characters, clear and specific
+- purpose: 2-3 sentences ONLY, max 300 characters total. Be brief!
+- techStack: 5-10 most significant technologies only
+- keyConcepts: 3-7 domain concepts (e.g., "embeddings", "API gateway")
+- coreModules: 3-7 main functional areas (e.g., "user-management", "search")
+
 Guidelines:
-1. Be specific and accurate based on the code shown
-2. Description should be informative to someone seeing it in a list
-3. Tech stack should include only significant technologies
-4. Core modules should reflect the actual code organization`;
+1. Be CONCISE - avoid unnecessary elaboration
+2. Be specific and accurate based on the code shown
+3. Description should be informative to someone seeing it in a list
+4. Tech stack should include only significant technologies
+5. Core modules should reflect the actual code organization`;
 
   const response = await router.predict({
     prompt,
     systemPrompt,
     taskType: 'synthesis',
     temperature: 0.3,
-    maxTokens: 8192,
+    maxTokens: 1024,  // Strict limit - Qwen has a habit of ignoring limits and generating 80k+ tokens
     responseFormat: CONTENT_ANALYSIS_SCHEMA
   });
 
@@ -307,11 +315,11 @@ Guidelines:
 function validateContentResponse(response) {
   return {
     description: String(response.description || 'Unknown project').slice(0, 120),
-    purpose: String(response.purpose || 'No description available').slice(0, 500),
+    purpose: String(response.purpose || 'No description available').slice(0, 300),
     architecture: String(response.architecture || 'unknown'),
-    techStack: (response.techStack || []).map(String),
-    keyConcepts: (response.keyConcepts || []).map(String),
-    coreModules: (response.coreModules || []).map(String)
+    techStack: (response.techStack || []).slice(0, 10).map(String),
+    keyConcepts: (response.keyConcepts || []).slice(0, 7).map(String),
+    coreModules: (response.coreModules || []).slice(0, 7).map(String)
   };
 }
 

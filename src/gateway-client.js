@@ -10,6 +10,9 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
     
     // Map<requestId, { resolve, reject, onDelta, response } >
     const pendingRequests = new Map();
+    
+    // Reference to the client object for use in closures
+    let client = null;
 
     function summarizeText(text, maxLength = 120) {
         if (!text) return '';
@@ -66,6 +69,23 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                                 req.onDelta(content, deltaMeta); 
                             }
                             if (content) req.response.content += content;
+                            
+                            // Hard client-side limits to prevent runaway generation
+                            // Some models (Qwen) get stuck in infinite thinking loops with empty deltas
+                            const MAX_EMPTY_DELTAS = 1000; // Max deltas with no content before we give up
+                            const emptyDeltaThreshold = req.maxTokens ? Math.min(MAX_EMPTY_DELTAS, req.maxTokens) : MAX_EMPTY_DELTAS;
+                            
+                            if (req.hardLimit && req.totalChars > req.hardLimit) {
+                                logger.warn(`[Gateway] Hard CHAR limit exceeded for ${request_id}: ${req.totalChars} chars > ${req.hardLimit}. Cancelling...`);
+                                client.cancel(request_id);
+                            } else if (req.deltaCount > emptyDeltaThreshold && req.totalChars === 0) {
+                                // Detect infinite thinking loop (many deltas, zero output)
+                                logger.error(`[Gateway] Infinite thinking detected for ${request_id}: ${req.deltaCount} deltas, 0 chars. Cancelling...`);
+                                client.cancel(request_id);
+                                // Force reject the promise to fail fast
+                                req.reject(new Error(`Model stuck in infinite thinking loop (${req.deltaCount} empty deltas). Try again or use a different model.`));
+                                pendingRequests.delete(request_id);
+                            }
                         }
                     } else if (msg.method === 'chat.progress') {
                         const { request_id, phase, context } = msg.params;
@@ -146,13 +166,13 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
 
     connect();
 
-    return {
+    client = {
         get connected() {
             return ws && ws.readyState === WebSocket.OPEN;
         },
 
         // Adapter for old router.predict() API used by codebase agent
-        async predict({ prompt, systemPrompt, taskType, temperature, responseFormat }) {
+        async predict({ prompt, systemPrompt, taskType, temperature, maxTokens, responseFormat }) {
             const model = models[taskType] || models.query || 'default';
             // Wrap raw JSON Schema objects into gateway format
             let gatewayFormat = responseFormat;
@@ -166,6 +186,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                 model,
                 messages: [{ role: 'user', content: prompt }],
                 systemPrompt,
+                maxTokens,
                 temperature,
                 responseFormat: gatewayFormat
             });
@@ -193,13 +214,16 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                     startedAt: Date.now(),
                     deltaCount: 0,
                     totalChars: 0,
-                    loggedFirstDelta: false
+                    loggedFirstDelta: false,
+                    maxTokens: maxTokens || null,
+                    hardLimit: maxTokens ? Math.floor(maxTokens * 4.5) : null // ~4.5 chars/token heuristic
                 });
                 try {
                     logger.info(`[Gateway] Sending chat.create for ${id}`, {
                         model,
                         messageCount: fullMessages.length,
                         promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),
+                        maxTokens: maxTokens,
                         stream: true,
                         hasResponseFormat: Boolean(responseFormat)
                     });
@@ -299,4 +323,6 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             pendingRequests.clear();
         }
     };
+    
+    return client;
 }
