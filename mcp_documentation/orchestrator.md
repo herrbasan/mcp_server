@@ -17,6 +17,7 @@
 | [Research](#web-research-module) | Multi-source research pipeline |
 | [Browser](#browser-module) | Headless browser with persistent sessions |
 | [Inspector](#code-inspector-module) | LLM-based code analysis |
+| [Vision](#vision-module) | Iterative image analysis with drill-down focus |
 | [Docs](#docs-module) | Documentation access |
 
 ---
@@ -425,6 +426,116 @@ mcp_orchestrator_get_documentation()
 
 ---
 
+## Vision Module (5 tools)
+
+Iterative image analysis with "ever-sharpening" drill-down capability. Sessions store the original image and accumulate analyses over time.
+
+### `vision_create_session`
+Create a new image analysis session.
+
+```javascript
+// From URL
+mcp_orchestrator_vision_create_session({
+  image_url: "https://example.com/photo.jpg"
+})
+
+// From base64
+mcp_orchestrator_vision_create_session({
+  image_data: "data:image/jpeg;base64,...",
+  image_mime_type: "image/jpeg"
+})
+// → { session_id: "img_1234567890_abc123", ... }
+```
+
+### `vision_analyze`
+Analyze an image with optional focus for zoomed-in detail.
+
+```javascript
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "Describe everything in this image",
+  include_context: true  // include previous analyses (default: true)
+})
+
+// Text focus (free-form description)
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "What is this person wearing?",
+  focus: { text: "person on the left" }
+})
+
+// Grid focus (divide image, analyze specific cells)
+// Grid index: 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "Describe the top-right area",
+  focus: { grid: { cols: 2, rows: 2, cells: [1] } }
+})
+
+// Region focus (normalized coordinates 0-1)
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "Read the text",
+  focus: { region: { left: 0.7, top: 0.1, right: 0.95, bottom: 0.3 } }
+})
+
+// Center crop (percentage)
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "What is the main subject?",
+  focus: { centerCrop: 50 }  // keep center 50%
+})
+
+// Asymmetric center crop
+mcp_orchestrator_vision_analyze({
+  session_id: "img_1234567890_abc123",
+  query: "Analyze the vertical center",
+  focus: { centerCrop: { widthPercent: 40, heightPercent: 80 } }
+})
+```
+
+**Focus Types:**
+| Type | Use Case |
+|------|----------|
+| `text` | Free description: "top-left corner", "person on the left" |
+| `grid` | Divide image into cols×rows grid, select cell indices |
+| `region` | Normalized pixel coordinates (left, top, right, bottom) |
+| `centerCrop` | Percentage crop from center (single number or {width, height}) |
+
+### `vision_list_sessions`
+List all active image sessions.
+
+```javascript
+mcp_orchestrator_vision_list_sessions()
+// → "Active sessions:\n- img_xxx: 3 analyses\n- img_yyy: 1 analysis"
+```
+
+### `vision_get_session`
+Get session details including accumulated analyses.
+
+```javascript
+mcp_orchestrator_vision_get_session({
+  session_id: "img_1234567890_abc123"
+})
+// → Session info with all previous analyses
+```
+
+### `vision_close_session`
+Close a session and free memory.
+
+```javascript
+mcp_orchestrator_vision_close_session({
+  session_id: "img_1234567890_abc123"
+})
+```
+
+**Session Lifecycle:**
+- Sessions auto-expire after 30 minutes of inactivity
+- Original image stored in memory (FleetingMemory with TTL)
+- Crops are generated on-demand via MediaService
+
+---
+
 ## Common Workflows
 
 ### Cross-Project Pattern Discovery
@@ -487,3 +598,4 @@ mcp_orchestrator_query_model({
 | `grep_codebase` | 1-3s | Live filesystem search (cached) |
 | `research_topic` | 12-45s | Depends on pages scraped |
 | `query_model` | 2-10s | Depends on model & tokens |
+| `vision_analyze` | 3-15s | Depends on image size and model |
