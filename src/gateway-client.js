@@ -50,12 +50,12 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                             };
                             if (content && !req.loggedFirstDelta) {
                                 req.loggedFirstDelta = true;
-                                logger.debug(`[Gateway] First delta for ${request_id}`, {
+                                logger.info(`[Gateway] First delta for ${request_id}`, {
                                     preview: summarizeText(content),
                                     chars: content.length
                                 });
                             } else if (content && (req.deltaCount % 25 === 0)) {
-                                logger.debug(`[Gateway] Delta chunk ${req.deltaCount} for ${request_id}`, {
+                                logger.info(`[Gateway] Delta chunk ${req.deltaCount} for ${request_id}`, {
                                     totalChars: req.totalChars,
                                     chunkChars: content.length,
                                     preview: summarizeText(content, 60)
@@ -77,7 +77,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                         const { request_id, cancelled } = msg.params;
                         const req = pendingRequests.get(request_id);
                         if (req) {
-                            logger.debug(`[Gateway] chat.done for ${request_id}`, {
+                            logger.info(`[Gateway] chat.done for ${request_id}`, {
                                 cancelled,
                                 durationMs: Date.now() - req.startedAt,
                                 deltaCount: req.deltaCount || 0,
@@ -91,7 +91,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                         const { request_id, error } = msg.params;
                         const req = pendingRequests.get(request_id);
                         if (req) {
-                            logger.debug(`[Gateway] chat.error for ${request_id}`, {
+                            logger.info(`[Gateway] chat.error for ${request_id}`, {
                                 durationMs: Date.now() - req.startedAt,
                                 deltaCount: req.deltaCount || 0,
                                 totalChars: req.totalChars || 0,
@@ -196,7 +196,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                     loggedFirstDelta: false
                 });
                 try {
-                    logger.debug(`[Gateway] Sending chat.create for ${id}`, {
+                    logger.info(`[Gateway] Sending chat.create for ${id}`, {
                         model,
                         messageCount: fullMessages.length,
                         promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),

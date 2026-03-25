@@ -1,30 +1,41 @@
 import { createFleetingMemory } from './fleeting-memory.js';
 import { createMediaClient } from './media-client.js';
+import { getLogger } from '../../utils/logger.js';
+
+const logger = getLogger();
 
 let fleetingMemory;
 let mediaClient;
 let modelMaxDimension = 2048; // Default fallback
+let mediaServiceUrl = 'http://localhost:3500'; // Default fallback
 
 export async function init(context) {
   const ttlMinutes = context.config.agents?.vision?.ttlMinutes ?? 30;
-  const mediaServiceUrl = context.config.agents?.vision?.mediaServiceUrl ?? 'http://localhost:3500';
+  mediaServiceUrl = context.config.agents?.vision?.mediaServiceUrl ?? 'http://localhost:3500';
   const gatewayUrl = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
 
   fleetingMemory = createFleetingMemory({ ttlMinutes });
   mediaClient = createMediaClient(mediaServiceUrl);
 
-  // Probe Gateway for vision model capabilities
-  try {
-    const response = await fetch(`${gatewayUrl}/v1/models?type=chat`);
-    if (response.ok) {
-      const data = await response.json();
-      const visionModel = data.data?.find(m => m.capabilities?.vision);
-      if (visionModel?.capabilities?.imageInputLimit?.maxDimension) {
-        modelMaxDimension = visionModel.capabilities.imageInputLimit.maxDimension;
+  // Config per-model limits override Gateway probe
+  const visionModelName = context.config.models?.vision || 'kimi-chat';
+  const configuredLimit = context.config.agents?.vision?.modelLimits?.[visionModelName];
+  if (configuredLimit) {
+    modelMaxDimension = configuredLimit;
+  } else {
+    // Probe Gateway for vision model capabilities
+    try {
+      const response = await fetch(`${gatewayUrl}/v1/models?type=chat`);
+      if (response.ok) {
+        const data = await response.json();
+        const visionModel = data.data?.find(m => m.capabilities?.vision);
+        if (visionModel?.capabilities?.imageInputLimit?.maxDimension) {
+          modelMaxDimension = visionModel.capabilities.imageInputLimit.maxDimension;
+        }
       }
+    } catch (e) {
+      // Use default fallback
     }
-  } catch (e) {
-    // Use default fallback
   }
 
   return { status: 'initialized', modelMaxDimension };
@@ -58,13 +69,29 @@ async function fetchImageAsBase64(url) {
   }
 }
 
+function stripDataUriPrefix(dataUri) {
+  // Handle both data URI format and raw base64
+  if (dataUri.startsWith('data:')) {
+    const match = dataUri.match(/^data:[^;]+;base64,(.+)$/);
+    return match ? match[1] : dataUri;
+  }
+  return dataUri;
+}
+
+function ensureDataUri(base64Str, mimeType = 'image/jpeg') {
+  if (base64Str.startsWith('data:')) return base64Str;
+  return `data:${mimeType};base64,${base64Str}`;
+}
+
 async function optimizeForModel(base64Data, mediaServiceUrl) {
+  // Strip data URI prefix if present — media service expects raw base64
+  const rawBase64 = stripDataUriPrefix(base64Data);
   try {
     const response = await fetch(`${mediaServiceUrl}/v1/optimize/image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        base64: base64Data,
+        base64: rawBase64,
         max_dimension: modelMaxDimension,
         format: 'jpeg',
         quality: 85,
@@ -77,7 +104,7 @@ async function optimizeForModel(base64Data, mediaServiceUrl) {
 
     const result = await response.json();
     return {
-      data: result.base64,
+      data: ensureDataUri(result.base64, `image/${result.format}`),
       mimeType: `image/${result.format}`,
       width: result.width,
       height: result.height,
@@ -183,15 +210,16 @@ export async function vision_analyze(args, context) {
 
   progress?.('Preparing analysis...', 20, 100);
 
-  let imageToAnalyze = session.imageData;
+  // Strip data URI prefix — store/use as raw base64 internally
+  let imageToAnalyze = stripDataUriPrefix(session.imageData);
   let focusDescription = null;
 
   if (focus && (focus.grid || focus.region || focus.centerCrop)) {
     progress?.('Cropping image...', 30, 100);
     try {
-      const crops = await mediaClient.cropImage(session.imageData, focus);
+      const crops = await mediaClient.cropImage(stripDataUriPrefix(session.imageData), focus);
       if (crops && crops.length > 0) {
-        imageToAnalyze = crops[0].base64;
+        imageToAnalyze = stripDataUriPrefix(crops[0].base64);
         focusDescription = `Crop at ${crops[0].width}x${crops[0].height}`;
       }
     } catch (error) {
@@ -204,14 +232,11 @@ export async function vision_analyze(args, context) {
 
   // Optimize image for model limits (resize + transcode to JPEG)
   progress?.('Optimizing image for model...', 35, 100);
-  try {
-    imageToAnalyze = await optimizeForModel(imageToAnalyze, config.mediaServiceUrl);
-  } catch (error) {
-    return {
-      content: [{ type: 'text', text: `Error: image_optimization_failed - ${error.message}` }],
-      isError: true
-    };
-  }
+  const imageSizeKB = Math.round(imageToAnalyze.length / 1024);
+  logger.info(`[Vision] Image size before optimization: ${imageSizeKB}KB`, null, 'Agent:vision');
+  const optimized = await optimizeForModel(imageToAnalyze, mediaServiceUrl);
+  imageToAnalyze = optimized.data; // Already a data URI via ensureDataUri
+  logger.info(`[Vision] Optimization complete: ${Math.round(optimized.width)}x${Math.round(optimized.height)}, result size: ${Math.round(optimized.data.length / 1024)}KB`, null, 'Agent:vision');
 
   progress?.('Building prompt...', 40, 100);
 
