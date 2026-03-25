@@ -3,15 +3,31 @@ import { createMediaClient } from './media-client.js';
 
 let fleetingMemory;
 let mediaClient;
+let modelMaxDimension = 2048; // Default fallback
 
 export async function init(context) {
   const ttlMinutes = context.config.ttlMinutes ?? 30;
   const mediaServiceUrl = context.config.mediaServiceUrl ?? 'http://localhost:3500';
+  const gatewayUrl = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
 
   fleetingMemory = createFleetingMemory({ ttlMinutes });
   mediaClient = createMediaClient(mediaServiceUrl);
 
-  return { status: 'initialized' };
+  // Probe Gateway for vision model capabilities
+  try {
+    const response = await fetch(`${gatewayUrl}/v1/models?type=chat`);
+    if (response.ok) {
+      const data = await response.json();
+      const visionModel = data.data?.find(m => m.capabilities?.vision);
+      if (visionModel?.capabilities?.imageInputLimit?.maxDimension) {
+        modelMaxDimension = visionModel.capabilities.imageInputLimit.maxDimension;
+      }
+    }
+  } catch (e) {
+    // Use default fallback
+  }
+
+  return { status: 'initialized', modelMaxDimension };
 }
 
 export async function shutdown() {
@@ -39,6 +55,35 @@ async function fetchImageAsBase64(url) {
     };
   } catch (error) {
     throw new Error(`image_fetch_failed: ${error.message}`);
+  }
+}
+
+async function optimizeForModel(base64Data, mediaServiceUrl) {
+  try {
+    const response = await fetch(`${mediaServiceUrl}/v1/optimize/image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base64: base64Data,
+        max_dimension: modelMaxDimension,
+        format: 'jpeg',
+        quality: 85,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Optimization failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    return {
+      data: result.base64,
+      mimeType: `image/${result.format}`,
+      width: result.width,
+      height: result.height,
+    };
+  } catch (error) {
+    throw new Error(`image_optimization_failed: ${error.message}`);
   }
 }
 
@@ -155,6 +200,17 @@ export async function vision_analyze(args, context) {
         isError: true
       };
     }
+  }
+
+  // Optimize image for model limits (resize + transcode to JPEG)
+  progress?.('Optimizing image for model...', 35, 100);
+  try {
+    imageToAnalyze = await optimizeForModel(imageToAnalyze, config.mediaServiceUrl);
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: `Error: image_optimization_failed - ${error.message}` }],
+      isError: true
+    };
   }
 
   progress?.('Building prompt...', 40, 100);
