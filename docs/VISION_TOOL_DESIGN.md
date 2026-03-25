@@ -54,7 +54,7 @@ A vision analysis tool that allows non-vision LLMs to analyze images through an 
 ```typescript
 interface ImageSession {
   id: string;                    // e.g., "img_1234567890_abc123"
-  imageData: string;             // base64 encoded original image (full resolution)
+  imageData: string;             // base64 encoded, optimized to max 1024px, JPEG
   imageMimeType: string;         // e.g., "image/jpeg"
   originalWidth: number;         // Original image dimensions
   originalHeight: number;
@@ -360,8 +360,8 @@ const VISION_TASK = 'vision'; // Routed to kimi-chat via LLM Gateway
 
 export async function vision_create_session(args, context) {
   // 1. Fetch image if URL provided
-  // 2. Validate image format and dimensions
-  // 3. Store original (full resolution) in FleetingMemory
+  // 2. Optimize via MediaService: resize to max 1024px, transcode to JPEG
+  // 3. Store optimized image in FleetingMemory
   // 4. Return session_id
 }
 
