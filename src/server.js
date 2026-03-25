@@ -94,7 +94,7 @@ async function start() {
     });
 
     // POST /api/tools/call - call any tool by name (including admin-only)
-    app.post('/api/tools/call', adminOnly, express.json(), async (req, res) => {
+    app.post('/api/tools/call', adminOnly, express.json({ limit: '300mb' }), async (req, res) => {
         const { name, args = {} } = req.body || {};
         if (!name) { res.status(400).json({ error: 'name required' }); return; }
         const result = await routeToolCall(name, args, globalContext);
@@ -107,7 +107,7 @@ async function start() {
     });
 
     // PATCH /api/config - deep-merge update config (persists to config.json)
-    app.patch('/api/config', adminOnly, express.json(), (req, res) => {
+    app.patch('/api/config', adminOnly, express.json({ limit: '300mb' }), (req, res) => {
         const patch = req.body;
         if (!patch || typeof patch !== 'object') { res.status(400).json({ error: 'body must be a JSON object' }); return; }
         const updated = deepMerge(globalContext.config, patch);
@@ -138,7 +138,7 @@ async function start() {
     });
 
     // Client POSTs all JSON-RPC messages here; tool calls respond with SSE for progress support
-    app.post('/mcp', express.json(), async (req, res) => {
+    app.post('/mcp', express.json({ limit: '300mb' }), async (req, res) => {
         const msg = req.body;
 
         // Notifications have no id - just acknowledge
@@ -227,7 +227,7 @@ async function start() {
     });
 
     // POST endpoint - client sends JSON-RPC requests here
-    app.post('/message', express.json(), async (req, res) => {
+    app.post('/message', express.json({ limit: '300mb' }), async (req, res) => {
         const sessionId = req.query.sessionId;
         const session = sessions.get(sessionId);
         if (!session) return res.status(404).send('Session not found');
