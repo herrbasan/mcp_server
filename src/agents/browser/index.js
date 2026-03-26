@@ -22,6 +22,9 @@ let isShuttingDown = false;
 const sessions = new Map();
 const SESSION_IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes per session
 
+// Visible browser instances - maps sessionId -> Browser instance (for headed sessions)
+const visibleBrowsers = new Map();
+
 function log(message) {
     console.log(`[Browser] ${message}`);
 }
@@ -323,15 +326,29 @@ async function closeSession(sessionId) {
         clearTimeout(session.idleTimer);
     }
 
-    try {
-        if (!session.page.isClosed()) {
-            await session.page.close();
+    // Handle visible browser sessions
+    const visibleBrowser = visibleBrowsers.get(sessionId);
+    if (visibleBrowser) {
+        try {
+            log(`Closing visible browser for session ${sessionId}...`);
+            await visibleBrowser.close();
+            visibleBrowsers.delete(sessionId);
+            log(`Visible browser for session ${sessionId} closed`);
+        } catch (err) {
+            log(`Error closing visible browser for session ${sessionId}: ${err.message}`);
         }
-    } catch (err) {
-        log(`Error closing session ${sessionId} page: ${err.message}`);
+    } else {
+        // Handle regular headless sessions
+        try {
+            if (!session.page.isClosed()) {
+                await session.page.close();
+            }
+        } catch (err) {
+            log(`Error closing session ${sessionId} page: ${err.message}`);
+        }
+        activePages.delete(session.page);
     }
 
-    activePages.delete(session.page);
     sessions.delete(sessionId);
     log(`Session ${sessionId} closed, remaining: ${sessions.size}`);
 }
@@ -339,10 +356,23 @@ async function closeSession(sessionId) {
 async function ensurePageForSession(session) {
     if (session.page.isClosed()) {
         log(`Session ${session.sessionId}: page was closed, recreating`);
-        const b = await getBrowser();
-        session.page = await b.newPage();
+        
+        if (session.visible) {
+            // For visible sessions, create a new page from the visible browser instance
+            const visibleBrowser = visibleBrowsers.get(session.sessionId);
+            if (visibleBrowser) {
+                session.page = await visibleBrowser.newPage();
+            } else {
+                throw new Error(`Visible browser instance not found for session ${session.sessionId}`);
+            }
+        } else {
+            // For headless sessions, use the shared browser
+            const b = await getBrowser();
+            session.page = await b.newPage();
+            activePages.add(session.page);
+        }
+        
         await session.page.setViewport(session.viewport || defaultViewport);
-        activePages.add(session.page);
     }
 }
 
@@ -440,10 +470,32 @@ export async function browser_pdf(args, context) {
 
 // Session management tools
 export async function browser_session_create(args, context) {
-    const { viewport = defaultViewport, userAgent } = args;
+    const { viewport = defaultViewport, userAgent, visible = false } = args;
 
-    const b = await getBrowser();
-    const page = await b.newPage();
+    let page;
+    let sessionBrowser = null;
+
+    if (visible) {
+        // Launch a headed browser instance for visible sessions
+        log('Launching visible (headed) browser for interactive session...');
+        sessionBrowser = await puppeteer.launch({
+            headless: false,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--window-size=1280,900'
+            ],
+            userDataDir: path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile')
+        });
+        page = await sessionBrowser.newPage();
+        log('Visible browser launched successfully');
+    } else {
+        // Use the shared headless browser
+        const b = await getBrowser();
+        page = await b.newPage();
+    }
+
     const sessionId = randomUUID();
 
     await page.setViewport(viewport);
@@ -474,16 +526,24 @@ export async function browser_session_create(args, context) {
         lastActivity: new Date(),
         viewport,
         idleTimer: null,
-        consoleBuffer
+        consoleBuffer,
+        visible
     };
     sessions.set(sessionId, session);
-    activePages.add(page);
+    
+    // Track visible browser instance separately so we can close it with the session
+    if (sessionBrowser) {
+        visibleBrowsers.set(sessionId, sessionBrowser);
+    } else {
+        activePages.add(page);
+    }
+    
     resetSessionIdleTimer(sessionId);
 
-    log(`Session created: ${sessionId}, total sessions: ${sessions.size}`);
+    log(`Session created: ${sessionId}, total sessions: ${sessions.size}, visible: ${visible}`);
 
     return {
-        content: [{ type: "text", text: `Session created: ${sessionId}\nPage ready at: ${page.url() || 'about:blank'}` }]
+        content: [{ type: "text", text: `Session created: ${sessionId}\nVisible: ${visible}\nPage ready at: ${page.url() || 'about:blank'}` }]
     };
 }
 
@@ -497,11 +557,12 @@ export async function browser_session_list(args, context) {
     for (const [sessionId, session] of sessions) {
         const age = Math.round((now - new Date(session.createdAt)) / 1000);
         const ageStr = age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`;
+        const visibleFlag = session.visible ? ' [VISIBLE]' : '';
         try {
             const url = session.page.isClosed() ? '(closed)' : (session.page.url() || 'about:blank');
-            lines.push(`[${sessionId.substring(0, 8)}] ${url} (${ageStr} old)`);
+            lines.push(`[${sessionId.substring(0, 8)}]${visibleFlag} ${url} (${ageStr} old)`);
         } catch {
-            lines.push(`[${sessionId.substring(0, 8)}] (error reading page)`);
+            lines.push(`[${sessionId.substring(0, 8)}]${visibleFlag} (error reading page)`);
         }
     }
 

@@ -175,11 +175,21 @@ Guidelines:
     if (typeof response === 'object' && response !== null) {
       return validateFileTreeResponse(response, files);
     }
-    
-    // Fallback: try to parse if it's a string (strip markdown fences if present)
-    const clean = typeof response === 'string' ? response.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim() : response;
-    const parsed = JSON.parse(clean);
-    return validateFileTreeResponse(parsed, files);
+
+    // Fallback: try to parse if it's a string
+    if (typeof response === 'string') {
+      // Handle markdown fences by extracting JSON between first { and last }
+      let text = response.trim();
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        text = text.substring(firstBrace, lastBrace + 1);
+      }
+      const parsed = JSON.parse(text);
+      return validateFileTreeResponse(parsed, files);
+    }
+
+    throw new Error('Unexpected response type: ' + typeof response);
   } catch (err) {
     throw new Error(`Failed to parse file tree analysis: ${err.message}`);
   }

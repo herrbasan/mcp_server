@@ -10,7 +10,7 @@
  * - ripgrep: Live exact text search
  */
 
-import { Database } from './nDB/napi/index.js';
+import { Database } from './nVDB/napi/index.js';
 import { SimpleMetadataStore } from './simple-metadata.js';
 import { Indexer } from './indexer.js';
 import { SearchRouter } from './search-router.js';
@@ -362,7 +362,7 @@ export class CodebaseIndexingService {
     await fs.mkdir(codebasePath, { recursive: true });
 
     // Initialize nDB
-    const db = new Database(path.join(codebasePath, 'ndb'));
+    const db = new Database(path.join(codebasePath, 'nvdb'));
     const collection = db.createCollection('files', this.config.embeddingDimension, {
       durability: 'buffered'
     });
@@ -552,7 +552,7 @@ export class CodebaseIndexingService {
     }
 
     const codebasePath = this._getCodebasePath(resolvedName);
-    const db = new Database(path.join(codebasePath, 'ndb'));
+    const db = new Database(path.join(codebasePath, 'nvdb'));
     const collection = db.getCollection('files');
     const metaStore = new SimpleMetadataStore(codebasePath);
     await metaStore.init();

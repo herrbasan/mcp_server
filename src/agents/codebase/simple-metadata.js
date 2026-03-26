@@ -24,9 +24,31 @@ class ContentIndex {
   async load() {
     try {
       const data = await fs.readFile(this.indexPath, 'utf-8');
-      this.index = JSON.parse(data);
-    } catch {
-      this.index = {};
+      const parsed = JSON.parse(data);
+
+      // Validate structure: must be { word: [{ path: string, lines: array }] }
+      if (parsed && typeof parsed === 'object') {
+        for (const [word, entries] of Object.entries(parsed)) {
+          if (!Array.isArray(entries)) {
+            throw new Error(`Corrupted index: word "${word}" has non-array value`);
+          }
+          for (const entry of entries) {
+            if (!entry || typeof entry.path !== 'string' || !Array.isArray(entry.lines)) {
+              throw new Error(`Corrupted index: invalid entry for word "${word}"`);
+            }
+          }
+        }
+        this.index = parsed;
+      } else {
+        throw new Error('Corrupted index: root is not an object');
+      }
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        this.index = {};
+      } else {
+        console.warn(`[ContentIndex] Corrupted index, resetting: ${err.message}`);
+        this.index = {};
+      }
     }
   }
 
@@ -66,8 +88,8 @@ class ContentIndex {
         if (count >= this.maxLinesPerFile) continue;
         seenWords.set(word, count + 1);
 
-        if (!this.index[word]) {
-          this.index[word] = [];
+        if (!Array.isArray(this.index[word])) {
+          this.index[word] = []; // Reset corrupted data
         }
 
         let entry = this.index[word].find(e => e.path === filePath);

@@ -192,7 +192,17 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             });
             // Return parsed object if responseFormat is a schema, else string
             if (gatewayFormat?.type === 'json_schema') {
-                const text = response.content.replace(/```json|```/g, '').trim();
+                // Parse JSON response, handling markdown fences
+                let text = response.content || '';
+                console.log('[DEBUG] response.content length:', text.length, 'preview:', text.slice(0, 100));
+                // Find the first { and last } to extract JSON (handles any fences)
+                const firstBrace = text.indexOf('{');
+                const lastBrace = text.lastIndexOf('}');
+                console.log('[DEBUG] firstBrace:', firstBrace, 'lastBrace:', lastBrace);
+                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                    text = text.substring(firstBrace, lastBrace + 1);
+                }
+                console.log('[DEBUG] text to parse preview:', text.slice(0, 100));
                 return JSON.parse(text);
             }
             return response.content;

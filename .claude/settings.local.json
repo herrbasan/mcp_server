@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -X POST http://localhost:3100/api/tools/call -H \"Content-Type: application/json\" -d '{\"\"name\"\": \"\"index_codebase\"\", \"\"args\"\": {\"\"name\"\": \"\"WebAdmin\"\", \"\"source\"\": \"\"//BADKID/Stuff/DEV/WebAdmin\"\"}}')",
+      "Bash(curl -s -X POST http://localhost:3100/api/tools/call -H \"Content-Type: application/json\" -d '{\"\"name\"\": \"\"index_codebase\"\", \"\"args\"\": {\"\"name\"\": \"\"LLM Gateway Chat\"\", \"\"source\"\": \"\"//COOLKID/work/Work/_GIT/LLM Gateway Chat\"\"}}')",
+      "Bash(curl -s -X POST http://localhost:3100/api/tools/call -H \"Content-Type: application/json\" -d '{\"\"name\"\": \"\"index_codebase\"\", \"\"args\"\": {\"\"name\"\": \"\"nui_wc2\"\", \"\"source\"\": \"\"//COOLKID/work/Work/_GIT/nui_wc2\"\"}}')",
+      "Bash(curl -s -X POST http://localhost:3100/api/tools/call -H \"Content-Type: application/json\" -d '{\"\"name\"\": \"\"index_codebase\"\", \"\"args\"\": {\"\"name\"\": \"\"Electron_LibreMon\"\", \"\"source\"\": \"\"//COOLKID/work/Work/_GIT/Electron_LibreMon\"\"}}')"
+    ]
+  }
+}

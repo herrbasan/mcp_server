@@ -60,7 +60,8 @@
                         "description": "Override default viewport size",
                         "properties": { "width": { "type": "number" }, "height": { "type": "number" } }
                     },
-                    "userAgent": { "type": "string", "description": "Custom user agent string" }
+                    "userAgent": { "type": "string", "description": "Custom user agent string" },
+                    "visible": { "type": "boolean", "description": "Launch a visible browser window for manual interaction (e.g., entering credentials). The window will stay open until the session is closed." }
                 }
             }
         },

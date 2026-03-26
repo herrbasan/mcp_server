@@ -11,10 +11,10 @@
   },
   "models": {
     "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "lmstudio-chat",
-    "inspect": "lmstudio-chat",
-    "synthesis": "lmstudio-chat",
-    "analysis": "lmstudio-chat",
+    "query": "glm-chat",
+    "inspect": "glm-chat",
+    "synthesis": "glm-chat",
+    "analysis": "glm-chat",
     "embed": "lmstudio-embed",
     "vision": "kimi-chat"
   },
