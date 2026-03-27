@@ -214,7 +214,7 @@
                 "type": "object",
                 "properties": {
                     "sessionId": { "type": "string" },
-                    "selectors": { "type": "array", "description": "CSS selectors - waits for ANY to appear (OR logic)" },
+                    "selectors": { "type": "array", "items": { "type": "string" }, "description": "CSS selectors - waits for ANY to appear (OR logic)" },
                     "text": { "type": "string", "description": "Text to wait for in page content" },
                     "urlPattern": { "type": "string", "description": "Regex pattern to match against current URL" },
                     "condition": { "type": "string", "description": "JS expression that must evaluate to truthy" },
