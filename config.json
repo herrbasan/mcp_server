@@ -11,10 +11,10 @@
   },
   "models": {
     "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "glm-chat",
-    "inspect": "glm-chat",
-    "synthesis": "glm-chat",
-    "analysis": "glm-chat",
+    "query": "glm5-turbo-chat",
+    "inspect": "glm5-turbo-chat",
+    "synthesis": "glm5-turbo-chat",
+    "analysis": "glm5-turbo-chat",
     "embed": "lmstudio-embed",
     "vision": "kimi-chat"
   },
@@ -22,6 +22,13 @@
     "COOLKID-Work": ["\\\\COOLKID\\Work\\Work", "d:\\Work"],
     "BADKID-DEV": ["\\\\BADKID\\Stuff\\DEV", "d:\\DEV"],
     "BADKID-SRV": ["\\\\BADKID\\Stuff\\SRV", "d:\\SRV"]
+  },
+  "nIndexer": {
+    "wsUrl": "ws://localhost:3666",
+    "connectTimeout": 5000,
+    "requestTimeout": 30000,
+    "reconnectInterval": 3000,
+    "maxReconnectAttempts": 5
   },
   "agents": {
     "browser": {

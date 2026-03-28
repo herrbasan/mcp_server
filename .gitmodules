@@ -4,6 +4,3 @@
 [submodule "src/nLogger"]
 	path = src/nLogger
 	url = https://github.com/herrbasan/nLogger.git
-[submodule "src/agents/codebase/nVDB"]
-	path = src/agents/codebase/nVDB
-	url = https://github.com/herrbasan/nVDB.git
