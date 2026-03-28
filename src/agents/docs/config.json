@@ -1,30 +1,16 @@
 {
     "agent": "docs",
-    "description": "Access orchestrator documentation",
+    "description": "Orchestrator documentation access",
     "tools": [
         {
-            "name": "get_documentation",
-            "description": "Get the main orchestrator documentation (tools guide). Equivalent to read_document({name: 'orchestrator'}).",
+            "name": "get_philosophy",
+            "description": "⚠️ READ THIS FIRST — Coding philosophy (Deterministic Mind principles). 33 lines, 2 min read. Essential before using any tools.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
-            "name": "list_documents",
-            "description": "List all available documentation files in the mcp_documentation folder.",
+            "name": "get_orchestrator_doc",
+            "description": "Tools reference guide. 35+ tools across 8 agents. Read get_philosophy() first to understand the mindset.",
             "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "read_document",
-            "description": "Read a specific documentation file by name (without .md extension).",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "name": { 
-                        "type": "string", 
-                        "description": "Document name without extension (e.g., 'orchestrator', 'coding-philosophy')" 
-                    }
-                },
-                "required": ["name"]
-            }
         }
     ]
 }
