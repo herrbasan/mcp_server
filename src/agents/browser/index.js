@@ -544,7 +544,7 @@ export async function browser_session_goto(args, context) {
         return await withRetry(async (attempt) => {
             if (progress) progress(`Navigating to ${url}...${attempt > 0 ? ` (retry ${attempt})` : ''}`, 20, 100);
 
-            await session.page.goto(url, { waitUntil: 'networkidle2', timeout });
+            await session.page.goto(url, { waitUntil: 'load', timeout });
 
             if (waitFor) {
                 if (progress) progress(`Waiting for ${waitFor}...`, 50, 100);
