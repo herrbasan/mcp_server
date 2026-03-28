@@ -4,52 +4,6 @@
     "defaultViewport": { "width": 1280, "height": 1280 },
     "tools": [
         {
-            "name": "browser_fetch",
-            "description": "Fetch URL with headless browser. Modes: text (default), html, screenshot, markdown. Use waitFor for dynamic content.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["text", "html", "screenshot", "markdown"] },
-                    "waitFor": { "type": "string", "description": "CSS selector to wait for" },
-                    "fullPage": { "type": "boolean" },
-                    "viewport": {
-                        "type": "object",
-                        "description": "Override default viewport size. Defaults to 1920x1080.",
-                        "properties": { "width": { "type": "number" }, "height": { "type": "number" } }
-                    }
-                },
-                "required": ["url"]
-            }
-        },
-        {
-            "name": "browser_evaluate",
-            "description": "Execute JavaScript in page context",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "script": { "type": "string", "description": "JS code (must return value)" },
-                    "waitFor": { "type": "string" }
-                },
-                "required": ["url", "script"]
-            }
-        },
-        {
-            "name": "browser_pdf",
-            "description": "Generate PDF of page",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string" },
-                    "format": { "type": "string", "enum": ["A4", "Letter", "Legal", "Tabloid"] },
-                    "landscape": { "type": "boolean" },
-                    "printBackground": { "type": "boolean" }
-                },
-                "required": ["url"]
-            }
-        },
-        {
             "name": "browser_session_create",
             "description": "Create a persistent browser session. Returns a sessionId in the response text. Use this sessionId in all subsequent browser_session_* calls (goto, content, click, fill, evaluate, scroll, metadata, close). Example: call this first, then use browser_session_goto with the returned sessionId.",
             "inputSchema": {

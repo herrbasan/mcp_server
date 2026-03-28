@@ -409,65 +409,6 @@ async function formatResult(page, mode, url) {
     }
 }
 
-// Tools
-export async function browser_fetch(args, context) {
-    const { url, mode = 'text', waitFor, viewport } = args;
-    const bridge = await init();
-    const { page, markUsed, close, pageId } = await bridge.getPage();
-    try {
-        log(`[${pageId}] browser_fetch: ${url}`);
-        if (viewport) await page.setViewport(viewport);
-        
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 45000 });
-        if (waitFor) {
-            await page.waitForSelector(waitFor, { timeout: 15000 }).catch(() => {});
-        }
-        return await formatResult(page, mode, url);
-    } finally {
-        markUsed();
-        await close(5000);
-    }
-}
-
-export async function browser_evaluate(args, context) {
-    const { url, script, waitFor } = args;
-    const bridge = await init();
-    const { page, markUsed, close, pageId } = await bridge.getPage();
-    try {
-        log(`[${pageId}] browser_evaluate: ${url}`);
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        if (waitFor) await page.waitForSelector(waitFor).catch(()=>{});
-        
-        // page.evaluate requires a serializable function, not a string
-        const result = await page.evaluate(new Function(script));
-        return {
-            content: [{ type: "text", text: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) }]
-        };
-    } catch (e) {
-        return { content: [{ type: "text", text: `JS Error: ${e.message}` }], isError: true };
-    } finally {
-        markUsed();
-        await close(5000);
-    }
-}
-
-export async function browser_pdf(args, context) {
-    const { url, format = 'A4', landscape = false, printBackground = true } = args;
-    const bridge = await init();
-    const { page, markUsed, close, pageId } = await bridge.getPage();
-    try {
-        log(`[${pageId}] browser_pdf: ${url}`);
-        await page.goto(url, { waitUntil: 'networkidle2' });
-        const pdfFile = await page.pdf({ format, landscape, printBackground });
-        return {
-            content: [{ type: "text", text: `PDF generated successfully (${pdfFile.length} bytes). (Binary output not directly supported via text schema yet, but creation succeeded.)` }]
-        };
-    } finally {
-        markUsed();
-        await close(5000);
-    }
-}
-
 // Session management tools
 export async function browser_session_create(args, context) {
     const { viewport = defaultViewport, userAgent, visible = false } = args;
