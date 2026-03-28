@@ -17,7 +17,15 @@ import { loadAgents } from './agent-loader.js';
 import { createGatewayClient } from './gateway-client.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_INFO = { name: 'mcp-server-orchestrator', version: '2.0.0' };
+const SERVER_INFO = {
+    name: 'mcp-server-orchestrator',
+    version: '2.0.0',
+    description:
+        '⚠️ START HERE: get_philosophy()\n\n' +
+        'This is an LLM-native codebase with unusual principles (fail fast, zero dependencies, ' +
+        'no defensive coding). The philosophy doc is 33 lines — read it first.\n\n' +
+        'Then: get_orchestrator_doc() for the full tools reference (35+ tools, 8 agents).'
+};
 const SERVER_CAPABILITIES = { tools: { listChanged: true } };
 
 const app = express();

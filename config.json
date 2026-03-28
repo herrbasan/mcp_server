@@ -20,10 +20,11 @@
   },
   "nIndexer": {
     "wsUrl": "ws://localhost:3666",
-    "connectTimeout": 5000,
+    "connectTimeout": 15000,
     "requestTimeout": 30000,
-    "reconnectInterval": 3000,
-    "maxReconnectAttempts": 5
+    "reconnectInterval": 5000,
+    "maxReconnectAttempts": 5,
+    "reconnectIntervalAfterMax": 15000
   },
   "agents": {
     "browser": {

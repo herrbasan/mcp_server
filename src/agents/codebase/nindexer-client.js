@@ -7,10 +7,11 @@
 
 const DEFAULT_CONFIG = {
   wsUrl: 'ws://localhost:3666',
-  connectTimeout: 5000,
+  connectTimeout: 15000,
   requestTimeout: 30000,
-  reconnectInterval: 3000,
-  maxReconnectAttempts: 5
+  reconnectInterval: 5000,
+  maxReconnectAttempts: 5,
+  reconnectIntervalAfterMax: 15000
 };
 
 export class NIndexerClient {
@@ -172,7 +173,17 @@ export class NIndexerClient {
 
   _scheduleReconnect() {
     this.reconnectAttempts++;
-    console.log(`[nIndexer] Scheduling reconnect attempt ${this.reconnectAttempts}/${this.config.maxReconnectAttempts}`);
+
+    // After maxReconnectAttempts, switch to reconnectIntervalAfterMax and retry forever
+    const interval = this.reconnectAttempts <= this.config.maxReconnectAttempts
+      ? this.config.reconnectInterval
+      : this.config.reconnectIntervalAfterMax;
+
+    const attemptLabel = this.reconnectAttempts <= this.config.maxReconnectAttempts
+      ? `${this.reconnectAttempts}/${this.config.maxReconnectAttempts}`
+      : `${this.reconnectAttempts} (forever)`;
+
+    console.log(`[nIndexer] Scheduling reconnect attempt ${attemptLabel}`);
 
     this.reconnectTimer = setTimeout(async () => {
       try {
@@ -180,7 +191,7 @@ export class NIndexerClient {
       } catch (err) {
         console.warn(`[nIndexer] Reconnect failed: ${err.message}`);
       }
-    }, this.config.reconnectInterval);
+    }, interval);
   }
 
   // ========== nIndexer Tool Wrappers ==========
