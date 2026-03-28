@@ -11,17 +11,12 @@
   },
   "models": {
     "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "glm5-turbo-chat",
-    "inspect": "glm5-turbo-chat",
-    "synthesis": "glm5-turbo-chat",
-    "analysis": "glm5-turbo-chat",
+    "query": "kimi-chat",
+    "inspect": "kimi-chat",
+    "synthesis": "kimi-chat",
+    "analysis": "kimi-chat",
     "embed": "lmstudio-embed",
     "vision": "kimi-chat"
-  },
-  "spaces": {
-    "COOLKID-Work": ["\\\\COOLKID\\Work\\Work", "d:\\Work"],
-    "BADKID-DEV": ["\\\\BADKID\\Stuff\\DEV", "d:\\DEV"],
-    "BADKID-SRV": ["\\\\BADKID\\Stuff\\SRV", "d:\\SRV"]
   },
   "nIndexer": {
     "wsUrl": "ws://localhost:3666",
@@ -32,9 +27,6 @@
   },
   "agents": {
     "browser": {
-      "timeout": 30000,
-      "maxContentSize": 2097152,
-      "idleTimeout": 300000,
       "viewport": { "width": 1280, "height": 1800 },
       "userDataDir": "data/chrome-profile"
     },
@@ -48,15 +40,7 @@
       "searchEngines": ["google", "duckduckgo"]
     },
     "codebase": {
-      "dataDir": "data/codebases",
-      "embeddingDimension": 768,
-      "maxFileSize": 1048576,
-      "maintenance": {
-        "enabled": true,
-        "intervalMs": 3600000,
-        "autoRefresh": true,
-        "staleThresholdMs": 300000
-      }
+      "dataDir": "data/codebases"
     },
     "vision": {
       "ttlMinutes": 30,
