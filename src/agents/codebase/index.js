@@ -91,17 +91,6 @@ export class CodebaseIndexingService {
     );
   }
 
-  /**
-   * List available spaces from configuration
-   */
-  async listSpaces() {
-    return Object.entries(this.spaces).map(([name, paths]) => ({
-      name,
-      paths,
-      description: `Project root: ${paths[0]}`
-    }));
-  }
-
   // ========== Proxy Methods to nIndexer ==========
 
   /**
@@ -412,11 +401,6 @@ IMPLEMENTATION_PATTERNS:
         inputSchema: { type: 'object', properties: {} }
       },
       {
-        name: 'list_spaces',
-        description: 'List available spaces (configured project roots) for indexing codebases. Use this to find space names before calling index_codebase.',
-        inputSchema: { type: 'object', properties: {} }
-      },
-      {
         name: 'index_codebase',
         description: 'Index a new codebase for semantic search. Provide either "source" (absolute path) OR "space" (configured space name).',
         inputSchema: {
@@ -650,7 +634,6 @@ IMPLEMENTATION_PATTERNS:
   handlesTool(name) {
     return [
       'list_codebases',
-      'list_spaces',
       'index_codebase',
       'refresh_codebase',
       'remove_codebase',
@@ -675,7 +658,6 @@ IMPLEMENTATION_PATTERNS:
   async callTool(name, args) {
     const methodMap = {
       'list_codebases': 'listCodebases',
-      'list_spaces': 'listSpaces',
       'index_codebase': 'indexCodebase',
       'refresh_codebase': 'refreshCodebase',
       'remove_codebase': 'removeCodebase',
@@ -776,7 +758,6 @@ export async function shutdown() {
 
 // Tool handlers
 export async function list_codebases(args, context) { return serviceInstance.callTool('list_codebases', args); }
-export async function list_spaces(args, context) { return serviceInstance.callTool('list_spaces', args); }
 export async function index_codebase(args, context) { return serviceInstance.callTool('index_codebase', args); }
 export async function search_codebase(args, context) { return serviceInstance.callTool('search_codebase', args); }
 export async function search_semantic(args, context) { return serviceInstance.callTool('search_semantic', args); }

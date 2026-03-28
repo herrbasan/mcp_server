@@ -11,14 +11,6 @@
       }
     },
     {
-      "name": "list_spaces",
-      "description": "List available spaces (configured project roots) for indexing codebases. Use this to find space names before calling index_codebase.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {}
-      }
-    },
-    {
       "name": "index_codebase",
       "adminOnly": true,
       "description": "Index a new codebase for semantic search. Provide either \"source\" (absolute path) OR \"space\" (configured space name).",
