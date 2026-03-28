@@ -1,6 +1,5 @@
 # MCP Orchestrator - Tools Reference Guide
 
-> **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.  
 > **📍 Scope**: Use IDE shortcuts for **current project** (faster!). Use MCP tools for **cross-project search**, **web content**, and **LLM queries**.
 
 > ✅ **You have read this documentation via `get_documentation()`. Follow the scope guidelines and workflows below.**
@@ -149,7 +148,7 @@ mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
 
 ---
 
-## Memory Module (7 tools)
+## Memory Module (5 tools)
 
 > Store evidence for OUTPUT QUALITY. Categories: `proven`, `anti_patterns`, `hypotheses`, `context`, `observed`
 
@@ -167,10 +166,10 @@ mcp_orchestrator_remember({
 // Results: [#id] [domain] category (similarity%) confidence-indicator
 // ✓=proven(0.7+)  ~=promising(0.5-0.7)  ?=hypothesis(<0.5)
 
-mcp_orchestrator_recall({ 
-  query: "authentication patterns", 
+mcp_orchestrator_recall({
+  query: "authentication patterns",
   domain: "mcp_server",
-  limit: 5 
+  limit: 5
 })
 ```
 
@@ -180,15 +179,6 @@ mcp_orchestrator_list_memories({ domain: "mcp_server" })
 mcp_orchestrator_update_memory({ id: 42, text: "Updated...", category: "proven" })
 mcp_orchestrator_forget({ id: 42 })
 ```
-
-### `reflect_on_session` / `apply_reflection_changes`
-**Purpose**: Memory maintenance at session end. YOU trigger this when work completes.
-
-**What happens**: I scan all project memories, check against current codebase reality, identify outdated patterns, propose updates/deletes for stale items.
-
-**Also check**: Update project documentation (README, AGENTS.md, instructions) if code changes have made them stale.
-
-**Why user-initiated**: Prevents constant memory churn while ensuring regular hygiene. You control when reflection happens; I do the validation work.
 
 ---
 
@@ -235,45 +225,9 @@ mcp_orchestrator_research_topic({
 
 ---
 
-## Browser Module (17 tools)
+## Browser Module (14 tools)
 
 Headless browser (Puppeteer) with persistent sessions for multi-step workflows.
-
-### One-shot Tools (create page per call)
-
-```javascript
-// Text extraction (default) - clean article content
-mcp_orchestrator_browser_fetch({ url: "https://example.com" })
-
-// Screenshot with custom viewport options
-mcp_orchestrator_browser_fetch({
-  url: "https://example.com",
-  mode: "screenshot",
-  fullPage: true,
-  viewport: { width: 1280, height: 720 }
-})
-
-// Wait for dynamic content
-mcp_orchestrator_browser_fetch({
-  url: "https://spa-app.com",
-  waitFor: ".data-loaded"
-})
-
-// Execute JS in page context
-mcp_orchestrator_browser_evaluate({
-  url: "https://example.com",
-  script: "return document.title"
-})
-
-// Generate PDF
-mcp_orchestrator_browser_pdf({
-  url: "https://example.com",
-  format: "A4",
-  landscape: true
-})
-```
-
-### Session Tools (persistent page across calls)
 
 **Workflow**: Create session → Navigate/interact → Get content → Close
 
