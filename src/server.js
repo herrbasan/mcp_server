@@ -74,6 +74,20 @@ function jsonrpcError(id, code, message) {
 }
 
 async function start() {
+    // Query available models from gateway and save to data/models.json
+    try {
+        const modelsResponse = await fetch(`${gatewayHttp}/v1/models`);
+        if (modelsResponse.ok) {
+            const modelsData = await modelsResponse.json();
+            const dataDir = path.join(__dirname, '../data');
+            if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+            fs.writeFileSync(path.join(dataDir, 'models.json'), JSON.stringify(modelsData, null, 2));
+            logger.info(`[Startup] Saved ${modelsData.data?.length || 0} available models to data/models.json`);
+        }
+    } catch (e) {
+        logger.warn(`[Startup] Could not query gateway models: ${e.message}`);
+    }
+
     const { tools, adminTools, routeToolCall, shutdownAll } = await loadAgents(globalContext);
 
     // Admin API - localhost only, no auth needed (loopback-scoped)

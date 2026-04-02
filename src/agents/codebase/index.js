@@ -216,107 +216,6 @@ export class CodebaseIndexingService {
   }
 
   /**
-   * Analyze search results using local LLM
-   */
-  async analyzeSearchResults(searchResults, query, searchType = 'search') {
-    if (!this.router) {
-      throw new Error('LLM router not available for analysis');
-    }
-
-    const results = searchResults.results || [];
-    if (results.length === 0) {
-      return {
-        summary: 'No results found.',
-        keyFindings: [],
-        relevantFiles: [],
-        implementationPatterns: [],
-        raw: 'No results to analyze.'
-      };
-    }
-
-    // Build context from search results
-    const context = results.map((r, i) => {
-      const parts = [
-        `Result ${i + 1}: ${r.file || r.path || 'unknown'}`,
-        r.score ? `Score: ${r.score.toFixed(3)}` : null,
-        r.language ? `Language: ${r.language}` : null,
-        r.functions?.length ? `Functions: ${r.functions.join(', ')}` : null,
-        r.classes?.length ? `Classes: ${r.classes.join(', ')}` : null,
-        r.line ? `Line ${r.line}: ${r.content || ''}` : null
-      ].filter(Boolean);
-      return parts.join('\n');
-    }).join('\n\n---\n\n');
-
-    const analysisPrompt = `You are analyzing code search results to extract key information. Be concise and structured.
-
-Search Query: "${query}"
-Search Type: ${searchType}
-Number of Results: ${results.length}
-
-Search Results:
-${context}
-
-Provide a structured analysis in this exact format:
-
-SUMMARY: (2-3 sentences describing what was found and how it relates to the query)
-
-KEY_FINDINGS:
-- (bullet point 1: specific implementation detail or pattern found)
-- (bullet point 2: another key finding)
-- (add more as relevant, max 5)
-
-RELEVANT_FILES:
-1. (filepath) - (why it's relevant in 5-8 words)
-2. (add more as relevant, max 5)
-
-IMPLEMENTATION_PATTERNS:
-- (pattern name): (brief description of how it's implemented)
-- (add more as found, max 3)`;
-
-    const analysis = await this.router.predict({
-      prompt: analysisPrompt,
-      temperature: 0.3,
-      taskType: 'analysis'
-    });
-
-    // Parse the analysis into structured format
-    const lines = analysis.trim().split('\n');
-    const parsed = {
-      summary: '',
-      keyFindings: [],
-      relevantFiles: [],
-      implementationPatterns: [],
-      raw: analysis.trim()
-    };
-
-    let section = null;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('SUMMARY:')) {
-        section = 'summary';
-        parsed.summary = trimmed.slice(8).trim();
-      } else if (trimmed.startsWith('KEY_FINDINGS:')) {
-        section = 'findings';
-      } else if (trimmed.startsWith('RELEVANT_FILES:')) {
-        section = 'files';
-      } else if (trimmed.startsWith('IMPLEMENTATION_PATTERNS:')) {
-        section = 'patterns';
-      } else if (trimmed.startsWith('- ') && section === 'findings') {
-        parsed.keyFindings.push(trimmed.slice(2));
-      } else if (/^\d+\./.test(trimmed) && section === 'files') {
-        parsed.relevantFiles.push(trimmed.replace(/^\d+\.\s*/, ''));
-      } else if (trimmed.startsWith('- ') && section === 'patterns') {
-        parsed.implementationPatterns.push(trimmed.slice(2));
-      } else if (section === 'summary' && !trimmed.startsWith('KEY_FINDINGS:')) {
-        parsed.summary += ' ' + trimmed;
-      }
-    }
-
-    parsed.summary = parsed.summary.trim();
-    return parsed;
-  }
-
-  /**
    * Get file tree
    */
   async getFileTree({ codebase, path: subpath = '' }) {
@@ -428,16 +327,14 @@ IMPLEMENTATION_PATTERNS:
             filter: {
               type: 'object',
               properties: { language: { type: 'string' } }
-            },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. Recommended for exploration.' },
-            includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down.' }
+            }
           },
           required: ['codebase', 'query']
         }
       },
       {
         name: 'search_semantic',
-        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Use analyze:true for structured summary. Codebase name supports partial matching.',
+        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -447,9 +344,7 @@ IMPLEMENTATION_PATTERNS:
             filter: {
               type: 'object',
               properties: { language: { type: 'string' } }
-            },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. Recommended for exploration.' },
-            includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down.' }
+            }
           },
           required: ['codebase', 'query']
         }
@@ -463,9 +358,73 @@ IMPLEMENTATION_PATTERNS:
             codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
             query: { type: 'string', description: 'Keywords to search (function names, class names, etc.)' },
             limit: { type: 'number', default: 20 },
-            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary (reduces token cost for calling LLM)' },
-            includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis (increases token usage)' }
+            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' }
+          },
+          required: ['codebase', 'query']
+        }
+      },
+      {
+        name: 'grep_codebase',
+        description: 'Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Use ONLY when: (1) You need regex patterns like "function.*predict\(", (2) You need exact line numbers for editing, (3) You suspect index is stale. OTHERWISE prefer search_keyword (faster for names) or search_semantic (for concepts). Slower than indexed search (1-3s vs <200ms). Codebase name supports partial matching.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
+            pattern: { type: 'string', description: 'Search pattern (regex or literal string)' },
+            regex: { type: 'boolean', default: true, description: 'Use regex pattern matching. Set to false for literal string search (faster)' },
+            limit: { type: 'number', default: 50, description: 'Max total results to return' },
+            maxMatchesPerFile: { type: 'number', default: 5, description: 'Max matches per file (-1 for unlimited, 1 for "find files only")' },
+            caseSensitive: { type: 'boolean', default: false, description: 'Case-sensitive search' },
+            pathPattern: { type: 'string', description: 'Filter by file path glob (e.g., "*.js", "src/**")' },
+            noCache: { type: 'boolean', default: false, description: 'Skip cache and force fresh search' }
+          },
+          required: ['codebase', 'pattern']
+        }
+      },
+      {
+        name: 'search_all_codebases',
+        description: 'Search across ALL indexed codebases at once. Perfect for finding "how is X implemented across different projects?" Strategies: hybrid (default, semantic, keyword).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query (natural language, keywords, or grep pattern)' },
+            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid', description: 'hybrid=best overall (default), keyword=fastest, semantic=conceptual' },
+            limit: { type: 'number', default: 20, description: 'Total result limit across all codebases' },
+            perCodebaseLimit: { type: 'number', default: 5, description: 'Max results per codebase' },
+            filter: {
+              type: 'object',
+              properties: { language: { type: 'string' } }
+            }
+          }
+        }
+      },
+      {
+        name: 'search_semantic',
+        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Codebase name supports partial matching.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
+            query: { type: 'string', description: 'Natural language query describing what you are looking for' },
+            limit: { type: 'number', default: 10 },
+            filter: {
+              type: 'object',
+              properties: { language: { type: 'string' } }
+            }
+          },
+          required: ['codebase', 'query']
+        }
+      },
+      {
+        name: 'search_keyword',
+        description: 'FAST indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Codebase name supports partial matching.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
+            query: { type: 'string', description: 'Keywords to search (function names, class names, etc.)' },
+            limit: { type: 'number', default: 20 },
+            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' }
           },
           required: ['codebase', 'query']
         }
@@ -608,7 +567,7 @@ IMPLEMENTATION_PATTERNS:
       },
       {
         name: 'get_codebase_description',
-        description: 'Get LLM-generated project description with staleness check. Codebase name supports partial matching.',
+        description: 'Get project description (heuristic-based) with staleness check. Codebase name supports partial matching.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -683,34 +642,7 @@ IMPLEMENTATION_PATTERNS:
       throw new Error(`Unknown tool: ${name}`);
     }
 
-    // Extract analyze flag before passing to method
-    const shouldAnalyze = args.analyze === true;
-    const methodArgs = { ...args };
-    delete methodArgs.analyze;
-
-    const result = await this[methodName](methodArgs);
-
-    // Post-process with LLM analysis if requested (for search tools)
-    const searchTools = ['search_codebase', 'search_semantic', 'search_keyword', 'search_all_codebases', 'grep_codebase'];
-    if (shouldAnalyze && searchTools.includes(name)) {
-      try {
-        const searchQuery = args.query || args.pattern || 'unknown query';
-        const analysis = await this.analyzeSearchResults(result, searchQuery, name);
-        const combined = {
-          analysis,
-          stats: {
-            resultCount: result.count ?? result.totalCount ?? 0,
-            searchType: name,
-            originalQuery: searchQuery
-          },
-          ...(args.includeRaw ? { rawResults: result.results || result } : {})
-        };
-        return { content: [{ type: 'text', text: JSON.stringify(combined, null, 2) }] };
-      } catch (err) {
-        result._analysisError = err.message;
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-      }
-    }
+    const result = await this[methodName](args);
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
   }

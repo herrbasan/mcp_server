@@ -2,6 +2,7 @@ import puppeteer from 'puppeteer';
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -58,52 +59,76 @@ async function withRetry(fn, options = {}) {
     throw lastError;
 }
 
+const DEBUGGING_PORT = 9222;
+const CHROME_PROFILE_DIR = path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile');
+
 async function getBrowser() {
     if (isShuttingDown) {
         throw new Error('Browser is shutting down');
     }
     
     if (!browser) {
-        log('Launching Puppeteer...');
+        const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
+
+        // Try to connect to existing Chrome with debugging enabled
         try {
-            // Basic anti-bot settings
-            browser = await puppeteer.launch({
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-blink-features=AutomationControlled',
-                    '--disable-notifications',
-                    '--window-size=1920,1080'
-                ],
-                userDataDir: path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile')
+            log('Attempting to connect to existing Chrome via CDP...');
+            browser = await puppeteer.connect({
+                browserWSEndpoint: wsUrl,
+                timeout: 3000
             });
-            
-            // Listen for disconnect events
+
+            // Verify it's still responsive
+            const version = await browser.version();
+            log(`Connected to existing Chrome (version: ${version})`);
+
             browser.on('disconnected', () => {
-                log('Browser disconnected event received');
+                log('Chrome disconnected via CDP');
                 browser = null;
                 activePages.clear();
             });
-            
-            // Listen for target created/destroyed to track pages
-            browser.on('targetcreated', (target) => {
-                if (target.type() === 'page') {
-                    log(`Page created: ${target.url()}`);
-                }
-            });
-            
-            browser.on('targetdestroyed', (target) => {
-                if (target.type() === 'page') {
-                    log(`Page destroyed: ${target.url()}`);
-                    activePages.delete(target);
-                }
-            });
-            
-            log(`Browser launched successfully (PID: ${browser.process()?.pid})`);
+
         } catch (err) {
-            log(`Failed to launch browser: ${err.message}`);
-            throw err;
+            // No existing Chrome found, launch new one with debugging enabled
+            log('No existing Chrome found, launching new instance...');
+            try {
+                browser = await puppeteer.launch({
+                    headless: true,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-notifications',
+                        '--window-size=1920,1080',
+                        `--remote-debugging-port=${DEBUGGING_PORT}`,
+                        `--user-data-dir=${CHROME_PROFILE_DIR}`
+                    ]
+                });
+
+                browser.on('disconnected', () => {
+                    log('Browser disconnected event received');
+                    browser = null;
+                    activePages.clear();
+                });
+
+                browser.on('targetcreated', (target) => {
+                    if (target.type() === 'page') {
+                        log(`Page created: ${target.url()}`);
+                    }
+                });
+
+                browser.on('targetdestroyed', (target) => {
+                    if (target.type() === 'page') {
+                        log(`Page destroyed: ${target.url()}`);
+                        activePages.delete(target);
+                    }
+                });
+
+                log(`Browser launched successfully (PID: ${browser.process()?.pid})`);
+            } catch (launchErr) {
+                log(`Failed to launch browser: ${launchErr.message}`);
+                throw launchErr;
+            }
         }
     }
 
@@ -417,20 +442,35 @@ export async function browser_session_create(args, context) {
     let sessionBrowser = null;
 
     if (visible) {
-        // Launch a headed browser instance for visible sessions
-        log('Launching visible (headed) browser for interactive session...');
-        sessionBrowser = await puppeteer.launch({
-            headless: false,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-blink-features=AutomationControlled',
-                '--window-size=1280,900'
-            ],
-            userDataDir: path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile')
-        });
+        const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
+
+        // For visible sessions, try to connect to existing Chrome first
+        try {
+            log('Attempting to connect to existing Chrome for visible session...');
+            sessionBrowser = await puppeteer.connect({
+                browserWSEndpoint: wsUrl,
+                timeout: 3000
+            });
+            const version = await sessionBrowser.version();
+            log(`Connected to existing Chrome for visible session (version: ${version})`);
+        } catch (err) {
+            // Launch new headed browser if no existing Chrome
+            log('No existing Chrome for visible session, launching new instance...');
+            sessionBrowser = await puppeteer.launch({
+                headless: false,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--window-size=1280,900',
+                    `--remote-debugging-port=${DEBUGGING_PORT}`,
+                    `--user-data-dir=${CHROME_PROFILE_DIR}`
+                ]
+            });
+            log('Visible browser launched successfully');
+        }
+
         page = await sessionBrowser.newPage();
-        log('Visible browser launched successfully');
     } else {
         // Use the shared headless browser
         const b = await getBrowser();
@@ -626,9 +666,24 @@ export async function browser_session_fill(args, context) {
     resetSessionIdleTimer(sessionId);
 
     try {
-        return await withRetry(async (_attempt) => {
+        if (!fields?.length) {
+            return { content: [{ type: "text", text: "No fields to fill" }], isError: true };
+        }
+        for (const f of fields) {
+            if (!f.selector?.trim()) {
+                return { content: [{ type: "text", text: "Empty selector provided" }], isError: true };
+            }
+        }
+        return await withRetry(async (attempt) => {
             for (const f of fields) {
                 await session.page.waitForSelector(f.selector);
+                await session.page.evaluate((sel) => {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        el.value = '';
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                }, f.selector);
                 await session.page.type(f.selector, f.value || '');
             }
             if (submit) {

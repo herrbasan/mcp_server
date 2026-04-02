@@ -86,27 +86,10 @@ export async function research_topic(args, context) {
     const evalResult = await gateway.chat({
         model: context.config.models?.analysis || 'default',
         messages: [{ role: 'user', content: `Original Query: "${query}"\n\nSynthesized Answer:\n${synthesisResult.content}\n\nRate confidence from 0.0 to 1.0 based on how well this answers the query and the quality of sources. Describe weaknesses.` }],
-        systemPrompt: prompts.evaluation || "You are an evaluator. Return JSON.",
-        responseFormat: {
-            type: "json_schema",
-            json_schema: {
-                name: "evaluation",
-                strict: true,
-                schema: {
-                    type: "object",
-                    properties: {
-                        confidence: { type: "number" },
-                        weaknesses: { type: "array", items: { type: "string" } }
-                    },
-                    required: ["confidence", "weaknesses"]
-                }
-            }
-        }
+        systemPrompt: prompts.evaluation || "You are an evaluator."
     });
 
-    const evaluation = JSON.parse(evalResult.content.replace(/```json|```/g, '').trim());
-    const confidence = evaluation.confidence > 1 ? evaluation.confidence : evaluation.confidence * 100;
-    const finalOutput = `${synthesisResult.content}\n\n---\n*Research Confidence: ${confidence.toFixed(0)}%*\n*Weaknesses: ${evaluation.weaknesses?.join('; ') || 'None noted'}*`;
+    const finalOutput = `${synthesisResult.content}\n\n---\n*Evaluation:\n${evalResult.content}*`;
 
     return { content: [{ type: "text", text: finalOutput }] };
 }

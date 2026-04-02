@@ -5,7 +5,7 @@
     "tools": [
         {
             "name": "browser_session_create",
-            "description": "Create a persistent browser session. Returns a sessionId in the response text. Use this sessionId in all subsequent browser_session_* calls (goto, content, click, fill, evaluate, scroll, metadata, close). Example: call this first, then use browser_session_goto with the returned sessionId.",
+            "description": "Create a persistent browser session. Returns a sessionId in the response text. Use this sessionId in all subsequent browser_session_* calls (goto, content, screenshot, click, fill, evaluate, scroll, metadata, close). Example: call this first, then use browser_session_goto with the returned sessionId.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

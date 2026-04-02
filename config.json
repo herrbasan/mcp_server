@@ -11,10 +11,10 @@
   },
   "models": {
     "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "kimi-chat",
-    "inspect": "kimi-chat",
-    "synthesis": "kimi-chat",
-    "analysis": "kimi-chat",
+    "query": "minimax-chat",
+    "inspect": "minimax-chat",
+    "synthesis": "glm5-turbo-chat",
+    "analysis": "glm5-turbo-chat",
     "embed": "lmstudio-embed",
     "vision": "kimi-chat"
   },

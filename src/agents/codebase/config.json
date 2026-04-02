@@ -32,11 +32,6 @@
           "project": {
             "type": "string",
             "description": "Project folder name within space (defaults to codebase name if not specified)"
-          },
-          "analyze": {
-            "type": "boolean",
-            "description": "Run LLM analysis after indexing to generate project description (default: false)",
-            "default": false
           }
         },
         "required": [
@@ -46,7 +41,7 @@
     },
     {
       "name": "search_codebase",
-      "description": "[RECOMMENDED] Primary focused search tool for a single codebase. Very fast. Combines semantic (meaning) + keyword (exact) matching. ALWAYS use this first before falling back to search_all_codebases. Use strategy:keyword for fast exact name lookups, strategy:semantic for conceptual queries. Use analyze:true to get an AI-summarized response (saves tokens). Codebase name supports partial matching.",
+      "description": "[RECOMMENDED] Primary focused search tool for a single codebase. Very fast. Combines semantic (meaning) + keyword (exact) matching. ALWAYS use this first before falling back to search_all_codebases. Use strategy:keyword for fast exact name lookups, strategy:semantic for conceptual queries. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -79,16 +74,6 @@
                 "type": "string"
               }
             }
-          },
-          "analyze": {
-            "type": "boolean",
-            "default": false,
-            "description": "Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. Recommended for exploration."
-          },
-          "includeRaw": {
-            "type": "boolean",
-            "default": false,
-            "description": "Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down."
           }
         },
         "required": [
@@ -99,7 +84,7 @@
     },
     {
       "name": "search_semantic",
-      "description": "Semantic (AI embedding) search - finds conceptually similar code. Best for: \"how is X implemented?\", \"find code that does Y\", pattern discovery. Slower than keyword but understands meaning, not just text. Use analyze:true for structured summary. Codebase name supports partial matching.",
+      "description": "Semantic (AI embedding) search - finds conceptually similar code. Best for: \"how is X implemented?\", \"find code that does Y\", pattern discovery. Slower than keyword but understands meaning, not just text. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -122,16 +107,6 @@
                 "type": "string"
               }
             }
-          },
-          "analyze": {
-            "type": "boolean",
-            "default": false,
-            "description": "Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. Recommended for exploration."
-          },
-          "includeRaw": {
-            "type": "boolean",
-            "default": false,
-            "description": "Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down."
           }
         },
         "required": [
@@ -162,16 +137,6 @@
             "type": "boolean",
             "default": true,
             "description": "Search file content (not just paths). Slightly slower but more thorough."
-          },
-          "analyze": {
-            "type": "boolean",
-            "default": false,
-            "description": "Use local LLM to analyze results and return structured summary (reduces token cost for calling LLM)"
-          },
-          "includeRaw": {
-            "type": "boolean",
-            "default": false,
-            "description": "Include raw search results in addition to analysis (increases token usage)"
           }
         },
         "required": [
@@ -222,16 +187,6 @@
             "type": "boolean",
             "default": false,
             "description": "Skip cache and force fresh search"
-          },
-          "analyze": {
-            "type": "boolean",
-            "default": false,
-            "description": "Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results."
-          },
-          "includeRaw": {
-            "type": "boolean",
-            "default": false,
-            "description": "Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down."
           }
         },
         "required": [
@@ -242,7 +197,7 @@
     },
     {
       "name": "search_all_codebases",
-      "description": "[AVOID IF POSSIBLE] Slowest search method. Search across ALL indexed codebases at once. ONLY use this as a last resort when focused searches on individual codebases have failed, or for extremely broad queries like \"how is X implemented across different projects?\" Use analyze:true to get AI-summarized insights instead of raw snippets.",
+      "description": "[AVOID IF POSSIBLE] Slowest search method. Search across ALL indexed codebases at once. ONLY use this as a last resort when focused searches on individual codebases have failed, or for extremely broad queries like \"how is X implemented across different projects?\"",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -283,16 +238,6 @@
                 "type": "string"
               }
             }
-          },
-          "analyze": {
-            "type": "boolean",
-            "default": false,
-            "description": "Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. STRONGLY RECOMMENDED for cross-codebase exploration."
-          },
-          "includeRaw": {
-            "type": "boolean",
-            "default": false,
-            "description": "Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down."
           }
         },
         "required": [
@@ -349,11 +294,6 @@
         "properties": {
           "name": {
             "type": "string"
-          },
-          "analyze": {
-            "type": "boolean",
-            "description": "Re-run LLM analysis if stale (default: false)",
-            "default": false
           }
         },
         "required": [
@@ -440,7 +380,7 @@
     {
       "name": "analyze_codebase",
       "adminOnly": true,
-      "description": "Run LLM analysis to generate project description and identify key files. Codebase name supports partial matching.",
+      "description": "Generate project description using heuristics (fast, no LLM). Identifies key files and patterns. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -456,7 +396,7 @@
     },
     {
       "name": "get_codebase_description",
-      "description": "Get LLM-generated project description with staleness check. Codebase name supports partial matching.",
+      "description": "Get project description (heuristic-based) with staleness check. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
