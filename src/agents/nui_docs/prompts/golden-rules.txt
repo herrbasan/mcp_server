@@ -1,0 +1,56 @@
+# NUI Golden Rules — Always Follow These
+
+## Wrapper Pattern (CRITICAL)
+NUI components are Light DOM wrappers around native HTML. You MUST include the inner semantic element.
+
+CORRECT: <nui-button><button type="button">Text</button></nui-button>
+CORRECT: <nui-input><input type="text" /></nui-input>
+CORRECT: <nui-dialog><dialog>...</dialog></nui-dialog>
+CORRECT: <nui-accordion><details><summary>Title</summary><p>Content</p></details></nui-accordion>
+
+WRONG: <nui-button>Text</nui-button>
+WRONG: <nui-dialog><div>Content</div></nui-dialog>
+WRONG: Inventing non-existent component names
+
+Set attributes (disabled, aria-label, type) on the INNER native element, NOT the wrapper.
+
+## CSS Rules
+- NEVER invent CSS variables. Only use those defined in :root of nui-theme.css.
+- Spacing: --nui-space, --nui-space-half, --nui-space-double (no md/lg/xl suffixes)
+- Colors: --color-base, --color-shade1 through --color-shade9 (no "surface" or "background")
+- Borders: --border-thickness, --border-shade1, --border-radius1
+- No <style> blocks in page fragments; use existing classes or scope under .page-<slug>
+- Theme customization via CSS :root overrides or nui-vars-* attributes on nui-app
+
+## Component Pattern
+- Thin custom element class (lifecycle hooks only) + pure functions (logic takes element as parameter)
+- No inheritance hierarchies; each component is self-contained
+- CustomEvent for inter-component communication; no pub/sub
+- data-action for simple click wiring; standard addEventListener for complex logic
+
+## Required Setup
+<link rel="stylesheet" href="NUI/css/nui-theme.css"> in <head>
+<script type="module" src="NUI/nui.js"></script> before </body>
+Addons require separate imports (see component registry "imports" field).
+
+## What to Avoid
+- Framework abstractions (React, Vue, Angular)
+- Shadow DOM
+- CSS-in-JS
+- Virtual DOM
+- State management libraries
+- Custom pub/sub systems
+- try/catch that silently hides errors (fail loud)
+- document.querySelector() in page scripts (use element.querySelector() scoped to page wrapper)
+
+## Page Script Contract (Fragment-Based SPA)
+- init(element, params, nui) runs ONCE (pages are cached by router)
+- Use element.show = (params) => {} and element.hide = () => {} for lifecycle
+- Scope ALL DOM queries to element, never document
+- Do not attach global document listeners without removing them in element.hide()
+
+## Accessibility
+- Components enhance native elements; progressive enhancement by default
+- Use roving tabindex for composite components (tabs, menus, toolbars)
+- Use a11y.announce(message) for focus-driven state changes
+- Icon-only buttons auto-receive aria-label from icon name

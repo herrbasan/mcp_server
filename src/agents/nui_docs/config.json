@@ -37,6 +37,30 @@
 				},
 				"required": ["topic"]
 			}
+		},
+		{
+			"name": "nui_get_reference",
+			"description": "Compact API reference cheat sheet. Returns setup boilerplate, addon imports, root API (nui.*), components API (nui.components.*), utilities (nui.util.*), data-action syntax, router contract, and key component events. Use this for quick lookups without reading full guide pages.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {}
+			}
+		},
+		{
+			"name": "nui_get_css_variables",
+			"description": "Get all CSS variables defined in nui-theme.css. Returns categorized list of variable names and their values. Dynamically generated from the submodule source (cached per commit).",
+			"inputSchema": {
+				"type": "object",
+				"properties": {}
+			}
+		},
+		{
+			"name": "nui_get_icons",
+			"description": "Get all icon names available in the material-icons-sprite.svg. Returns a comma-separated list of icon IDs for use with nui-icon. Dynamically generated from the submodule source (cached per commit).",
+			"inputSchema": {
+				"type": "object",
+				"properties": {}
+			}
 		}
 	]
 }
