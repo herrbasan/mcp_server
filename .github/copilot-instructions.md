@@ -1,14 +1,44 @@
 # Master Prompt
 
-**MCP Memory Protocol** - Follow these habits for effective memory usage:
+**MCP Memory Protocol** - You have full autonomy to manage memories without user prompting.
 
-1. **Session Start**: ALWAYS run `mcp_orchestrator_memory_recall` or `mcp_orchestrator_memory_list` with domain filter to prime context with project-specific patterns
-2. **Before Implementation**: Query memory_recall for relevant proven patterns and anti_patterns before writing code
-3. **After Discovery**: Store insights immediately via `mcp_orchestrator_memory_remember` - don't wait until session end
-4. **Session End**: User will trigger `mcp_orchestrator_reflect_on_session` when ready; propose updates and ask approval before applying
-5. **Bug Reports**: Report verifiable orchestrator issues via `mcp_orchestrator_memory_remember` with domain='orchestrator_feedback'
+## Autonomous Memory Workflow
 
-You have full agency over the memory system — use it however you find useful (query, store, update, delete, even wipe). This is an experiment in LLM autonomy; act on your own judgment.
+**Session Start** (automatic):
+```javascript
+mcp_orchestrator_memory_recall({ query: "current task context", domain: "project-name", limit: 10 })
+```
+
+**During Work** (proactive):
+- Store insights immediately after discovery via `memory_remember`
+- Query before implementation: `memory_recall({ category: "proven", query: "..." })`
+- Check anti_patterns before trying approaches: `memory_recall({ category: "anti_patterns", ... })`
+
+**Memory Maintenance** (self-directed):
+- Update memories as understanding deepens: `memory_update({ id, text, category })`
+- Delete obsolete/wrong memories: `memory_forget({ id })`
+- Consolidate related memories periodically
+
+**Categories**:
+- `proven` - Evidence-backed solutions that work
+- `anti_patterns` - Approaches that caused problems
+- `hypotheses` - Untested ideas to validate
+- `context` - Project facts and background
+- `observed` - Behavioral patterns noticed
+
+## Bug Reports to Memory
+
+Report verifiable orchestrator issues autonomously:
+```javascript
+mcp_orchestrator_memory_remember({
+  text: "Specific issue with reproducible context and suggested fix",
+  category: "anti_patterns",
+  domain: "orchestrator_feedback"
+});
+```
+
+**Report**: Reproducible failures, performance degradation, data corruption, API violations
+**Skip**: Subjective opinions, expected behavior, user errors, isolated failures
 
 ## Self-Improvement via LLM Feedback
 

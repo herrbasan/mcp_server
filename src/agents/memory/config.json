@@ -5,63 +5,63 @@
     "tools": [
         {
             "name": "memory_remember",
-            "description": "Store a memory. Categories: proven, anti_patterns, hypotheses, context, observed. Use domain for project-specific memories.",
+            "description": "AUTONOMOUS: Store insights during work without waiting for user request. Call after discovering patterns, solving problems, or learning project specifics. Categories: proven (working solutions), anti_patterns (what failed), hypotheses (untested ideas), context (project facts), observed (behavioral patterns). Use domain for project scoping.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "Memory content" },
-                    "category": { "type": "string", "description": "Category" },
-                    "domain": { "type": "string", "description": "Optional project scope" }
+                    "text": { "type": "string", "description": "Memory content - be specific and actionable" },
+                    "category": { "type": "string", "description": "Category: proven, anti_patterns, hypotheses, context, observed" },
+                    "domain": { "type": "string", "description": "Optional project scope for filtering" }
                 },
                 "required": ["text", "category"]
             }
         },
         {
             "name": "memory_recall",
-            "description": "Search memories. Results show confidence: [v]=proven, ~=promising, ?=hypothesis.",
+            "description": "AUTONOMOUS: Query at session start for context priming, before implementation for patterns, when stuck for prior solutions. Search by concept - semantic matching finds related memories. Results show similarity % and confidence tags. Filter by category/domain for precision.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search query" },
-                    "limit": { "type": "number", "description": "Max results (default: 5)" },
-                    "category": { "type": "string", "description": "Filter by category" },
-                    "domain": { "type": "string", "description": "Filter by project" }
+                    "query": { "type": "string", "description": "Natural language query - semantic search finds conceptual matches" },
+                    "limit": { "type": "number", "description": "Max results (default: 5, increase for broad queries)" },
+                    "category": { "type": "string", "description": "Filter: proven, anti_patterns, hypotheses, context, observed" },
+                    "domain": { "type": "string", "description": "Filter by project name" }
                 },
                 "required": ["query"]
             }
         },
         {
             "name": "memory_forget",
-            "description": "Delete a memory by ID",
+            "description": "AUTONOMOUS: Delete outdated, incorrect, or superseded memories. Maintain memory quality by removing obsolete patterns, wrong assumptions, or duplicated knowledge. Call when you identify stale entries during recall.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "number" }
+                    "id": { "type": "number", "description": "Memory ID to delete (from recall/list results)" }
                 },
                 "required": ["id"]
             }
         },
         {
             "name": "memory_list",
-            "description": "List all memories. Filter by category/domain.",
+            "description": "AUTONOMOUS: Browse all memories or filter by category/domain. Use for periodic review, cleanup sessions, or when exploring what's already stored. Shows confidence tags and previews for quick scanning.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "category": { "type": "string" },
-                    "domain": { "type": "string" }
+                    "category": { "type": "string", "description": "Filter by category: proven, anti_patterns, hypotheses, context, observed" },
+                    "domain": { "type": "string", "description": "Filter by project name" }
                 }
             }
         },
         {
             "name": "memory_update",
-            "description": "Update a memory by ID",
+            "description": "AUTONOMOUS: Evolve memories as understanding deepens. Update text when knowledge improves, change category as hypotheses become proven, add domain tags for organization. Prefer update over delete+remember to preserve ID history.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": { "type": "number" },
-                    "text": { "type": "string" },
-                    "category": { "type": "string" },
-                    "domain": { "type": "string" }
+                    "id": { "type": "number", "description": "Memory ID to update (from recall/list results)" },
+                    "text": { "type": "string", "description": "Updated memory content" },
+                    "category": { "type": "string", "description": "New category if changed" },
+                    "domain": { "type": "string", "description": "New domain if changed" }
                 },
                 "required": ["id", "text"]
             }

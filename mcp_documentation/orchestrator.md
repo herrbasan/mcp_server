@@ -150,35 +150,69 @@ mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
 
 ## Memory Module (5 tools)
 
-> Store evidence for OUTPUT QUALITY. Categories: `proven`, `anti_patterns`, `hypotheses`, `context`, `observed`
+> **AUTONOMOUS USAGE**: You are encouraged to use memory tools proactively without user prompting. Store insights as you work, recall context at session start, and maintain memory quality.
+
+**Categories**: `proven` (evidence-backed), `anti_patterns` (what failed), `hypotheses` (untested), `context` (facts), `observed` (patterns)
 
 ### `memory_remember`
+Store insights immediately after discovery - don't wait for user request.
+
 ```javascript
 mcp_orchestrator_memory_remember({
-  text: "Pattern description",
+  text: "Use exponential backoff with jitter for WebSocket reconnects",
   category: "proven",        // or anti_patterns, hypotheses, context, observed
   domain: "mcp_server"       // optional project scope
 })
 ```
 
-### `memory_recall`
-```javascript
-// Results: [#id] [domain] category (similarity%) confidence-indicator
-// ✓=proven(0.7+)  ~=promising(0.5-0.7)  ?=hypothesis(<0.5)
+**When to call autonomously**:
+- After solving a non-trivial problem
+- When discovering project-specific patterns
+- After learning what doesn't work (anti_patterns)
+- When user confirms a solution worked
 
+### `memory_recall`
+Query at session start for context, before implementation for patterns, when stuck.
+
+```javascript
+// Session start - prime context
 mcp_orchestrator_memory_recall({
-  query: "authentication patterns",
+  query: "WebSocket reconnection",
   domain: "mcp_server",
   limit: 5
 })
+
+// Before implementation - find patterns
+mcp_orchestrator_memory_recall({
+  query: "file upload drag and drop electron",
+  category: "proven",
+  limit: 10
+})
 ```
 
+**Results format**: `[#id] [domain] category (similarity%) confidence-tag`
+- `[proven]` = confidence ≥0.7, `[likely]` = 0.5-0.7, `[uncertain]` = <0.5
+
 ### `memory_list` / `memory_update` / `memory_forget`
+Maintain memory quality - review, evolve, and cleanup autonomously.
+
 ```javascript
+// Periodic review
 mcp_orchestrator_memory_list({ domain: "mcp_server" })
-mcp_orchestrator_memory_update({ id: 42, text: "Updated...", category: "proven" })
+mcp_orchestrator_memory_list({ category: "anti_patterns" })
+
+// Evolve knowledge
+mcp_orchestrator_memory_update({ 
+  id: 42, 
+  text: "Updated with refined approach...", 
+  category: "proven"  // promoted from hypotheses
+})
+
+// Remove obsolete/wrong memories
 mcp_orchestrator_memory_forget({ id: 42 })
 ```
+
+**Autonomous maintenance**: Call during natural pauses, after identifying outdated info during recall, or when consolidating related memories.
 
 ---
 
