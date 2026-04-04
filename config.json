@@ -15,7 +15,7 @@
     "inspect": "minimax-chat",
     "synthesis": "glm5-turbo-chat",
     "analysis": "glm5-turbo-chat",
-    "embed": "lmstudio-embed",
+    "embed": "badkid-embed",
     "vision": "kimi-chat"
   },
   "nIndexer": {
