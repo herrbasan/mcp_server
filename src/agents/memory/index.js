@@ -64,7 +64,7 @@ export async function shutdown() {
     }
 }
 
-export async function remember(args, context) {
+export async function memory_remember(args, context) {
     const { gateway, progress } = context;
     const { text, category, domain } = args;
     
@@ -136,7 +136,7 @@ export async function remember(args, context) {
     };
 }
 
-export async function recall(args, context) {
+export async function memory_recall(args, context) {
     const { gateway, progress } = context;
     const { query, limit = 5, category, domain } = args;
 
@@ -173,7 +173,7 @@ export async function recall(args, context) {
     };
 }
 
-export async function forget(args, context) {
+export async function memory_forget(args, context) {
     const { id } = args;
     const idx = memories.memories.findIndex(m => m.id === id);
 
@@ -189,7 +189,7 @@ export async function forget(args, context) {
     };
 }
 
-export async function list_memories(args, context) {
+export async function memory_list(args, context) {
     const { category, domain } = args;
     let list = memories.memories;
     if (category) list = list.filter(m => m.category === category);
@@ -212,7 +212,7 @@ export async function list_memories(args, context) {
     };
 }
 
-export async function update_memory(args, context) {
+export async function memory_update(args, context) {
     const { gateway } = context;
     const { id, text, category, domain } = args;
     

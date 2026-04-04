@@ -327,7 +327,7 @@ Weaknesses: None noted
 
 ## Category 7: Memory
 
-### `remember` / `recall` / `list_memories` ✅ **WORKING WELL**
+### `memory_remember` / `memory_recall` / `memory_list` ✅ **WORKING WELL**
 
 | Feature | Status |
 |---------|--------|
@@ -390,7 +390,7 @@ NUI uses customElements.define with nui- prefix for all components
 |------|-------|
 | `get_codebase_description` | Partial matching doesn't work |
 | `inspect_code` | Path format unclear |
-| `list_memories` | All marked `[uncertain]` |
+| `memory_list` | All marked `[uncertain]` |
 
 ### Enhancements
 
@@ -410,7 +410,7 @@ NUI uses customElements.define with nui- prefix for all components
 | `search_keyword` | ✅ Use | Finding exact identifiers |
 | `grep_codebase` | ✅ Use | Complex regex patterns |
 | `research_topic` | ✅ Use | Web research with citations |
-| `remember/recall` | ✅ Use | Knowledge persistence |
+| `memory_remember/memory_recall` | ✅ Use | Knowledge persistence |
 | `check_codebase_status` | ✅ Use | Index health check |
 | `get_prioritized_files` | ⚠️ Avoid | Too much noise |
 | `search_codebase` | ⚠️ Avoid | Use keyword instead |

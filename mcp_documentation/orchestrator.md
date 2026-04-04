@@ -152,32 +152,32 @@ mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
 
 > Store evidence for OUTPUT QUALITY. Categories: `proven`, `anti_patterns`, `hypotheses`, `context`, `observed`
 
-### `remember`
+### `memory_remember`
 ```javascript
-mcp_orchestrator_remember({
+mcp_orchestrator_memory_remember({
   text: "Pattern description",
   category: "proven",        // or anti_patterns, hypotheses, context, observed
   domain: "mcp_server"       // optional project scope
 })
 ```
 
-### `recall`
+### `memory_recall`
 ```javascript
 // Results: [#id] [domain] category (similarity%) confidence-indicator
 // ✓=proven(0.7+)  ~=promising(0.5-0.7)  ?=hypothesis(<0.5)
 
-mcp_orchestrator_recall({
+mcp_orchestrator_memory_recall({
   query: "authentication patterns",
   domain: "mcp_server",
   limit: 5
 })
 ```
 
-### `list_memories` / `update_memory` / `forget`
+### `memory_list` / `memory_update` / `memory_forget`
 ```javascript
-mcp_orchestrator_list_memories({ domain: "mcp_server" })
-mcp_orchestrator_update_memory({ id: 42, text: "Updated...", category: "proven" })
-mcp_orchestrator_forget({ id: 42 })
+mcp_orchestrator_memory_list({ domain: "mcp_server" })
+mcp_orchestrator_memory_update({ id: 42, text: "Updated...", category: "proven" })
+mcp_orchestrator_memory_forget({ id: 42 })
 ```
 
 ---

@@ -2,11 +2,11 @@
 
 **MCP Memory Protocol** - Follow these habits for effective memory usage:
 
-1. **Session Start**: ALWAYS run `mcp_orchestrator_recall` or `mcp_orchestrator_list_memories` with domain filter to prime context with project-specific patterns
-2. **Before Implementation**: Query recall for relevant proven patterns and anti_patterns before writing code
-3. **After Discovery**: Store insights immediately via `mcp_orchestrator_remember` - don't wait until session end
+1. **Session Start**: ALWAYS run `mcp_orchestrator_memory_recall` or `mcp_orchestrator_memory_list` with domain filter to prime context with project-specific patterns
+2. **Before Implementation**: Query memory_recall for relevant proven patterns and anti_patterns before writing code
+3. **After Discovery**: Store insights immediately via `mcp_orchestrator_memory_remember` - don't wait until session end
 4. **Session End**: User will trigger `mcp_orchestrator_reflect_on_session` when ready; propose updates and ask approval before applying
-5. **Bug Reports**: Report verifiable orchestrator issues via `mcp_orchestrator_remember` with domain='orchestrator_feedback'
+5. **Bug Reports**: Report verifiable orchestrator issues via `mcp_orchestrator_memory_remember` with domain='orchestrator_feedback'
 
 You have full agency over the memory system — use it however you find useful (query, store, update, delete, even wipe). This is an experiment in LLM autonomy; act on your own judgment.
 
@@ -22,7 +22,7 @@ Calling LLMs can report orchestrator bugs/issues back to the memory system for c
 
 **How to Report**:
 ```javascript
-mcp_orchestrator_remember({
+mcp_orchestrator_memory_remember({
   text: "browser_fetch timeout: 30s limit insufficient for heavy pages. Example: research_topic failed on 3/10 pages during [session]. Suggest: Add timeout parameter or increase default to 60s.",
   category: "anti_patterns",
   domain: "orchestrator_feedback"
@@ -127,7 +127,7 @@ const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
 
 | Task | Default | Used By | Purpose |
 |------|---------|---------|---------|
-| `embedding` | `lmstudio` | `remember`, `recall`, code indexing | Text embeddings for semantic search (NOTE: Uses `embeddingProvider` config, not taskDefaults) |
+| `embedding` | `lmstudio` | `memory_remember`, `memory_recall`, code indexing | Text embeddings for semantic search (NOTE: Uses `embeddingProvider` config, not taskDefaults) |
 | `analysis` | `lmstudio` | `search_codebase`* (analyze mode), `analyze_codebase`, `get_prioritized_files` | LLM analysis of search results and code structure |
 | `synthesis` | `lmstudio` | `research_topic` | Synthesizing research findings into reports |
 | `query` | `lmstudio` | `query_model` | General LLM queries via MCP tool |
@@ -171,8 +171,8 @@ Complete mapping of MCP tools to their LLM routing tasks:
 | `research_topic` | `synthesis` | `router.predict({ taskType: 'synthesis' })` | `taskDefaults.synthesis` |
 | `search_codebase`* | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
 | `analyze_codebase` | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
-| `remember` | embedding | `router.embedText()` | `embeddingProvider`** |
-| `recall` | embedding | `router.embedText()` | `embeddingProvider`** |
+| `memory_remember` | embedding | `router.embedText()` | `embeddingProvider`** |
+| `memory_recall` | embedding | `router.embedText()` | `embeddingProvider`** |
 | Code indexing | embedding | `router.embedBatch()` | `embeddingProvider`** |
 
 \* All search tools support `analyze: true` parameter which triggers LLM analysis of results.
@@ -261,7 +261,7 @@ Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
 - **hypotheses**: Untested ideas
 - **context**: Project facts, background info
 
-Domain scoping: Memories can be tagged with optional `domain` field for project-specific organization. Use domain parameter in recall/list_memories to filter results.
+Domain scoping: Memories can be tagged with optional `domain` field for project-specific organization. Use domain parameter in memory_recall/memory_list to filter results.
 
 ## Code Style & Philosophy
 - **Language**: Vanilla JavaScript (ES modules) - NO TypeScript

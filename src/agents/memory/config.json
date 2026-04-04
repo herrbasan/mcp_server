@@ -4,7 +4,7 @@
     "maxMemoryChars": 6000,
     "tools": [
         {
-            "name": "remember",
+            "name": "memory_remember",
             "description": "Store a memory. Categories: proven, anti_patterns, hypotheses, context, observed. Use domain for project-specific memories.",
             "inputSchema": {
                 "type": "object",
@@ -17,7 +17,7 @@
             }
         },
         {
-            "name": "recall",
+            "name": "memory_recall",
             "description": "Search memories. Results show confidence: [v]=proven, ~=promising, ?=hypothesis.",
             "inputSchema": {
                 "type": "object",
@@ -31,7 +31,7 @@
             }
         },
         {
-            "name": "forget",
+            "name": "memory_forget",
             "description": "Delete a memory by ID",
             "inputSchema": {
                 "type": "object",
@@ -42,7 +42,7 @@
             }
         },
         {
-            "name": "list_memories",
+            "name": "memory_list",
             "description": "List all memories. Filter by category/domain.",
             "inputSchema": {
                 "type": "object",
@@ -53,7 +53,7 @@
             }
         },
         {
-            "name": "update_memory",
+            "name": "memory_update",
             "description": "Update a memory by ID",
             "inputSchema": {
                 "type": "object",

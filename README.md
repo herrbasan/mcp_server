@@ -49,7 +49,7 @@ Open `config.json` and set the model names in the `models` section. Each key map
 | `inspect`   | `inspect_code` tool                         | Code-capable chat model     |
 | `synthesis` | `research_topic`, `reflect_on_session`      | Long-context chat model     |
 | `analysis`  | Research evaluation phase                   | Fast reasoning model        |
-| `embed`     | `remember`, `recall` (via Gateway HTTP)     | Text embedding model        |
+| `embed`     | `memory_remember`, `memory_recall` (via Gateway HTTP)     | Text embedding model        |
 
 Model names must match what your LLM Gateway recognizes. All keys fall back to `process.env.DEFAULT_MODEL` and then `'default'` if unset.
 
@@ -117,7 +117,7 @@ Client (VS Code / CLI)
 | `docs`     | `get_documentation`, `list_documents`, `read_document` | Access `mcp_documentation/` files |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model`, `get_query_status` | Direct LLM queries (async by default) |
-| `memory`   | `remember`, `recall`, `forget`, `list_memories`, `update_memory`, `reflect_on_session`, `apply_reflection_changes` | Semantic vector memory |
+| `memory`   | `memory_remember`, `memory_recall`, `memory_forget`, `memory_list`, `memory_update`, `reflect_on_session`, `apply_reflection_changes` | Semantic vector memory |
 | `research` | `research_topic` | Multi-phase web research pipeline |
 
 ---
