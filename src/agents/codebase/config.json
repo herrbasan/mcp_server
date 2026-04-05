@@ -41,7 +41,7 @@
     },
     {
       "name": "search_codebase",
-      "description": "[RECOMMENDED] Primary focused search tool for a single codebase. Very fast. Combines semantic (meaning) + keyword (exact) matching. ALWAYS use this first before falling back to search_all_codebases. Use strategy:keyword for fast exact name lookups, strategy:semantic for conceptual queries. Codebase name supports partial matching.",
+      "description": "[PRIMARY SEARCH] Focused search for single codebase. Combines semantic + keyword matching. Use strategy:keyword for exact names (function/class/files), strategy:semantic for concepts. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -117,7 +117,7 @@
     },
     {
       "name": "search_keyword",
-      "description": "[FASTEST] Indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Codebase name supports partial matching.",
+      "description": "[FASTEST] Indexed keyword search - <100ms. Best for: exact function/class/variable names, imports, file paths. Searches paths AND content. Use INSTEAD of grep_codebase for specific identifiers. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -147,7 +147,7 @@
     },
     {
       "name": "grep_codebase",
-      "description": "Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Slowest single-codebase search. Use ONLY when: (1) You need complex regex patterns, (2) You need exact line numbers for editing, (3) You strongly suspect the index is stale. OTHERWISE prefer search_keyword (faster for exact names) or search_semantic (for concepts). Codebase name supports partial matching.",
+      "description": "Live regex search via ripgrep. ALWAYS CURRENT (searches filesystem). SLOW (1-3s). Use ONLY for: (1) Complex regex patterns, (2) Exact line numbers for editing, (3) Suspected stale index. Prefer search_keyword for exact names. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -197,7 +197,7 @@
     },
     {
       "name": "search_all_codebases",
-      "description": "[AVOID IF POSSIBLE] Slowest search method. Search across ALL indexed codebases at once. ONLY use this as a last resort when focused searches on individual codebases have failed, or for extremely broad queries like \"how is X implemented across different projects?\"",
+      "description": "[LAST RESORT] Search ALL codebases at once. SLOW - searches every codebase sequentially. ONLY use when: (1) You don't know which project has the code, (2) Finding patterns across projects. Prefer search_codebase when you know the project. Strategies: hybrid (default), keyword (fastest), semantic (concepts).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -246,8 +246,8 @@
       }
     },
     {
-      "name": "get_file_info",
-      "description": "Get file structure (functions, classes, imports) without content. Codebase name supports partial matching.",
+      "name": "get_file_tree",
+      "description": "Get directory tree for a codebase or subdirectory. START HERE to understand project structure. Returns hierarchical file/folder list with file counts. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -256,7 +256,29 @@
             "description": "Codebase name (partial match supported)"
           },
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "Subdirectory path (empty or omit for root)",
+            "default": ""
+          }
+        },
+        "required": [
+          "codebase"
+        ]
+      }
+    },
+    {
+      "name": "get_file_info",
+      "description": "[KEY SCANNING TOOL] Get file structure: functions (with signatures), classes, imports. Returns metadata without full content - perfect for rapid triage. Use after search to evaluate which files to read. Codebase name supports partial matching.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "codebase": {
+            "type": "string",
+            "description": "Codebase name (partial match supported)"
+          },
+          "path": {
+            "type": "string",
+            "description": "File path relative to codebase root"
           }
         },
         "required": [
@@ -266,8 +288,30 @@
       }
     },
     {
+      "name": "get_files_info",
+      "description": "[BULK SCAN] Get structure for multiple files in one call. Returns array of file info objects. Use after search_codebase to scan all results at once before selecting files to read.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "codebase": {
+            "type": "string",
+            "description": "Codebase name (partial match supported)"
+          },
+          "paths": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of file paths to scan"
+          }
+        },
+        "required": [
+          "codebase",
+          "paths"
+        ]
+      }
+    },
+    {
       "name": "get_file",
-      "description": "Get file content with staleness check. Codebase name supports partial matching.",
+      "description": "Get full file content with staleness check. Use AFTER get_file_info to read promising files. Codebase name supports partial matching.",
       "inputSchema": {
         "type": "object",
         "properties": {

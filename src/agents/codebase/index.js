@@ -230,6 +230,25 @@ export class CodebaseIndexingService {
   }
 
   /**
+   * Get file info for multiple files (bulk scan)
+   */
+  async getFilesInfo({ codebase, paths }) {
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new Error('paths must be a non-empty array');
+    }
+    const results = [];
+    for (const p of paths) {
+      try {
+        const info = await this.client.getFileInfo(codebase, p);
+        results.push({ path: p, ...info });
+      } catch (err) {
+        results.push({ path: p, error: err.message });
+      }
+    }
+    return results;
+  }
+
+  /**
    * Get file content with staleness check
    */
   async getFile({ codebase, path: filePath }) {
@@ -603,6 +622,7 @@ export class CodebaseIndexingService {
       'search_all_codebases',
       'get_file_tree',
       'get_file_info',
+      'get_files_info',
       'get_file',
       'check_codebase_status',
       'check_file_stale',
@@ -627,6 +647,7 @@ export class CodebaseIndexingService {
       'search_all_codebases': 'searchAll',
       'get_file_tree': 'getFileTree',
       'get_file_info': 'getFileInfo',
+      'get_files_info': 'getFilesInfo',
       'get_file': 'getFile',
       'check_codebase_status': 'checkCodebaseStatus',
       'check_file_stale': 'checkFileStale',
@@ -696,7 +717,9 @@ export async function search_semantic(args, context) { return serviceInstance.ca
 export async function search_keyword(args, context) { return serviceInstance.callTool('search_keyword', args); }
 export async function grep_codebase(args, context) { return serviceInstance.callTool('grep_codebase', args); }
 export async function search_all_codebases(args, context) { return serviceInstance.callTool('search_all_codebases', args); }
+export async function get_file_tree(args, context) { return serviceInstance.callTool('get_file_tree', args); }
 export async function get_file_info(args, context) { return serviceInstance.callTool('get_file_info', args); }
+export async function get_files_info(args, context) { return serviceInstance.callTool('get_files_info', args); }
 export async function get_file(args, context) { return serviceInstance.callTool('get_file', args); }
 export async function refresh_codebase(args, context) { return serviceInstance.callTool('refresh_codebase', args); }
 export async function remove_codebase(args, context) { return serviceInstance.callTool('remove_codebase', args); }
