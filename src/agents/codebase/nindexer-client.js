@@ -245,8 +245,8 @@ export class NIndexerClient {
    * @param {number} limit - Max results
    * @param {object} filter - Optional filter (e.g., { language: 'javascript' })
    */
-  async search(codebase, query, limit = 10, filter = null) {
-    const params = { codebase, query, strategy: 'hybrid', limit };
+  async search(codebase, query, strategy = 'hybrid', limit = 10, filter = null) {
+    const params = { codebase, query, strategy, limit };
     if (filter) params.filter = filter;
     return this.request('search', params);
   }

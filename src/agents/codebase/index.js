@@ -168,7 +168,7 @@ export class CodebaseIndexingService {
    * Hybrid search - combines semantic + keyword
    */
   async search({ codebase, query, strategy = 'hybrid', limit = 10, filter }) {
-    return this.client.search(codebase, query, limit, filter);
+    return this.client.search(codebase, query, strategy, limit, filter);
   }
 
   /**
