@@ -85,7 +85,7 @@ Centralized MCP server running as an **independent HTTP service**.
 - Server: src/server.js - Port 3100 (MCP via custom SSE)
 - Transport: Per-session SSE transport mapped by sessionId
 - Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, codebase, docs, inspector, llm, memory, research)
+- Agents: src/agents/ - (browser, codebase, docs, inspector, llm, memory, nui_docs, research, vision)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -108,143 +108,98 @@ Documentation is now in `mcp_documentation/` folder:
 
 Access via MCP tools:
 ```javascript
-mcp_orchestrator_list_documents()           // List available docs
-mcp_orchestrator_read_document({name: "orchestrator"})
-mcp_orchestrator_get_documentation()        // Shortcut for orchestrator.md
+mcp_orchestrator_get_philosophy()           // ⚠️ START HERE - coding philosophy
+mcp_orchestrator_get_orchestrator_doc()     // Full tools reference (35+ tools)
 ```
 
-## LLM Router Architecture
+## Gateway Client Architecture
 
-**Location**: `src/router/` - Pure functional implementation (no classes)
+**Location**: `src/gateway-client.js` - WebSocket client to external LLM Gateway
 
-**Core Files**:
-- `router.js` - Multi-provider orchestrator with context management
-- `adapters/lmstudio.js` - LM Studio HTTP adapter (local)
-- `adapters/ollama.js` - Ollama HTTP adapter with full model management
-- `adapters/gemini.js` - Google Gemini cloud adapter
-- `context-manager.js` - Token estimation and auto-compaction
-- `formatter.js` - Thinking tag stripping, JSON extraction
-- `chunk.js` / `compact.js` / `tokenize.js` - Text processing utilities
+The orchestrator connects to a central LLM Gateway (localhost:3400) for all LLM operations. The Gateway handles model providers (LM Studio, Ollama, Gemini) internally.
 
 **API**:
 ```javascript
-import { createRouter } from './src/router/router.js';
+import { createGatewayClient } from './src/gateway-client.js';
 
-const router = await createRouter(config.llm);
+const gateway = createGatewayClient(wsUrl, httpUrl, embedModel, models);
 
-// Prediction with task-based routing
-const response = await router.predict({
-  prompt: 'Explain async/await',
-  systemPrompt: 'You are a helpful assistant',
-  taskType: 'query',      // Uses taskDefaults.query provider
+// Chat with streaming support
+const response = await gateway.chat({
+  model: 'qwen2.5-coder-14b',
+  messages: [{ role: 'user', content: 'Hello' }],
+  systemPrompt: 'You are helpful',
   maxTokens: 500,
   temperature: 0.7,
-  responseFormat: { schema: {...} }  // Optional JSON schema
+  responseFormat: { type: 'json_schema', ... },  // Optional structured output
+  onDelta: (chunk, meta) => console.log(chunk),  // Streaming deltas
+  onProgress: (phase, context) => console.log(phase)  // Progress notifications
+});
+
+// Prediction (adapter for old router API)
+const result = await gateway.predict({
+  prompt: 'Explain async/await',
+  systemPrompt: '...',
+  taskType: 'query',  // Maps to config.models.query
+  maxTokens: 500,
+  temperature: 0.7,
+  responseFormat: { schema: {...} }  // Returns parsed JSON if schema provided
 });
 
 // Embeddings
-const vector = await router.embedText('search query');
-const vectors = await router.embedBatch(['text1', 'text2']);
-
-// Model management
-const models = await router.listModels('lmstudio');
-const loaded = await router.getLoadedModel('lmstudio');
-const running = await router.getRunningModels('ollama');  // Ollama only
-const info = await router.showModelInfo('gemma3:12b', 'ollama');  // Ollama only
+const vector = await gateway.embedText('search query');
+const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 ```
 
-**Task-Based Routing** (config.llm.taskDefaults):
-
-| Task | Default | Used By | Purpose |
-|------|---------|---------|---------|
-| `embedding` | `lmstudio` | `memory_remember`, `memory_recall`, code indexing | Text embeddings for semantic search (NOTE: Uses `embeddingProvider` config, not taskDefaults) |
-| `analysis` | `lmstudio` | `search_codebase`* (analyze mode), `analyze_codebase`, `get_prioritized_files` | LLM analysis of search results and code structure |
-| `synthesis` | `lmstudio` | `research_topic` | Synthesizing research findings into reports |
-| `query` | `lmstudio` | `query_model` | General LLM queries via MCP tool |
-| `inspect` | `lmstudio` | `inspect_code` | Code analysis and review |
-
-\* All search tools (`search_codebase`, `search_semantic`, `search_keyword`, `grep_codebase`, `search_all_codebases`) support `analyze: true` which routes through the `analysis` task.
-
-**Routing Logic**: explicitProvider > taskType default > defaultProvider
-
-**Structured Output**: Use `responseFormat: { schema: {...} }` for guaranteed valid JSON
-- LMStudio: Full JSON schema via llama.cpp grammar-based sampling
-- Ollama: Full JSON schema via format field
-- Gemini: JSON schema via responseMimeType + responseSchema
-
-**Auto-Compaction**: Router automatically compacts prompts that exceed context window
-- Uses rolling compaction algorithm (chunk → compress → accumulate)
-- Thinking tags (think/analysis/reasoning) stripped from output
-
-**Capabilities by Provider**:
-| Capability | LMStudio | Ollama | Gemini |
-|------------|----------|--------|--------|
-| embeddings | ✅ | ✅ | ✅ |
-| structuredOutput | ✅ | ✅ | ✅ |
-| batch embeddings | ✅ | ✅ | ✅ |
-| modelManagement | ✅ | ✅ | ❌ (cloud) |
-| local | ✅ | configurable | ❌ |
-
-**Environment Variables** (in .env):
-- `LM_STUDIO_ENDPOINT` - LM Studio HTTP endpoint
-- `OLLAMA_ENDPOINT` - Ollama HTTP endpoint
-- `GEMINI_API_KEY` - Google AI API key
-
-## Tool-to-Task Mapping
-
-Complete mapping of MCP tools to their LLM routing tasks:
-
-| MCP Tool | Task | Router Call | Config Key |
-|----------|------|-------------|------------|
-| `query_model` | `query` | `router.predict({ taskType: 'query' })` | `taskDefaults.query` |
-| `inspect_code` | `inspect` | `router.predict({ taskType: 'inspect' })` | `taskDefaults.inspect` |
-| `research_topic` | `synthesis` | `router.predict({ taskType: 'synthesis' })` | `taskDefaults.synthesis` |
-| `search_codebase`* | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
-| `analyze_codebase` | `analysis` | `router.predict({ taskType: 'analysis' })` | `taskDefaults.analysis` |
-| `memory_remember` | embedding | `router.embedText()` | `embeddingProvider`** |
-| `memory_recall` | embedding | `router.embedText()` | `embeddingProvider`** |
-| Code indexing | embedding | `router.embedBatch()` | `embeddingProvider`** |
-
-\* All search tools support `analyze: true` parameter which triggers LLM analysis of results.
-
-\*\* Embeddings use `embeddingProvider` (separate config from taskDefaults) because they require specific embedding-capable models.
-
-**Default Configuration**:
+**Configuration** (config.json):
 ```json
 {
-  "llm": {
-    "embeddingProvider": "lmstudio",
-    "taskDefaults": {
-      "embedding": "lmstudio",
-      "analysis": "lmstudio",
-      "synthesis": "lmstudio",
-      "query": "lmstudio",
-      "inspect": "lmstudio"
-    }
+  "models": {
+    "query": "minimax-chat",
+    "inspect": "minimax-chat",
+    "synthesis": "glm5-turbo-chat",
+    "analysis": "glm5-turbo-chat",
+    "embed": "badkid-embed",
+    "vision": "kimi-chat"
   }
 }
 ```
 
-## LM Studio Integration
-- **Transport**: REST API via `/v1/chat/completions` (OpenAI-compatible) and `/api/v1/*` (native)
-- **Structured Output**: JSON schema enforcement via `response_format` - uses llama.cpp grammar-based sampling
-- **Progress**: Real-time MCP notifications (model loading 1%-100%, generation status)
-- **TTL Management**: Default model has 60-minute idle timeout, other models 10-minute timeout
-- **Error Handling**: Promise lock prevents race conditions, stack traces preserved for debugging
-- **Batch Embeddings**: `/v1/embeddings` accepts array input for batch processing
-  - `embedBatch(texts)` in lmstudio-adapter.js sends array, sorts results by index
-  - `router.embedBatch(texts, provider)` with fallback to sequential if unsupported
-  - Optimal: BATCH_SIZE=50 + PARALLEL_REQUESTS=4 = 2.3x speedup (274 files/sec)
-  - For large indexes (>512MB): use streaming JSON write to avoid "Invalid string length"
+| Task Key | Used By | Purpose |
+|----------|---------|---------|
+| `query` | `query_model` tool | General LLM queries |
+| `inspect` | `inspect_code` tool | Code analysis |
+| `synthesis` | `research_topic` | Research synthesis |
+| `analysis` | `analyze_codebase`, `search_codebase` (with `analyze: true`) | Code analysis |
+| `embed` | `memory_remember`, `memory_recall`, code indexing | Text embeddings |
+| `vision` | `vision_analyze` | Image analysis |
+
+## nIndexer Integration
+
+**Location**: `src/agents/codebase/nindexer-client.js`
+
+Codebase indexing uses a separate nIndexer service (WebSocket on port 3666) for vector search:
+- Semantic code search via nDB vector database
+- File structure indexing with metadata
+- LLM-powered codebase analysis
+
+**Config** (config.json):
+```json
+{
+  "nIndexer": {
+    "wsUrl": "ws://localhost:3666",
+    "connectTimeout": 15000,
+    "requestTimeout": 30000
+  }
+}
+```
 
 ## Deployment & Configuration
-- **Environment**: `.env` file for sensitive config (LM Studio endpoints, embedding model, host/port binding)
-- **Config**: `config.json` for non-sensitive settings (models, prompts, timeouts, enable/disable servers)
-- **Start**: `npm run start:http`
-- **Endpoints**: LM_STUDIO_HTTP_ENDPOINT (http://localhost:1234)
-- **Binding**: MCP_HOST/WEB_HOST must be `0.0.0.0` for remote access (not localhost)
-- **Firewall**: OPNsense/Windows Firewall rules for TCP 3100, 3010
-- **Client Config**: VS Code `mcp.json` (not settings.json) with `{"type": "sse", "url": "http://IP:3100/mcp"}`
+- **Environment**: `.env` file for sensitive config (Gateway endpoints, host/port binding)
+- **Config**: `config.json` for non-sensitive settings (models, nIndexer connection, agent options)
+- **Start**: `npm start` (or `npm run dev` for watch mode)
+- **Binding**: `HOST` in .env must be `0.0.0.0` for remote access (not localhost)
+- **Client Config**: VS Code `mcp.json` with `{"type": "sse", "url": "http://IP:3100/sse"}` or `{"type": "http", "url": "http://IP:3100/mcp"}`
 
 ## Browser Architecture
 
@@ -253,12 +208,41 @@ Complete mapping of MCP tools to their LLM routing tasks:
   - Persistent browser with idle timeout (5 min default)
   - Lingering tabs (10-30s random delay) for realistic behavior
   - Exported APIs:
-    - `callTool()` - MCP tools (browser_fetch, browser_click, browser_fill, browser_evaluate, browser_pdf)
-    - `getPage()` - For custom automation (returns `{ page, markUsed(), close() }`)
-    - `fetch(url)` - Simplified scraping
+    - `browser_session_create/goto/click/fill/scroll/type/evaluate/content/metadata` - MCP browser tools
+    - `browser_session_inspect/console/wait/list/close` - Session management tools
+    - Supports: `text` / `html` / `markdown` / `screenshot` content modes
 - **google-adapter.js**: Uses `browserServer.getPage()` for search
 - **duckduckgo-adapter.js**: Uses `browserServer.getPage()` for search  
 - **web-research.js**: Uses `browserServer.getPage()` and `fetch()` for scraping
+
+## NUI Docs Agent
+
+**Location**: `src/agents/nui_docs/`
+
+Provides documentation access for the NUI (Native UI) web component library. Reads from the nui_wc2 git submodule.
+
+**Tools**:
+- `nui_list_components` - List all available components with name, category, description
+- `nui_get_component` - Get full documentation for a specific component (LLM guide + code examples)
+- `nui_get_guide` - Get guide documentation (getting-started, architecture-patterns, api-structure, declarative-actions, accessibility, utilities)
+- `nui_get_reference` - Quick API reference cheat sheet
+- `nui_get_css_variables` - List all CSS variables from nui-theme.css
+- `nui_get_icons` - List all available icon names from material-icons-sprite.svg
+
+**Usage**:
+```javascript
+// List all components
+mcp_orchestrator_nui_list_components()
+
+// Get component docs
+mcp_orchestrator_nui_get_component({ component: "nui-button" })
+
+// Get guide
+mcp_orchestrator_nui_get_guide({ topic: "getting-started" })
+
+// Quick reference
+mcp_orchestrator_nui_get_reference()
+```
 
 ## Web Research Module
 
@@ -333,7 +317,7 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **Status**: Production-ready LLM-based code analysis
 
 **Implementation**:
-- `src/servers/code-inspector.js` - LLM-based code analysis
+- `src/agents/inspector/index.js` - LLM-based code analysis
 - Tool: inspect_code
 
 **File Referencing**: Only absolute paths supported
@@ -345,7 +329,7 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 **Status**: Production-ready
 
 **Implementation**:
-- `src/servers/codebase-indexing/project-analyzer.js` - Two-phase LLM analysis
+- `src/agents/codebase/index.js` - Two-phase LLM analysis via nIndexer
 - Phase 1: File tree analysis → key file selection (high/medium/low priority)
 - Phase 2: Content analysis → project summary (description, purpose, tech stack)
 
@@ -375,8 +359,8 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
     "description": "MCP orchestrator with semantic memory",
     "purpose": "Centralized MCP server managing AI tools...",
     "keyFiles": {
-      "high": ["src/index.js", "README.md"],
-      "medium": ["src/router/router.js"],
+      "high": ["src/server.js", "README.md"],
+      "medium": ["src/gateway-client.js"],
       "low": ["test/"]
     },
     "entryPoints": ["src/index.js"],
@@ -488,7 +472,7 @@ All search tools support `analyze`:
 
 ### Implementation Details
 
-- `src/servers/codebase-indexing/index.js` - `analyzeSearchResults()` method
+- `src/agents/codebase/index.js` - `analyzeSearchResults()` method
 - Uses `taskType: 'analysis'` for routing to appropriate LLM
 - 800 token limit, temperature 0.3 for consistent formatting
 - Analysis happens server-side before response
@@ -546,6 +530,12 @@ mcp_orchestrator_search_keyword({
 ```
 
 ## Historical Changes
+
+### April 2026 - Architecture Simplification
+- Removed local LLM Router (`src/router/`)
+- Now uses external LLM Gateway exclusively via `src/gateway-client.js`
+- Simplified model configuration in config.json
+- Added nIndexer integration for codebase indexing (separate service on port 3666)
 
 ### March 2026 - Search Optimizations
 - `grep_codebase`: Added result caching, early termination, multi-threading

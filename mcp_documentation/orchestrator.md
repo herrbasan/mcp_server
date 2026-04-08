@@ -17,6 +17,7 @@
 | [Browser](#browser-module) | Headless browser with persistent sessions |
 | [Inspector](#code-inspector-module) | LLM-based code analysis |
 | [Vision](#vision-module) | Iterative image analysis with drill-down focus |
+| [NUI Docs](#nui-docs-module) | NUI web component library docs |
 | [Docs](#docs-module) | Documentation access |
 
 ---
@@ -152,6 +153,8 @@ mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
 
 > **AUTONOMOUS USAGE**: You are encouraged to use memory tools proactively without user prompting. Store insights as you work, recall context at session start, and maintain memory quality.
 
+**Tools**: `memory_remember`, `memory_recall`, `memory_list`, `memory_update`, `memory_forget`
+
 **Categories**: `proven` (evidence-backed), `anti_patterns` (what failed), `hypotheses` (untested), `context` (facts), `observed` (patterns)
 
 ### `memory_remember`
@@ -225,8 +228,9 @@ Query local LLM on orchestrator server.
 mcp_orchestrator_query_model({
   prompt: "Explain async/await",
   systemPrompt: "Optional custom system prompt",
-  schema: { type: "object", ... },  // optional JSON schema
-  maxTokens: 500                     // optional limit
+  maxTokens: 500,                    // optional limit
+  temperature: 0.7,                  // optional (default: 0.7)
+  files: ["D:\\project\\src\\api.js"] // optional file paths for context
 })
 ```
 
@@ -386,30 +390,74 @@ mcp_orchestrator_inspect_code({
 
 ---
 
-## Documentation Module (3 tools)
+## NUI Docs Module (6 tools)
+
+> Documentation for NUI (Native UI) web component library. Reads from the nui_wc2 git submodule.
+
+### `nui_list_components`
+List all available components with name, category, and description.
+
+```javascript
+mcp_orchestrator_nui_list_components()
+```
+
+### `nui_get_component`
+Get full documentation for a specific component (LLM guide + code examples).
+
+```javascript
+mcp_orchestrator_nui_get_component({ component: "nui-button" })
+```
+
+### `nui_get_guide`
+Get guide documentation for a specific topic.
+
+**Topics**: `getting-started`, `architecture-patterns`, `api-structure`, `declarative-actions`, `accessibility`, `utilities`
+
+```javascript
+mcp_orchestrator_nui_get_guide({ topic: "getting-started" })
+```
+
+### `nui_get_reference`
+Get quick API reference cheat sheet.
+
+```javascript
+mcp_orchestrator_nui_get_reference()
+```
+
+### `nui_get_css_variables`
+List all CSS variables from nui-theme.css.
+
+```javascript
+mcp_orchestrator_nui_get_css_variables()
+```
+
+### `nui_get_icons`
+List all available icon names from material-icons-sprite.svg.
+
+```javascript
+mcp_orchestrator_nui_get_icons()
+```
+
+---
+
+## Documentation Module (2 tools)
 
 > Access MCP orchestrator documentation
 
-### `list_documents`
-List all available documentation files.
+### `get_philosophy`
+Get the coding philosophy document. **⚠️ START HERE** when working with this codebase.
 
 ```javascript
-mcp_orchestrator_list_documents()
-// Returns: { documents: ["orchestrator", "coding-philosophy"], count: 2 }
+mcp_orchestrator_get_philosophy()
+// Returns: Deterministic mind principles (33 lines)
 ```
 
-### `read_document`
-Read a specific documentation file.
+### `get_orchestrator_doc`
+Get the full tools reference guide (this document).
 
 ```javascript
-mcp_orchestrator_read_document({ name: "coding-philosophy" })
-```
-
-### `get_documentation`
-Get the main orchestrator documentation (equivalent to `read_document({name: "orchestrator"})`).
-
-```javascript
-mcp_orchestrator_get_documentation()
+mcp_orchestrator_get_orchestrator_doc()
+// Returns: Complete tools reference (35+ tools)
 ```
 
 ---

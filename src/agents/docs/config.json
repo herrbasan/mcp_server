@@ -9,7 +9,7 @@
         },
         {
             "name": "get_orchestrator_doc",
-            "description": "Tools reference guide. 35+ tools across 8 agents. Read get_philosophy() first to understand the mindset.",
+            "description": "Tools reference guide. 35+ tools across 9 agents. Read get_philosophy() first to understand the mindset.",
             "inputSchema": { "type": "object", "properties": {} }
         }
     ]

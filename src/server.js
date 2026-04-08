@@ -24,7 +24,7 @@ const SERVER_INFO = {
         '⚠️ START HERE: get_philosophy()\n\n' +
         'This is an LLM-native codebase with unusual principles (fail fast, zero dependencies, ' +
         'no defensive coding). The philosophy doc is 33 lines — read it first.\n\n' +
-        'Then: get_orchestrator_doc() for the full tools reference (35+ tools, 8 agents).'
+        'Then: get_orchestrator_doc() for the full tools reference (35+ tools, 9 agents).'
 };
 const SERVER_CAPABILITIES = { tools: { listChanged: true } };
 
