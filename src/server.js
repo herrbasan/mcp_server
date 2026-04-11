@@ -321,14 +321,38 @@ async function start() {
         }
     }, 30000);
 
-    process.on('SIGINT', async () => {
-        logger.info('Exiting gracefully...', null, 'SHUTDOWN');
+    let isShuttingDown = false;
+
+    async function gracefulShutdown(signal) {
+        if (isShuttingDown) {
+            logger.info(`Shutdown already in progress, ignoring ${signal}`, null, 'SHUTDOWN');
+            return;
+        }
+        isShuttingDown = true;
+        logger.info(`Received ${signal}, exiting gracefully...`, null, 'SHUTDOWN');
         clearInterval(keepalive);
         server.close();
         for (const [, session] of sessions) session.res.end();
         sessions.clear();
         await shutdownAll();
         process.exit(0);
+    }
+
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+    process.on('exit', (code) => {
+        logger.info(`Process exiting with code ${code}`, null, 'SHUTDOWN');
+    });
+
+    process.on('uncaughtException', async (err) => {
+        logger.error('Uncaught exception, shutting down', err, 'FATAL');
+        await gracefulShutdown('uncaughtException');
+    });
+
+    process.on('unhandledRejection', async (reason, promise) => {
+        logger.error('Unhandled rejection, shutting down', reason, 'FATAL');
+        await gracefulShutdown('unhandledRejection');
     });
 }
 
