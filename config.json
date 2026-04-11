@@ -9,15 +9,6 @@
     "wsUrl": "ws://localhost:3400/v1/realtime",
     "httpUrl": "http://localhost:3400"
   },
-  "models": {
-    "_comment": "Model names as known by the LLM Gateway. Use the exact model identifier the Gateway expects.",
-    "query": "minimax-chat",
-    "inspect": "minimax-chat",
-    "synthesis": "glm5-turbo-chat",
-    "analysis": "glm5-turbo-chat",
-    "embed": "badkid-embed",
-    "vision": "kimi-chat"
-  },
   "nIndexer": {
     "wsUrl": "ws://localhost:3666",
     "connectTimeout": 15000,

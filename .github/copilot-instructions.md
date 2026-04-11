@@ -118,19 +118,19 @@ mcp_orchestrator_get_orchestrator_doc()     // Full tools reference (35+ tools)
 
 The orchestrator connects to a central LLM Gateway (localhost:3400) for all LLM operations. The Gateway handles model providers (LM Studio, Ollama, Gemini) internally.
 
-**API**:
+**Task-Based API** (Recommended):
 ```javascript
 import { createGatewayClient } from './src/gateway-client.js';
 
-const gateway = createGatewayClient(wsUrl, httpUrl, embedModel, models);
+const gateway = createGatewayClient(wsUrl, httpUrl);
 
-// Chat with streaming support
+// Chat with streaming support using tasks
 const response = await gateway.chat({
-  model: 'qwen2.5-coder-14b',
+  task: 'query',  // Gateway resolves model, prompt, temperature, etc.
   messages: [{ role: 'user', content: 'Hello' }],
-  systemPrompt: 'You are helpful',
-  maxTokens: 500,
-  temperature: 0.7,
+  systemPrompt: 'You are helpful',  // Optional override
+  maxTokens: 500,                    // Optional override
+  temperature: 0.7,                  // Optional override
   responseFormat: { type: 'json_schema', ... },  // Optional structured output
   onDelta: (chunk, meta) => console.log(chunk),  // Streaming deltas
   onProgress: (phase, context) => console.log(phase)  // Progress notifications
@@ -140,30 +140,18 @@ const response = await gateway.chat({
 const result = await gateway.predict({
   prompt: 'Explain async/await',
   systemPrompt: '...',
-  taskType: 'query',  // Maps to config.models.query
+  task: 'query',  // Gateway-managed task
   maxTokens: 500,
   temperature: 0.7,
   responseFormat: { schema: {...} }  // Returns parsed JSON if schema provided
 });
 
-// Embeddings
+// Embeddings (uses task='embed' automatically)
 const vector = await gateway.embedText('search query');
 const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 ```
 
-**Configuration** (config.json):
-```json
-{
-  "models": {
-    "query": "minimax-chat",
-    "inspect": "minimax-chat",
-    "synthesis": "glm5-turbo-chat",
-    "analysis": "glm5-turbo-chat",
-    "embed": "badkid-embed",
-    "vision": "kimi-chat"
-  }
-}
-```
+**Available Tasks** (managed by Gateway):
 
 | Task Key | Used By | Purpose |
 |----------|---------|---------|
@@ -173,6 +161,8 @@ const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 | `analysis` | `analyze_codebase`, `search_codebase` (with `analyze: true`) | Code analysis |
 | `embed` | `memory_remember`, `memory_recall`, code indexing | Text embeddings |
 | `vision` | `vision_analyze` | Image analysis |
+
+**Note**: Model routing is now handled entirely by the Gateway. The `models` section in `config.json` has been removed. To change which model handles a task, update the Gateway's configuration instead.
 
 ## nIndexer Integration
 
@@ -530,6 +520,14 @@ mcp_orchestrator_search_keyword({
 ```
 
 ## Historical Changes
+
+### April 2026 - Task-Based Gateway API
+- Migrated to Gateway's task-based query system
+- Removed `models` section from `config.json` — Gateway is now ground truth for model routing
+- All agents now use `task` parameter (`query`, `inspect`, `synthesis`, `analysis`, `vision`, `embed`) instead of explicit model names
+- `gateway-client.js` simplified: no longer accepts `embedModel` or `models` parameters
+- Embedding calls automatically use `task: 'embed'`
+- `predict()` adapter updated: `taskType` → `task` parameter
 
 ### April 2026 - Architecture Simplification
 - Removed local LLM Router (`src/router/`)

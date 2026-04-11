@@ -18,7 +18,7 @@ export async function init(context) {
   mediaClient = createMediaClient(mediaServiceUrl);
 
   // Config per-model limits override Gateway probe
-  const visionModelName = context.config.models?.vision || 'kimi-chat';
+  const visionModelName = 'kimi-chat'; // Default for dimension probing; Gateway handles actual routing
   const configuredLimit = context.config.agents?.vision?.modelLimits?.[visionModelName];
   if (configuredLimit) {
     modelMaxDimension = configuredLimit;
@@ -248,8 +248,6 @@ export async function vision_analyze(args, context) {
 
   progress?.('Analyzing image...', 50, 100);
 
-  const model = config.models?.vision || 'kimi-chat';
-
   const messages = [{
     role: 'user',
     content: [
@@ -259,7 +257,7 @@ export async function vision_analyze(args, context) {
   }];
 
   const response = await gateway.chat({
-    model,
+    task: 'vision',
     messages,
     systemPrompt: 'You are a detailed visual analysis assistant. Provide precise, descriptive responses.',
     onProgress: (phase, ctx) => {
@@ -282,7 +280,7 @@ export async function vision_analyze(args, context) {
     analysis: response.content,
     description_id: description.id,
     total_descriptions: session.descriptions.length,
-    model_used: model
+    task_used: 'vision'
   };
 }
 

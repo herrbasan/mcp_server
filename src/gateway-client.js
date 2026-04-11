@@ -3,15 +3,13 @@ import { getLogger } from './utils/logger.js';
 
 const logger = getLogger();
 
-export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
+export function createGatewayClient(wsUrl, httpUrl) {
     let ws = null;
     let isClosed = false;
     let reconnectAttempts = 0;
     
-    // Map<requestId, { resolve, reject, onDelta, response } >
     const pendingRequests = new Map();
     
-    // Reference to the client object for use in closures
     let client = null;
 
     function summarizeText(text, maxLength = 120) {
@@ -34,7 +32,6 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             try {
                 const msg = JSON.parse(event.data);
 
-                // Handle JSON-RPC notifications from server
                 if (msg.method) {
                     if (msg.method === 'chat.delta') {
                         const { request_id, choices } = msg.params;
@@ -65,24 +62,19 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                                 });
                             }
                             if (req.onDelta) { 
-                                // Explicit check that it is being passed
                                 req.onDelta(content, deltaMeta); 
                             }
                             if (content) req.response.content += content;
                             
-                            // Hard client-side limits to prevent runaway generation
-                            // Some models (Qwen) get stuck in infinite thinking loops with empty deltas
-                            const MAX_EMPTY_DELTAS = 1000; // Max deltas with no content before we give up
+                            const MAX_EMPTY_DELTAS = 1000;
                             const emptyDeltaThreshold = req.maxTokens ? Math.min(MAX_EMPTY_DELTAS, req.maxTokens) : MAX_EMPTY_DELTAS;
                             
                             if (req.hardLimit && req.totalChars > req.hardLimit) {
                                 logger.warn(`[Gateway] Hard CHAR limit exceeded for ${request_id}: ${req.totalChars} chars > ${req.hardLimit}. Cancelling...`);
                                 client.cancel(request_id);
                             } else if (req.deltaCount > emptyDeltaThreshold && req.totalChars === 0) {
-                                // Detect infinite thinking loop (many deltas, zero output)
                                 logger.error(`[Gateway] Infinite thinking detected for ${request_id}: ${req.deltaCount} deltas, 0 chars. Cancelling...`);
                                 client.cancel(request_id);
-                                // Force reject the promise to fail fast
                                 req.reject(new Error(`Model stuck in infinite thinking loop (${req.deltaCount} empty deltas). Try again or use a different model.`));
                                 pendingRequests.delete(request_id);
                             }
@@ -121,10 +113,8 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                             pendingRequests.delete(request_id);
                         }
                     }
-                    // chat.progress (routing, context_stats) - informational, no action needed
                 }
                 
-                // Handle direct JSON-RPC error responses (e.g. bad request before stream starts)
                 if (msg.id && !msg.method && msg.error) {
                     const req = pendingRequests.get(msg.id);
                     if (req) {
@@ -139,7 +129,6 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
 
         ws.onclose = () => {
             if (isClosed) return;
-            // Reject all pending
             for (const [id, req] of pendingRequests.entries()) {
                 req.reject(new Error('WebSocket disconnected'));
             }
@@ -152,7 +141,6 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
         };
 
         ws.onerror = (err) => {
-            // Error is handled mostly by close, just log
             logger.error('WebSocket error', err, null, 'Gateway');
         };
     }
@@ -171,10 +159,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             return ws && ws.readyState === WebSocket.OPEN;
         },
 
-        // Adapter for old router.predict() API used by codebase agent
-        async predict({ prompt, systemPrompt, taskType, temperature, maxTokens, responseFormat }) {
-            const model = models[taskType] || models.query || 'default';
-            // Wrap raw JSON Schema objects into gateway format
+        async predict({ prompt, systemPrompt, task, temperature, maxTokens, responseFormat }) {
             let gatewayFormat = responseFormat;
             if (responseFormat && !responseFormat.type) {
                 gatewayFormat = {
@@ -183,19 +168,16 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                 };
             }
             const response = await this.chat({
-                model,
+                task,
                 messages: [{ role: 'user', content: prompt }],
                 systemPrompt,
                 maxTokens,
                 temperature,
                 responseFormat: gatewayFormat
             });
-            // Return parsed object if responseFormat is a schema, else string
             if (gatewayFormat?.type === 'json_schema') {
-                // Parse JSON response, handling markdown fences
                 let text = response.content || '';
                 console.log('[DEBUG] response.content length:', text.length, 'preview:', text.slice(0, 100));
-                // Find the first { and last } to extract JSON (handles any fences)
                 const firstBrace = text.indexOf('{');
                 const lastBrace = text.lastIndexOf('}');
                 console.log('[DEBUG] firstBrace:', firstBrace, 'lastBrace:', lastBrace);
@@ -208,9 +190,8 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             return response.content;
         },
 
-        async chat({ model, messages, systemPrompt, maxTokens, temperature, responseFormat, onDelta, onProgress }) {
+        async chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, onDelta, onProgress }) {
             const id = randomUUID();
-            // Prepend system prompt as a system message if provided
             const fullMessages = systemPrompt
                 ? [{ role: 'system', content: systemPrompt }, ...messages]
                 : messages;
@@ -226,10 +207,12 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                     totalChars: 0,
                     loggedFirstDelta: false,
                     maxTokens: maxTokens || null,
-                    hardLimit: maxTokens ? Math.floor(maxTokens * 4.5) : null // ~4.5 chars/token heuristic
+                    hardLimit: maxTokens ? Math.floor(maxTokens * 4.5) : null
                 });
                 try {
+                    const logModel = task || model || 'unspecified';
                     logger.info(`[Gateway] Sending chat.create for ${id}`, {
+                        task,
                         model,
                         messageCount: fullMessages.length,
                         promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),
@@ -237,19 +220,24 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
                         stream: true,
                         hasResponseFormat: Boolean(responseFormat)
                     });
+                    const params = {
+                        messages: fullMessages,
+                        max_tokens: maxTokens,
+                        temperature,
+                        response_format: responseFormat,
+                        strip_thinking: true,
+                        stream: true
+                    };
+                    if (task) {
+                        params.task = task;
+                    } else if (model) {
+                        params.model = model;
+                    }
                     send({
                         jsonrpc: "2.0",
                         id,
                         method: "chat.create",
-                        params: {
-                            model,
-                            messages: fullMessages,
-                            max_tokens: maxTokens,
-                            temperature,
-                            response_format: responseFormat,
-                            strip_thinking: true,
-                            stream: true
-                        }
+                        params
                     });
                 } catch (err) {
                     pendingRequests.delete(id);
@@ -300,7 +288,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input: text, model: embedModel })
+                body: JSON.stringify({ input: text, task: 'embed' })
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
             const data = await res.json();
@@ -315,7 +303,7 @@ export function createGatewayClient(wsUrl, httpUrl, embedModel, models = {}) {
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input: texts, model: embedModel })
+                body: JSON.stringify({ input: texts, task: 'embed' })
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
             const data = await res.json();

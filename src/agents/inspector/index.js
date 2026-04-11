@@ -21,7 +21,7 @@ export async function inspect_code(args, context) {
     if (progress) progress('Analyzing code with LLM...', 50, 100);
 
     const response = await gateway.chat({
-        model: context.config.models?.inspect || 'default',
+        task: 'inspect',
         messages: [{ role: 'user', content: finalPrompt }],
         systemPrompt: systemPrompt
     });

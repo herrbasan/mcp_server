@@ -40,7 +40,7 @@ export async function query_model(args, context) {
     }
 
     const response = await gateway.chat({
-        model: context.config.models?.query || 'default',
+        task: 'query',
         messages: [{ role: 'user', content: finalPrompt }],
         systemPrompt: sysPrompt,
         onProgress: (phase, ctx) => {
