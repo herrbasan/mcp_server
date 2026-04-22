@@ -1,3 +1,16 @@
+/**
+ * NUI MCP Server - mcp_server agent
+ * 
+ * This file replaces src/agents/nui_docs/index.js in the mcp_server repo.
+ * It reads all data dynamically from the NUI submodule's components.json
+ * instead of using hardcoded strings.
+ * 
+ * The standalone MCP server lives in the NUI repo at:
+ *   nui_wc2/scripts/mcp-server.js
+ * 
+ * Copy this file to: mcp_server/src/agents/nui_docs/index.js
+ */
+
 import { readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -12,6 +25,8 @@ const ICON_SPRITE_PATH = join(NUI_DIR, 'NUI', 'assets', 'material-icons-sprite.s
 
 let registry = null;
 let assetCache = { commit: null, cssVars: null, icons: null };
+
+// ─── Data Loading ────────────────────────────────────────────────────────────
 
 function getSubmoduleCommit() {
 	try {
@@ -55,7 +70,7 @@ function loadRegistry() {
 	try {
 		registry = JSON.parse(readFileSync(REGISTRY_PATH, 'utf-8'));
 		return registry;
-	} catch (err) {
+	} catch {
 		return null;
 	}
 }
@@ -64,26 +79,23 @@ function readPage(pagePath) {
 	const filePath = join(PAGES_DIR, `${pagePath}.html`);
 	try {
 		return readFileSync(filePath, 'utf-8');
-	} catch (err) {
+	} catch {
 		return null;
 	}
 }
 
 function extractLlmGuide(html) {
-	const match = html.match(/<script\s+type="text\/markdown">([\s\S]*?)<\/script>/);
+	const match = html.match(/<nui-markdown[^>]*id="llm-guide"[^>]*>[\s\S]*?<script type="text\/markdown">([\s\S]*?)<\/script>/);
 	if (!match) return null;
-	return match[1].trim();
+	return match[1].replace(/<\\\/script>/g, '</script>').trim();
 }
 
 function extractCodeExamples(html) {
 	const examples = [];
 	const regex = /<script\s+type="example"\s+data-lang="(\w+)">([\s\S]*?)<\/script>/gi;
-	let match;
-	while ((match = regex.exec(html)) !== null) {
-		const lang = match[1];
-		let code = match[2].trim();
-		code = code.replace(/^\n+/, '').replace(/\n+$/, '');
-		examples.push({ lang, code });
+	let m;
+	while ((m = regex.exec(html)) !== null) {
+		examples.push({ lang: m[1], code: m[2].trim() });
 	}
 	return examples;
 }
@@ -101,21 +113,14 @@ function extractTextContent(html) {
 	text = text.replace(/<[^>]+>/g, '');
 	text = text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
 	text = text.replace(/\n{3,}/g, '\n\n');
-	const lines = text.split('\n');
-	const dedented = lines.map(line => {
-		const trimmed = line.replace(/^\t+/, '');
-		return trimmed.trimEnd();
-	});
-	return dedented.join('\n').trim();
+	return text.split('\n').map(l => l.replace(/^\t+/, '').trimEnd()).join('\n').trim();
 }
 
 function formatComponentDoc(name, html) {
 	const parts = [];
 
 	const llmGuide = extractLlmGuide(html);
-	if (llmGuide) {
-		parts.push('## LLM Guide\n\n' + llmGuide);
-	}
+	if (llmGuide) parts.push('## LLM Guide\n\n' + llmGuide);
 
 	const examples = extractCodeExamples(html);
 	if (examples.length > 0) {
@@ -126,9 +131,7 @@ function formatComponentDoc(name, html) {
 	}
 
 	const textContent = extractTextContent(html);
-	if (textContent) {
-		parts.push('## Documentation\n\n' + textContent);
-	}
+	if (textContent) parts.push('## Documentation\n\n' + textContent);
 
 	return parts.join('\n\n');
 }
@@ -136,13 +139,10 @@ function formatComponentDoc(name, html) {
 function formatGuideDoc(html) {
 	const parts = [];
 
-	const examples = extractCodeExamples(html);
 	const textContent = extractTextContent(html);
+	if (textContent) parts.push(textContent);
 
-	if (textContent) {
-		parts.push(textContent);
-	}
-
+	const examples = extractCodeExamples(html);
 	if (examples.length > 0) {
 		parts.push('## Code Examples\n');
 		for (const ex of examples) {
@@ -154,15 +154,14 @@ function formatGuideDoc(html) {
 }
 
 function errorResponse(msg) {
-	return {
-		content: [{ type: 'text', text: msg }],
-		isError: true
-	};
+	return { content: [{ type: 'text', text: msg }], isError: true };
 }
 
 function textResponse(text) {
 	return { content: [{ type: 'text', text }] };
 }
+
+// ─── Tool Handlers ───────────────────────────────────────────────────────────
 
 export async function nui_list_components() {
 	const reg = loadRegistry();
@@ -170,28 +169,27 @@ export async function nui_list_components() {
 
 	const lines = [];
 
-	if (reg.guides && reg.guides.length > 0) {
-		lines.push('## Guides');
-		for (const g of reg.guides) {
-			lines.push(`- **${g.name}** — ${g.description}`);
+	if (reg.components && reg.components.length > 0) {
+		lines.push('## Components');
+		for (const c of reg.components) {
+			lines.push(`- **${c.name}** (${c.group}) — ${c.description}`);
 		}
 		lines.push('');
 	}
 
-	const categories = {};
-	for (const c of reg.components) {
-		const cat = c.category;
-		if (!categories[cat]) categories[cat] = [];
-		categories[cat].push(c);
+	if (reg.addons && reg.addons.length > 0) {
+		lines.push('## Addons');
+		for (const a of reg.addons) {
+			const imports = a.imports ? ` [${a.imports.js || ''}${a.imports.css ? ', ' + a.imports.css : ''}]` : '';
+			lines.push(`- **${a.name}** — ${a.description}${imports}`);
+		}
+		lines.push('');
 	}
 
-	const catOrder = ['layout', 'forms', 'display', 'navigation', 'utility', 'addon'];
-	for (const cat of catOrder) {
-		if (!categories[cat]) continue;
-		const label = cat.charAt(0).toUpperCase() + cat.slice(1);
-		lines.push(`## ${label}`);
-		for (const c of categories[cat]) {
-			lines.push(`- **${c.name}** — ${c.description}`);
+	if (reg.reference && reg.reference.length > 0) {
+		lines.push('## Reference');
+		for (const r of reg.reference) {
+			lines.push(`- **${r.name}** — ${r.description}`);
 		}
 		lines.push('');
 	}
@@ -206,13 +204,13 @@ export async function nui_get_component(args) {
 	const reg = loadRegistry();
 	if (!reg) return errorResponse('Failed to load component registry.');
 
-	const entry = reg.components.find(c =>
-		c.name.toLowerCase() === name.toLowerCase() ||
-		c.name === name
+	const allEntries = [...(reg.components || []), ...(reg.addons || [])];
+	const entry = allEntries.find(c =>
+		c.name.toLowerCase() === name.toLowerCase() || c.name === name
 	);
 
 	if (!entry) {
-		const available = reg.components.map(c => c.name).join(', ');
+		const available = allEntries.map(c => c.name).join(', ');
 		return errorResponse(`Component "${name}" not found. Available: ${available}`);
 	}
 
@@ -230,13 +228,12 @@ export async function nui_get_guide(args) {
 	const reg = loadRegistry();
 	if (!reg) return errorResponse('Failed to load component registry.');
 
-	const entry = reg.guides?.find(g =>
-		g.name.toLowerCase() === topic.toLowerCase() ||
-		g.name === topic
+	const entry = reg.reference?.find(g =>
+		g.name.toLowerCase() === topic.toLowerCase() || g.name === topic
 	);
 
 	if (!entry) {
-		const available = reg.guides?.map(g => g.name).join(', ') || 'none';
+		const available = reg.reference?.map(g => g.name).join(', ') || 'none';
 		return errorResponse(`Guide "${topic}" not found. Available: ${available}`);
 	}
 
@@ -247,117 +244,107 @@ export async function nui_get_guide(args) {
 	return textResponse(doc);
 }
 
-const REFERENCE = `
-## Setup
-
-### Minimal (Standalone)
-\`\`\`html
-<link rel="stylesheet" href="NUI/css/nui-theme.css">
-<script type="module" src="NUI/nui.js"></script>
-\`\`\`
-
-### FOUC Prevention (App Mode)
-\`\`\`css
-body { margin: 0; overflow: hidden; }
-nui-app:not(.nui-ready) { display: none; }
-nui-loading:not(.active) { display: none; }
-\`\`\`
-
-### Addon Imports (optional)
-| Addon | JS | CSS |
-|-------|----|-----|
-| nui-menu | NUI/lib/modules/nui-menu.js | NUI/css/modules/nui-menu.css |
-| nui-list | NUI/lib/modules/nui-list.js | NUI/css/modules/nui-list.css |
-| nui-markdown | NUI/lib/modules/nui-markdown.js | — |
-| nui-syntax-highlight | NUI/lib/modules/nui-syntax-highlight.js | — |
-
-## Root API (\`nui.*\`)
-
-\`\`\`js
-nui.init(options)                              // Auto-called; initializes library
-nui.configure({ iconSpritePath, baseFontSize, animationDuration })
-nui.version                                    // Library version string
-nui.registerFeature(name, (container, params) => { ... })
-nui.registerType(type, (element, content) => { ... })
-nui.createRouter(container, { defaultPage, onNavigate })
-nui.enableContentLoading({ container, navigation, basePath, defaultPage })
-\`\`\`
-
-## Components API (\`nui.components.*\`)
-
-### Dialog (ephemeral)
-\`\`\`js
-await nui.components.dialog.alert(title, message, options?)
-await nui.components.dialog.confirm(title, message, options?)   // returns boolean
-await nui.components.dialog.prompt(title, message, { fields: [{ id, label, type?, value? }] }, options?)  // returns object | null
-const { dialog, main } = await nui.components.dialog.page(title, subtitle?, { contentScroll, buttons: [{ label, type, value }] })
-\`\`\`
-Options: { placement: 'top'|'center'|'bottom', target: Element, modal: bool, blocking: bool, classes: string[] }
-
-### Banner (ephemeral)
-\`\`\`js
-const controller = nui.components.banner.show({ content, placement: 'top'|'bottom', priority: 'info'|'alert', autoClose: ms })
-nui.components.banner.hide(controller)
-nui.components.banner.hideAll()
-\`\`\`
-
-### Link List (persistent)
-\`\`\`js
-nui.components.linkList.create(data, { mode: 'fold'|'tree' })
-nui.components.linkList.setActive(selector)
-nui.components.linkList.getActive()
-nui.components.linkList.clearActive()
-\`\`\`
-Data format: [{ label, icon?, href?, items?: [...] }, { separator: true }]
-
-### Media Player (experimental, persistent)
-\`\`\`js
-nui.components.mediaPlayer.create(target, { url, type: 'video'|'audio', poster?, pauseOthers?, attributes?, playerAttributes? })
-\`\`\`
-
-## Utilities (\`nui.util.*\`)
-
-\`\`\`js
-nui.util.createElement(tag, { class, attrs, data, events, content, target })
-nui.util.createSvgElement(tag, attrs, children)
-nui.util.enableDrag(element, { onDragStart, onDrag, onDragEnd })  // returns cleanup fn
-nui.util.storage.get({ name })
-nui.util.storage.set({ name, value, ttl })     // ttl: '30d', '7d', '1h'
-nui.util.storage.remove({ name })
-nui.util.sortByKey(array, propertyPath, numeric?)
-nui.util.filter({ data, search, prop[] })
-nui.util.detectEnv()                            // { isTouch, isMac, isIOS, isSafari, isFF }
-nui.util.markdownToHtml(md)                     // Lightweight markdown -> HTML string
-\`\`\`
-
-## data-action Syntax
-
-\`\`\`
-data-action="name[:param][@targetSelector]"
-\`\`\`
-Dispatches: \`nui-action\` (generic) + \`nui-action-\${name}\` (specific), both bubble.
-detail: { name, param, target, originalEvent }
-
-## Router Contract
-
-- Hash-based: \`#page=path/to/page\` or \`#feature=featureName\`
-- Pages cached: init() runs ONCE, show()/hide() on navigation
-- Scope DOM to element (page wrapper), never document
-
-## Key Component Events
-
-| Component | Events | Detail |
-|-----------|--------|--------|
-| nui-dialog | nui-dialog-open, nui-dialog-close, nui-dialog-cancel | { returnValue } |
-| nui-tabs | nui-tabs-change | { tab, panel } |
-| nui-select | nui-select-change | { value } |
-| nui-sortable | nui-sort-reorder | { from, to } |
-| nui-accordion | toggle | native |
-| nui-link-list | nui-link-click | { href, label } |
-`;
-
 export async function nui_get_reference() {
-	return textResponse(REFERENCE.trim());
+	const reg = loadRegistry();
+	if (!reg) return errorResponse('Failed to load component registry.');
+
+	const lines = [];
+
+	if (reg.setup) {
+		lines.push('## Setup\n');
+		if (reg.setup.minimal) {
+			lines.push(`### Minimal (${reg.setup.minimal.description})`);
+			lines.push('```' + (reg.setup.minimal.lang || 'html'));
+			lines.push(reg.setup.minimal.code);
+			lines.push('```\n');
+		}
+		if (reg.setup.foucPrevention) {
+			lines.push(`### ${reg.setup.foucPrevention.description}`);
+			lines.push('```' + (reg.setup.foucPrevention.lang || 'css'));
+			lines.push(reg.setup.foucPrevention.code);
+			lines.push('```\n');
+		}
+		if (reg.setup.addons) {
+			lines.push('### Addon Imports');
+			lines.push('| Addon | JS | CSS |');
+			lines.push('|-------|----|-----|');
+			for (const addon of reg.setup.addons) {
+				lines.push(`| ${addon.name} | ${addon.js || '—'} | ${addon.css || '—'} |`);
+			}
+			lines.push('');
+		}
+	}
+
+	if (reg.api?.root) {
+		lines.push('## Root API (`nui.*`)\n```js');
+		for (const item of reg.api.root) {
+			lines.push(item.signature + (item.description ? ` // ${item.description}` : ''));
+		}
+		lines.push('```\n');
+	}
+
+	if (reg.api?.components) {
+		lines.push('## Components API (`nui.components.*`)');
+		for (const comp of reg.api.components) {
+			lines.push(`\n### ${comp.namespace} (${comp.type}${comp.experimental ? ', experimental' : ''})`);
+			if (comp.description) lines.push(comp.description);
+			lines.push('```js');
+			for (const method of comp.methods) {
+				lines.push(method.signature + (method.async ? ' // async' : ''));
+			}
+			lines.push('```');
+		}
+		lines.push('');
+	}
+
+	if (reg.api?.utilities) {
+		lines.push('## Utilities (`nui.util.*`)\n```js');
+		for (const util of reg.api.utilities) {
+			if (util.type === 'namespace') {
+				for (const method of util.methods) {
+					lines.push(method.signature + (method.note ? ` // ${method.note}` : ''));
+				}
+			} else {
+				lines.push(util.signature);
+			}
+		}
+		lines.push('```\n');
+	}
+
+	if (reg.patterns?.dataAction) {
+		const da = reg.patterns.dataAction;
+		lines.push('## data-action Syntax');
+		lines.push('```');
+		lines.push(da.syntax);
+		lines.push('```');
+		if (da.description) lines.push(da.description);
+		if (da.events) lines.push(`Dispatches: \`${da.events.generic}\` (generic) + \`${da.events.specific}\` (specific)`);
+		if (da.detail) lines.push(`detail: ${JSON.stringify(da.detail)}`);
+		if (da.bubbles !== undefined) lines.push(`bubbles: ${da.bubbles}`);
+		lines.push('');
+	}
+
+	if (reg.patterns?.router) {
+		lines.push('## Router Contract');
+		const router = reg.patterns.router;
+		if (router.hashFormat) lines.push(`- Hash format: ${router.hashFormat.join(' or ')}`);
+		if (router.caching) lines.push(`- ${router.caching}`);
+		if (router.scopeRule) lines.push(`- ${router.scopeRule}`);
+		lines.push('');
+	}
+
+	if (reg.events && reg.events.length > 0) {
+		lines.push('## Key Component Events\n');
+		lines.push('| Component | Events | Detail |');
+		lines.push('|-----------|--------|--------|');
+		for (const item of reg.events) {
+			const events = item.events.map(e => e.name).join(', ');
+			const detail = item.events[0]?.detail || item.events[0]?.note || '';
+			lines.push(`| ${item.component} | ${events} | ${detail} |`);
+		}
+	}
+
+	return textResponse(lines.join('\n'));
 }
 
 export async function nui_get_css_variables() {
@@ -413,7 +400,7 @@ export async function nui_get_icons() {
 		return errorResponse('Failed to read icon sprite from material-icons-sprite.svg.');
 	}
 
-	const lines = [
+	return textResponse([
 		`## NUI Icon Sprite (${cache.icons.length} icons, commit: ${cache.commit?.substring(0, 7)})`,
 		'',
 		'Usage: `<nui-icon name="ICON_NAME">fallback</nui-icon>`',
@@ -421,7 +408,5 @@ export async function nui_get_icons() {
 		'```text',
 		cache.icons.join(', '),
 		'```'
-	];
-
-	return textResponse(lines.join('\n'));
+	].join('\n'));
 }

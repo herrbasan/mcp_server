@@ -209,30 +209,74 @@ Codebase indexing uses a separate nIndexer service (WebSocket on port 3666) for 
 
 **Location**: `src/agents/nui_docs/`
 
-Provides documentation access for the NUI (Native UI) web component library. Reads from the nui_wc2 git submodule.
+Provides documentation access for the NUI (Native UI) web component library. Reads **dynamically** from the nui_wc2 git submodule's `docs/components.json` registry.
+
+**Architecture**:
+```
+src/agents/nui_docs/
+├── index.js          ← Wrapper (reads from submodule at runtime)
+├── config.json       ← Tool definitions (unchanged)
+└── nui_wc2/          ← git submodule → nui_wc2 repo
+    ├── docs/components.json   ← Source of truth (auto-generated)
+    ├── Playground/pages/      ← HTML documentation pages
+    ├── NUI/css/nui-theme.css  ← CSS variables
+    └── NUI/assets/material-icons-sprite.svg  ← Icons
+```
 
 **Tools**:
-- `nui_list_components` - List all available components with name, category, description
-- `nui_get_component` - Get full documentation for a specific component (LLM guide + code examples)
-- `nui_get_guide` - Get guide documentation (getting-started, architecture-patterns, api-structure, declarative-actions, accessibility, utilities)
-- `nui_get_reference` - Quick API reference cheat sheet
-- `nui_get_css_variables` - List all CSS variables from nui-theme.css
-- `nui_get_icons` - List all available icon names from material-icons-sprite.svg
+- `nui_list_components` - List all components, addons, and reference pages from registry
+- `nui_get_component` - Get full documentation for a specific component or addon (LLM guide + code examples)
+- `nui_get_guide` - Get guide documentation from reference pages (getting-started, architecture-patterns, etc.)
+- `nui_get_reference` - Dynamic API reference cheat sheet (generated from registry)
+- `nui_get_css_variables` - List all CSS variables from nui-theme.css (cached per commit)
+- `nui_get_icons` - List all available icon names from material-icons-sprite.svg (cached per commit)
+
+**Registry Schema** (`components.json`):
+- `reg.components` — 25 core NUI components (e.g., nui-button, nui-dialog)
+- `reg.addons` — 8 optional modules (e.g., nui-menu, nui-list, nui-lightbox)
+- `reg.reference` — 8 documentation pages (e.g., getting-started, accessibility)
+- `reg.setup` — Setup code snippets (minimal, FOUC prevention)
+- `reg.api` — Root API, Components API, Utilities
+- `reg.patterns` — data-action syntax, router contract
+- `reg.events` — Component event reference
+
+**Updating** (when NUI repo changes):
+```bash
+# 1. Pull latest submodule
+cd src/agents/nui_docs/nui_wc2 && git pull origin main && cd ../../../..
+
+# 2. Regenerate components.json (in NUI repo)
+cd src/agents/nui_docs/nui_wc2 && node scripts/update-docs.js && cd ../../../..
+
+# 3. Copy updated wrapper
+cp src/agents/nui_docs/nui_wc2/scripts/mcp-server-mcp-wrapper.js src/agents/nui_docs/index.js
+
+# 4. Restart mcp_server
+```
 
 **Usage**:
 ```javascript
-// List all components
+// List all components, addons, reference pages
 mcp_orchestrator_nui_list_components()
 
-// Get component docs
+// Get component docs (works for core components AND addons)
 mcp_orchestrator_nui_get_component({ component: "nui-button" })
+mcp_orchestrator_nui_get_component({ component: "nui-list" })  // addon
 
-// Get guide
+// Get guide (from reference pages)
 mcp_orchestrator_nui_get_guide({ topic: "getting-started" })
+mcp_orchestrator_nui_get_guide({ topic: "accessibility" })
 
-// Quick reference
+// Quick reference (dynamically generated from registry)
 mcp_orchestrator_nui_get_reference()
 ```
+
+**Troubleshooting**:
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| "Failed to load component registry" | Submodule not initialized | `git submodule update --init nui_wc2` |
+| "Documentation page not found" | Stale submodule | `git pull` in submodule directory |
+| Tool returns empty/old data | `components.json` out of sync | Run `node scripts/update-docs.js` in NUI repo |
 
 ## Web Research Module
 

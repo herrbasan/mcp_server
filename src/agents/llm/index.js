@@ -17,7 +17,7 @@ export async function query_model(args, context) {
     }
 
     const finalPrompt = fileContext ? `${fileContext}\n\n${prompt}` : prompt;
-    const sysPrompt = systemPrompt || prompts.system || 'You are a helpful AI assistant.';
+    const sysPrompt = systemPrompt || prompts.system;
 
     if (progress) progress('Querying LLM...', 10, 100);
     logger.debug(`[LLM Tool] Started query with prompt length ${finalPrompt.length}`);

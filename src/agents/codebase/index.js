@@ -22,13 +22,10 @@ const DEFAULT_CONFIG = {
 };
 
 export class CodebaseIndexingService {
-  constructor(config = {}, llmRouter) {
+  constructor(config = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.router = llmRouter;
     this.client = new NIndexerClient(this.config.nIndexer || {});
     this.progressCallback = null;
-
-    // Store spaces configuration for path resolution (before calling nIndexer)
     this.spaces = config.spaces || {};
   }
 
@@ -275,8 +272,8 @@ export class CodebaseIndexingService {
   /**
    * Manually run maintenance
    */
-  async runMaintenance({ codebase } = {}) {
-    return this.client.runMaintenance(codebase);
+  async runMaintenance({ codebase, reindex, analyze } = {}) {
+    return this.client.runMaintenance(codebase, reindex, analyze);
   }
 
   /**
@@ -286,11 +283,8 @@ export class CodebaseIndexingService {
     return this.client.getMaintenanceStats();
   }
 
-  // ========== LLM Project Analysis ==========
+  // ========== Project Analysis (nIndexer heuristic) ==========
 
-  /**
-   * Analyze codebase with LLM
-   */
   async analyzeCodebase({ name }, onProgress) {
     return this.client.analyzeCodebase(name);
   }
@@ -309,364 +303,6 @@ export class CodebaseIndexingService {
     return this.client.getPrioritizedFiles(name);
   }
 
-  // ========== MCP Tool Integration ==========
-
-  getTools() {
-    return [
-      {
-        name: 'list_codebases',
-        description: 'List all indexed codebases with status and file counts',
-        inputSchema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'index_codebase',
-        description: 'Index a new codebase for semantic search. Provide either "source" (absolute path) OR "space" (configured space name).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Codebase name (e.g., "SoundApp")' },
-            source: { type: 'string', description: 'Absolute path to source directory (alternative to space)' },
-            space: { type: 'string', description: 'Space name from config (e.g., "COOLKID-Work") - resolves project path automatically' },
-            project: { type: 'string', description: 'Project folder name within space (defaults to codebase name if not specified)' },
-            analyze: { type: 'boolean', description: 'Run LLM analysis after indexing to generate project description (default: false)', default: false }
-          },
-          required: ['name']
-        }
-      },
-      {
-        name: 'search_codebase',
-        description: 'Primary search tool for single codebase. RECOMMENDED over grep_codebase for most searches. Combines semantic (meaning) + keyword (exact) matching. Use strategy:keyword for fast name lookups, strategy:semantic for concept queries. Use analyze:true to get AI-summarized results (saves 50-90% tokens). Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Search query (natural language or keywords)' },
-            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid', description: 'hybrid=best overall, keyword=fast exact match, semantic=conceptual similarity' },
-            limit: { type: 'number', default: 10 },
-            filter: {
-              type: 'object',
-              properties: { language: { type: 'string' } }
-            }
-          },
-          required: ['codebase', 'query']
-        }
-      },
-      {
-        name: 'search_semantic',
-        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Natural language query describing what you are looking for' },
-            limit: { type: 'number', default: 10 },
-            filter: {
-              type: 'object',
-              properties: { language: { type: 'string' } }
-            }
-          },
-          required: ['codebase', 'query']
-        }
-      },
-      {
-        name: 'search_keyword',
-        description: 'FAST indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Keywords to search (function names, class names, etc.)' },
-            limit: { type: 'number', default: 20 },
-            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' }
-          },
-          required: ['codebase', 'query']
-        }
-      },
-      {
-        name: 'grep_codebase',
-        description: 'Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Use ONLY when: (1) You need regex patterns like "function.*predict\(", (2) You need exact line numbers for editing, (3) You suspect index is stale. OTHERWISE prefer search_keyword (faster for names) or search_semantic (for concepts). Slower than indexed search (1-3s vs <200ms). Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            pattern: { type: 'string', description: 'Search pattern (regex or literal string)' },
-            regex: { type: 'boolean', default: true, description: 'Use regex pattern matching. Set to false for literal string search (faster)' },
-            limit: { type: 'number', default: 50, description: 'Max total results to return' },
-            maxMatchesPerFile: { type: 'number', default: 5, description: 'Max matches per file (-1 for unlimited, 1 for "find files only")' },
-            caseSensitive: { type: 'boolean', default: false, description: 'Case-sensitive search' },
-            pathPattern: { type: 'string', description: 'Filter by file path glob (e.g., "*.js", "src/**")' },
-            noCache: { type: 'boolean', default: false, description: 'Skip cache and force fresh search' }
-          },
-          required: ['codebase', 'pattern']
-        }
-      },
-      {
-        name: 'search_all_codebases',
-        description: 'Search across ALL indexed codebases at once. Perfect for finding "how is X implemented across different projects?" Strategies: hybrid (default, semantic, keyword).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query (natural language, keywords, or grep pattern)' },
-            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid', description: 'hybrid=best overall (default), keyword=fastest, semantic=conceptual' },
-            limit: { type: 'number', default: 20, description: 'Total result limit across all codebases' },
-            perCodebaseLimit: { type: 'number', default: 5, description: 'Max results per codebase' },
-            filter: {
-              type: 'object',
-              properties: { language: { type: 'string' } }
-            }
-          }
-        }
-      },
-      {
-        name: 'search_semantic',
-        description: 'Semantic (AI embedding) search - finds conceptually similar code. Best for: "how is X implemented?", "find code that does Y", pattern discovery. Slower than keyword but understands meaning, not just text. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Natural language query describing what you are looking for' },
-            limit: { type: 'number', default: 10 },
-            filter: {
-              type: 'object',
-              properties: { language: { type: 'string' } }
-            }
-          },
-          required: ['codebase', 'query']
-        }
-      },
-      {
-        name: 'search_keyword',
-        description: 'FAST indexed keyword search. Best for: exact function names, class names, variable names, imports. Searches file paths AND content. Much faster than grep_codebase (<100ms vs 1-3s). Use this INSTEAD of grep_codebase when searching for specific identifiers. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            query: { type: 'string', description: 'Keywords to search (function names, class names, etc.)' },
-            limit: { type: 'number', default: 20 },
-            searchContent: { type: 'boolean', default: true, description: 'Search file content (not just paths). Slightly slower but more thorough.' }
-          },
-          required: ['codebase', 'query']
-        }
-      },
-      {
-        name: 'grep_codebase',
-        description: 'Live regex search using ripgrep. ALWAYS CURRENT (searches filesystem directly). Use ONLY when: (1) You need regex patterns like "function.*predict\\(", (2) You need exact line numbers for editing, (3) You suspect index is stale. OTHERWISE prefer search_keyword (faster for names) or search_semantic (for concepts). Slower than indexed search (1-3s vs <200ms). Use analyze:true to get structured analysis. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            pattern: { type: 'string', description: 'Search pattern (regex or literal string)' },
-            regex: { type: 'boolean', default: true, description: 'Use regex pattern matching. Set to false for literal string search (faster)' },
-            limit: { type: 'number', default: 50, description: 'Max total results to return' },
-            maxMatchesPerFile: { type: 'number', default: 5, description: 'Max matches per file (-1 for unlimited, 1 for "find files only")' },
-            caseSensitive: { type: 'boolean', default: false, description: 'Case-sensitive search' },
-            pathPattern: { type: 'string', description: 'Filter by file path glob (e.g., "*.js", "src/**")' },
-            noCache: { type: 'boolean', default: false, description: 'Skip cache and force fresh search' },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results.' },
-            includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down.' }
-          },
-          required: ['codebase', 'pattern']
-        }
-      },
-      {
-        name: 'search_all_codebases',
-        description: '[RECOMMENDED] Search across ALL indexed codebases at once. Perfect for finding "how is X implemented across different projects?" Strategies: hybrid (default, semantic, keyword). Use analyze:true (strongly recommended) to get AI-summarized insights instead of 50+ raw snippets (saves 50-90% tokens).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Search query (natural language, keywords, or grep pattern)' },
-            strategy: { type: 'string', enum: ['hybrid', 'semantic', 'keyword'], default: 'hybrid', description: 'hybrid=best overall (default), keyword=fastest, semantic=conceptual' },
-            limit: { type: 'number', default: 20, description: 'Total result limit across all codebases' },
-            perCodebaseLimit: { type: 'number', default: 5, description: 'Max results per codebase' },
-            filter: {
-              type: 'object',
-              properties: { language: { type: 'string' } }
-            },
-            analyze: { type: 'boolean', default: false, description: 'Use local LLM to analyze results and return structured summary with keyFindings, relevantFiles, implementationPatterns. Saves 50-90% tokens vs raw results. STRONGLY RECOMMENDED for cross-codebase exploration.' },
-            includeRaw: { type: 'boolean', default: false, description: 'Include raw search results in addition to analysis. Use when you want both the AI summary AND original snippets for drilling down.' }
-          },
-          required: ['query']
-        }
-      },
-      {
-        name: 'get_file_info',
-        description: 'Get file structure (functions, classes, imports) without content. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            path: { type: 'string' }
-          },
-          required: ['codebase', 'path']
-        }
-      },
-      {
-        name: 'get_file',
-        description: 'Get file content with staleness check. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            path: { type: 'string' }
-          },
-          required: ['codebase', 'path']
-        }
-      },
-      {
-        name: 'refresh_codebase',
-        description: 'Incremental refresh of codebase index',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' },
-            analyze: { type: 'boolean', description: 'Re-run LLM analysis if stale (default: false)', default: false }
-          },
-          required: ['name']
-        }
-      },
-      {
-        name: 'remove_codebase',
-        description: 'Remove a codebase and all its data',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' }
-          },
-          required: ['name']
-        }
-      },
-      {
-        name: 'check_codebase_status',
-        description: 'Check staleness status of a codebase (stale files, missing files). Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' }
-          },
-          required: ['codebase']
-        }
-      },
-      {
-        name: 'check_file_stale',
-        description: 'Check if a specific file is stale (changed since indexing). Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Codebase name (partial match supported)' },
-            path: { type: 'string', description: 'File path relative to codebase root' }
-          },
-          required: ['codebase', 'path']
-        }
-      },
-      {
-        name: 'run_maintenance',
-        description: 'Manually trigger maintenance cycle to refresh stale codebases',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            codebase: { type: 'string', description: 'Specific codebase to refresh, or omit for all' }
-          }
-        }
-      },
-      {
-        name: 'get_maintenance_stats',
-        description: 'Get maintenance statistics and status',
-        inputSchema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'analyze_codebase',
-        description: 'Run LLM analysis to generate project description and identify key files. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Codebase name to analyze (partial match supported)' }
-          },
-          required: ['name']
-        }
-      },
-      {
-        name: 'get_codebase_description',
-        description: 'Get project description (heuristic-based) with staleness check. Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Codebase name (partial match supported)' }
-          },
-          required: ['name']
-        }
-      },
-      {
-        name: 'get_prioritized_files',
-        description: 'Get files ordered by importance (high/medium/low priority). Codebase name supports partial matching.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Codebase name (partial match supported)' }
-          },
-          required: ['name']
-        }
-      }
-    ];
-  }
-
-  handlesTool(name) {
-    return [
-      'list_codebases',
-      'index_codebase',
-      'refresh_codebase',
-      'remove_codebase',
-      'search_codebase',
-      'search_semantic',
-      'search_keyword',
-      'grep_codebase',
-      'search_all_codebases',
-      'get_file_tree',
-      'get_file_info',
-      'get_files_info',
-      'get_file',
-      'check_codebase_status',
-      'check_file_stale',
-      'run_maintenance',
-      'get_maintenance_stats',
-      'analyze_codebase',
-      'get_codebase_description',
-      'get_prioritized_files'
-    ].includes(name);
-  }
-
-  async callTool(name, args) {
-    const methodMap = {
-      'list_codebases': 'listCodebases',
-      'index_codebase': 'indexCodebase',
-      'refresh_codebase': 'refreshCodebase',
-      'remove_codebase': 'removeCodebase',
-      'search_codebase': 'search',
-      'search_semantic': 'searchSemantic',
-      'search_keyword': 'searchKeyword',
-      'grep_codebase': 'grepCodebase',
-      'search_all_codebases': 'searchAll',
-      'get_file_tree': 'getFileTree',
-      'get_file_info': 'getFileInfo',
-      'get_files_info': 'getFilesInfo',
-      'get_file': 'getFile',
-      'check_codebase_status': 'checkCodebaseStatus',
-      'check_file_stale': 'checkFileStale',
-      'run_maintenance': 'runMaintenance',
-      'get_maintenance_stats': 'getMaintenanceStats',
-      'analyze_codebase': 'analyzeCodebase',
-      'get_codebase_description': 'getCodebaseDescription',
-      'get_prioritized_files': 'getPrioritizedFiles'
-    };
-
-    const methodName = methodMap[name];
-    if (!methodName || typeof this[methodName] !== 'function') {
-      throw new Error(`Unknown tool: ${name}`);
-    }
-
-    const result = await this[methodName](args);
-
-    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  }
 }
 
 // --- Agent Contract ---
@@ -683,8 +319,7 @@ export async function init(context) {
   };
 
   serviceInstance = new CodebaseIndexingService(
-    { ...context.config.codebase, spaces: context.config.spaces, nIndexer: nIndexerConfig },
-    context.gateway
+    { ...context.config.codebase, spaces: context.config.spaces, nIndexer: nIndexerConfig }
   );
 
   // Connect to nIndexer service
@@ -710,23 +345,27 @@ export async function shutdown() {
 }
 
 // Tool handlers
-export async function list_codebases(args, context) { return serviceInstance.callTool('list_codebases', args); }
-export async function index_codebase(args, context) { return serviceInstance.callTool('index_codebase', args); }
-export async function search_codebase(args, context) { return serviceInstance.callTool('search_codebase', args); }
-export async function search_semantic(args, context) { return serviceInstance.callTool('search_semantic', args); }
-export async function search_keyword(args, context) { return serviceInstance.callTool('search_keyword', args); }
-export async function grep_codebase(args, context) { return serviceInstance.callTool('grep_codebase', args); }
-export async function search_all_codebases(args, context) { return serviceInstance.callTool('search_all_codebases', args); }
-export async function get_file_tree(args, context) { return serviceInstance.callTool('get_file_tree', args); }
-export async function get_file_info(args, context) { return serviceInstance.callTool('get_file_info', args); }
-export async function get_files_info(args, context) { return serviceInstance.callTool('get_files_info', args); }
-export async function get_file(args, context) { return serviceInstance.callTool('get_file', args); }
-export async function refresh_codebase(args, context) { return serviceInstance.callTool('refresh_codebase', args); }
-export async function remove_codebase(args, context) { return serviceInstance.callTool('remove_codebase', args); }
-export async function check_codebase_status(args, context) { return serviceInstance.callTool('check_codebase_status', args); }
-export async function check_file_stale(args, context) { return serviceInstance.callTool('check_file_stale', args); }
-export async function run_maintenance(args, context) { return serviceInstance.callTool('run_maintenance', args); }
-export async function get_maintenance_stats(args, context) { return serviceInstance.callTool('get_maintenance_stats', args); }
-export async function analyze_codebase(args, context) { return serviceInstance.callTool('analyze_codebase', args); }
-export async function get_codebase_description(args, context) { return serviceInstance.callTool('get_codebase_description', args); }
-export async function get_prioritized_files(args, context) { return serviceInstance.callTool('get_prioritized_files', args); }
+function _result(data) {
+  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+}
+
+export async function list_codebases(args, context) { return _result(await serviceInstance.listCodebases()); }
+export async function index_codebase(args, context) { return _result(await serviceInstance.indexCodebase(args)); }
+export async function search_codebase(args, context) { return _result(await serviceInstance.search(args)); }
+export async function search_semantic(args, context) { return _result(await serviceInstance.searchSemantic(args)); }
+export async function search_keyword(args, context) { return _result(await serviceInstance.searchKeyword(args)); }
+export async function grep_codebase(args, context) { return _result(await serviceInstance.grepCodebase(args)); }
+export async function search_all_codebases(args, context) { return _result(await serviceInstance.searchAll(args)); }
+export async function get_file_tree(args, context) { return _result(await serviceInstance.getFileTree(args)); }
+export async function get_file_info(args, context) { return _result(await serviceInstance.getFileInfo(args)); }
+export async function get_files_info(args, context) { return _result(await serviceInstance.getFilesInfo(args)); }
+export async function get_file(args, context) { return _result(await serviceInstance.getFile(args)); }
+export async function refresh_codebase(args, context) { return _result(await serviceInstance.refreshCodebase(args)); }
+export async function remove_codebase(args, context) { return _result(await serviceInstance.removeCodebase(args)); }
+export async function check_codebase_status(args, context) { return _result(await serviceInstance.checkCodebaseStatus(args)); }
+export async function check_file_stale(args, context) { return _result(await serviceInstance.checkFileStale(args)); }
+export async function run_maintenance(args, context) { return _result(await serviceInstance.runMaintenance(args)); }
+export async function get_maintenance_stats(args, context) { return _result(await serviceInstance.getMaintenanceStats()); }
+export async function analyze_codebase(args, context) { return _result(await serviceInstance.analyzeCodebase(args)); }
+export async function get_codebase_description(args, context) { return _result(await serviceInstance.getCodebaseDescription(args)); }
+export async function get_prioritized_files(args, context) { return _result(await serviceInstance.getPrioritizedFiles(args)); }

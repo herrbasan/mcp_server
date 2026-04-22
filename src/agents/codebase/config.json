@@ -32,6 +32,11 @@
           "project": {
             "type": "string",
             "description": "Project folder name within space (defaults to codebase name if not specified)"
+          },
+          "analyze": {
+            "type": "boolean",
+            "description": "Run heuristic analysis after indexing to generate project description (default: false)",
+            "default": false
           }
         },
         "required": [
@@ -338,6 +343,11 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "analyze": {
+            "type": "boolean",
+            "description": "Re-run heuristic analysis if stale (default: false)",
+            "default": false
           }
         },
         "required": [
@@ -401,13 +411,23 @@
     {
       "name": "run_maintenance",
       "adminOnly": true,
-      "description": "Manually trigger maintenance cycle to refresh stale codebases",
+      "description": "Run maintenance cycle. Discovery re-scans roots before maintenance runs.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "codebase": {
             "type": "string",
-            "description": "Specific codebase to refresh, or omit for all"
+            "description": "Specific codebase to maintain (omit for all)"
+          },
+          "reindex": {
+            "type": "string",
+            "enum": ["if_missing", "changed", "always"],
+            "description": "Reindex mode: 'if_missing' (build if absent), 'changed' (update changed files), 'always' (force rebuild)"
+          },
+          "analyze": {
+            "type": "boolean",
+            "description": "Run heuristic analysis after maintenance (default: false)",
+            "default": false
           }
         }
       }
