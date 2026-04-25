@@ -68,8 +68,19 @@ export async function loadAgents(globalContext) {
         visit(name);
     }
 
-    // 3. Import and initialize
+    // 2b. Filter disabled agents (config.agents.<folder>.disabled === true)
+    const disabledAgents = new Set();
     for (const config of sortedAgents) {
+        const agentConf = globalContext.config.agents?.[config._folder];
+        if (agentConf?.disabled) {
+            disabledAgents.add(config.agent);
+            logger.info(`Agent ${config.agent} is disabled, skipping.`, null, 'Loader');
+        }
+    }
+    const activeAgents = sortedAgents.filter(c => !disabledAgents.has(c.agent));
+
+    // 3. Import and initialize
+    for (const config of activeAgents) {
         const folder = config._folder;
         logger.info(`Initializing agent: ${config.agent}`, null, 'Loader');
         
@@ -127,7 +138,8 @@ export async function loadAgents(globalContext) {
         }
     }
 
-    logger.info(`Loaded ${sortedAgents.length} agents, ${allTools.length} tools (${adminTools.length} admin-only).`, null, 'Loader');
+    const disabledCount = sortedAgents.length - activeAgents.length;
+    logger.info(`Loaded ${activeAgents.length} agents, ${allTools.length} tools (${adminTools.length} admin-only).${disabledCount ? ` ${disabledCount} disabled.` : ''}`, null, 'Loader');
 
     // 4. Return unified interfaces
     return {
@@ -163,7 +175,7 @@ export async function loadAgents(globalContext) {
             }
         },
         async shutdownAll() {
-            for (const config of sortedAgents.reverse()) { // Reverse order for shutdown
+            for (const config of activeAgents.reverse()) { // Reverse order for shutdown
                 const folder = config._folder;
                 try {
                     const indexUrl = `file://${path.join(agentsDir, folder, 'index.js').replace(/\\/g, '/')}`;

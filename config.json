@@ -32,6 +32,7 @@
       "searchEngines": ["google", "duckduckgo"]
     },
     "codebase": {
+      "disabled": true,
       "dataDir": "data/codebases"
     },
     "vision": {
