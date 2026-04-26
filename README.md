@@ -4,12 +4,10 @@ A centralized Model Context Protocol (MCP) server that hosts multiple domain-spe
 
 ## Features
 
-- **Agent architecture** — domain-specific modules (browser, codebase, docs, inspector, llm, memory, nui_docs, research, vision) that own their own state and tools
+- **Agent architecture** — domain-specific modules (browser, docs, inspector, llm, memory, research, vision) that own their own state and tools
 - **LLM Gateway integration** — thin WebSocket client to an external LLM Gateway at localhost:3400
-- **Codebase indexing** — semantic code search via nIndexer service (nDB vector database on port 3666)
 - **Browser automation** — persistent Puppeteer browser with session management for web research and scraping
 - **Semantic memory** — vector embedding-based recall across sessions
-- **NUI Docs** — documentation access for the NUI web component library
 - **Vision analysis** — iterative image analysis with drill-down focus capability
 
 ---
@@ -117,12 +115,10 @@ Client (VS Code / CLI)
 | Agent      | Tools | Description |
 |------------|-------|-------------|
 | `browser`  | `browser_session_create`, `browser_session_goto`, `browser_session_click`, … (14 tools) | Persistent Puppeteer browser with session management |
-| `codebase` | `index_codebase`, `search_codebase`, `search_keyword`, `search_semantic`, `grep_codebase`, `get_file`, `get_file_info`, `analyze_codebase`, … (18 tools) | nDB-powered semantic code search via nIndexer |
 | `docs`     | `get_philosophy`, `get_orchestrator_doc` | Access `mcp_documentation/` files |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |
 | `memory`   | `memory_remember`, `memory_recall`, `memory_forget`, `memory_list`, `memory_update` | Semantic vector memory |
-| `nui_docs` | `nui_list_components`, `nui_get_component`, `nui_get_guide`, `nui_get_reference`, `nui_get_css_variables`, `nui_get_icons` | NUI web component library docs |
 | `research` | `research_topic` | Multi-phase web research pipeline |
 | `vision`   | `vision_create_session`, `vision_analyze`, `vision_list_sessions`, `vision_get_session`, `vision_close_session` | Iterative image analysis with drill-down |
 

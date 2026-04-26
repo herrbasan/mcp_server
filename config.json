@@ -9,14 +9,6 @@
     "wsUrl": "ws://localhost:3400/v1/realtime",
     "httpUrl": "http://localhost:3400"
   },
-  "nIndexer": {
-    "wsUrl": "ws://localhost:3666",
-    "connectTimeout": 15000,
-    "requestTimeout": 30000,
-    "reconnectInterval": 5000,
-    "maxReconnectAttempts": 5,
-    "reconnectIntervalAfterMax": 15000
-  },
   "agents": {
     "browser": {
       "viewport": { "width": 1280, "height": 1800 },
@@ -30,10 +22,6 @@
       "maxDepth": 2,
       "timeout": 300000,
       "searchEngines": ["google", "duckduckgo"]
-    },
-    "codebase": {
-      "disabled": true,
-      "dataDir": "data/codebases"
     },
     "vision": {
       "ttlMinutes": 30,

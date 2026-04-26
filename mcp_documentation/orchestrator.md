@@ -10,142 +10,15 @@
 
 | Agent | Purpose |
 |-------|---------|
-| [Codebase](#codebase-indexing-module) | Semantic code search, indexing |
 | [Memory](#memory-module) | Quality-focused semantic memory |
 | [LLM](#llm-module) | Local model querying |
 | [Research](#web-research-module) | Multi-source research pipeline |
 | [Browser](#browser-module) | Headless browser with persistent sessions |
 | [Inspector](#code-inspector-module) | LLM-based code analysis |
 | [Vision](#vision-module) | Iterative image analysis with drill-down focus |
-| [NUI Docs](#nui-docs-module) | NUI web component library docs |
 | [Docs](#docs-module) | Documentation access |
 
 ---
-
-## Codebase Indexing Module
-
-**Decision Guide:**
-
-| You want to... | Use this |
-|----------------|---------|
-| Search a specific codebase you know | `search_codebase` |
-| Find exact function/class names | `search_keyword` |
-| Conceptual/similarity search | `search_semantic` |
-| Live regex, stale index, or line numbers | `grep_codebase` |
-| Don't know which codebase has it | `search_all_codebases` (last resort) |
-
-**⚡ Performance:**
-| Tool | Speed | Best For |
-|------|-------|----------|
-| `search_keyword` | <50ms | Exact names |
-| `search_codebase` | <200ms | Focused search |
-| `search_semantic` | 100-300ms | Conceptual |
-| `search_all_codebases` | 2-5s | **Use rarely** |
-| `grep_codebase` | 1-3s | Regex, live search |
-
-### `search_codebase`
-Search within a specific codebase. **Preferred approach** - be specific about which codebase.
-
-```javascript
-mcp_orchestrator_search_codebase({
-  codebase: "my-project",      // Use the project name
-  query: "webSocket retry",
-  limit: 10
-})
-```
-
-### `search_keyword`
-**Fast exact-match search** for function names, class names, identifiers.
-
-```javascript
-mcp_orchestrator_search_keyword({
-  codebase: "my-project",
-  query: "StreamableHTTPServerTransport"
-})
-```
-
-### `search_semantic`
-Conceptual/similarity search using embeddings.
-
-```javascript
-mcp_orchestrator_search_semantic({
-  codebase: "my-project",
-  query: "how does the router handle failures?"
-})
-```
-
-### `grep_codebase`
-Live regex search. Slower but always current.
-
-```javascript
-mcp_orchestrator_grep_codebase({
-  codebase: "my-project",
-  pattern: "async.*function",
-  regex: true
-})
-```
-
-### `search_all_codebases`
-**⚠️ Last resort** - searches ALL indexed codebases. Slow and expensive. Only use when you genuinely don't know which codebase contains what you're looking for.
-
-```javascript
-// AVOID unless necessary
-mcp_orchestrator_search_all_codebases({
-  query: "drag and drop implementation"
-})
-```
-
-**Do this instead:**
-1. Use `list_codebases` to find relevant projects
-2. Use `search_codebase` on specific projects
-3. Use `search_keyword` for exact matches
-
-```javascript
-mcp_orchestrator_search_semantic({
-  codebase: "mcp_server",
-  query: "how does the router handle provider fallback?",
-  limit: 5,
-  analyze: true
-})
-```
-
-#### `search_keyword`
-**FAST indexed keyword search** - Best for exact function names, class names, and identifiers. Searches both file paths AND content.
-
-```javascript
-// Find function by name (fastest)
-mcp_orchestrator_search_keyword({
-  codebase: "mcp_server",
-  query: "StreamableHTTPServerTransport",
-  limit: 20
-})
-
-// Search content (includes line matches)
-mcp_orchestrator_search_keyword({
-  codebase: "mcp_server",
-  query: "handleRequest",
-  searchContent: true,  // Include content matches
-  limit: 10
-})
-// Returns: { file, path, rank, contentMatches: [{line, content}] }
-```
-
-**💡 Prefer this over `grep_codebase`** when:
-- Searching for specific function/class names
-- You need fast results (<50ms vs 1-3s)
-- You don't need regex patterns
-- You don't need exact line numbers for editing
-
-#### `grep_codebase`
-**Live regex search** with ripgrep. Always current (searches filesystem directly). **Use sparingly** - it's 10-50x slower than indexed search.
-
-### `get_file` / `get_file_info`
-Retrieve file content or structure from a codebase.
-
-```javascript
-mcp_orchestrator_get_file({ codebase: "my-project", path: "src/main.js" })
-mcp_orchestrator_get_file_info({ codebase: "my-project", path: "src/main.js" })
-```
 
 ---
 
@@ -390,54 +263,6 @@ mcp_orchestrator_inspect_code({
 
 ---
 
-## NUI Docs Module (6 tools)
-
-> Documentation for NUI (Native UI) web component library. Reads from the nui_wc2 git submodule.
-
-### `nui_list_components`
-List all available components with name, category, and description.
-
-```javascript
-mcp_orchestrator_nui_list_components()
-```
-
-### `nui_get_component`
-Get full documentation for a specific component (LLM guide + code examples).
-
-```javascript
-mcp_orchestrator_nui_get_component({ component: "nui-button" })
-```
-
-### `nui_get_guide`
-Get guide documentation for a specific topic.
-
-**Topics**: `getting-started`, `architecture-patterns`, `api-structure`, `declarative-actions`, `accessibility`, `utilities`
-
-```javascript
-mcp_orchestrator_nui_get_guide({ topic: "getting-started" })
-```
-
-### `nui_get_reference`
-Get quick API reference cheat sheet.
-
-```javascript
-mcp_orchestrator_nui_get_reference()
-```
-
-### `nui_get_css_variables`
-List all CSS variables from nui-theme.css.
-
-```javascript
-mcp_orchestrator_nui_get_css_variables()
-```
-
-### `nui_get_icons`
-List all available icon names from material-icons-sprite.svg.
-
-```javascript
-mcp_orchestrator_nui_get_icons()
-```
-
 ---
 
 ## Documentation Module (2 tools)
@@ -572,66 +397,18 @@ mcp_orchestrator_vision_close_session({
 
 ---
 
-## Common Workflows
-
-### Cross-Project Pattern Discovery
-```javascript
-// Find how different projects implement WebSocket retry
-mcp_orchestrator_search_all_codebases({
-  query: "websocket reconnect exponential backoff",
-  strategy: "semantic",
-  limit: 15,
-  analyze: true
-})
-// Review findings, then inspect specific implementation:
-mcp_orchestrator_get_file({
-  codebase: "Project-Name",
-  path: "src/websocket/client.js"
-})
-```
-
-### Research → Implement → Remember
-```javascript
-mcp_orchestrator_research_topic({ query: "WebSocket retry best practices" })
-// ... implement pattern ...
-mcp_orchestrator_remember({
-  text: "Use exponential backoff with jitter",
-  category: "proven",
-  domain: "my_project"
-})
-```
-
-### Query with File Context
-```javascript
-mcp_orchestrator_query_model({
-  prompt: "Review this code for issues",
-  files: ["D:\\project\\src\\api.js"]
-})
-```
-
----
-
-## Scope Guidelines
-
-| Scenario | Tool |
-|----------|------|
-| Current IDE project | IDE shortcuts (Ctrl+P, F12, Ctrl+Click) |
-| Cross-project search | `search_all_codebases` |
-| Specific codebase | `search_codebase` / `get_file` |
-| Code analysis | Code Inspector with absolute paths |
-| Web content | Browser / Research |
-| LLM queries | query_model |
-
----
-
 ## Performance Notes
 
 | Tool | Typical Time | Notes |
 |------|--------------|-------|
 | `search_keyword` | <50ms | Indexed content search |
-| `search_all_codebases` | 1-2s | Preloaded at startup |
-| `search_codebase` | <500ms | Single codebase |
-| `grep_codebase` | 1-3s | Live filesystem search (cached) |
 | `research_topic` | 12-45s | Depends on pages scraped |
 | `query_model` | 2-10s | Depends on model & tokens |
 | `vision_analyze` | 3-15s | Depends on image size and model |
+
+
+
+
+
+
+

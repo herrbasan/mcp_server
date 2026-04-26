@@ -1,9 +1,4 @@
-[submodule "src/web/public/nui_wc2"]
-	path = src/web/public/nui_wc2
-	url = https://github.com/herrbasan/nui_wc2.git
 [submodule "src/nLogger"]
 	path = src/nLogger
 	url = https://github.com/herrbasan/nLogger.git
-[submodule "src/agents/nui_docs/nui_wc2"]
-	path = src/agents/nui_docs/nui_wc2
-	url = https://github.com/herrbasan/nui_wc2.git
+
