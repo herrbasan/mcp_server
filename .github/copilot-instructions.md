@@ -6,34 +6,37 @@
 
 **Session Start** (automatic):
 ```javascript
-mcp_orchestrator_memory_recall({ query: "current task context", domain: "project-name", limit: 10 })
+mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
 ```
 
 **During Work** (proactive):
-- Store insights immediately after discovery via `memory_remember`
-- Query before implementation: `memory_recall({ category: "proven", query: "..." })`
-- Check anti_patterns before trying approaches: `memory_recall({ category: "anti_patterns", ... })`
+- Store insights immediately after discovery via `memory_store`
+- Query before implementation: `memory_recall({ query: "..." })`
+- Check for prior failed approaches: `memory_recall({ query: "what went wrong with ..." })`
 
 **Memory Maintenance** (self-directed):
-- Update memories as understanding deepens: `memory_update({ id, text, category })`
+- Update memories as understanding deepens: `memory_update({ id, description, confidence })`
 - Delete obsolete/wrong memories: `memory_forget({ id })`
 - Consolidate related memories periodically
 
-**Categories**:
-- `proven` - Evidence-backed solutions that work
-- `anti_patterns` - Approaches that caused problems
-- `hypotheses` - Untested ideas to validate
-- `context` - Project facts and background
-- `observed` - Behavioral patterns noticed
+## Memory Schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | string | Short summary (shown in listings and search) |
+| `category` | string | Freeform domain descriptor: "notes", "personal preference", "hardware", "coding style", etc. |
+| `confidence` | number | 0-1 reliability score (default 0.5). 1.0 = verified fact, 0.0 = wild guess |
+| `data` | string | Optional extended content (only visible via `memory_get`, not in listings) |
 
 ## Bug Reports to Memory
 
 Report verifiable orchestrator issues autonomously:
 ```javascript
-mcp_orchestrator_memory_remember({
-  text: "Specific issue with reproducible context and suggested fix",
-  category: "anti_patterns",
-  domain: "orchestrator_feedback"
+mcp_orchestrator_memory_store({
+  description: "Short summary of the issue",
+  category: "orchestrator feedback",
+  confidence: 0.8,
+  data: "Detailed reproducible context, impact, and suggested fix"
 });
 ```
 
@@ -52,10 +55,11 @@ Calling LLMs can report orchestrator bugs/issues back to the memory system for c
 
 **How to Report**:
 ```javascript
-mcp_orchestrator_memory_remember({
-  text: "browser_fetch timeout: 30s limit insufficient for heavy pages. Example: research_topic failed on 3/10 pages during [session]. Suggest: Add timeout parameter or increase default to 60s.",
-  category: "anti_patterns",
-  domain: "orchestrator_feedback"
+mcp_orchestrator_memory_store({
+  description: "browser_fetch timeout on heavy pages",
+  category: "orchestrator feedback",
+  confidence: 0.8,
+  data: "30s limit insufficient for heavy pages. research_topic failed on 3/10 pages. Suggest: increase default to 60s."
 });
 ```
 
@@ -71,7 +75,7 @@ mcp_orchestrator_memory_remember({
 - User errors ("I called it wrong")
 - Single isolated failures without pattern
 
-**Review Process**: User or autonomous agents periodically query `domain="orchestrator_feedback"` memories to extract improvement tasks.
+**Review Process**: User or autonomous agents periodically query `category="orchestrator feedback"` memories to extract improvement tasks.
 
 ---
 
@@ -85,7 +89,7 @@ Centralized MCP server running as an **independent HTTP service**.
 - Server: src/server.js - Port 3100 (MCP via custom SSE)
 - Transport: Per-session SSE transport mapped by sessionId
 - Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, docs, inspector, llm, memory, research, vision)
+- Agents: src/agents/ - (browser, docs, github, inspector, llm, memory, research, vision)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -159,7 +163,7 @@ const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 | `inspect` | `inspect_code` tool | Code analysis |
 | `synthesis` | `research_topic` | Research synthesis |
 | `analysis` | `analyze_codebase`, `search_codebase` (with `analyze: true`) | Code analysis |
-| `embed` | `memory_remember`, `memory_recall`, code indexing | Text embeddings |
+| `embed` | `memory_store`, `memory_recall`, code indexing | Text embeddings |
 | `vision` | `vision_analyze` | Image analysis |
 
 **Note**: Model routing is now handled entirely by the Gateway. The `models` section in `config.json` has been removed. To change which model handles a task, update the Gateway's configuration instead.
@@ -209,14 +213,7 @@ Major refactoring completed with significant reliability and performance improve
 - **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
 
 ## Memory System Philosophy
-Memory exists to improve OUTPUT QUALITY, not store user preferences. Categories:
-- **proven**: Evidence-backed approaches that produce good outcomes
-- **anti_patterns**: Approaches that have caused problems
-- **observed**: Behavioral patterns, may be promoted to proven
-- **hypotheses**: Untested ideas
-- **context**: Project facts, background info
-
-Domain scoping: Memories can be tagged with optional `domain` field for project-specific organization. Use domain parameter in memory_recall/memory_list to filter results.
+Memory exists to improve OUTPUT QUALITY, not store user preferences. Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding style", "notes"). Confidence (0-1) tracks reliability separately from category. Use `data` field for extended content that shouldn't clutter listings.
 
 ## Code Style & Philosophy
 - **Language**: Vanilla JavaScript (ES modules) - NO TypeScript
@@ -266,6 +263,12 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - UNC: `\\server\share\file.js`
 
 ## Historical Changes
+
+### May 2026 - GitHub Relay Agent
+- New `src/agents/github/` — 15 tools for remote repo browsing via GitHub REST API
+- Tools: `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue`
+- Uses `GIT_TOKEN` from `.env` — no external MCP server dependency
+- Fixed `.env` loading to use absolute path (works regardless of CWD)
 
 ### April 2026 - Task-Based Gateway API
 - Migrated to Gateway's task-based query system

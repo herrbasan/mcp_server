@@ -14,6 +14,7 @@
 | [LLM](#llm-module) | Local model querying |
 | [Research](#web-research-module) | Multi-source research pipeline |
 | [Browser](#browser-module) | Headless browser with persistent sessions |
+| [GitHub](#github-module) | Browse code, history, PRs, issues from any GitHub repo |
 | [Inspector](#code-inspector-module) | LLM-based code analysis |
 | [Vision](#vision-module) | Iterative image analysis with drill-down focus |
 | [Docs](#docs-module) | Documentation access |
@@ -22,55 +23,49 @@
 
 ---
 
-## Memory Module (5 tools)
+## Memory Module (6 tools)
 
-> **AUTONOMOUS USAGE**: You are encouraged to use memory tools proactively without user prompting. Store insights as you work, recall context at session start, and maintain memory quality.
+> **AUTONOMOUS USAGE**: You forget everything between sessions. Store insights as you work, recall context at session start, and maintain memory quality — or lose what you learned.
 
-**Tools**: `memory_remember`, `memory_recall`, `memory_list`, `memory_update`, `memory_forget`
+**Tools**: `memory_store`, `memory_recall`, `memory_get`, `memory_list`, `memory_update`, `memory_forget`
 
-**Categories**: `proven` (evidence-backed), `anti_patterns` (what failed), `hypotheses` (untested), `context` (facts), `observed` (patterns)
+**Schema**: `description` (short summary), `category` (freeform domain tag), `confidence` (0-1), `data` (optional extended content)
 
-### `memory_remember`
-Store insights immediately after discovery - don't wait for user request.
+### `memory_store`
+You forget everything between sessions — store it or lose it.
 
 ```javascript
-mcp_orchestrator_memory_remember({
-  text: "Use exponential backoff with jitter for WebSocket reconnects",
-  category: "proven",        // or anti_patterns, hypotheses, context, observed
-  domain: "mcp_server"       // optional project scope
+mcp_orchestrator_memory_store({
+  description: "Use exponential backoff with jitter for WebSocket reconnects",
+  category: "notes",           // freeform: 'notes', 'personal preference', 'hardware', etc.
+  confidence: 0.8,             // 0-1 reliability (default 0.5)
+  data: "Optional extended context..."  // only visible via memory_get
 })
 ```
 
 **When to call autonomously**:
 - After solving a non-trivial problem
 - When discovering project-specific patterns
-- After learning what doesn't work (anti_patterns)
+- After learning what doesn't work
 - When user confirms a solution worked
 
 ### `memory_recall`
-Query at session start for context, before implementation for patterns, when stuck.
+CALL THIS FIRST at every session start. Also use before implementation to check for prior solutions.
 
 ```javascript
-// Session start - prime context
 mcp_orchestrator_memory_recall({
   query: "WebSocket reconnection",
-  domain: "mcp_server",
   limit: 5
-})
-
-// Before implementation - find patterns
-mcp_orchestrator_memory_recall({
-  query: "file upload drag and drop electron",
-  category: "proven",
-  limit: 10
 })
 ```
 
-**Results format**: `[#id] [domain] category (similarity%) confidence-tag`
-- `[proven]` = confidence ≥0.7, `[likely]` = 0.5-0.7, `[uncertain]` = <0.5
+**Results format**: `[#id] [category] match% conf:0.x [has data]`
+
+### `memory_get`
+Retrieve full content including data payload for a specific memory.
 
 ### `memory_list` / `memory_update` / `memory_forget`
-Maintain memory quality - review, evolve, and cleanup autonomously.
+Browse, evolve, and cleanup memories autonomously.
 
 ```javascript
 // Periodic review
@@ -244,6 +239,174 @@ mcp_orchestrator_browser_session_wait({
 
 > **Scope**: Analyze code with LLM for quality issues.
 
+---
+
+## GitHub Module (15 tools)
+
+> **Scope**: Browse code, history, PRs, and issues from any GitHub repo. No local checkout needed — reads directly from GitHub API.
+
+**Requires**: `GIT_TOKEN` in `.env` (GitHub Personal Access Token with `repo` scope)
+
+**Tools**: `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue`
+
+### `git_search_repos`
+Search GitHub repositories or list repos for a user/org.
+
+```javascript
+mcp_orchestrator_git_search_repos({
+  query: "user:herrbasan sort:updated",
+  limit: 10
+})
+```
+
+### `git_read_file`
+Read a file's contents or list a directory from a GitHub repo.
+
+```javascript
+mcp_orchestrator_git_read_file({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  path: "src/server.js",      // empty for root directory listing
+  branch: "main"              // optional, defaults to default branch
+})
+```
+
+### `git_list_tree`
+Recursively list all files in a repo or subdirectory.
+
+```javascript
+mcp_orchestrator_git_list_tree({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  path: "src/agents/",        // optional scope
+  branch: "main"
+})
+```
+
+### `git_log`
+List commit history for a repo or specific file.
+
+```javascript
+mcp_orchestrator_git_log({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  path: "src/server.js",      // optional file filter
+  branch: "main",
+  limit: 20
+})
+```
+
+### `git_get_commit`
+Get details of a single commit with full diff.
+
+```javascript
+mcp_orchestrator_git_get_commit({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  sha: "a9a8b24"
+})
+```
+
+### `git_diff`
+Compare two refs (branches, tags, SHAs).
+
+```javascript
+mcp_orchestrator_git_diff({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  base: "main",
+  head: "feature-branch"
+})
+```
+
+### `git_search_code`
+Search code across GitHub repos.
+
+```javascript
+mcp_orchestrator_git_search_code({
+  query: "websocket repo:herrbasan/mcp_server",
+  limit: 10
+})
+```
+
+### `git_search_issues`
+Search issues and pull requests across GitHub.
+
+```javascript
+mcp_orchestrator_git_search_issues({
+  query: "repo:herrbasan/mcp_server is:issue is:open",
+  limit: 10
+})
+```
+
+### `git_repo_info`
+Get repo metadata: description, default branch, language, size, topics.
+
+```javascript
+mcp_orchestrator_git_repo_info({
+  owner: "herrbasan",
+  repo: "mcp_server"
+})
+```
+
+### `git_list_branches`
+List branches or tags for a repo.
+
+```javascript
+mcp_orchestrator_git_list_branches({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  type: "branches"    // or "tags"
+})
+```
+
+### `git_pr_list` / `git_get_pr`
+List or get details of pull requests.
+
+```javascript
+mcp_orchestrator_git_pr_list({
+  owner: "herrbasan", repo: "mcp_server", state: "open", limit: 10
+})
+
+mcp_orchestrator_git_get_pr({
+  owner: "herrbasan", repo: "mcp_server", number: 5
+})
+```
+
+### `git_issue_list` / `git_get_issue`
+List or get details of issues (with optional comments).
+
+```javascript
+mcp_orchestrator_git_issue_list({
+  owner: "herrbasan", repo: "mcp_server", state: "open", labels: "bug"
+})
+
+mcp_orchestrator_git_get_issue({
+  owner: "herrbasan", repo: "mcp_server", number: 3,
+  comments: true    // include issue comments
+})
+```
+
+### `git_create_issue`
+Create a new issue in a GitHub repo.
+
+```javascript
+mcp_orchestrator_git_create_issue({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  title: "Bug: something broken",
+  body: "Description of the issue...",
+  labels: ["bug"],
+  assignees: ["herrbasan"]
+})
+```
+
+---
+
+## Code Inspector Module (1 tool) — continued
+
+> **Scope**: Analyze code with LLM for quality issues.
+
 ### `inspect_code`
 ```javascript
 // Analyze files by absolute path
@@ -401,7 +564,9 @@ mcp_orchestrator_vision_close_session({
 
 | Tool | Typical Time | Notes |
 |------|--------------|-------|
-| `search_keyword` | <50ms | Indexed content search |
+| `git_read_file` | 0.5-2s | GitHub API call |
+| `git_list_tree` | 1-3s | Recursive tree, may be truncated for large repos |
+| `git_search_code` | 1-3s | GitHub search API |
 | `research_topic` | 12-45s | Depends on pages scraped |
 | `query_model` | 2-10s | Depends on model & tokens |
 | `vision_analyze` | 3-15s | Depends on image size and model |

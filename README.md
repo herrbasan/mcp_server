@@ -4,10 +4,11 @@ A centralized Model Context Protocol (MCP) server that hosts multiple domain-spe
 
 ## Features
 
-- **Agent architecture** — domain-specific modules (browser, docs, inspector, llm, memory, research, vision) that own their own state and tools
+- **Agent architecture** — domain-specific modules (browser, docs, github, inspector, llm, memory, research, vision) that own their own state and tools
 - **LLM Gateway integration** — thin WebSocket client to an external LLM Gateway at localhost:3400
 - **Browser automation** — persistent Puppeteer browser with session management for web research and scraping
 - **Semantic memory** — vector embedding-based recall across sessions
+- **GitHub relay** — browse code, history, PRs, issues from any GitHub repo without local checkout
 - **Vision analysis** — iterative image analysis with drill-down focus capability
 
 ---
@@ -29,31 +30,9 @@ GATEWAY_URL=ws://localhost:3400/v1/realtime
 GATEWAY_HTTP_URL=http://localhost:3400
 ```
 
-### 3. Configure models
+### 3. Configure environment (continued)
 
-Open `config.json` and set the model names in the `models` section. Each key maps a task type to the model identifier your LLM Gateway expects.
-
-```json
-"models": {
-    "query":     "qwen2.5-coder-14b",
-    "inspect":   "qwen2.5-coder-14b",
-    "synthesis": "qwen2.5-coder-14b",
-    "analysis":  "qwen2.5-coder-14b",
-    "embed":     "nomic-embed-text-v2-moe",
-    "vision":    "kimi-chat"
-}
-```
-
-| Task key    | Used by                                     | Recommended model type      |
-|-------------|---------------------------------------------|-----------------------------|
-| `query`     | `query_model` tool                          | General-purpose chat model  |
-| `inspect`   | `inspect_code` tool                         | Code-capable chat model     |
-| `synthesis` | `research_topic`                            | Long-context chat model     |
-| `analysis`  | Research evaluation phase                   | Fast reasoning model        |
-| `embed`     | `memory_remember`, `memory_recall`, code indexing (via Gateway HTTP) | Text embedding model        |
-| `vision`    | `vision_analyze` tool                                     | Vision-language model       |
-
-Model names must match what your LLM Gateway recognizes. All keys fall back to `process.env.DEFAULT_MODEL` and then `'default'` if unset.
+Model routing is handled by the LLM Gateway. See the Gateway's configuration for task-to-model mapping.
 
 ### 4. Start the server
 
@@ -105,8 +84,8 @@ Client (VS Code / CLI)
 
 | File | Contents |
 |------|----------|
-| `.env` | Secrets and runtime endpoints (`GATEWAY_URL`, `GATEWAY_HTTP_URL`, `MAX_MEMORY_CHARS`) |
-| `config.json` | Non-secret settings: model names per task, agent options, port binding |
+| `.env` | Secrets and runtime endpoints (`GATEWAY_URL`, `GATEWAY_HTTP_URL`, `GIT_TOKEN`, `MAX_MEMORY_CHARS`) |
+| `config.json` | Non-secret settings: agent options, port binding |
 
 ---
 
@@ -116,9 +95,10 @@ Client (VS Code / CLI)
 |------------|-------|-------------|
 | `browser`  | `browser_session_create`, `browser_session_goto`, `browser_session_click`, … (14 tools) | Persistent Puppeteer browser with session management |
 | `docs`     | `get_philosophy`, `get_orchestrator_doc` | Access `mcp_documentation/` files |
+| `github`   | `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue` (15 tools) | GitHub repo relay — browse code, history, PRs, issues from any repo |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |
-| `memory`   | `memory_remember`, `memory_recall`, `memory_forget`, `memory_list`, `memory_update` | Semantic vector memory |
+| `memory`   | `memory_store`, `memory_recall`, `memory_get`, `memory_forget`, `memory_list`, `memory_update` | Semantic vector memory |
 | `research` | `research_topic` | Multi-phase web research pipeline |
 | `vision`   | `vision_create_session`, `vision_analyze`, `vision_list_sessions`, `vision_get_session`, `vision_close_session` | Iterative image analysis with drill-down |
 
