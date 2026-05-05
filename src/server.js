@@ -7,9 +7,8 @@ import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
 import { createLogger, interceptConsole } from './utils/logger.js';
 
-dotenv.config();
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 const logger = createLogger({ logsDir: path.join(__dirname, '../logs'), sessionPrefix: 'mcp' });
 interceptConsole(logger);
 
