@@ -1,0 +1,116 @@
+{
+    "agent": "github",
+    "description": "GitHub repo relay — browse code, history, PRs, issues from any repo",
+    "tools": [
+        {
+            "name": "git_read_file",
+            "description": "Read a file's contents or list a directory from a GitHub repo. Returns decoded text for files, or directory listing with name/type/size/path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner (username or org)" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "path": { "type": "string", "description": "File or directory path (empty or '/' for root)" },
+                    "branch": { "type": "string", "description": "Branch, tag, or commit SHA (default: repo's default branch)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_list_tree",
+            "description": "Recursively list all files in a repo (or subdirectory). Returns flat list of paths with types. Use path prefix like 'src/' to scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "path": { "type": "string", "description": "Subdirectory to scope (empty for full tree)" },
+                    "branch": { "type": "string", "description": "Branch, tag, or SHA (default: default branch)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_log",
+            "description": "List commit history for a repo or specific file. Returns sha, author, date, message per commit.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "path": { "type": "string", "description": "Filter to specific file path" },
+                    "branch": { "type": "string", "description": "Branch or SHA (default: default branch)" },
+                    "limit": { "type": "number", "description": "Max commits to return (default: 20, max: 100)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_search_code",
+            "description": "Search code across GitHub repos. Supports GitHub query syntax: 'term repo:owner/repo path:src/ extension:js'",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query. Use 'repo:owner/repo' to scope. Example: 'websocket repo:herrbasan/mcp_server'" },
+                    "limit": { "type": "number", "description": "Max results (default: 10, max: 30)" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "git_diff",
+            "description": "Compare two refs (branches, tags, SHAs) in a repo. Returns files changed and patch content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "base": { "type": "string", "description": "Base ref (branch/tag/SHA)" },
+                    "head": { "type": "string", "description": "Head ref (branch/tag/SHA)" }
+                },
+                "required": ["owner", "repo", "base", "head"]
+            }
+        },
+        {
+            "name": "git_pr_list",
+            "description": "List pull requests for a repo. Returns title, number, author, state, branch info.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "state": { "type": "string", "description": "Filter: 'open', 'closed', 'all' (default: 'open')" },
+                    "limit": { "type": "number", "description": "Max PRs (default: 10, max: 50)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_issue_list",
+            "description": "List issues for a repo. Returns title, number, author, state, labels.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "state": { "type": "string", "description": "Filter: 'open', 'closed', 'all' (default: 'open')" },
+                    "labels": { "type": "string", "description": "Comma-separated label filter" },
+                    "limit": { "type": "number", "description": "Max issues (default: 10, max: 50)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_repo_info",
+            "description": "Get repo metadata: description, default branch, language, size, topics, last activity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" }
+                },
+                "required": ["owner", "repo"]
+            }
+        }
+    ]
+}

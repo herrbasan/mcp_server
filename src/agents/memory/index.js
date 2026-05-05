@@ -7,28 +7,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let storePath;
 let memories;
 
-function chunkText(text, maxChars) {
-    const chunks = [];
-    for (let i = 0; i < text.length; i += maxChars) {
-        chunks.push(text.slice(i, i + maxChars));
-    }
-    return chunks;
-}
-
-function extractDomain(text) {
-    const match = text.match(/^PROJECT:\s*([^\-\n]+?)\s*\-\s*/);
-    if (match) {
-        return {
-            domain: match[1].trim(),
-            text: text.substring(match[0].length).trim()
-        };
-    }
-    return { domain: null, text };
-}
-
 function cosineSimilarity(a, b) {
-    if (!a || !b) return 0;
-    if (a.length !== b.length) return 0;
+    if (!a || !b || a.length !== b.length) return 0;
     let dot = 0, magA = 0, magB = 0;
     for (let i = 0; i < a.length; i++) {
         dot += a[i] * b[i];
@@ -52,6 +32,14 @@ function saveMemories() {
     writeFileSync(storePath, JSON.stringify(memories, null, 2));
 }
 
+function embedText(gateway, description, data, maxChars) {
+    const parts = [description];
+    if (data) parts.push(data);
+    const combined = parts.join(' ');
+    const safe = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
+    return gateway.embed(safe);
+}
+
 export async function init(context) {
     storePath = join(__dirname, '..', '..', '..', 'data', 'memories.json');
     memories = loadMemories(storePath);
@@ -59,86 +47,49 @@ export async function init(context) {
 }
 
 export async function shutdown() {
-    if (memories) {
-        saveMemories();
-    }
+    if (memories) saveMemories();
 }
 
-export async function memory_remember(args, context) {
+export async function memory_store(args, context) {
     const { gateway, progress } = context;
-    const { text, category, domain } = args;
-    
-    let processedText = text;
-    let finalDomain = domain;
+    const description = args.description || args.text;
+    const category = args.category || 'notes';
+    const confidence = args.confidence ?? 0.5;
+    const { data } = args;
     const now = new Date().toISOString();
     const maxChars = context.config.maxMemoryChars || 6000;
 
-    if (!finalDomain) {
-        const extracted = extractDomain(text);
-        finalDomain = extracted.domain;
-        processedText = extracted.text;
+    if (!description) {
+        return { content: [{ type: 'text', text: 'Error: description is required' }], isError: true };
     }
 
-    if (processedText.length > maxChars) {
-        const chunks = chunkText(processedText, maxChars);
-        const memoryIds = [];
-        progress(`Embedding ${chunks.length} memory chunks...`, 10);
-        
-        for (let i = 0; i < chunks.length; i++) {
-            const embedding = await gateway.embed(chunks[i]);
-            const memory = {
-                id: memories.nextId++,
-                text: chunks[i],
-                category,
-                embedding,
-                timestamp: now,
-                confidence: 0.3,
-                observations: 1,
-                firstSeen: now,
-                lastSeen: now,
-                chunkInfo: { part: i + 1, total: chunks.length }
-            };
-            if (finalDomain) memory.domain = finalDomain;
-            memories.memories.push(memory);
-            memoryIds.push(memory.id);
-            progress(`Embedded chunk ${i + 1}/${chunks.length}`, 10 + (90 * (i + 1) / chunks.length));
-        }
+    progress('Generating embedding...', 50);
+    const embedding = await embedText(gateway, description, data, maxChars);
 
-        saveMemories();
-        const domainStr = finalDomain ? ` [${finalDomain}]` : '';
-        return {
-            content: [{ type: 'text', text: `Stored ${chunks.length} memory chunks #${memoryIds.join(', #')} in '${category}'${domainStr}` }]
-        };
-    }
-
-    progress(`Generating embedding...`, 50);
-    const embedding = await gateway.embed(processedText);
     const memory = {
         id: memories.nextId++,
-        text: processedText,
+        description,
         category,
+        confidence: Math.max(0, Math.min(1, confidence)),
         embedding,
-        timestamp: now,
-        confidence: 0.3,
-        observations: 1,
-        firstSeen: now,
-        lastSeen: now
+        timestamp: now
     };
-    if (finalDomain) memory.domain = finalDomain;
+    if (data) memory.data = data;
 
     memories.memories.push(memory);
     saveMemories();
 
-    const domainStr = finalDomain ? ` [${finalDomain}]` : '';
-    progress(`Embedding complete`, 100);
+    progress('Embedding complete', 100);
     return {
-        content: [{ type: 'text', text: `Stored memory #${memory.id} in '${category}'${domainStr}` }]
+        content: [{ type: 'text', text: `Remembered #${memory.id} [${category}]. Use memory_recall to find it later.` }]
     };
 }
 
+export { memory_store as memory_remember };
+
 export async function memory_recall(args, context) {
     const { gateway, progress } = context;
-    const { query, limit = 5, category, domain } = args;
+    const { query, limit = 5, category } = args;
 
     progress('Embedding query...', 50);
     const maxChars = context.config.maxMemoryChars || 6000;
@@ -147,7 +98,6 @@ export async function memory_recall(args, context) {
 
     let candidates = memories.memories;
     if (category) candidates = candidates.filter(m => m.category === category);
-    if (domain) candidates = candidates.filter(m => m.domain && m.domain.toString().trim() === domain.toString().trim());
 
     const scored = candidates.map(m => {
         const conf = m.confidence ?? 0.5;
@@ -156,21 +106,36 @@ export async function memory_recall(args, context) {
     }).sort((a, b) => b.weightedScore - a.weightedScore).slice(0, limit);
 
     if (!scored.length) {
-        return { content: [{ type: 'text', text: 'No memories found' }] };
+        return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
     }
 
     const results = scored.map(m => {
         const conf = m.confidence ?? 0.5;
-        const obs = m.observations ?? 1;
-        const confTag = conf >= 0.7 ? '[proven]' : conf >= 0.5 ? '[likely]' : '[uncertain]';
-        const domainTag = m.domain ? `[${m.domain}] ` : '';
-        return `[#${m.id}] ${domainTag}${m.category} (${(m.score * 100).toFixed(1)}%) ${confTag}${obs > 1 ? ` x${obs}` : ''}\n${m.text}`;
+        const hasData = m.data ? ' [has data]' : '';
+        return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}% conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
     }).join('\n\n');
 
     progress('Search complete', 100);
     return {
         content: [{ type: 'text', text: `Found ${scored.length} memories:\n\n${results}` }]
     };
+}
+
+export async function memory_get(args, context) {
+    const { id } = args;
+    const memory = memories.memories.find(m => m.id === id);
+
+    if (!memory) {
+        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
+    }
+
+    const conf = memory.confidence ?? 0.5;
+    let result = `[#${memory.id}] [${memory.category}] conf:${conf.toFixed(1)}\n`;
+    result += `Description: ${memory.description}\n`;
+    if (memory.data) result += `Data: ${memory.data}\n`;
+    result += `Created: ${memory.timestamp}`;
+
+    return { content: [{ type: 'text', text: result }] };
 }
 
 export async function memory_forget(args, context) {
@@ -185,57 +150,62 @@ export async function memory_forget(args, context) {
     saveMemories();
 
     return {
-        content: [{ type: 'text', text: `Deleted memory #${id}: ${deleted.text.substring(0, 50)}...` }]
+        content: [{ type: 'text', text: `Forgot #${id}: ${(deleted.description || '').substring(0, 80)}` }]
     };
 }
 
 export async function memory_list(args, context) {
-    const { category, domain } = args;
+    const { category } = args;
     let list = memories.memories;
     if (category) list = list.filter(m => m.category === category);
-    if (domain) list = list.filter(m => m.domain && m.domain.toString().trim() === domain.toString().trim());
 
     if (!list.length) {
-        return { content: [{ type: 'text', text: 'No memories found matching criteria' }] };
+        return { content: [{ type: 'text', text: 'No memories found. Memory is empty or no match for this category.' }] };
     }
 
     const formatted = list.map(m => {
         const conf = m.confidence ?? 0.5;
-        const confTag = conf >= 0.7 ? '[proven]' : conf >= 0.5 ? '[likely]' : '[uncertain]';
-        const domainTag = m.domain ? `[${m.domain}] ` : '';
-        const preview = m.text.length > 100 ? m.text.substring(0, 100) + '...' : m.text;
-        return `[#${m.id}] ${domainTag}${m.category} ${confTag} - ${preview}`;
+        const hasData = m.data ? ' [has data]' : '';
+        return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData} - ${m.description}`;
     }).join('\n');
 
     return {
-        content: [{ type: 'text', text: `Total matching memories: ${list.length}\n\n${formatted}` }]
+        content: [{ type: 'text', text: `${list.length} memories stored:\n\n${formatted}` }]
     };
 }
 
 export async function memory_update(args, context) {
     const { gateway } = context;
-    const { id, text, category, domain } = args;
-    
+    const { id, description, category, confidence, data } = args;
+
     const memory = memories.memories.find(m => m.id === id);
     if (!memory) {
         return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
-    if (text && text !== memory.text) {
-        memory.text = text;
+    const textChanged = (description && description !== memory.description) || (data !== undefined && data !== memory.data);
+    if (textChanged) {
+        const newDesc = description || memory.description;
+        const newData = data !== undefined ? data : memory.data;
         const maxChars = context.config.maxMemoryChars || 6000;
-        const safeText = text.length > maxChars ? text.slice(0, maxChars) : text;
-        memory.embedding = await gateway.embed(safeText);
+        memory.embedding = await embedText(gateway, newDesc, newData, maxChars);
     }
-    
+
+    if (description) memory.description = description;
     if (category) memory.category = category;
-    if (domain !== undefined) memory.domain = domain;
-    
-    memory.lastSeen = new Date().toISOString();
+    if (confidence !== undefined) memory.confidence = Math.max(0, Math.min(1, confidence));
+    if (data !== undefined) {
+        if (data === null) {
+            delete memory.data;
+        } else {
+            memory.data = data;
+        }
+    }
+
+    memory.timestamp = new Date().toISOString();
     saveMemories();
 
     return {
-        content: [{ type: 'text', text: `Updated memory #${id}` }]
+        content: [{ type: 'text', text: `Updated #${id}. Use memory_recall to verify.` }]
     };
 }
-
