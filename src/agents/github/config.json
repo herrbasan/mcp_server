@@ -46,15 +46,16 @@
             }
         },
         {
-            "name": "git_search_code",
-            "description": "Search code across GitHub repos. Supports GitHub query syntax: 'term repo:owner/repo path:src/ extension:js'",
+            "name": "git_get_commit",
+            "description": "Get details of a single commit: full message, author, stats, and file diffs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string", "description": "Search query. Use 'repo:owner/repo' to scope. Example: 'websocket repo:herrbasan/mcp_server'" },
-                    "limit": { "type": "number", "description": "Max results (default: 10, max: 30)" }
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "sha": { "type": "string", "description": "Commit SHA (full or abbreviated)" }
                 },
-                "required": ["query"]
+                "required": ["owner", "repo", "sha"]
             }
         },
         {
@@ -72,6 +73,68 @@
             }
         },
         {
+            "name": "git_list_branches",
+            "description": "List branches or tags for a repo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "type": { "type": "string", "description": "'branches' or 'tags' (default: 'branches')" },
+                    "limit": { "type": "number", "description": "Max results (default: 30, max: 100)" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_search_repos",
+            "description": "Search GitHub repositories. Use to discover repos or list repos for a user/org.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query. Examples: 'user:herrbasan sort:updated', 'topic:mcp', 'language:javascript stars:>100'" },
+                    "limit": { "type": "number", "description": "Max results (default: 10, max: 30)" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "git_search_code",
+            "description": "Search code across GitHub repos. Supports GitHub query syntax: 'term repo:owner/repo path:src/ extension:js'",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query. Use 'repo:owner/repo' to scope. Example: 'websocket repo:herrbasan/mcp_server'" },
+                    "limit": { "type": "number", "description": "Max results (default: 10, max: 30)" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "git_search_issues",
+            "description": "Search issues and pull requests across GitHub. Supports GitHub search syntax.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query. Examples: 'repo:owner/repo is:issue is:open', 'author:herrbasan is:pr is:merged'" },
+                    "limit": { "type": "number", "description": "Max results (default: 10, max: 30)" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "git_repo_info",
+            "description": "Get repo metadata: description, default branch, language, size, topics, last activity.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" }
+                },
+                "required": ["owner", "repo"]
+            }
+        },
+        {
             "name": "git_pr_list",
             "description": "List pull requests for a repo. Returns title, number, author, state, branch info.",
             "inputSchema": {
@@ -83,6 +146,19 @@
                     "limit": { "type": "number", "description": "Max PRs (default: 10, max: 50)" }
                 },
                 "required": ["owner", "repo"]
+            }
+        },
+        {
+            "name": "git_get_pr",
+            "description": "Get details of a single pull request: description, commits, files changed, comments.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "number": { "type": "number", "description": "Pull request number" }
+                },
+                "required": ["owner", "repo", "number"]
             }
         },
         {
@@ -101,15 +177,33 @@
             }
         },
         {
-            "name": "git_repo_info",
-            "description": "Get repo metadata: description, default branch, language, size, topics, last activity.",
+            "name": "git_get_issue",
+            "description": "Get details of a single issue: body, comments, labels, assignees.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "owner": { "type": "string", "description": "Repo owner" },
-                    "repo": { "type": "string", "description": "Repository name" }
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "number": { "type": "number", "description": "Issue number" },
+                    "comments": { "type": "boolean", "description": "Include comments (default: false)" }
                 },
-                "required": ["owner", "repo"]
+                "required": ["owner", "repo", "number"]
+            }
+        },
+        {
+            "name": "git_create_issue",
+            "description": "Create a new issue in a GitHub repo.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "title": { "type": "string", "description": "Issue title" },
+                    "body": { "type": "string", "description": "Issue body (markdown)" },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels to apply" },
+                    "assignees": { "type": "array", "items": { "type": "string" }, "description": "Usernames to assign" }
+                },
+                "required": ["owner", "repo", "title"]
             }
         }
     ]

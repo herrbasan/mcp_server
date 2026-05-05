@@ -202,6 +202,170 @@ export async function git_issue_list(args) {
     };
 }
 
+export async function git_search_repos(args) {
+    const { query, limit = 10 } = args;
+    const url = paginate(`/search/repositories?q=${encodeURIComponent(query)}&sort=updated`, Math.min(limit, 30));
+    const data = await api(url);
+
+    if (!data.items || !data.items.length) {
+        return { content: [{ type: 'text', text: `No repos found for: ${query}` }] };
+    }
+
+    const lines = data.items.map(r => {
+        const lang = (r.language || '').padEnd(12);
+        const stars = r.stargazers_count.toString().padStart(4);
+        const desc = r.description ? ` — ${r.description.slice(0, 80)}` : '';
+        return `${r.full_name.padEnd(40)} ${lang} ★${stars}${desc}`;
+    });
+    const header = `Found ${data.total_count} repos (showing ${lines.length}):\n`;
+    return { content: [{ type: 'text', text: header + lines.join('\n') }] };
+}
+
+export async function git_search_issues(args) {
+    const { query, limit = 10 } = args;
+    const url = paginate(`/search/issues?q=${encodeURIComponent(query)}`, Math.min(limit, 30));
+    const data = await api(url);
+
+    if (!data.items || !data.items.length) {
+        return { content: [{ type: 'text', text: `No issues/PRs found for: ${query}` }] };
+    }
+
+    const lines = data.items.map(i => {
+        const num = `#${i.number}`.padEnd(6);
+        const st = i.state.padEnd(6);
+        const type = i.pull_request ? 'PR' : 'IS';
+        const repo = i.repository_url?.split('/').slice(-2).join('/') || '';
+        return `${type} ${num} ${st} ${repo.padEnd(30)} ${i.title}`;
+    });
+    const header = `Found ${data.total_count} results (showing ${lines.length}):\n`;
+    return { content: [{ type: 'text', text: header + lines.join('\n') }] };
+}
+
+export async function git_get_commit(args) {
+    const { owner, repo, sha } = args;
+    const data = await api(`/repos/${owner}/${repo}/commits/${sha}`);
+
+    const lines = [
+        `Commit: ${data.sha}`,
+        `Author: ${data.commit.author.name} <${data.commit.author.email}>`,
+        `Date:   ${data.commit.author.date}`,
+        '',
+        `    ${data.commit.message}`,
+        ''
+    ];
+
+    if (data.files) {
+        lines.push(`Files changed: ${data.files.length}  (+${data.stats?.additions || '?'} -${data.stats?.deletions || '?'})`, '');
+        for (const f of data.files) {
+            lines.push(`${f.status.padEnd(10)} ${f.filename} (+${f.additions} -${f.deletions})`);
+            if (f.patch && f.patch.length < 4000) {
+                lines.push(f.patch);
+            } else if (f.patch) {
+                lines.push(f.patch.slice(0, 4000) + '\n... (truncated)');
+            }
+            lines.push('');
+        }
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+export async function git_list_branches(args) {
+    const { owner, repo, type = 'branches', limit = 30 } = args;
+
+    if (type === 'tags') {
+        const data = await api(paginate(`/repos/${owner}/${repo}/tags`, Math.min(limit, 100)));
+        const lines = data.map(t => `${t.name.padEnd(30)} ${t.commit.sha.slice(0, 7)}`);
+        return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No tags found.' }] };
+    }
+
+    const data = await api(paginate(`/repos/${owner}/${repo}/branches`, Math.min(limit, 100)));
+    const lines = data.map(b => `${b.name.padEnd(30)} ${b.commit.sha.slice(0, 7)}${b.protected ? '  (protected)' : ''}`);
+    return { content: [{ type: 'text', text: lines.length ? lines.join('\n') : 'No branches found.' }] };
+}
+
+export async function git_get_pr(args) {
+    const { owner, repo, number } = args;
+    const [pr, files] = await Promise.all([
+        api(`/repos/${owner}/${repo}/pulls/${number}`),
+        api(`/repos/${owner}/${repo}/pulls/${number}/files`)
+    ]);
+
+    const lines = [
+        `PR #${pr.number}: ${pr.title}`,
+        `State: ${pr.state}  ${pr.merged ? '(merged)' : ''}`,
+        `Author: ${pr.user.login}`,
+        `Branch: ${pr.head.ref} → ${pr.base.ref}`,
+        `Created: ${pr.created_at.slice(0, 10)}  Updated: ${pr.updated_at.slice(0, 10)}`,
+        `Labels: ${pr.labels?.map(l => l.name).join(', ') || '(none)'}`,
+        '',
+        pr.body || '(no description)',
+        '',
+        `Files changed: ${files.length}`,
+        ''
+    ];
+
+    for (const f of files.slice(0, 20)) {
+        lines.push(`${f.status.padEnd(10)} ${f.filename} (+${f.additions} -${f.deletions})`);
+        if (f.patch && f.patch.length < 3000) {
+            lines.push(f.patch);
+        } else if (f.patch) {
+            lines.push(f.patch.slice(0, 3000) + '\n... (truncated)');
+        }
+        lines.push('');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+export async function git_get_issue(args) {
+    const { owner, repo, number, comments: includeComments } = args;
+    const issue = await api(`/repos/${owner}/${repo}/issues/${number}`);
+
+    const lines = [
+        `Issue #${issue.number}: ${issue.title}`,
+        `State: ${issue.state}`,
+        `Author: ${issue.user.login}`,
+        `Labels: ${issue.labels?.map(l => l.name).join(', ') || '(none)'}`,
+        `Assignees: ${issue.assignees?.map(a => a.login).join(', ') || '(none)'}`,
+        `Created: ${issue.created_at.slice(0, 10)}  Updated: ${issue.updated_at.slice(0, 10)}`,
+        '',
+        issue.body || '(no body)'
+    ];
+
+    if (includeComments) {
+        const comments = await api(paginate(`/repos/${owner}/${repo}/issues/${number}/comments`, 50));
+        if (comments.length) {
+            lines.push('', `--- Comments (${comments.length}) ---`, '');
+            for (const c of comments) {
+                lines.push(`@${c.user.login} (${c.created_at.slice(0, 10)}):`);
+                lines.push(c.body);
+                lines.push('');
+            }
+        }
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+export async function git_create_issue(args) {
+    const { owner, repo, title, body, labels, assignees } = args;
+    const payload = { title };
+    if (body) payload.body = body;
+    if (labels?.length) payload.labels = labels;
+    if (assignees?.length) payload.assignees = assignees;
+
+    const issue = await api(`/repos/${owner}/${repo}/issues`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    return {
+        content: [{ type: 'text', text: `Created issue #${issue.number}: ${issue.title}\n${issue.html_url}` }]
+    };
+}
+
 export async function git_repo_info(args) {
     const { owner, repo } = args;
     const data = await api(`/repos/${owner}/${repo}`);
