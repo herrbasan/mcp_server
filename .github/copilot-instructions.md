@@ -7,7 +7,10 @@
 **Session Start** (automatic):
 ```javascript
 mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
+mcp_orchestrator_git_issue_list({ owner: "herrbasan", repo: "mcp_server", state: "open" })
 ```
+Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
+Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
 
 **During Work** (proactive):
 - Store insights immediately after discovery via `memory_store`
@@ -28,54 +31,21 @@ mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
 | `confidence` | number | 0-1 reliability score (default 0.5). 1.0 = verified fact, 0.0 = wild guess |
 | `data` | string | Optional extended content (only visible via `memory_get`, not in listings) |
 
-## Bug Reports to Memory
+## Bug Reports via GitHub Issues
 
-Report verifiable orchestrator issues autonomously:
+Report verifiable orchestrator issues as GitHub issues instead of memories:
 ```javascript
-mcp_orchestrator_memory_store({
-  description: "Short summary of the issue",
-  category: "orchestrator feedback",
-  confidence: 0.8,
-  data: "Detailed reproducible context, impact, and suggested fix"
+mcp_orchestrator_git_create_issue({
+  owner: "herrbasan",
+  repo: "mcp_server",
+  title: "Short summary of the issue",
+  body: "## Reproducible context\n- Tool/API that failed\n- Parameters used\n- Expected vs actual behavior\n\n## Impact\n- Blocked task, degraded performance, or wrong output\n\n## Suggested fix\n- If obvious",
+  labels: ["bug"]
 });
 ```
 
 **Report**: Reproducible failures, performance degradation, data corruption, API violations
 **Skip**: Subjective opinions, expected behavior, user errors, isolated failures
-
-## Self-Improvement via LLM Feedback
-
-Calling LLMs can report orchestrator bugs/issues back to the memory system for continuous improvement:
-
-**When to Report** (HIGH bar - signal over noise):
-- **Reproducible failures**: "API returned 500 for 3+ consecutive calls to [tool]"
-- **Performance degradation**: "search_semantic took 45s vs usual 5s with [specific query]"
-- **Data corruption**: "refresh_index corrupted file count: expected 28k, got 110"
-- **API contract violations**: "browser_fetch returned HTML when mode='json' specified"
-
-**How to Report**:
-```javascript
-mcp_orchestrator_memory_store({
-  description: "browser_fetch timeout on heavy pages",
-  category: "orchestrator feedback",
-  confidence: 0.8,
-  data: "30s limit insufficient for heavy pages. research_topic failed on 3/10 pages. Suggest: increase default to 60s."
-});
-```
-
-**Required Elements**:
-- Specific tool/API that failed
-- Reproducible context (query, parameters, session details)
-- Impact (blocked task, degraded performance, wrong output)
-- Suggested fix (if obvious)
-
-**Do NOT Report**:
-- Subjective opinions ("API is confusing")
-- Expected behavior ("search returned 0 results" without context)
-- User errors ("I called it wrong")
-- Single isolated failures without pattern
-
-**Review Process**: User or autonomous agents periodically query `category="orchestrator feedback"` memories to extract improvement tasks.
 
 ---
 

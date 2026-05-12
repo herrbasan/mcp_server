@@ -11,7 +11,8 @@ function headers() {
 
 async function api(path, opts = {}) {
     const url = `${API}${path}`;
-    const res = await fetch(url, { headers: headers(), ...opts });
+    const { headers: extraHeaders, ...rest } = opts;
+    const res = await fetch(url, { ...rest, headers: { ...headers(), ...extraHeaders } });
     if (!res.ok) {
         const body = await res.text().catch(() => '');
         throw new Error(`GitHub API ${res.status}: ${path} — ${body.slice(0, 300)}`);
