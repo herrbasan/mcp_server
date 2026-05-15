@@ -21,7 +21,7 @@
         },
         {
             "name": "browser_session_list",
-            "description": "List all active browser sessions",
+            "description": "List all active web browser sessions (for web page automation, NOT for image analysis). For image sessions, use vision_list_sessions instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}

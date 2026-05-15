@@ -4,7 +4,7 @@
     "tools": [
         {
             "name": "vision_create_session",
-            "description": "Create a new image session for analysis. Returns a session_id to use with vision_analyze. The session stores the original image and accumulates analyses over time.",
+            "description": "Create a new image session for analysis. Returns a session_id to use with vision_analyze. BEFORE calling this, check vision_list_sessions — if a session already exists for this image, reuse it. Do NOT create duplicate sessions for the same image.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -29,7 +29,7 @@
         },
         {
             "name": "vision_analyze",
-            "description": "Analyze an image. Previous analyses are included as context, enabling ever-sharpening detail. Use 'focus' to zoom into specific regions for higher resolution analysis of that area.",
+            "description": "Analyze an image session. Only call this if the user explicitly asks about an image and no vision analysis is present in the conversation. For follow-up questions about an already-analyzed image, reuse the existing session_id — do NOT create a new session.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -101,7 +101,7 @@
         },
         {
             "name": "vision_list_sessions",
-            "description": "List all active image sessions",
+            "description": "List all active image analysis sessions. Call this BEFORE vision_create_session to avoid creating duplicate sessions for the same image.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}
@@ -109,7 +109,7 @@
         },
         {
             "name": "vision_get_session",
-            "description": "Get details about a session including accumulated analyses",
+            "description": "Get details about an image session including all previous analyses. Use this to check what has already been analyzed before making additional vision_analyze calls.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

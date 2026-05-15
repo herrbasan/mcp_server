@@ -48,6 +48,12 @@ export async function shutdown() {
 }
 
 async function fetchImageAsBase64(url) {
+  // Detect obviously invalid/hallucinated URLs
+  const lowerUrl = url.toLowerCase();
+  if (lowerUrl.includes('placeholder') || lowerUrl.includes('example.com') || lowerUrl.includes('undefined') || lowerUrl.includes('null')) {
+    throw new Error(`image_fetch_failed: The URL appears to be invalid or placeholder (${url}). If analyzing an image from this conversation, the image data may no longer be available. Use vision_list_sessions to check for an existing session instead of creating a new one.`);
+  }
+
   try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -65,7 +71,8 @@ async function fetchImageAsBase64(url) {
       height: null,
     };
   } catch (error) {
-    throw new Error(`image_fetch_failed: ${error.message}`);
+    if (error.message.startsWith('image_fetch_failed:')) throw error;
+    throw new Error(`image_fetch_failed: ${error.message}. If this image was provided by the user in this conversation, the data may no longer be available. Check vision_list_sessions for an existing session before creating a new one.`);
   }
 }
 
@@ -190,7 +197,7 @@ export async function vision_create_session(args, context) {
   return {
     content: [{
       type: 'text',
-      text: `Session created: ${session.id}. The session will expire after 30 minutes of inactivity.`
+      text: `Session created: ${session.id}. The session will expire after 30 minutes of inactivity. If you need to analyze this image again later, reuse this session_id instead of creating a new session.`
     }],
     session_id: session.id
   };
@@ -304,16 +311,16 @@ export async function vision_list_sessions(args, context) {
   const sessions = fleetingMemory.listSessions();
   if (sessions.length === 0) {
     return {
-      content: [{ type: 'text', text: 'No active image sessions.' }]
+      content: [{ type: 'text', text: 'No active image sessions. If you need to analyze an image, create one with vision_create_session.' }]
     };
   }
 
   const sessionList = sessions.map(s =>
-    `- ${s.id}: ${s.descriptionCount} analyses, created ${s.createdAt.toISOString()}`
+    `- ${s.id}: ${s.descriptionCount} analysis(es), created ${s.createdAt.toISOString()}`
   ).join('\n');
 
   return {
-    content: [{ type: 'text', text: `Active sessions:\n\n${sessionList}` }]
+    content: [{ type: 'text', text: `Active image sessions (${sessions.length}):\n\n${sessionList}\n\nUse an existing session_id with vision_analyze instead of creating a duplicate session.` }]
   };
 }
 
@@ -335,7 +342,7 @@ export async function vision_get_session(args, context) {
   return {
     content: [{
       type: 'text',
-      text: `Session: ${session_id}\nCreated: ${session.createdAt.toISOString()}\nLast accessed: ${session.lastAccessedAt.toISOString()}\nImage: ${session.imageMimeType} (${session.originalWidth || '?'}x${session.originalHeight || '?'})\n\nDescriptions:\n\n${descriptions || 'No analyses yet.'}`
+      text: `Session: ${session_id}\nCreated: ${session.createdAt.toISOString()}\nLast accessed: ${session.lastAccessedAt.toISOString()}\nImage: ${session.imageMimeType} (${session.originalWidth || '?'}x${session.originalHeight || '?'})\n\n${session.descriptions.length > 0 ? `**This image has already been analyzed ${session.descriptions.length} time(s).** Only call vision_analyze again if the user asks for more detail or a specific focus area.\n\n` : ''}Previous analyses:\n\n${descriptions || 'No analyses yet.'}`
     }]
   };
 }
