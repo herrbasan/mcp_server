@@ -177,7 +177,7 @@ If `max_tokens` is omitted, the gateway derives a safe output budget from the mo
 
 > **Thinking Stripper:** When `strip_thinking: true` (or `no_thinking: true`) is provided, and the model outputs reasoning/thinking tokens (like DeepSeek `<think>` blocks or native `reasoning_content`), the gateway will automatically strip the reasoning portion. This works seamlessly for both standard and streaming requests, ensuring clean JSON/markdown outputs.
 
-> **Image Processing:** The `image_processing` field is optional. When provided, images in messages are fetched (remote URLs) and optionally resized/transcoded via MediaService. See [Vision (Image Input)](#vision-image-input) for complete examples.
+> **Image Processing:** The `image_processing` field is optional. When provided, images in messages are fetched (remote URLs) and optionally resized/transcoded via nMedia. See [Vision (Image Input)](#vision-image-input) for complete examples.
 
 **Response 200 (Small Prompt or Transparent Compaction):**
 
@@ -709,7 +709,7 @@ POST /v1/chat/completions
 **Notes:**
 - The gateway fetches remote URLs automatically
 - Private IP addresses are blocked for security - use base64 for local images
-- MediaService resizes while preserving aspect ratio
+- nMedia resizes while preserving aspect ratio
 - Only models with `capabilities.vision: true` support image inputs
 
 ### Media Generation

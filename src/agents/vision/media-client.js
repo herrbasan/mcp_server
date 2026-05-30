@@ -1,11 +1,11 @@
 /**
- * MediaService client for image crop operations
+ * nMedia client for image crop operations
  */
 
 export function createMediaClient(baseUrl) {
   async function cropImage(base64Image, cropOptions, quality = 85, format = 'jpeg') {
-    const mediaServiceCrop = focusToMediaServiceCrop(cropOptions);
-    if (!mediaServiceCrop) {
+    const nMediaCrop = focusToNMediaCrop(cropOptions);
+    if (!nMediaCrop) {
       return [{ base64: base64Image, cell_index: null, width: null, height: null }];
     }
 
@@ -14,7 +14,7 @@ export function createMediaClient(baseUrl) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         base64: base64Image,
-        crop: mediaServiceCrop,
+        crop: nMediaCrop,
         quality,
         format,
       }),
@@ -22,7 +22,7 @@ export function createMediaClient(baseUrl) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`MediaService crop failed: ${response.status} ${errorText}`);
+      throw new Error(`nMedia crop failed: ${response.status} ${errorText}`);
     }
 
     const data = await response.json();
@@ -34,7 +34,7 @@ export function createMediaClient(baseUrl) {
     }));
   }
 
-  function focusToMediaServiceCrop(focus) {
+  function focusToNMediaCrop(focus) {
     if (!focus) return null;
 
     if (focus.text) {

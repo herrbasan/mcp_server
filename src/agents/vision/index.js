@@ -7,15 +7,15 @@ const logger = getLogger();
 let fleetingMemory;
 let mediaClient;
 let modelMaxDimension = 2048; // Default fallback
-let mediaServiceUrl = 'http://localhost:3500'; // Default fallback
+let nMediaUrl = 'http://localhost:3500'; // Default fallback
 
 export async function init(context) {
   const ttlMinutes = context.config.agents?.vision?.ttlMinutes ?? 30;
-  mediaServiceUrl = context.config.mediaServiceUrl ?? context.config.agents?.vision?.mediaServiceUrl ?? 'http://localhost:3500';
+  nMediaUrl = context.config.nMediaUrl ?? context.config.mediaServiceUrl ?? context.config.agents?.vision?.mediaServiceUrl ?? 'http://localhost:3500';
   const gatewayUrl = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
 
   fleetingMemory = createFleetingMemory({ ttlMinutes });
-  mediaClient = createMediaClient(mediaServiceUrl);
+  mediaClient = createMediaClient(nMediaUrl);
 
   // Config per-model limits override Gateway probe
   const visionModelName = 'kimi-chat'; // Default for dimension probing; Gateway handles actual routing
@@ -90,11 +90,11 @@ function ensureDataUri(base64Str, mimeType = 'image/jpeg') {
   return `data:${mimeType};base64,${base64Str}`;
 }
 
-async function optimizeForModel(base64Data, mediaServiceUrl) {
+async function optimizeForModel(base64Data, nMediaUrl) {
   // Strip data URI prefix if present — media service expects raw base64
   const rawBase64 = stripDataUriPrefix(base64Data);
   try {
-    const response = await fetch(`${mediaServiceUrl}/v1/process/image`, {
+    const response = await fetch(`${nMediaUrl}/v1/process/image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -241,7 +241,7 @@ export async function vision_analyze(args, context) {
   progress?.('Optimizing image for model...', 35, 100);
   const imageSizeKB = Math.round(imageToAnalyze.length / 1024);
   logger.info(`[Vision] Image size before optimization: ${imageSizeKB}KB`, null, 'Agent:vision');
-  const optimized = await optimizeForModel(imageToAnalyze, mediaServiceUrl);
+  const optimized = await optimizeForModel(imageToAnalyze, nMediaUrl);
   imageToAnalyze = optimized.data; // Already a data URI via ensureDataUri
   logger.info(`[Vision] Optimization complete: ${Math.round(optimized.width)}x${Math.round(optimized.height)}, result size: ${Math.round(optimized.data.length / 1024)}KB`, null, 'Agent:vision');
 

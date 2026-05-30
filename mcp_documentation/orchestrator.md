@@ -556,7 +556,7 @@ mcp_orchestrator_vision_close_session({
 **Session Lifecycle:**
 - Sessions auto-expire after 30 minutes of inactivity
 - Original image stored in memory (FleetingMemory with TTL)
-- Crops are generated on-demand via MediaService
+- Crops are generated on-demand via nMedia
 
 ---
 

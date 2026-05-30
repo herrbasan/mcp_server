@@ -34,7 +34,7 @@ A vision analysis tool that allows non-vision LLMs to analyze images through an 
 │                     └──────────┬──────────┘                   │
 │                                │                              │
 │                    ┌───────────▼───────────┐                 │
-│                    │    MediaService       │                 │
+│                    │    nMedia             │                 │
 │                    │    (crop/resize)      │                 │
 │                    └───────────┬───────────┘                 │
 │                                │                              │
@@ -368,7 +368,7 @@ export async function vision_create_session(args, context) {
 export async function vision_analyze(args, context) {
   // 1. Get session from FleetingMemory
   // 2. If focus has region/grid/centerCrop:
-  //    - Call MediaService to crop the original image
+  //    - Call nMedia to crop the original image
   //    - Use cropped image for vision analysis
   // 3. Build prompt with accumulated context
   // 4. Call LLM Gateway with task='vision' + image
@@ -421,7 +421,7 @@ function buildAnalysisPrompt(query, focus, previousContext) {
 
 ### LLM Gateway Image Processing
 
-The LLM Gateway handles image conformance to model limits automatically via its integrated MediaService:
+The LLM Gateway handles image conformance to model limits automatically via its integrated nMedia:
 
 - **Original stored**: Sessions store the full-resolution original image
 - **Gateway auto-processes**: When sending to the vision model, the Gateway:
@@ -444,7 +444,7 @@ gateway.chat({
 });
 ```
 
-**Crop workflow**: When a focus region is specified, MediaService crops at full resolution before sending to Gateway. This ensures zoomed regions maintain detail.
+**Crop workflow**: When a focus region is specified, nMedia crops at full resolution before sending to Gateway. This ensures zoomed regions maintain detail.
 
 ## Configuration
 
@@ -457,7 +457,7 @@ Add to MCP server's `config.json`:
       "enabled": true,
       "task": "vision",
       "ttlMinutes": 30,
-      "mediaServiceUrl": "http://localhost:3500"
+      "nMediaUrl": "http://localhost:3500"
     }
   }
 }
@@ -472,14 +472,14 @@ src/agents/vision/
 ├── config.json          # Tool definitions
 ├── index.js             # Tool implementations
 ├── fleeting-memory.js   # Session storage with TTL
-└── media-client.js      # MediaService API client
+└── media-client.js      # nMedia API client
 ```
 
-## MediaService Integration
+## nMedia Integration
 
-The vision agent calls MediaService (`src/vendor/MediaService`) for image cropping operations.
+The vision agent calls nMedia (`src/vendor/nMedia`) for image cropping operations.
 
-### MediaService API: POST /v1/optimize/image/crop
+### nMedia API: POST /v1/optimize/image/crop
 
 **Endpoint**: `http://localhost:3500/v1/optimize/image/crop` (configurable via `config.json`)
 
@@ -524,7 +524,7 @@ The vision agent calls MediaService (`src/vendor/MediaService`) for image croppi
 }
 ```
 
-### Focus Type to MediaService Mapping
+### Focus Type to nMedia Mapping
 
 | Focus Type | crop.type | Parameters |
 |------------|-----------|------------|
@@ -533,12 +533,12 @@ The vision agent calls MediaService (`src/vendor/MediaService`) for image croppi
 | `centerCrop` (object) | `"center"` | `width`, `height` percentages |
 | `grid` | `"grid"` | `grid: { cols, rows, cells[] }` |
 
-### Example: MediaService Client
+### Example: nMedia Client
 
 ```javascript
 // src/agents/vision/media-client.js
-export async function cropImage(base64Image, cropOptions, mediaServiceUrl) {
-  const response = await fetch(`${mediaServiceUrl}/v1/optimize/image/crop`, {
+export async function cropImage(base64Image, cropOptions, nMediaUrl) {
+  const response = await fetch(`${nMediaUrl}/v1/optimize/image/crop`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -550,7 +550,7 @@ export async function cropImage(base64Image, cropOptions, mediaServiceUrl) {
   });
 
   if (!response.ok) {
-    throw new Error(`MediaService crop failed: ${response.statusText}`);
+    throw new Error(`nMedia crop failed: ${response.statusText}`);
   }
 
   const data = await response.json();
@@ -568,7 +568,7 @@ export async function cropImage(base64Image, cropOptions, mediaServiceUrl) {
 
 4. **Focus parameter with multiple types**: Text, grid, region, and centerCrop give the LLM flexible ways to specify zoom areas.
 
-5. **Original storage, crop-on-demand**: FleetingMemory stores only the original image. Crops are generated via MediaService when needed. This keeps memory minimal while enabling unlimited re-cropping.
+5. **Original storage, crop-on-demand**: FleetingMemory stores only the original image. Crops are generated via nMedia when needed. This keeps memory minimal while enabling unlimited re-cropping.
 
 6. **Grid-based focus**: Dividing the image into a logical grid (e.g., 2x2, 3x3) is more LLM-friendly than pixel coordinates.
 
@@ -581,7 +581,7 @@ export async function cropImage(base64Image, cropOptions, mediaServiceUrl) {
 - `session_not_found`: Session expired or invalid ID
 - `image_fetch_failed`: Could not download from URL
 - `image_validation_failed`: Unsupported format or dimensions
-- `crop_failed`: MediaService could not process crop request
+- `crop_failed`: nMedia could not process crop request
 - `analysis_failed`: LLM Gateway error
 - `invalid_image_data`: Malformed base64 or unsupported format
 
