@@ -9,7 +9,7 @@ export function createMediaClient(baseUrl) {
       return [{ base64: base64Image, cell_index: null, width: null, height: null }];
     }
 
-    const response = await fetch(`${baseUrl}/v1/optimize/image/crop`, {
+    const response = await fetch(`${baseUrl}/v1/process/image/crop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -26,7 +26,12 @@ export function createMediaClient(baseUrl) {
     }
 
     const data = await response.json();
-    return data.metadata.crops;
+    return data.crops.map(c => ({
+      cell_index: c.index,
+      base64: c.base64,
+      width: c.width,
+      height: c.height,
+    }));
   }
 
   function focusToMediaServiceCrop(focus) {

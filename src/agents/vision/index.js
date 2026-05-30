@@ -94,7 +94,7 @@ async function optimizeForModel(base64Data, mediaServiceUrl) {
   // Strip data URI prefix if present — media service expects raw base64
   const rawBase64 = stripDataUriPrefix(base64Data);
   try {
-    const response = await fetch(`${mediaServiceUrl}/v1/optimize/image`, {
+    const response = await fetch(`${mediaServiceUrl}/v1/process/image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
