@@ -9,6 +9,7 @@
     "wsUrl": "ws://localhost:3400/v1/realtime",
     "httpUrl": "http://localhost:3400"
   },
+  "mediaServiceUrl": "http://localhost:3500",
   "agents": {
     "browser": {
       "viewport": { "width": 1280, "height": 1800 },
@@ -24,8 +25,7 @@
       "searchEngines": ["google", "duckduckgo"]
     },
     "vision": {
-      "ttlMinutes": 30,
-      "mediaServiceUrl": "http://localhost:3500"
+      "ttlMinutes": 30
     }
   }
 }
