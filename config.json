@@ -26,6 +26,10 @@
     },
     "vision": {
       "ttlMinutes": 30
+    },
+    "forge": {
+      "defaultTimeout": 300000,
+      "maxTimeout": 600000
     }
   }
 }

@@ -4,5 +4,6 @@ dist/
 logs/
 .env
 .DS_Store
-data/
+data/*
+!data/forge/
 _Archive/
