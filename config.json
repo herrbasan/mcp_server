@@ -30,6 +30,13 @@
     "forge": {
       "defaultTimeout": 300000,
       "maxTimeout": 600000
+    },
+    "dreaming": {
+      "intervalMinutes": 60,
+      "contextBudget": 800000,
+      "autoStart": true,
+      "distillerTask": "query",
+      "dreamerTask": "query"
     }
   }
 }

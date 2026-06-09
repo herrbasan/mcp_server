@@ -6,4 +6,4 @@ logs/
 .DS_Store
 data/*
 !data/forge/
-_Archive/
+/_Archive/

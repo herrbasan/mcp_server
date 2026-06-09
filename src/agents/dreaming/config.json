@@ -1,0 +1,42 @@
+{
+    "agent": "dreaming",
+    "description": "Autonomous memory consolidation via distillation + dreaming",
+    "dependsOn": "memory",
+    "tools": [
+        {
+            "name": "dream_generate",
+            "description": "Run the full dreaming pipeline (distill + dream) to consolidate memories into a structured Map. Runs automatically every hour, but can be triggered manually. Returns a summary of the generated map including cluster count, bridge count, and delta stats.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force regeneration even if map is fresh (default: false)"
+                    }
+                }
+            }
+        },
+        {
+            "name": "dream_status",
+            "description": "Check the current state of the dreaming system: last run time, map freshness, memory count, distillate cache status, and next scheduled run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "dream_inject",
+            "description": "Get the current dream map formatted for injection into a system prompt. Returns the map JSON with recall directive. Used internally by the server on session init.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "format": {
+                        "type": "string",
+                        "description": "Output format: 'json' (raw map) or 'prompt' (formatted for system prompt injection). Default: 'prompt'.",
+                        "enum": ["json", "prompt"]
+                    }
+                }
+            }
+        }
+    ]
+}

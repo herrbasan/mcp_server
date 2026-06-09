@@ -54,29 +54,32 @@ export function createGatewayClient(wsUrl, httpUrl) {
                                     preview: summarizeText(content),
                                     chars: content.length
                                 });
-                            } else if (content && (req.deltaCount % 25 === 0)) {
-                                logger.info(`[Gateway] Delta chunk ${req.deltaCount} for ${request_id}`, {
-                                    totalChars: req.totalChars,
-                                    chunkChars: content.length,
-                                    preview: summarizeText(content, 60)
-                                });
+                            }
+                            // Log at 25%, 50%, 75% of maxTokens (char-based estimate)
+                            if (content && req.maxTokens && !req.lastProgressLog) req.lastProgressLog = 0;
+                            if (content && req.maxTokens) {
+                                const pct = Math.floor((req.totalChars / (req.maxTokens * 4)) * 100);
+                                const milestone = Math.floor(pct / 25) * 25;
+                                if (milestone > req.lastProgressLog && milestone > 0 && milestone <= 75) {
+                                    req.lastProgressLog = milestone;
+                                    logger.info(`[Gateway] Stream ${request_id} at ${milestone}%`, {
+                                        totalChars: req.totalChars,
+                                        deltaCount: req.deltaCount
+                                    });
+                                }
                             }
                             if (req.onDelta) { 
                                 req.onDelta(content, deltaMeta); 
                             }
                             if (content) req.response.content += content;
                             
-                            const MAX_EMPTY_DELTAS = 1000;
-                            const emptyDeltaThreshold = req.maxTokens ? Math.min(MAX_EMPTY_DELTAS, req.maxTokens) : MAX_EMPTY_DELTAS;
-                            
                             if (req.hardLimit && req.totalChars > req.hardLimit) {
                                 logger.warn(`[Gateway] Hard CHAR limit exceeded for ${request_id}: ${req.totalChars} chars > ${req.hardLimit}. Cancelling...`);
                                 client.cancel(request_id);
-                            } else if (req.deltaCount > emptyDeltaThreshold && req.totalChars === 0) {
-                                logger.error(`[Gateway] Infinite thinking detected for ${request_id}: ${req.deltaCount} deltas, 0 chars. Cancelling...`);
-                                client.cancel(request_id);
-                                req.reject(new Error(`Model stuck in infinite thinking loop (${req.deltaCount} empty deltas). Try again or use a different model.`));
-                                pendingRequests.delete(request_id);
+                            } else if (req.deltaCount === 1000 && req.totalChars === 0) {
+                                logger.warn(`[Gateway] Model thinking for ${request_id}: ${req.deltaCount} deltas, 0 output chars so far. Waiting...`);
+                            } else if (req.deltaCount % 5000 === 0 && req.totalChars === 0) {
+                                logger.warn(`[Gateway] Model still thinking for ${request_id}: ${req.deltaCount} deltas, 0 output chars. Waiting...`);
                             }
                         }
                     } else if (msg.method === 'chat.progress') {
@@ -190,7 +193,7 @@ export function createGatewayClient(wsUrl, httpUrl) {
             return response.content;
         },
 
-        async chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, onDelta, onProgress }) {
+        async chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress }) {
             const id = randomUUID();
             const fullMessages = systemPrompt
                 ? [{ role: 'system', content: systemPrompt }, ...messages]
@@ -228,6 +231,7 @@ export function createGatewayClient(wsUrl, httpUrl) {
                         strip_thinking: true,
                         stream: true
                     };
+                    if (enableThinking != null) params.enable_thinking = enableThinking;
                     if (task) {
                         params.task = task;
                     } else if (model) {

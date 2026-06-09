@@ -11,6 +11,7 @@
 | Agent | Purpose |
 |-------|---------|
 | [Memory](#memory-module) | Quality-focused semantic memory |
+| [Dreaming](#dreaming-module) | Autonomous memory consolidation into structured Map |
 | [LLM](#llm-module) | Local model querying |
 | [Research](#web-research-module) | Multi-source research pipeline |
 | [Browser](#browser-module) | Headless browser with persistent sessions |
@@ -428,6 +429,50 @@ mcp_orchestrator_inspect_code({
 
 ---
 
+## Dreaming Module (3 tools)
+
+> Autonomous memory consolidation. Runs hourly to produce a structured Map of all memories with clusters, bridges, and progressive compression.
+
+**Tools**: `dream_generate`, `dream_status`, `dream_inject`
+
+### `dream_generate`
+Run the full dreaming pipeline (distill + dream) to consolidate memories into a structured Map.
+
+```javascript
+mcp_orchestrator_dream_generate({
+  force: true  // optional: force regeneration even if map is fresh
+})
+// → "✓ Dream complete in 100.0s: 6 clusters, 4 bridges, 111 nodes"
+```
+
+Runs automatically every hour and on server startup. Manual trigger useful after bulk memory changes.
+
+### `dream_status`
+Check the current state of the dreaming system.
+
+```javascript
+mcp_orchestrator_dream_status()
+// → Map age, cluster/node counts, distillate cache status, next scheduled run
+```
+
+### `dream_inject`
+Get the current dream map formatted for injection into a system prompt.
+
+```javascript
+mcp_orchestrator_dream_inject({
+  format: "prompt"  // "json" for raw map, "prompt" for formatted injection (default)
+})
+// → Formatted map with clusters, nodes, bridges, wildcards, and recall directive
+```
+
+**Pipeline**: Distillation (LLM compresses memories, incremental cache) → Dreaming (LLM produces Map v3.0 with clusters, bridges, connection momentum)
+
+**Typical time**: 60-100 seconds for ~120 memories (depends on model thinking time)
+
+---
+
+---
+
 ## Documentation Module (2 tools)
 
 > Access MCP orchestrator documentation
@@ -570,6 +615,7 @@ mcp_orchestrator_vision_close_session({
 | `research_topic` | 12-45s | Depends on pages scraped |
 | `query_model` | 2-10s | Depends on model & tokens |
 | `vision_analyze` | 3-15s | Depends on image size and model |
+| `dream_generate` | 60-100s | Full pipeline for ~120 memories |
 
 
 

@@ -81,7 +81,7 @@ export async function memory_store(args, context) {
 
     progress('Embedding complete', 100);
     return {
-        content: [{ type: 'text', text: `Remembered #${memory.id} [${category}]. Use memory_recall to find it later.` }]
+        content: [{ type: 'text', text: `✓ #${memory.id} [${category}] stored. ${memories.memories.length} memories total — keep storing freely, dreaming organizes them.` }]
     };
 }
 

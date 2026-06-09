@@ -13,9 +13,10 @@ Check open issues for pending tasks, bug reports, or feature requests that may b
 Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
 
 **During Work** (proactive):
-- Store insights immediately after discovery via `memory_store`
+- **Store aggressively** via `memory_store` — observations, failed approaches, working context, hunches, user preferences. Over-store rather than under-store.
 - Query before implementation: `memory_recall({ query: "..." })`
 - Check for prior failed approaches: `memory_recall({ query: "what went wrong with ..." })`
+- Update memories freely as understanding evolves — nothing is permanent
 
 **Memory Maintenance** (self-directed):
 - Update memories as understanding deepens: `memory_update({ id, description, confidence })`
@@ -59,7 +60,7 @@ Centralized MCP server running as an **independent HTTP service**.
 - Server: src/server.js - Port 3100 (MCP via custom SSE)
 - Transport: Per-session SSE transport mapped by sessionId
 - Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, docs, github, inspector, llm, memory, research, vision)
+- Agents: src/agents/ - (browser, docs, dreaming, github, inspector, llm, memory, research, vision)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -183,7 +184,46 @@ Major refactoring completed with significant reliability and performance improve
 - **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
 
 ## Memory System Philosophy
-Memory exists to improve OUTPUT QUALITY, not store user preferences. Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding style", "notes"). Confidence (0-1) tracks reliability separately from category. Use `data` field for extended content that shouldn't clutter listings.
+Memory exists to improve OUTPUT QUALITY. **Store aggressively** — the Dreaming System (hourly background process) consolidates memories into a weighted graph (the "Map") that provides topology, priority, and relationships. Noisy, redundant, or partial memories are automatically compressed during dreaming. It is always better to over-store than to lose context.
+
+Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding style", "notes"). Confidence (0-1) tracks reliability separately from category. Use `data` field for extended content that shouldn't clutter listings.
+
+## Dreaming System Architecture
+
+**Location**: `src/agents/dreaming/` - Autonomous memory consolidation
+
+Two-phase LLM pipeline that runs hourly (or on startup) to produce a structured Map of all memories:
+
+**Phase 1: Distillation**
+- LLM compresses all memories into dense thematic summaries
+- Incremental caching: only re-distills new/updated memories (tracks ID → timestamp snapshot)
+- Output cached in `/data/dream_distillate.json`
+
+**Phase 2: Dreaming**
+- LLM analyzes distillate + full recent memories + previous map → produces Map JSON v3.0
+- Connection momentum: nodes gaining connections get promoted, losing connections get demoted
+- Progressive compression: full → summary → title-only based on connection trends
+- Output saved to `/data/dream_map.json` with 5-version backup rotation
+
+**Map Structure**:
+- **Clusters**: Thematic groupings with hub nodes
+- **Bridges**: Cross-cluster semantic links
+- **Nodes**: Scored memories with type, state, connections, momentum
+- **Wildcards**: 5 random/dormant nodes for "mental drift"
+- **Recall directive**: Timestamp cutoff for memories not yet in the map
+
+**Configuration** (`config.json` → `agents.dreaming`):
+```json
+{
+  "intervalMinutes": 60,
+  "contextBudget": 800000,
+  "autoStart": true,
+  "distillerTask": "query",
+  "dreamerTask": "query"
+}
+```
+
+**Tools**: `dream_generate` (run pipeline), `dream_status` (check state), `dream_inject` (get map for prompt injection)
 
 ## Code Style & Philosophy
 - **Language**: Vanilla JavaScript (ES modules) - NO TypeScript
@@ -234,6 +274,17 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 
 ## Historical Changes
 
+### June 2026 - Dreaming System
+- New `src/agents/dreaming/` — 3 tools for autonomous memory consolidation
+- Tools: `dream_generate`, `dream_status`, `dream_inject`
+- Two-phase LLM pipeline: Distillation (incremental cache) → Dreaming (Map v3.0)
+- Connection momentum: nodes gain/lose score based on connection changes across dreams
+- Progressive compression: full → summary → title-only for decaying nodes
+- Incremental distillation: tracks ID → timestamp snapshot, only re-distills changed memories
+- Runs hourly + on startup, produces structured Map with clusters, bridges, wildcards
+- Updated `gateway-client.js`: added `enableThinking` parameter for disabling reasoning
+- Updated memory tool descriptions to encourage aggressive storage
+
 ### May 2026 - GitHub Relay Agent
 - New `src/agents/github/` — 15 tools for remote repo browsing via GitHub REST API
 - Tools: `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue`
@@ -268,7 +319,7 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 
 ## Contributors
 - **@herrbasan** - Initial architecture, LM Studio integration, memory system
-- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening
+- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, dreaming system implementation
 - **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search (now archived)
 - **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening, streaming research pipeline
 

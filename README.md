@@ -8,6 +8,7 @@ A centralized Model Context Protocol (MCP) server that hosts multiple domain-spe
 - **LLM Gateway integration** — thin WebSocket client to an external LLM Gateway at localhost:3400
 - **Browser automation** — persistent Puppeteer browser with session management for web research and scraping
 - **Semantic memory** — vector embedding-based recall across sessions
+- **Dreaming system** — hourly autonomous memory consolidation into a structured Map with clusters, bridges, and progressive compression
 - **GitHub relay** — browse code, history, PRs, issues from any GitHub repo without local checkout
 - **Vision analysis** — iterative image analysis with drill-down focus capability
 
@@ -95,6 +96,7 @@ Client (VS Code / CLI)
 |------------|-------|-------------|
 | `browser`  | `browser_session_create`, `browser_session_goto`, `browser_session_click`, … (14 tools) | Persistent Puppeteer browser with session management |
 | `docs`     | `get_philosophy`, `get_orchestrator_doc` | Access `mcp_documentation/` files |
+| `dreaming` | `dream_generate`, `dream_status`, `dream_inject` | Autonomous memory consolidation into structured Map |
 | `github`   | `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue` (15 tools) | GitHub repo relay — browse code, history, PRs, issues from any repo |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |
