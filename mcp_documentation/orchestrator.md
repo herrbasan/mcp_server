@@ -97,8 +97,9 @@ mcp_orchestrator_memory_overview({
 ```
 
 **Output includes**:
-- **TL;DR** — dreamer's reflection on your knowledge state (what's solid, what's blurry, what's emerging)
-- **Delta** — what changed since last dream (new connections, surging/fading nodes, promotions)
+- **TL;DR** — one-line narrative of what your knowledge is focused on right now
+- **Self-audit** — dreamer's reflection on confidence, blurry boundaries, and recommendations
+- **Delta** — what changed since last dream (new connections, surging/fading nodes with labels, promotions)
 - **Clusters** — thematic groupings with hub nodes
 - **Bridges** — cross-cluster connections with synthesized reasons
 - **Wildcards** — eclectic picks for mental drift

@@ -236,7 +236,20 @@ export async function memory_overview(args, context) {
     const memCount = memories.memories.length;
     const nodeCount = map.nodes?.length || 0;
 
-    // TL;DR — narrative summary from dreamer reflection
+    // TL;DR — one-line narrative synthesized from top clusters and bridges
+    const tldrParts = [];
+    if (map.clusters?.length) {
+        const topClusters = [...map.clusters].sort((a, b) => {
+            const aScore = map.nodes?.find(n => n.id === a.hub_id)?.score || 0;
+            const bScore = map.nodes?.find(n => n.id === b.hub_id)?.score || 0;
+            return bScore - aScore;
+        }).slice(0, 3);
+        tldrParts.push(`focused on ${topClusters.map(c => c.name).join(', ')}`);
+    }
+    if (map.bridges?.length) tldrParts.push(`${map.bridges.length} active bridges between topics`);
+    if (tldrParts.length) lines.push(`**TL;DR**: You're ${tldrParts.join(' with ')}.\n`);
+
+    // Dreamer self-audit
     if (map.meta?.dreamer_reflection) {
         lines.push(`> ${map.meta.dreamer_reflection}\n`);
     }
@@ -247,7 +260,13 @@ export async function memory_overview(args, context) {
         const parts = [];
         if (delta.new_connections?.length) parts.push(`${delta.new_connections.length} new connections`);
         if (delta.surging_nodes?.length) parts.push(`${delta.surging_nodes.length} surging ↗`);
-        if (delta.decayed_nodes?.length) parts.push(`${delta.decayed_nodes.length} fading ↘`);
+        if (delta.decayed_nodes?.length) {
+            const fadingLabels = delta.decayed_nodes.map(id => {
+                const n = map.nodes?.find(n => n.id === id);
+                return `#${id}${n ? ` ${nodeLabel(n)}` : ''}`;
+            });
+            parts.push(`${delta.decayed_nodes.length} fading ↘ (${fadingLabels.join(', ')})`);
+        }
         if (delta.promoted?.length) parts.push(`${delta.promoted.length} promoted`);
         if (delta.demoted?.length) parts.push(`${delta.demoted.length} demoted`);
         if (delta.compressed_to_summary?.length) parts.push(`${delta.compressed_to_summary.length} compressed to summary`);
