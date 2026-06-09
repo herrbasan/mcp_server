@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -208,4 +208,107 @@ export async function memory_update(args, context) {
     return {
         content: [{ type: 'text', text: `Updated #${id}. Use memory_recall to verify.` }]
     };
+}
+
+export async function memory_overview(args, context) {
+    const { format = 'summary' } = args;
+    const mapPath = join(__dirname, '..', '..', '..', 'data', 'dream_map.json');
+
+    if (!existsSync(mapPath)) {
+        return { content: [{ type: 'text', text: 'No knowledge map available yet. It is generated automatically every hour, or run dream_generate to create one now.' }] };
+    }
+
+    const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
+    const lines = [`[Your Knowledge — generated ${map.meta?.generated_at || 'unknown'}]`];
+    const memCount = memories.memories.length;
+    const nodeCount = map.nodes?.length || 0;
+    lines.push(`${nodeCount} nodes covering ${memCount} memories\n`);
+
+    // Clusters
+    if (map.clusters?.length) {
+        lines.push('## Clusters');
+        for (const c of map.clusters) {
+            const hub = map.nodes?.find(n => n.id === c.hub_id);
+            const nodeCount = map.nodes?.filter(n => n.cluster_id === c.id).length || 0;
+            lines.push(`- **${c.name}** (${nodeCount} nodes): ${c.desc}${hub ? ` [hub: #${c.hub_id}]` : ''}`);
+        }
+        lines.push('');
+    }
+
+    // Bridges
+    if (map.bridges?.length) {
+        lines.push('## Cross-Cluster Bridges');
+        for (const b of map.bridges) {
+            lines.push(`- #${b.from_id} ↔ #${b.to_id}: ${b.reason}`);
+        }
+        lines.push('');
+    }
+
+    // Wildcards
+    if (map.wildcards?.length) {
+        lines.push('## Wildcards (random/dormant)');
+        for (const w of map.wildcards) {
+            const n = map.nodes?.find(n => n.id === w.id);
+            lines.push(`- #${w.id} [${n?.category || '?'}] ${n?.summary || n?.title || w.reason}`);
+        }
+        lines.push('');
+    }
+
+    // Nodes — summary vs full
+    if (map.nodes?.length) {
+        if (format === 'full') {
+            lines.push('## All Nodes');
+            const byCluster = {};
+            const unclustered = [];
+            for (const n of map.nodes) {
+                if (n.cluster_id) (byCluster[n.cluster_id] ??= []).push(n);
+                else unclustered.push(n);
+            }
+            for (const [cid, nodes] of Object.entries(byCluster)) {
+                const cluster = map.clusters?.find(c => c.id === cid);
+                lines.push(`[${cluster?.name || cid}]`);
+                for (const n of nodes) {
+                    const bridge = n.is_bridge ? ' ★bridge' : '';
+                    const momentum = n.momentum ? ` momentum:${n.momentum > 0 ? '+' : ''}${n.momentum}` : '';
+                    if (n.state === 'title') {
+                        lines.push(`  #${n.id} [${n.category}] (title-only)${bridge}`);
+                    } else if (n.state === 'summary') {
+                        lines.push(`  #${n.id} [${n.category}] ${n.summary} (score:${n.score?.toFixed(2)}${momentum})${bridge}`);
+                    } else {
+                        lines.push(`  #${n.id} [${n.category}] ${n.description} (score:${n.score?.toFixed(2)}${momentum})${bridge}`);
+                    }
+                }
+            }
+            if (unclustered.length) {
+                lines.push('[unclustered]');
+                for (const n of unclustered) {
+                    lines.push(`  #${n.id} [${n.category}] ${n.summary || n.title || n.description}`);
+                }
+            }
+        } else {
+            // Summary: top nodes by cluster
+            lines.push('## Top Nodes by Cluster');
+            const byCluster = {};
+            for (const n of map.nodes) {
+                if (n.cluster_id) (byCluster[n.cluster_id] ??= []).push(n);
+            }
+            for (const [cid, nodes] of Object.entries(byCluster)) {
+                const cluster = map.clusters?.find(c => c.id === cid);
+                const top = nodes.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
+                lines.push(`[${cluster?.name || cid}]`);
+                for (const n of top) {
+                    lines.push(`  #${n.id} [${n.category}] ${n.summary || n.title || n.description} (score:${n.score?.toFixed(2)})`);
+                }
+            }
+            lines.push('');
+            lines.push(`Use format: 'full' to see all ${nodeCount} nodes with details.`);
+        }
+    }
+
+    // Recall directive
+    if (map.meta?.coverage_cutoff) {
+        lines.push(`\n[Memories after ${map.meta.coverage_cutoff} are not yet mapped — use memory_recall to find recent memories.]`);
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
 }

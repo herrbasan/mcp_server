@@ -76,6 +76,16 @@
                 },
                 "required": ["id"]
             }
+        },
+        {
+            "name": "memory_overview",
+            "description": "⚠️ CALL THIS FIRST at session start. Shows everything you know — organized into thematic clusters, cross-topic connections, and priority scores. This is your accumulated knowledge topology. Without it, you're operating blind. Use it to understand what you already know before making decisions or storing new memories.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "format": { "type": "string", "description": "Output format: 'summary' (clusters, bridges, top nodes) or 'full' (all nodes with details). Default: 'summary'.", "enum": ["summary", "full"] }
+                }
+            }
         }
     ]
 }

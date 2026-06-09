@@ -28,7 +28,7 @@
 
 > **AUTONOMOUS USAGE**: You forget everything between sessions. Store insights as you work, recall context at session start, and maintain memory quality — or lose what you learned.
 
-**Tools**: `memory_store`, `memory_recall`, `memory_get`, `memory_list`, `memory_update`, `memory_forget`
+**Tools**: `memory_store`, `memory_recall`, `memory_get`, `memory_list`, `memory_update`, `memory_forget`, `memory_overview`
 
 **Schema**: `description` (short summary), `category` (freeform domain tag), `confidence` (0-1), `data` (optional extended content)
 
@@ -85,6 +85,18 @@ mcp_orchestrator_memory_forget({ id: 42 })
 ```
 
 **Autonomous maintenance**: Call during natural pauses, after identifying outdated info during recall, or when consolidating related memories.
+
+### `memory_overview`
+⚠️ **CALL THIS FIRST** at session start. Shows everything you know — organized into thematic clusters, cross-topic connections, and priority scores.
+
+```javascript
+mcp_orchestrator_memory_overview({
+  format: "summary"  // "summary" (clusters + top nodes) or "full" (all nodes)
+})
+// → Clusters, bridges, wildcards, top nodes, coverage cutoff
+```
+
+Without this, you're operating blind. Use it to understand your accumulated knowledge before making decisions. Then use `memory_recall` to dive into specific topics.
 
 ---
 

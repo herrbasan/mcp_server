@@ -100,7 +100,7 @@ Client (VS Code / CLI)
 | `github`   | `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue` (15 tools) | GitHub repo relay — browse code, history, PRs, issues from any repo |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |
-| `memory`   | `memory_store`, `memory_recall`, `memory_get`, `memory_forget`, `memory_list`, `memory_update` | Semantic vector memory |
+| `memory`   | `memory_store`, `memory_recall`, `memory_get`, `memory_forget`, `memory_list`, `memory_update`, `memory_overview` | Semantic vector memory |
 | `research` | `research_topic` | Multi-phase web research pipeline |
 | `vision`   | `vision_create_session`, `vision_analyze`, `vision_list_sessions`, `vision_get_session`, `vision_close_session` | Iterative image analysis with drill-down |
 

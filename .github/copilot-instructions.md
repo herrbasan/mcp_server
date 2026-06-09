@@ -6,6 +6,7 @@
 
 **Session Start** (automatic):
 ```javascript
+mcp_orchestrator_memory_overview({ format: "summary" })  // Big picture: clusters, bridges, priorities
 mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
 mcp_orchestrator_git_issue_list({ owner: "herrbasan", repo: "mcp_server", state: "open" })
 ```
