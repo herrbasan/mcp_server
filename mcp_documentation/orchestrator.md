@@ -93,8 +93,16 @@ mcp_orchestrator_memory_forget({ id: 42 })
 mcp_orchestrator_memory_overview({
   format: "summary"  // "summary" (clusters + top nodes) or "full" (all nodes)
 })
-// → Clusters, bridges, wildcards, top nodes, coverage cutoff
+// → TL;DR narrative, delta since last dream, clusters, bridges, wildcards, top nodes
 ```
+
+**Output includes**:
+- **TL;DR** — dreamer's reflection on your knowledge state (what's solid, what's blurry, what's emerging)
+- **Delta** — what changed since last dream (new connections, surging/fading nodes, promotions)
+- **Clusters** — thematic groupings with hub nodes
+- **Bridges** — cross-cluster connections with synthesized reasons
+- **Wildcards** — eclectic picks for mental drift
+- **Top nodes** — highest-scoring memories per cluster with momentum arrows (↗ rising, ↘ fading)
 
 Without this, you're operating blind. Use it to understand your accumulated knowledge before making decisions. Then use `memory_recall` to dive into specific topics.
 

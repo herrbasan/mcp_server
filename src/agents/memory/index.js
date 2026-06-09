@@ -210,6 +210,19 @@ export async function memory_update(args, context) {
     };
 }
 
+function momentumArrow(momentum) {
+    if (!momentum) return '';
+    const delta = typeof momentum === 'object' ? momentum.delta : momentum;
+    if (delta > 1) return ' ↗';
+    if (delta < -1) return ' ↘';
+    return '';
+}
+
+function nodeLabel(n) {
+    if (n.state === 'title') return n.title || `#${n.id}`;
+    return n.summary || n.title || `#${n.id}`;
+}
+
 export async function memory_overview(args, context) {
     const { format = 'summary' } = args;
     const mapPath = join(__dirname, '..', '..', '..', 'data', 'dream_map.json');
@@ -222,15 +235,34 @@ export async function memory_overview(args, context) {
     const lines = [`[Your Knowledge — generated ${map.meta?.generated_at || 'unknown'}]`];
     const memCount = memories.memories.length;
     const nodeCount = map.nodes?.length || 0;
+
+    // TL;DR — narrative summary from dreamer reflection
+    if (map.meta?.dreamer_reflection) {
+        lines.push(`> ${map.meta.dreamer_reflection}\n`);
+    }
+
+    // Delta — what changed since last dream
+    const delta = map.meta?.delta;
+    if (delta) {
+        const parts = [];
+        if (delta.new_connections?.length) parts.push(`${delta.new_connections.length} new connections`);
+        if (delta.surging_nodes?.length) parts.push(`${delta.surging_nodes.length} surging ↗`);
+        if (delta.decayed_nodes?.length) parts.push(`${delta.decayed_nodes.length} fading ↘`);
+        if (delta.promoted?.length) parts.push(`${delta.promoted.length} promoted`);
+        if (delta.demoted?.length) parts.push(`${delta.demoted.length} demoted`);
+        if (delta.compressed_to_summary?.length) parts.push(`${delta.compressed_to_summary.length} compressed to summary`);
+        if (delta.compressed_to_title?.length) parts.push(`${delta.compressed_to_title.length} compressed to title`);
+        if (parts.length) lines.push(`Since last dream: ${parts.join(', ')}\n`);
+    }
+
     lines.push(`${nodeCount} nodes covering ${memCount} memories\n`);
 
     // Clusters
     if (map.clusters?.length) {
         lines.push('## Clusters');
         for (const c of map.clusters) {
-            const hub = map.nodes?.find(n => n.id === c.hub_id);
-            const nodeCount = map.nodes?.filter(n => n.cluster_id === c.id).length || 0;
-            lines.push(`- **${c.name}** (${nodeCount} nodes): ${c.desc}${hub ? ` [hub: #${c.hub_id}]` : ''}`);
+            const cNodes = map.nodes?.filter(n => n.cluster_id === c.id) || [];
+            lines.push(`- **${c.name}** (${cNodes.length} nodes): ${c.desc} [hub: #${c.hub_id}]`);
         }
         lines.push('');
     }
@@ -246,10 +278,10 @@ export async function memory_overview(args, context) {
 
     // Wildcards
     if (map.wildcards?.length) {
-        lines.push('## Wildcards (random/dormant)');
+        lines.push('## Wildcards');
         for (const w of map.wildcards) {
             const n = map.nodes?.find(n => n.id === w.id);
-            lines.push(`- #${w.id} [${n?.category || '?'}] ${n?.summary || n?.title || w.reason}`);
+            lines.push(`- #${w.id} [${n?.category || '?'}] ${w.summary || nodeLabel(n)} (${w.reason})`);
         }
         lines.push('');
     }
@@ -269,20 +301,18 @@ export async function memory_overview(args, context) {
                 lines.push(`[${cluster?.name || cid}]`);
                 for (const n of nodes) {
                     const bridge = n.is_bridge ? ' ★bridge' : '';
-                    const momentum = n.momentum ? ` momentum:${n.momentum > 0 ? '+' : ''}${n.momentum}` : '';
+                    const arrow = momentumArrow(n.momentum);
                     if (n.state === 'title') {
-                        lines.push(`  #${n.id} [${n.category}] (title-only)${bridge}`);
-                    } else if (n.state === 'summary') {
-                        lines.push(`  #${n.id} [${n.category}] ${n.summary} (score:${n.score?.toFixed(2)}${momentum})${bridge}`);
+                        lines.push(`  #${n.id} [${n.category}] (title-only)${bridge}${arrow}`);
                     } else {
-                        lines.push(`  #${n.id} [${n.category}] ${n.description} (score:${n.score?.toFixed(2)}${momentum})${bridge}`);
+                        lines.push(`  #${n.id} [${n.category}] ${nodeLabel(n)} (score:${n.score?.toFixed(2)})${bridge}${arrow}`);
                     }
                 }
             }
             if (unclustered.length) {
                 lines.push('[unclustered]');
                 for (const n of unclustered) {
-                    lines.push(`  #${n.id} [${n.category}] ${n.summary || n.title || n.description}`);
+                    lines.push(`  #${n.id} [${n.category}] ${nodeLabel(n)}`);
                 }
             }
         } else {
@@ -297,7 +327,8 @@ export async function memory_overview(args, context) {
                 const top = nodes.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
                 lines.push(`[${cluster?.name || cid}]`);
                 for (const n of top) {
-                    lines.push(`  #${n.id} [${n.category}] ${n.summary || n.title || n.description} (score:${n.score?.toFixed(2)})`);
+                    const arrow = momentumArrow(n.momentum);
+                    lines.push(`  #${n.id} [${n.category}] ${nodeLabel(n)} (score:${n.score?.toFixed(2)})${arrow}`);
                 }
             }
             lines.push('');
