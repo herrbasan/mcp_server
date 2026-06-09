@@ -363,7 +363,7 @@ async function start() {
                 res.json(jsonrpcResponse(msg.id, {
                     protocolVersion: PROTOCOL_VERSION,
                     capabilities: { tools: { listChanged: true } },
-                    serverInfo: { ...SERVER_INFO, name: 'mcp-server-orchestrator-compact' },
+                    serverInfo: { ...SERVER_INFO, name: 'workshop' },
                 }));
                 return;
 
