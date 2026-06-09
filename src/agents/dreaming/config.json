@@ -5,7 +5,7 @@
     "tools": [
         {
             "name": "dream_generate",
-            "description": "Run the full dreaming pipeline (distill + dream) to consolidate memories into a structured Map. Runs automatically every hour, but can be triggered manually. Returns a summary of the generated map including cluster count, bridge count, and delta stats.",
+            "description": "Run the full dreaming pipeline (distill + dream) to consolidate memories into a structured Map. Runs automatically every 15 minutes, but can be triggered manually. Returns a summary of the generated map including cluster count, bridge count, and delta stats.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

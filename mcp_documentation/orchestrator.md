@@ -443,7 +443,7 @@ mcp_orchestrator_inspect_code({
 
 ## Dreaming Module (3 tools)
 
-> Autonomous memory consolidation. Runs hourly to produce a structured Map of all memories with clusters, bridges, and progressive compression.
+> Autonomous memory consolidation. Runs every 15 minutes to produce a structured Map of all memories with clusters, bridges, and progressive compression.
 
 **Tools**: `dream_generate`, `dream_status`, `dream_inject`
 
@@ -457,7 +457,7 @@ mcp_orchestrator_dream_generate({
 // → "✓ Dream complete in 100.0s: 6 clusters, 4 bridges, 111 nodes"
 ```
 
-Runs automatically every hour and on server startup. Manual trigger useful after bulk memory changes.
+Runs automatically every 15 minutes and on server startup. Manual trigger useful after bulk memory changes.
 
 ### `dream_status`
 Check the current state of the dreaming system.

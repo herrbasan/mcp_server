@@ -32,7 +32,7 @@
       "maxTimeout": 600000
     },
     "dreaming": {
-      "intervalMinutes": 60,
+      "intervalMinutes": 15,
       "contextBudget": 800000,
       "autoStart": true,
       "distillerTask": "query",

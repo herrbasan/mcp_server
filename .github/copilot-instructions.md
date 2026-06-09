@@ -6,7 +6,6 @@
 
 **Session Start** (automatic):
 ```javascript
-mcp_orchestrator_memory_overview({ format: "summary" })  // Big picture: clusters, bridges, priorities
 mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
 mcp_orchestrator_git_issue_list({ owner: "herrbasan", repo: "mcp_server", state: "open" })
 ```
@@ -185,7 +184,7 @@ Major refactoring completed with significant reliability and performance improve
 - **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
 
 ## Memory System Philosophy
-Memory exists to improve OUTPUT QUALITY. **Store aggressively** — the Dreaming System (hourly background process) consolidates memories into a weighted graph (the "Map") that provides topology, priority, and relationships. Noisy, redundant, or partial memories are automatically compressed during dreaming. It is always better to over-store than to lose context.
+Memory exists to improve OUTPUT QUALITY. **Store aggressively** — the Dreaming System (background process every 15 min) consolidates memories into a weighted graph (the "Map") that provides topology, priority, and relationships. Noisy, redundant, or partial memories are automatically compressed during dreaming. It is always better to over-store than to lose context.
 
 Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding style", "notes"). Confidence (0-1) tracks reliability separately from category. Use `data` field for extended content that shouldn't clutter listings.
 
@@ -193,7 +192,7 @@ Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding
 
 **Location**: `src/agents/dreaming/` - Autonomous memory consolidation
 
-Two-phase LLM pipeline that runs hourly (or on startup) to produce a structured Map of all memories:
+Two-phase LLM pipeline that runs every 15 minutes (or on startup) to produce a structured Map of all memories:
 
 **Phase 1: Distillation**
 - LLM compresses all memories into dense thematic summaries
@@ -216,7 +215,7 @@ Two-phase LLM pipeline that runs hourly (or on startup) to produce a structured 
 **Configuration** (`config.json` → `agents.dreaming`):
 ```json
 {
-  "intervalMinutes": 60,
+  "intervalMinutes": 15,
   "contextBudget": 800000,
   "autoStart": true,
   "distillerTask": "query",
@@ -282,7 +281,7 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - Connection momentum: nodes gain/lose score based on connection changes across dreams
 - Progressive compression: full → summary → title-only for decaying nodes
 - Incremental distillation: tracks ID → timestamp snapshot, only re-distills changed memories
-- Runs hourly + on startup, produces structured Map with clusters, bridges, wildcards
+- Runs every 15 min + on startup, produces structured Map with clusters, bridges, wildcards
 - Updated `gateway-client.js`: added `enableThinking` parameter for disabling reasoning
 - Updated memory tool descriptions to encourage aggressive storage
 

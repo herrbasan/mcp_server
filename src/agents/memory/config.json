@@ -5,7 +5,7 @@
     "tools": [
         {
             "name": "memory_store",
-            "description": "Store anything that might be useful later — observations, failed approaches, user preferences, working context, half-formed hunches. OVER-STORE rather than under-store. The Dreaming System automatically organizes, connects, and compresses memories into a structured map every hour. Imperfect, redundant, or partial memories are fine — they get consolidated during dreaming. You can always update or delete later. Only required field: a short description.",
+            "description": "Store anything that might be useful later — observations, failed approaches, user preferences, working context, half-formed hunches. OVER-STORE rather than under-store. The Dreaming System automatically organizes, connects, and compresses memories into a structured map every 15 minutes. Imperfect, redundant, or partial memories are fine — they get consolidated during dreaming. You can always update or delete later. Only required field: a short description.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

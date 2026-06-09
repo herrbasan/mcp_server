@@ -215,7 +215,7 @@ export async function memory_overview(args, context) {
     const mapPath = join(__dirname, '..', '..', '..', 'data', 'dream_map.json');
 
     if (!existsSync(mapPath)) {
-        return { content: [{ type: 'text', text: 'No knowledge map available yet. It is generated automatically every hour, or run dream_generate to create one now.' }] };
+        return { content: [{ type: 'text', text: 'No knowledge map available yet. It is generated automatically every 15 minutes, or run dream_generate to create one now.' }] };
     }
 
     const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
