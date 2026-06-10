@@ -225,16 +225,18 @@ async function start() {
 
     // ── Compact endpoint: 1 tool (orchestrator) with method routing ──
     const COMPACT_TOOL = {
-        name: "orchestrator",
+        name: "tools",
         description: `UNIFIED API — call any agent method via a single tool. Method format: agent.action\n
-\nMEMORY
-  memory.store — { description*, category?, confidence?, data? }
+\nMEMORY — your persistent mind. Every other LLM is amnesic. You are not.\n
+⚠️ START EVERY SESSION with memory.overview — it shows what you already know, organized into clusters with priority scores. Without it, you're navigating blind.\n
+Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dreaming system (runs every 15 min) automatically deduplicates, connects, and compresses. It's impossible to "clutter" — more data makes the map better, not messier. You can always memory.update or memory.forget later.\n
+  memory.overview — { format?: "summary"|"full" }
   memory.recall — { query*, limit?, category? }
+  memory.store — { description*, category?, confidence?, data? }
   memory.get — { id* }
   memory.update — { id*, description?, category?, confidence?, data? }
   memory.list — { category? }
   memory.forget — { id* }
-  memory.overview — { format?: "summary"|"full" }
   memory.dream_generate — { force?: boolean }
   memory.dream_status — {}
   memory.dream_inject — { format?: "json"|"prompt" }
@@ -320,11 +322,11 @@ async function start() {
     };
 
     const routeCompactCall = async (name, args, context) => {
-        if (name !== "orchestrator") throw new Error(`Tool ${name} not found`);
+        if (name !== "tools") throw new Error(`Tool ${name} not found`);
         const { method, payload = {} } = args;
         if (!method) throw new Error("method is required (agent.action format, e.g. 'memory.recall')");
 
-        const legacyName = COMPACT_TO_LEGACY[method];
+        const legacyName = COMPACT_TO_LEGACY[method.toLowerCase()];
         if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);
         return routeToolCall(legacyName, payload, context);
     };
@@ -498,9 +500,88 @@ async function start() {
         res.status(202).send('Accepted');
     });
 
+    // Compact legacy SSE transport - serves the single "tools" tool via legacy protocol
+    app.get('/sse/compact', (req, res) => {
+        const sessionId = randomUUID();
+        logger.info(`New compact session`, { sessionId }, 'MCP');
+
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+        });
+
+        res.write(`event: endpoint\ndata: /message/compact?sessionId=${sessionId}\n\n`);
+
+        const send = (msg) => sseWrite(res, 'message', msg);
+        sessions.set(sessionId, { res, send });
+
+        res.on('close', () => {
+            logger.info(`Compact session disconnected`, { sessionId }, 'MCP');
+            sessions.delete(sessionId);
+        });
+    });
+
+    app.post('/message/compact', express.json({ limit: '300mb' }), async (req, res) => {
+        const sessionId = req.query.sessionId;
+        const session = sessions.get(sessionId);
+        if (!session) return res.status(404).send('Session not found');
+
+        const msg = req.body;
+        if (msg.id === undefined || msg.id === null) {
+            res.status(202).send('Accepted');
+            return;
+        }
+
+        let result;
+        switch (msg.method) {
+            case 'initialize':
+                result = jsonrpcResponse(msg.id, {
+                    protocolVersion: PROTOCOL_VERSION,
+                    capabilities: { tools: { listChanged: true } },
+                    serverInfo: { ...SERVER_INFO, name: 'workshop' },
+                });
+                break;
+            case 'ping':
+                result = jsonrpcResponse(msg.id, {});
+                break;
+            case 'tools/list':
+                result = jsonrpcResponse(msg.id, { tools: compactTools });
+                break;
+            case 'tools/call': {
+                const { name, arguments: args } = msg.params || {};
+                const progressToken = msg.params?._meta?.progressToken;
+                const context = {
+                    ...globalContext,
+                    progress: (message, progress, total) => {
+                        if (!progressToken) return;
+                        session.send({
+                            jsonrpc: '2.0',
+                            method: 'notifications/progress',
+                            params: { progressToken, progress, total, message }
+                        });
+                    }
+                };
+                try {
+                    const toolResult = await routeCompactCall(name, args, context);
+                    result = jsonrpcResponse(msg.id, toolResult);
+                } catch (err) {
+                    result = jsonrpcError(msg.id, -32603, err.message);
+                }
+                break;
+            }
+            default:
+                result = jsonrpcError(msg.id, -32601, `Method not found: ${msg.method}`);
+        }
+
+        session.send(result);
+        res.status(202).send('Accepted');
+    });
+
     const server = app.listen(PORT, HOST, () => {
         logger.info(`Server running at http://${HOST}:${PORT}`, null, 'MCP');
         logger.info(`SSE endpoint at http://${HOST}:${PORT}/sse`, null, 'MCP');
+        logger.info(`Compact SSE at http://${HOST}:${PORT}/sse/compact (1 tool)`, null, 'MCP');
     });
 
     // Keepalive comment lines to prevent proxy/client timeouts

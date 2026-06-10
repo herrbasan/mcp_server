@@ -121,12 +121,14 @@ export async function memory_recall(args, context) {
     };
 }
 
+function normId(id) { return typeof id === 'number' ? id : parseInt(String(id || '').replace(/^#/, ''), 10); }
+
 export async function memory_get(args, context) {
-    const { id } = args;
+    const id = normId(args.id);
     const memory = memories.memories.find(m => m.id === id);
 
     if (!memory) {
-        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
     }
 
     const conf = memory.confidence ?? 0.5;
@@ -139,11 +141,11 @@ export async function memory_get(args, context) {
 }
 
 export async function memory_forget(args, context) {
-    const { id } = args;
+    const id = normId(args.id);
     const idx = memories.memories.findIndex(m => m.id === id);
 
     if (idx === -1) {
-        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
     }
 
     const deleted = memories.memories.splice(idx, 1)[0];
@@ -176,11 +178,12 @@ export async function memory_list(args, context) {
 
 export async function memory_update(args, context) {
     const { gateway } = context;
-    const { id, description, category, confidence, data } = args;
+    const id = normId(args.id);
+    const { description, category, confidence, data } = args;
 
     const memory = memories.memories.find(m => m.id === id);
     if (!memory) {
-        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
     }
 
     const textChanged = (description && description !== memory.description) || (data !== undefined && data !== memory.data);
