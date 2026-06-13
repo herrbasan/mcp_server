@@ -33,6 +33,9 @@
       "autoStart": true,
       "distillerTask": "query",
       "dreamerTask": "query"
+    },
+    "docs": {
+      "llmDocsPath": "D:\\DEV\\LLM_Docs"
     }
   }
 }

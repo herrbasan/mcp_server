@@ -279,7 +279,11 @@ Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dre
   vision.session_close — { session_id* }
   vision.analyze — { session_id*, query?, focus?: {text|grid|region|centerCrop}, include_context? }
 \nLLM
-  llm.query — { prompt*, files?: string[], systemPrompt? }`,
+  llm.query — { prompt*, files?: string[], systemPrompt? }
+\nDOCS
+  docs.list — { domain? }
+  docs.get — { file*, lines?: [start,end] }
+  docs.query — { question*, domain?, files? }`,
         inputSchema: {
             type: "object",
             properties: {
@@ -318,7 +322,9 @@ Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dre
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
 
-        "llm.query": "query_model"
+        "llm.query": "query_model",
+
+        "docs.list": "docs_list", "docs.get": "docs_get", "docs.query": "docs_query"
     };
 
     const routeCompactCall = async (name, args, context) => {
