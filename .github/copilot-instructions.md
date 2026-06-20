@@ -6,8 +6,8 @@
 
 **Session Start** (automatic):
 ```javascript
-mcp_orchestrator_memory_recall({ query: "current task context", limit: 10 })
-mcp_orchestrator_git_issue_list({ owner: "herrbasan", repo: "mcp_server", state: "open" })
+mcp_workshop_tools({ method: "memory.overview" })
+mcp_workshop_tools({ method: "git.issue_list", payload: { owner: "herrbasan", repo: "mcp_server", state: "open" } })
 ```
 Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
 Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
@@ -36,12 +36,15 @@ Check open issues for pending tasks, bug reports, or feature requests that may b
 
 Report verifiable orchestrator issues as GitHub issues instead of memories:
 ```javascript
-mcp_orchestrator_git_create_issue({
-  owner: "herrbasan",
-  repo: "mcp_server",
-  title: "Short summary of the issue",
-  body: "## Reproducible context\n- Tool/API that failed\n- Parameters used\n- Expected vs actual behavior\n\n## Impact\n- Blocked task, degraded performance, or wrong output\n\n## Suggested fix\n- If obvious",
-  labels: ["bug"]
+mcp_workshop_tools({
+  method: "git.issue_create",
+  payload: {
+    owner: "herrbasan",
+    repo: "mcp_server",
+    title: "Short summary of the issue",
+    body: "## Reproducible context\n- Tool/API that failed\n- Parameters used\n- Expected vs actual behavior\n\n## Impact\n- Blocked task, degraded performance, or wrong output\n\n## Suggested fix\n- If obvious",
+    labels: ["bug"]
+  }
 });
 ```
 
@@ -60,7 +63,7 @@ Centralized MCP server running as an **independent HTTP service**.
 - Server: src/server.js - Port 3100 (MCP via custom SSE)
 - Transport: Per-session SSE transport mapped by sessionId
 - Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, docs, dreaming, github, inspector, llm, memory, research, vision)
+- Agents: src/agents/ - (browser, documentation, dreaming, github, inspector, llm, memory, research, storage, vision)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -77,14 +80,15 @@ Centralized MCP server running as an **independent HTTP service**.
 
 ## Documentation
 
-Documentation is now in `mcp_documentation/` folder:
+Documentation is in `mcp_documentation/` folder:
 - `orchestrator.md` - Tools guide (main reference)
 - `coding-philosophy.md` - Deterministic mind doc
 
-Access via MCP tools:
+Access via MCP documentation tools:
 ```javascript
-mcp_orchestrator_get_philosophy()           // ⚠️ START HERE - coding philosophy
-mcp_orchestrator_get_orchestrator_doc()     // Full tools reference (35+ tools)
+mcp_workshop_tools({ method: "documentation.get", payload: { file: "coding-philosophy.md" } })   // ⚠️ START HERE
+mcp_workshop_tools({ method: "documentation.get", payload: { file: "orchestrator.md" } })        // Full tools reference
+mcp_workshop_tools({ method: "documentation.query", payload: { question: "...", domain: "all" } })  // Search, Q&A, or spec alignment
 ```
 
 ## Gateway Client Architecture
@@ -145,6 +149,49 @@ const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 - **Start**: `npm start` (or `npm run dev` for watch mode)
 - **Binding**: `HOST` in .env must be `0.0.0.0` for remote access (not localhost)
 - **Client Config**: VS Code `mcp.json` with `{"type": "sse", "url": "http://IP:3100/sse"}` or `{"type": "http", "url": "http://IP:3100/mcp"}`
+
+### MCP Endpoint Note
+The orchestrator exposes two MCP endpoints:
+- **`/mcp/compact`** — **Primary endpoint.** A single `tools` tool routes to all
+  agent methods via `agent.action` format (e.g. `storage.write`, `memory.recall`).
+  This is the endpoint we mainly use and the one new clients should target.
+- **`/mcp`** — Legacy endpoint. Exposes every tool as a separate MCP tool.
+  Kept for backward compatibility but will eventually be removed.
+
+### Tool Handler Return Format
+
+All tool handlers in `src/agents/<name>/index.js` must return the MCP result shape:
+
+```javascript
+{ content: [{ type: 'text', text: '...' }], isError: false }
+```
+
+Returning a plain object (e.g. `{ ok: true, ... }`) will cause compact-endpoint
+clients to fail with `r.content is not iterable`.
+
+### How to register a new tool
+
+Adding an agent under `src/agents/<name>/` is not enough. Because the compact
+endpoint uses a single tool description, new agents must also be wired into it:
+
+1. **Create the agent** in `src/agents/<name>/`:
+   - `config.json` with `agent`, `description`, and `tools[]` schemas
+   - `index.js` exporting `init(context)` and one handler per tool name
+
+2. **Add config defaults** to `config.json` under `agents.<name>` if needed.
+
+3. **Wire into the compact endpoint** in `src/server.js`:
+   - Add the agent's methods to the `COMPACT_TOOL` description string so clients
+     know they exist.
+   - Add `agent.action` → `legacy_tool_name` mappings to `COMPACT_TO_LEGACY` so
+     the router knows how to dispatch calls.
+
+4. **Restart the orchestrator** and **reconnect the client**. The tool list is
+   built once at startup; the client may also cache tools per session.
+
+The legacy `/mcp` endpoint auto-registers tools from `loadAgents()` and does not
+need manual wiring. However, since we primarily use `/mcp/compact`, the manual
+step in `server.js` is required for new tools to appear.
 
 ## Browser Architecture
 

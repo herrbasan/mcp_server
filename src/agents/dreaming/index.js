@@ -280,9 +280,9 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
         throw new Error('Dreamer output missing required fields (meta, nodes)');
     }
 
-    // Ensure version tag
+    // Ensure version tag and override LLM-generated timestamps with actual wall-clock time
     map.meta.version = '3.0';
-    if (!map.meta.generated_at) map.meta.generated_at = new Date().toISOString();
+    map.meta.generated_at = new Date().toISOString();
 
     return map;
 }
@@ -348,9 +348,13 @@ async function runPipeline(force = false) {
 
         // Attach distillate stats
         map.meta.distillate_stats = distillateStats;
-        map.meta.coverage_cutoff = recentMemories.length > 0
-            ? recentMemories[0].timestamp
+
+        // Coverage cutoff: newest memory timestamp that the map actually reflects.
+        // This tells consumers which memories are newer than the map (and need live recall).
+        const newestMemoryTs = allMemories.length > 0
+            ? allMemories.reduce((a, b) => a.timestamp > b.timestamp ? a : b).timestamp
             : new Date().toISOString();
+        map.meta.coverage_cutoff = newestMemoryTs;
 
         // Ensure recall directive
         if (!map.recall_directive) {

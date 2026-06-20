@@ -34,7 +34,12 @@
       "distillerTask": "query",
       "dreamerTask": "query"
     },
-    "docs": {
+    "storage": {
+      "root": "D:\\MCP_Storage",
+      "maxReadSize": 10485760,
+      "maxWriteSize": 104857600
+    },
+    "documentation": {
       "llmDocsPath": "D:\\DEV\\LLM_Docs"
     }
   }
