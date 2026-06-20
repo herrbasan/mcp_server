@@ -32,7 +32,17 @@
       "contextBudget": 800000,
       "autoStart": true,
       "distillerTask": "query",
-      "dreamerTask": "query"
+      "dreamerTask": "query",
+      "serendipity": {
+        "enabled": true,
+        "wildcardBoost": 3,
+        "resurfaceThresholdCycles": 5,
+        "resurfaceChance": 0.3,
+        "scoreJitter": 0.05,
+        "scoreFloor": 0.15,
+        "jitterCeiling": 0.80,
+        "seed": null
+      }
     },
     "storage": {
       "root": "D:\\MCP_Storage",

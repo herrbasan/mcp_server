@@ -287,6 +287,145 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
     return map;
 }
 
+// ─── Phase 2b: Serendipity Injection ───
+// Post-dream stochastic "sauce" — expands wildcards with random dormant nodes,
+// applies small score jitter to mid-tier nodes, and tags everything so the
+// consumer LLM knows what was surfaced randomly vs. by score.
+//
+// This runs AFTER the LLM produces its deterministic map. The LLM's structural
+// decisions (clusters, bridges, node states) are preserved — we only add noise
+// to what gets *surfaced*, not to the topology itself.
+
+// Seeded PRNG (mulberry32) — reproducible when seed is set, true random otherwise
+function createRng(seed) {
+    const s = seed ?? Math.floor(Math.random() * 0xFFFFFFFF);
+    let a = s >>> 0;
+    return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+function applySerendipity(map, allMemories, previousMap, config) {
+    if (!config || config.enabled === false) {
+        return { injected: 0, resurfaced: 0, jittered: 0, floored: 0, seed: null };
+    }
+
+    const rng = createRng(config.seed);
+    const stats = { injected: 0, resurfaced: 0, jittered: 0, floored: 0, seed: config.seed };
+    const nodes = map.nodes || [];
+    if (nodes.length === 0) return stats;
+
+    // --- Score Floor Enforcement (deterministic, not random) ---
+    // No valid memory should sit at 0.0. Clamp anything below floor up to floor.
+    // This is the "gradual fade" guarantee — memories fade to dormant (0.15),
+    // never to dead (0.0). The dreamer prompt asks for this, but LLMs don't
+    // always comply, so we enforce it structurally.
+    const scoreFloor = config.scoreFloor ?? 0.15;
+    for (const n of nodes) {
+        if (n.state === 'title') continue; // title nodes omit score, skip
+        const s = n.score ?? scoreFloor;
+        if (s < scoreFloor) {
+            n.score = scoreFloor;
+            stats.floored++;
+        }
+    }
+
+    // Build a lookup of how many cycles each node has gone untouched.
+    // We approximate "untouched cycles" via consecutive_decay from momentum,
+    // which the dreamer already tracks. Nodes with high consecutive_decay
+    // are candidates for resurface decay.
+    const existingWildcardIds = new Set((map.wildcards || []).map(w => w.id));
+
+    // --- Resurface Decay: inject stale nodes that haven't surfaced in a while ---
+    const resurfaceThreshold = config.resurfaceThresholdCycles ?? 5;
+    const resurfaceChance = config.resurfaceChance ?? 0.3;
+    const staleCandidates = nodes.filter(n =>
+        n.state !== 'title' &&
+        !existingWildcardIds.has(n.id) &&
+        (n.momentum?.consecutive_decay ?? 0) >= resurfaceThreshold
+    );
+
+    const resurfaced = [];
+    for (const n of staleCandidates) {
+        if (rng() < resurfaceChance) {
+            resurfaced.push(n);
+            existingWildcardIds.add(n.id);
+            // Gradual nudge: bump resurfaced nodes up slightly so they're not
+            // stuck at floor. Don't reset to baseline — just lift toward it.
+            const current = n.score ?? scoreFloor;
+            n.score = Math.min(0.35, current + 0.10);
+        }
+    }
+
+    // --- Wildcard Boost: add random dormant/low-score nodes ---
+    const boostCount = config.wildcardBoost ?? 3;
+    // Pool is now "below baseline" rather than "below 0.5" — we want the
+    // genuinely dormant nodes, not mid-tier ones.
+    const pool = nodes.filter(n =>
+        n.state !== 'title' &&
+        !existingWildcardIds.has(n.id) &&
+        (n.score ?? scoreFloor) < 0.35
+    );
+
+    // Fisher-Yates partial shuffle for random selection
+    const boosted = [];
+    for (let i = 0; i < boostCount && pool.length > 0; i++) {
+        const idx = Math.floor(rng() * pool.length);
+        const picked = pool.splice(idx, 1)[0];
+        boosted.push(picked);
+        existingWildcardIds.add(picked.id);
+    }
+
+    // Merge new wildcards into the map
+    if (!map.wildcards) map.wildcards = [];
+    for (const n of [...resurfaced, ...boosted]) {
+        const isResurface = resurfaced.includes(n);
+        map.wildcards.push({
+            id: n.id,
+            summary: n.summary || `(score ${n.score?.toFixed(2)})`,
+            reason: isResurface ? 'resurface' : 'serendipity',
+            tag: '✨'
+        });
+        stats.injected++;
+        if (isResurface) stats.resurfaced++;
+    }
+
+    // --- Score Jitter: gentle stochastic breathing on non-extreme nodes ---
+    // Applies to everything between floor and 0.8 — dormant, mid-tier, and
+    // semi-important nodes all get slight variation. Only the top tier (0.8+)
+    // is held stable, and title-only nodes are skipped (no score field).
+    // This creates the "alive" feeling — scores drift slightly each cycle
+    // rather than sitting frozen.
+    const jitter = config.scoreJitter ?? 0.05;
+    const jitterCeiling = config.jitterCeiling ?? 0.80;
+    if (jitter > 0) {
+        for (const n of nodes) {
+            if (n.state === 'title') continue;
+            const s = n.score ?? scoreFloor;
+            if (s >= scoreFloor && s <= jitterCeiling) {
+                const delta = (rng() - 0.5) * 2 * jitter; // ±jitter
+                n.score = Math.max(scoreFloor, Math.min(jitterCeiling, s + delta));
+                stats.jittered++;
+            }
+        }
+    }
+
+    // Tag the map so consumers know serendipity was applied
+    map.meta.serendipity = {
+        applied: true,
+        seed: stats.seed,
+        injected: stats.injected,
+        resurfaced: stats.resurfaced,
+        jittered: stats.jittered,
+        floored: stats.floored
+    };
+
+    return stats;
+}
+
 // ─── Full Pipeline ───
 
 async function runPipeline(force = false) {
@@ -346,6 +485,12 @@ async function runPipeline(force = false) {
         // Phase 2: Dreaming
         const map = await dream(distillate, recentMemories, existingMap, contextBudget);
 
+        // Phase 2b: Serendipity Injection (stochastic wildcard boost + score jitter)
+        const serendipityStats = applySerendipity(map, allMemories, existingMap, agentConfig.serendipity);
+        if (serendipityStats.injected > 0 || serendipityStats.jittered > 0 || serendipityStats.floored > 0) {
+            logger.info(`[Dreaming] Serendipity: ${serendipityStats.floored} floored, +${serendipityStats.injected} wildcards (${serendipityStats.resurfaced} resurfaced), ${serendipityStats.jittered} jittered`, null, 'Dream');
+        }
+
         // Attach distillate stats
         map.meta.distillate_stats = distillateStats;
 
@@ -378,6 +523,7 @@ async function runPipeline(force = false) {
             nodes: map.nodes?.length || 0,
             wildcards: map.wildcards?.length || 0,
             delta: map.meta?.delta || {},
+            serendipity: serendipityStats,
             cache_hit_ratio: distillateStats.cache_hit_ratio,
             reflection: map.meta?.dreamer_reflection?.substring(0, 200)
         };
@@ -462,6 +608,14 @@ export async function dream_generate(args, context) {
     if (delta.compressed_to_summary?.length) deltaParts.push(`${delta.compressed_to_summary.length} → summary`);
     if (delta.compressed_to_title?.length) deltaParts.push(`${delta.compressed_to_title.length} → title`);
     if (deltaParts.length) lines.push(`  Delta: ${deltaParts.join(', ')}`);
+
+    if (result.serendipity && (result.serendipity.injected > 0 || result.serendipity.jittered > 0 || result.serendipity.floored > 0)) {
+        const parts = [];
+        if (result.serendipity.floored > 0) parts.push(`${result.serendipity.floored} floored→0.15`);
+        if (result.serendipity.injected > 0) parts.push(`+${result.serendipity.injected} wildcards (${result.serendipity.resurfaced} resurfaced)`);
+        if (result.serendipity.jittered > 0) parts.push(`${result.serendipity.jittered} jittered`);
+        lines.push(`  Serendipity: ${parts.join(', ')}${result.serendipity.seed !== null && result.serendipity.seed !== undefined ? ` [seed:${result.serendipity.seed}]` : ''}`);
+    }
 
     if (result.reflection) lines.push(`  Reflection: ${result.reflection}`);
 
@@ -578,9 +732,14 @@ export async function dream_inject(args, context) {
 
     // Wildcards
     if (map.wildcards?.length) {
+        const hasSerendipity = map.wildcards.some(w => w.reason === 'serendipity' || w.reason === 'resurface');
         lines.push('## Wildcards (mental drift)');
+        if (hasSerendipity) {
+            lines.push('⚠ Some entries below (✨) were surfaced STOCHASTICALLY, not by importance score. Do NOT dismiss them on score alone — assess whether they connect to the current task. Random surfacing is deliberate.');
+        }
         for (const w of map.wildcards) {
-            lines.push(`- #${w.id}: ${w.summary} (${w.reason})`);
+            const tag = w.tag || (w.reason === 'serendipity' || w.reason === 'resurface' ? '✨' : '');
+            lines.push(`- ${tag} #${w.id}: ${w.summary} (${w.reason})`);
         }
         lines.push('');
     }

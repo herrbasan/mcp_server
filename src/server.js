@@ -228,77 +228,335 @@ async function start() {
     // ── Compact endpoint: 1 tool (orchestrator) with method routing ──
     const COMPACT_TOOL = {
         name: "tools",
-        description: `UNIFIED API — call any agent method via a single tool. Method format: agent.action\n
-\nMEMORY — your persistent mind. Every other LLM is amnesic. You are not.\n
-⚠️ START EVERY SESSION with memory.overview — it shows what you already know, organized into clusters with priority scores. Without it, you're navigating blind.\n
-Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dreaming system (runs every 15 min) automatically deduplicates, connects, and compresses. It's impossible to "clutter" — more data makes the map better, not messier. You can always memory.update or memory.forget later.\n
+        description: `WORKSHOP UNIFIED API — One tool to rule them all.
+
+HOW IT WORKS
+  Call this single "tools" tool with { method: "agent.action", payload: {...} }.
+  method = which agent + which action (e.g. "memory.recall", "browser.goto")
+  payload = the arguments for that action (see tables below)
+
+RESPONSE FORMAT
+  Every call returns { content: [{ type: "text", text: "..." }], isError: false }.
+  The actual result is in content[0].text — parse it to get the data.
+  On error, isError is true and content[0].text contains the error message.
+
+
+═══════════════════════════════════════════════════════════════
+MEMORY — Your Persistent Mind
+═══════════════════════════════════════════════════════════════
+
+Every other LLM is amnesic between sessions. You are not.
+Memories survive across all workspaces and conversations.
+
+⚠️  CALL memory.overview AT THE START OF EVERY SESSION.
+    It shows clusters, bridges, top nodes, and what you already know.
+    Without it, you are navigating blind.
+
+Store aggressively. Imperfect, redundant, partial — it doesn't matter.
+The Dreaming System (runs every 15 min) automatically deduplicates, connects,
+and compresses memories. It's impossible to "clutter" — more data makes the
+map better. You can always memory.update or memory.forget later.
+
+Memory scopes:
+  /memories/           — User memory: survives all workspaces. Store preferences, patterns.
+  /memories/session/   — Session memory: this conversation only. Store task plans, in-progress state.
+  /memories/repo/      — Repository memory: scoped to this workspace. Store build commands, conventions.
+
   memory.overview — { format?: "summary"|"full" }
+      ⚠️ CALL THIS FIRST. Shows the Memory Map: clusters, bridges, top nodes,
+      wildcards, and the recall directive. Quick orientation before any task.
+
   memory.recall — { query*, limit?, category? }
+      Search memories by semantic similarity. Use natural language — it finds
+      related memories even with different wording. Use when overview shows a
+      topic you need more detail on, or for recent memories not yet in the map.
+
   memory.store — { description*, category?, confidence?, data? }
+      Save a memory. description is the only required field — be specific,
+      this is what shows in search results. category is a freeform domain tag
+      (e.g. "bug", "preference", "architecture"). confidence: 0-1 (default 0.5).
+      data holds extended content visible only via memory.get.
+
   memory.get — { id* }
+      Retrieve one memory's full content including its data payload.
+      Use when memory.recall returns a result tagged [has data].
+
   memory.update — { id*, description?, category?, confidence?, data? }
+      Edit an existing memory. Only provide the fields you want to change.
+
   memory.list — { category? }
+      Browse all memories or filter by category. Use for cleanup or review.
+
   memory.forget — { id* }
+      Delete a memory. Use for outdated, incorrect, or superseded memories.
+
   memory.dream_generate — { force?: boolean }
+      Run the dreaming pipeline manually (normally runs every 15 min).
+      Consolidates and organizes all memories into the structured Map.
+
   memory.dream_status — {}
+      Check dreaming system state: last run, map freshness, next scheduled run.
+
   memory.dream_inject — { format?: "json"|"prompt" }
-\nBROWSER
+      Get the current Memory Map formatted for system prompt injection.
+      Use "json" for raw data, "prompt" for human-readable.
+
+
+═══════════════════════════════════════════════════════════════
+BROWSER — Headless Web Automation
+═══════════════════════════════════════════════════════════════
+
+Persistent headless browser (Puppeteer). Sessions survive between calls.
+Reuse existing pages when possible — don't create new sessions unnecessarily.
+
+TYPICAL WORKFLOW:
+  1. browser.session_create → get a sessionId
+  2. browser.goto → navigate to a URL
+  3. browser.content or browser.inspect → read the page
+  4. browser.click, browser.fill, browser.type → interact
+  5. browser.session_close → clean up (optional, sessions time out)
+
+CONTENT MODES (used by browser.content, browser.click, browser.fill):
+  "text"       — readable text (default)
+  "html"       — raw HTML source
+  "markdown"   — markdown-formatted content
+  "screenshot" — base64 PNG image
+
   browser.session_create — { viewport?: {width,height}, userAgent?, visible? }
+      Create a browser session. Returns a sessionId — use it in all other
+      browser calls. Set visible:true for manual interaction (e.g. login).
+
   browser.session_list — {}
+      List all active browser sessions.
+
   browser.session_close — { sessionId* }
+      Close a session. Clean up when done.
+
   browser.session_metadata — { sessionId* }
+      Get session metadata (viewport, user agent, age).
+
   browser.goto — { sessionId*, url*, waitFor?, timeout?, retries? }
-  browser.click — { sessionId*, selector*, waitAfter?, mode?: "text"|"html"|"screenshot", retries? }
+      Navigate to a URL. Has built-in retry with exponential backoff.
+      waitFor: CSS selector to wait for before returning.
+
+  browser.click — { sessionId*, selector*, waitAfter?, mode?, retries? }
+      Click an element. Use mode to get page state after clicking.
+
   browser.fill — { sessionId*, fields*: [{selector,value}], submit?, waitAfter?, mode?, retries? }
+      Fill form fields. Set submit:true to submit the form after filling.
+
   browser.scroll — { sessionId*, direction?: "up"|"down", amount? }
+      Scroll the page up or down.
+
   browser.type — { sessionId*, selector?, text?, delay?, keystrokes?: string[] }
+      Type text or press keys. Use keystrokes for special keys (e.g. ["Enter"]).
+
   browser.content — { sessionId*, mode?: "text"|"html"|"markdown"|"screenshot" }
+      Get page content in the requested format. Primary way to read a page.
+
   browser.evaluate — { sessionId*, script*, waitFor? }
+      Run arbitrary JavaScript in the page. Returns the script's return value.
+
   browser.inspect — { sessionId*, selector*, screenshot? }
+      Inspect a specific element. Returns element details + optional screenshot.
+
   browser.console — { sessionId* }
+      Get all captured console messages (log, warn, error) from the page.
+
   browser.wait — { sessionId*, selectors?, text?, urlPattern?, condition?, timeout? }
+      Wait for a condition on the page before proceeding.
+
   browser.research — { query*, engines?: ["google"|"duckduckgo"|"bing"], max_pages? }
-\nGIT
+      Quick web research. Searches multiple engines, scrapes results, synthesizes
+      findings. For deeper research use the research agent instead.
+
+
+═══════════════════════════════════════════════════════════════
+GIT — GitHub API Relay
+═══════════════════════════════════════════════════════════════
+
+Browse remote GitHub repositories without cloning. Read files, search code,
+manage issues, review PRs — all via the GitHub REST API.
+
+Requires a GIT_TOKEN in the server's .env file. All repos are read-only
+except issue_create and PR operations.
+
   git.read — { owner*, repo*, path?, branch? }
+      Read a file from a repository. Default branch: the repo's default.
+
   git.tree — { owner*, repo*, path?, branch? }
+      List directory contents (like ls). Get the file tree at a path.
+
   git.log — { owner*, repo*, path?, branch?, limit? }
+      Show commit history for a repo or file.
+
   git.commit — { owner*, repo*, sha* }
+      Get details of a specific commit.
+
   git.diff — { owner*, repo*, base*, head* }
+      Show the diff between two commits, branches, or tags.
+
   git.branches — { owner*, repo*, type?: "branches"|"tags", limit? }
+      List branches or tags in a repository.
+
   git.repo_info — { owner*, repo* }
+      Get repository metadata: description, stars, language, topics.
+
   git.search_repos — { query*, limit? }
+      Search GitHub for repositories by name, description, or topic.
+
   git.search_code — { query*, limit? }
+      Search code across GitHub. Supports language: and path: filters.
+
   git.search_issues — { query*, limit? }
+      Search issues and PRs across GitHub.
+
   git.pr_list — { owner*, repo*, state?: "open"|"closed"|"all", limit? }
+      List pull requests in a repository.
+
   git.pr_get — { owner*, repo*, number* }
+      Get details of a specific pull request (includes diff and comments).
+
   git.issue_list — { owner*, repo*, state?, labels?, limit? }
+      List issues in a repository.
+
   git.issue_get — { owner*, repo*, number*, comments? }
+      Get a specific issue. Set comments:true to include the discussion.
+
   git.issue_create — { owner*, repo*, title*, body?, labels?, assignees? }
-\nVISION
+      Create a new issue. Use for bug reports and feature requests.
+
+
+═══════════════════════════════════════════════════════════════
+VISION — Image Analysis
+═══════════════════════════════════════════════════════════════
+
+Iterative image analysis sessions. Load an image, then ask questions about
+it. Supports multiple analysis passes on the same image.
+
   vision.session_create — { image_url? | image_data+image_mime_type? }
+      Create an analysis session. Provide either an image URL or raw image
+      data with its MIME type (e.g. "image/png").
+
   vision.session_list — {}
+      List active vision sessions (separate from browser sessions).
+
   vision.session_get — { session_id* }
+      Get details of a vision session.
+
   vision.session_close — { session_id* }
+      Close a vision session when done.
+
   vision.analyze — { session_id*, query?, focus?: {text|grid|region|centerCrop}, include_context? }
-\nLLM
+      Analyze the loaded image. query: what to look for. focus: constrain
+      analysis to a specific region, grid cell, or center crop.
+
+
+═══════════════════════════════════════════════════════════════
+LLM — Direct Model Access
+═══════════════════════════════════════════════════════════════
+
+Query the LLM Gateway directly. Use for meta-analysis, self-reflection,
+or tasks that need a different model than the current one.
+
   llm.query — { prompt*, files?: string[], systemPrompt? }
-\nDOCUMENTATION
-  documentation.domains — {}  // ⚠️ START HERE: lightweight domain listing
-  documentation.list — { domain? }  // Full listing with per-file metadata
-  documentation.get — { file*, lines?: [start,end] }  // file = 'DomainName/filename.md'
-  documentation.query — { question*, domain?, files? }  // LLM resolves inexact domains; prefer domain over files
-\nSTORAGE
+      Send a prompt to the LLM. files: absolute paths to include as context.
+      systemPrompt: override the default system prompt.
+      EXAMPLE: {"method":"llm.query","payload":{"prompt":"Explain async/await in JS"}}
+
+
+═══════════════════════════════════════════════════════════════
+DOCUMENTATION — Knowledge Base Access
+═══════════════════════════════════════════════════════════════
+
+Query the mcp_documentation/ and LLM_Docs knowledge bases.
+Covers project philosophy, coding standards, API references, and more.
+
+TYPICAL WORKFLOW:
+  1. documentation.domains → discover what domains exist
+  2. documentation.get → read a specific file you know the path of
+  OR documentation.query → ask a question, LLM searches for answers
+
+  documentation.domains — {}
+      ⚠️ START HERE. Lightweight list of all available documentation domains
+      (names, descriptions, file counts). No per-file details — fast.
+
+  documentation.list — { domain? }
+      Full listing with per-file metadata (title, scope, tags).
+      Omit domain to see everything; pass domain to filter.
+
+  documentation.get — { file*, lines?: [start,end] }
+      Read a specific document. file format: "DomainName/filename.md"
+      (e.g. "coding-philosophy.md"). lines: [start, end] for partial reads.
+
+  documentation.query — { question*, domain?, files? }
+      LLM-powered search and Q&A. The simplest way to find answers —
+      just ask a question. domain is flexible — an LLM pass resolves
+      inexact names to the closest real domain(s). Prefer domain over files.
+
+
+═══════════════════════════════════════════════════════════════
+STORAGE — Persistent File System
+═══════════════════════════════════════════════════════════════
+
+Scoped file storage under the configured storage root.
+Use for saving documents, blog posts, project files, or any persistent
+content that should survive beyond the current session.
+
   storage.stat — { path* }
-  storage.read — { path*, encoding? }
-  storage.write — { path*, content*, encoding? }
+      Get file or directory metadata (size, modified time, type).
+
+  storage.read — { path*, encoding?: "utf8"|"base64" }
+      Read a file. Defaults to utf8. Use base64 for binary files.
+
+  storage.write — { path*, content*, encoding?: "utf8"|"base64" }
+      Write a file. Creates parent directories automatically.
+      Overwrites existing files.
+      ⚠️  payload MUST be a JSON object with "path" and "content" fields.
+          Do NOT put raw text directly as the payload value.
+      EXAMPLE: {"method":"storage.write","payload":{"path":"notes/idea.md","content":"# My Idea\n\nHello world."}}
+
   storage.list — { path?, recursive? }
+      List directory contents. Omit path for root. Set recursive:true for
+      full tree.
+
   storage.move — { from*, to* }
-  storage.delete — { path*, recursive? }`,
+      Move or rename a file or directory.
+
+  storage.delete — { path*, recursive? }
+      Delete a file or directory. Set recursive:true to delete non-empty dirs.
+
+
+═══════════════════════════════════════════════════════════════
+IMPORTANT RULES
+═══════════════════════════════════════════════════════════════
+
+1. memory.overview FIRST — You forget everything between sessions.
+   The Memory Map is your continuity. Use it.
+
+2. Store aggressively — Every observation, preference, gotcha, and hunch.
+   The dreaming system handles organization. You can always edit later.
+
+3. Absolute file paths only — No relative paths. No hash IDs.
+   Valid: D:\\project\\file.js, /home/user/file.js
+
+4. Parse content[0].text — Responses are wrapped. The real data is in the
+   text field. If it looks like JSON, parse it.
+
+5. Tool handlers return { content: [{ type: "text", text: "..." }], isError }.
+
+6. payload is ALWAYS a JSON object — Never put raw text, markdown, or code
+   directly as the payload value. Always wrap arguments in the documented
+   fields: {"method":"storage.write","payload":{"path":"...","content":"..."}}
+   If you're building a new agent, follow this shape or clients will error.
+
+6. Error responses have isError:true — Check for this before assuming success.
+   The error message is in content[0].text.`,
         inputSchema: {
             type: "object",
             properties: {
                 method: { type: "string", description: "agent.action (e.g. 'memory.recall', 'browser.goto')" },
-                payload: { type: "object", description: "Arguments for the method (see orchestator description for schema)" }
+                payload: { type: "object", description: "Arguments for the method (see description above for each method's schema)" }
             },
             required: ["method"]
         }
