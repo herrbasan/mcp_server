@@ -1,0 +1,77 @@
+{
+    "agent": "storage",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts",
+    "tools": [
+        {
+            "name": "storage_stat",
+            "description": "Check if a path exists and what type it is (file or directory), without reading content. Returns exists, type, size, and modified time.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "storage_read",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above maxReadSize return a pointer instead of inline content.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8)" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "storage_write",
+            "description": "Write a file to storage. Creates parent directories automatically. Overwrites existing files. Content can be utf8 text or base64-encoded binary. Files above maxWriteSize are rejected.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "content": { "type": "string", "description": "File content (string for utf8, base64 string for binary)" },
+                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8)" }
+                },
+                "required": ["path", "content"]
+            }
+        },
+        {
+            "name": "storage_list",
+            "description": "List a directory in storage. Returns entries with name, type, size, modified time, and relative path. Use recursive=true for a flat list of all descendants.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to list (default: storage root)" },
+                    "recursive": { "type": "boolean", "description": "List all descendants as a flat list (default: false)" }
+                }
+            }
+        },
+        {
+            "name": "storage_move",
+            "description": "Move or rename a file or directory within storage. Refuses to overwrite an existing destination.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Source path within storage root" },
+                    "to": { "type": "string", "description": "Destination path within storage root" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "storage_delete",
+            "description": "Delete a file or directory. Requires recursive=true to delete non-empty directories.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to delete within storage root" },
+                    "recursive": { "type": "boolean", "description": "Required to delete non-empty directories (default: false)" }
+                },
+                "required": ["path"]
+            }
+        }
+    ]
+}

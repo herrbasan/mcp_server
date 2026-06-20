@@ -1,0 +1,49 @@
+{
+    "agent": "documentation",
+    "description": "Smart documentation access — browse and query the LLM_Docs knowledge base with LLM-powered Q&A",
+    "tools": [
+        {
+            "name": "documentation_domains",
+            "description": "⚠️ START HERE — Returns a lightweight list of all available documentation domains (names, descriptions, file counts). No per-file details. Call this FIRST to discover what domains exist before using documentation.get or documentation.query. Much lighter than documentation_list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "documentation_list",
+            "description": "⚠️ START HERE — Lists all available documentation domains and their files. Call this FIRST before using documentation.get or documentation.query, so you know what domains and filenames exist. Returns domain names, file counts, descriptions, and per-file metadata (title, scope, tags). Pass 'domain' to filter to a specific domain.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "domain": { "type": "string", "description": "Filter to a specific domain. Omit to list all domains." }
+                }
+            }
+        },
+        {
+            "name": "documentation_get",
+            "description": "Retrieve a specific document by its path from documentation_list's output. Path format: 'DomainName/filename.md' (e.g., 'LLM APIs/provider_openai.md'). Use 'lines' for partial reads (e.g., [1, 50]). ⚠️ Call documentation_list() first to discover available domain names and files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "description": "Relative path to the doc file from Documentation/ root (e.g., 'LLM APIs/provider_openai.md')" },
+                    "lines": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "description": "Optional line range [start, end] for partial reads (1-indexed, inclusive)" }
+                },
+                "required": ["file"]
+            }
+        },
+        {
+            "name": "documentation_query",
+            "description": "LLM-powered knowledge query. SIMPLEST: { question: \"...\" } — searches all docs. If you provide a 'domain' that doesn't exactly match, an LLM pass resolves it to the closest real domain(s) (e.g., 'nui' might resolve to 'NUI Web Components'). Three uses: SEARCH, Q&A, SPEC ALIGNMENT. ⚠️ Call documentation_domains() first to see available domains.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string", "description": "Your question, proofreading request, or task. The LLM will answer using the full domain knowledge as context." },
+                    "domain": { "type": "string", "description": "Domain to search. Can be any guess — an LLM pass resolves inexact names to the closest real domain(s). Use 'all' (default) to search everything. Get exact names from documentation_domains()." },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Optional: specific doc files to load instead of a full domain. Paths must be 'DomainName/filename.md' (as shown in documentation_list output). Prefer 'domain' parameter instead." }
+                },
+                "required": ["question"]
+            }
+        }
+    ]
+}

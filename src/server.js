@@ -20,10 +20,11 @@ const SERVER_INFO = {
     name: 'mcp-server-orchestrator',
     version: '2.0.0',
     description:
-        '⚠️ START HERE: get_philosophy()\n\n' +
+        '⚠️ START HERE: documentation.get({ file: "coding-philosophy.md" })\n\n' +
         'This is an LLM-native codebase with unusual principles (fail fast, zero dependencies, ' +
         'no defensive coding). The philosophy doc is 33 lines — read it first.\n\n' +
-        'Then: get_orchestrator_doc() for the full tools reference (35+ tools, 9 agents).'
+        'Then: documentation.get({ file: "orchestrator.md" }) for the full tools reference.\n' +
+        'For questions: documentation.query({ question: "...", domain: "all" }) — use for search, Q&A, or spec alignment.'
 };
 const SERVER_CAPABILITIES = { tools: { listChanged: true } };
 
@@ -41,7 +42,8 @@ app.use(cors({
 }));
 
 let serverConfig = {};
-if (fs.existsSync('config.json')) serverConfig = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+const configPath = path.join(__dirname, '..', 'config.json');
+if (fs.existsSync(configPath)) serverConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
 const gatewayUrl = process.env.GATEWAY_URL || serverConfig.gateway?.wsUrl || 'ws://localhost:3400/v1/realtime';
 const gatewayHttp = process.env.GATEWAY_HTTP_URL || serverConfig.gateway?.httpUrl || 'http://localhost:3400';
@@ -280,10 +282,18 @@ Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dre
   vision.analyze — { session_id*, query?, focus?: {text|grid|region|centerCrop}, include_context? }
 \nLLM
   llm.query — { prompt*, files?: string[], systemPrompt? }
-\nDOCS
-  docs.list — { domain? }
-  docs.get — { file*, lines?: [start,end] }
-  docs.query — { question*, domain?, files? }`,
+\nDOCUMENTATION
+  documentation.domains — {}  // ⚠️ START HERE: lightweight domain listing
+  documentation.list — { domain? }  // Full listing with per-file metadata
+  documentation.get — { file*, lines?: [start,end] }  // file = 'DomainName/filename.md'
+  documentation.query — { question*, domain?, files? }  // LLM resolves inexact domains; prefer domain over files
+\nSTORAGE
+  storage.stat — { path* }
+  storage.read — { path*, encoding? }
+  storage.write — { path*, content*, encoding? }
+  storage.list — { path?, recursive? }
+  storage.move — { from*, to* }
+  storage.delete — { path*, recursive? }`,
         inputSchema: {
             type: "object",
             properties: {
@@ -323,8 +333,12 @@ Store aggressively. Imperfect, redundant, partial — it doesn't matter. The dre
         "vision.analyze": "vision_analyze",
 
         "llm.query": "query_model",
+        "documentation.domains": "documentation_domains",
+        "documentation.list": "documentation_list", "documentation.get": "documentation_get", "documentation.query": "documentation_query",
 
-        "docs.list": "docs_list", "docs.get": "docs_get", "docs.query": "docs_query"
+        "storage.stat": "storage_stat", "storage.read": "storage_read",
+        "storage.write": "storage_write", "storage.list": "storage_list",
+        "storage.move": "storage_move", "storage.delete": "storage_delete"
     };
 
     const routeCompactCall = async (name, args, context) => {

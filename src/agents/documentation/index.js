@@ -3,7 +3,6 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MCP_DOCS_DIR = join(__dirname, '..', '..', '..', 'mcp_documentation');
 
 let llmDocsPath;
 
@@ -38,7 +37,7 @@ function parseFrontmatter(content) {
 
 function getDocsBase(context) {
     if (llmDocsPath) return llmDocsPath;
-    const cfg = context?.config?.agents?.docs?.llmDocsPath;
+    const cfg = context?.config?.agents?.documentation?.llmDocsPath;
     llmDocsPath = cfg || 'D:\\DEV\\LLM_Docs';
     return llmDocsPath;
 }
@@ -104,9 +103,69 @@ function listAllDomains(context) {
     return domains;
 }
 
+// ── LLM-based domain resolution ──────────────────────────────────────
+// When the caller provides a domain name that isn't an exact match,
+// ask the LLM to pick the best domain(s) from the available list.
+
+async function resolveDomainViaLLM(wanted, allDomains, question, gateway) {
+    const domainList = allDomains.map(d =>
+        `- "${d.domain}"${d.description ? ` — ${d.description}` : ''} (${d.count} files)`
+    ).join('\n');
+
+    const prompt = `You are selecting which documentation domain(s) to search. Below are the available domains:
+
+${domainList}
+
+The user asked: "${question}"
+They suggested domain: "${wanted}"
+
+Which domain(s) are most relevant? Reply with ONLY the exact domain name(s), comma-separated, from the list above. If multiple domains are relevant, list them. If none clearly match, reply "all". No explanation.`;
+
+    try {
+        const result = await gateway.chat({
+            task: 'query',
+            messages: [{ role: 'user', content: prompt }],
+            systemPrompt: 'Reply with only domain names from the list, comma-separated, or "all". No other text.',
+            maxTokens: 100,
+            temperature: 0
+        });
+
+        const raw = (typeof result === 'string' ? result : result?.content || '').trim();
+        // Parse comma-separated list
+        const picks = raw.split(',').map(s => s.trim().replace(/^["']|["']$/g, ''));
+        const valid = picks
+            .map(p => allDomains.find(d => d.domain === p))
+            .filter(Boolean)
+            .map(d => d.domain);
+
+        if (valid.length > 0) {
+            return { domains: valid, note: `LLM resolved "${wanted}" → ${valid.join(', ')}` };
+        }
+        // LLM said "all" or returned unrecognizable — fall back to all
+        return { domains: allDomains.map(d => d.domain), note: `LLM could not resolve "${wanted}" to a specific domain, fell back to all` };
+    } catch {
+        // LLM call failed — fall back to all
+        return { domains: allDomains.map(d => d.domain), note: `Domain resolution skipped (LLM unavailable), fell back to all` };
+    }
+}
+
 // ── MCP tool handlers ────────────────────────────────────────────────
 
-export async function docs_list(args, context) {
+export async function documentation_domains(args, context) {
+    const domains = listAllDomains(context);
+    const result = {
+        basePath: getDocsBase(context),
+        count: domains.length,
+        domains: domains.map(d => ({
+            domain: d.domain,
+            description: d.description,
+            fileCount: d.count
+        }))
+    };
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+}
+
+export async function documentation_list(args, context) {
     const { domain } = args || {};
 
     if (domain) {
@@ -125,13 +184,14 @@ export async function docs_list(args, context) {
     return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
 }
 
-export async function docs_get(args, context) {
+export async function documentation_get(args, context) {
     const { file, lines } = args || {};
     if (!file) return { content: [{ type: 'text', text: 'Error: "file" parameter is required.' }], isError: true };
 
     const fullPath = resolveDocPath(context, file);
     if (!existsSync(fullPath)) {
-        return { content: [{ type: 'text', text: `Document not found: "${file}". Use docs_list() to see available documents.` }], isError: true };
+        const avail = listAllDomains(context).map(d => `${d.domain} (${d.count} files)`).join(', ');
+        return { content: [{ type: 'text', text: `Document not found: "${file}". Paths must be 'DomainName/filename.md' (e.g., from documentation_list output). Available domains: ${avail}. Call documentation_list() for full file listings.` }], isError: true };
     }
 
     const content = readFileSync(fullPath, 'utf-8');
@@ -150,7 +210,7 @@ export async function docs_get(args, context) {
     return { content: [{ type: 'text', text: `--- File: ${file} ---\nFrontmatter: ${JSON.stringify(fm)}\n\n${body}` }] };
 }
 
-export async function docs_query(args, context) {
+export async function documentation_query(args, context) {
     const { question, domain, files } = args || {};
     if (!question) return { content: [{ type: 'text', text: 'Error: "question" parameter is required.' }], isError: true };
 
@@ -163,22 +223,39 @@ export async function docs_query(args, context) {
         for (const file of files) {
             const fullPath = resolveDocPath(context, file);
             if (!existsSync(fullPath)) {
-                return { content: [{ type: 'text', text: `Document not found: "${file}"` }], isError: true };
+                const avail = listAllDomains(context).map(d => d.domain).join(', ');
+                return { content: [{ type: 'text', text: `Document not found: "${file}". Paths must be 'DomainName/filename.md'. Available domains: ${avail}. Call documentation_list() to see exact filenames, or use the 'domain' parameter instead of 'files'.` }], isError: true };
             }
             const content = readFileSync(fullPath, 'utf-8');
             docsToLoad.push({ file, content });
         }
     } else {
-        // Load domain(s)
-        const domains = domain && domain !== 'all'
-            ? [domain]
-            : listAllDomains(context).map(d => d.domain);
+        // Load domain(s) — use LLM to resolve if domain name is inexact
+        const allDomains = listAllDomains(context);
+        const availNames = allDomains.map(d => d.domain);
 
-        for (const dom of domains) {
-            const dir = getDomainDir(context, dom);
-            if (!existsSync(dir)) {
-                return { content: [{ type: 'text', text: `Domain not found: "${dom}". Use docs_list() to see available domains.` }], isError: true };
+        let domainsToLoad;
+        let domainNote = '';
+
+        if (!domain || domain === 'all') {
+            domainsToLoad = availNames;
+        } else {
+            // Check for exact match first (fast path, no LLM call)
+            const exact = allDomains.find(d => d.domain === domain);
+            if (exact) {
+                domainsToLoad = [exact.domain];
+            } else {
+                // Inexact — ask LLM to resolve
+                if (progress) progress(`Resolving domain "${domain}" via LLM...`, 2, 100);
+                const resolved = await resolveDomainViaLLM(domain, allDomains, question, gateway);
+                domainsToLoad = resolved.domains;
+                domainNote = resolved.note;
             }
+        }
+
+        for (const dom of domainsToLoad) {
+            const dir = getDomainDir(context, dom);
+            if (!existsSync(dir)) continue;
             const entries = readdirSync(dir).filter(f => {
                 const full = join(dir, f);
                 return statSync(full).isFile() && f.endsWith('.md');
@@ -189,10 +266,15 @@ export async function docs_query(args, context) {
                 docsToLoad.push({ file: `${dom}/${file}`, content });
             }
         }
+
+        // Prepend domain note to the answer later
+        if (domainNote && docsToLoad.length) {
+            docsToLoad._domainNote = domainNote;
+        }
     }
 
     if (!docsToLoad.length) {
-        return { content: [{ type: 'text', text: 'No documents found to query. Use docs_list() to see available domains.' }], isError: true };
+        return { content: [{ type: 'text', text: 'No documents found to query. Use documentation_list() to see available domains.' }], isError: true };
     }
 
     if (progress) progress(`Loading ${docsToLoad.length} docs into context...`, 10, 100);
@@ -206,11 +288,12 @@ export async function docs_query(args, context) {
 
     const systemPrompt = `You are a documentation expert with access to the COMPLETE knowledge base loaded below. Answer the user's question using ONLY the provided documentation. Cite specific documents by filename when relevant. If the docs don't cover the answer, say so clearly — do not fabricate.
 
-The user may ask you to:
-- Answer a specific question about the documented systems
-- Proofread or verify something against the documented knowledge
-- Explain concepts, relationships, or patterns from the docs
-- Compare or contrast documented components/providers/architectures`;
+Use documentation.query for:
+- **Search**: Find where a concept, API, or feature is documented across the knowledge base
+- **Q&A**: Answer specific questions about documented systems, architecture, providers, or internals
+- **Spec alignment**: Analyze a script, config, or code snippet against documented specs — flag gaps, violations, or inconsistencies
+
+You can explain concepts, relationships, patterns, and compare/contrast documented components.`;
 
     const result = await gateway.chat({
         task: 'query',
@@ -222,31 +305,15 @@ The user may ask you to:
     });
 
     const answer = typeof result === 'string' ? result : result?.content || '';
+    const domainNote = docsToLoad._domainNote || '';
 
     return {
         content: [{
             type: 'text',
-            text: `### Docs Query Result\n**Question:** ${question}\n**Docs loaded:** ${docsToLoad.length} (${(totalChars / 1024).toFixed(0)}KB)\n**Domains:** ${[...new Set(docsToLoad.map(d => d.file.split('/')[0]))].join(', ')}\n\n${answer}`
+            text: `### Docs Query Result\n**Question:** ${question}\n**Docs loaded:** ${docsToLoad.length} (${(totalChars / 1024).toFixed(0)}KB)\n**Domains:** ${[...new Set(docsToLoad.map(d => d.file.split('/')[0]))].join(', ')}${domainNote}\n\n${answer}`
         }]
     };
 }
 
-// ── Legacy helpers (keep backward compat) ────────────────────────────
 
-function loadDoc(filename) {
-    try {
-        const content = readFileSync(join(MCP_DOCS_DIR, `${filename}.md`), 'utf-8');
-        return { content: [{ type: 'text', text: content }] };
-    } catch (err) {
-        return { content: [{ type: 'text', text: `Error reading document: ${err.message}` }], isError: true };
-    }
-}
-
-export async function get_philosophy(args, context) {
-    return loadDoc('coding-philosophy');
-}
-
-export async function get_orchestrator_doc(args, context) {
-    return loadDoc('orchestrator');
-}
 
