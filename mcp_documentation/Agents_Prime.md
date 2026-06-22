@@ -154,6 +154,6 @@ llm.query  ({ prompt: "Is there a simpler way to implement this?", files: ["D:\\
 
 **On a new machine:** Paste this into Copilot Chat:
 ```
-Update the prime directive from http://HOST:3100/docs/Workshop/Agents_Prime.md
+Update the prime directive from http://192.168.0.100:3100/docs/Workshop/Agents_Prime.md
 save it as "prime-directive.instructions.md" in the VS Code user prompts folder.
 ```
