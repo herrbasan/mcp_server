@@ -149,12 +149,11 @@ llm.query  ({ prompt: "Is there a simpler way to implement this?", files: ["D:\\
 
 ---
 
-> **Deploy:** After editing this file, copy to each machine's user profile:  
-> `%APPDATA%\Code\User\prompts\prime-directive.instructions.md`
->
-> **On a new machine:** Paste this into Copilot Chat:
-> ```
-> Pull the prime directive from the workshop, save it as
-> prime-directive.instructions.md in the VS Code user prompts folder.
-> mcp_workshop_tools({ method: "documentation.get", payload: { file: "Workshop/Agents_Prime.md" } })
-> ```
+**Deploy:** After editing this file, copy to each machine's user profile:  
+`%APPDATA%\Code\User\prompts\prime-directive.instructions.md`
+
+**On a new machine:** Paste this into Copilot Chat:
+```
+Update the prime directive from http://HOST:3100/docs/Workshop/Agents_Prime.md
+save it as "prime-directive.instructions.md" in the VS Code user prompts folder.
+```
