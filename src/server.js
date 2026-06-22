@@ -17,13 +17,11 @@ import { createGatewayClient } from './gateway-client.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = {
-    name: 'mcp-server-orchestrator',
+    name: 'mcp-server-workshop',
     version: '2.0.0',
     description:
-        '⚠️ START HERE: documentation.get({ file: "coding-philosophy.md" })\n\n' +
-        'This is an LLM-native codebase with unusual principles (fail fast, zero dependencies, ' +
-        'no defensive coding). The philosophy doc is 33 lines — read it first.\n\n' +
-        'Then: documentation.get({ file: "orchestrator.md" }) for the full tools reference.\n' +
+        '⚠️ START HERE: documentation.get({ file: "Workshop/Agents_Prime.md" }) — prime directive.\n' +
+        'Then: documentation.get({ file: "Workshop/workshop.md" }) for the full tools reference.\n' +
         'For questions: documentation.query({ question: "...", domain: "all" }) — use for search, Q&A, or spec alignment.'
 };
 const SERVER_CAPABILITIES = { tools: { listChanged: true } };
@@ -53,7 +51,8 @@ const globalContext = {
     gateway: gatewayClient,
     agents: new Map(),
     prompts: new Map(),
-    config: serverConfig
+    config: serverConfig,
+    app
 };
 
 // Per-session SSE state: Map<sessionId, { res, send }>
@@ -225,7 +224,7 @@ async function start() {
         }
     });
 
-    // ── Compact endpoint: 1 tool (orchestrator) with method routing ──
+    // ── Compact endpoint: 1 tool (workshop) with method routing ──
     const COMPACT_TOOL = {
         name: "tools",
         description: `WORKSHOP UNIFIED API — One tool to rule them all.
@@ -239,6 +238,26 @@ RESPONSE FORMAT
   Every call returns { content: [{ type: "text", text: "..." }], isError: false }.
   The actual result is in content[0].text — parse it to get the data.
   On error, isError is true and content[0].text contains the error message.
+
+
+═══════════════════════════════════════════════════════════════
+THE STORAGE BOX — Project Structure
+═══════════════════════════════════════════════════════════════
+
+This MCP server is a centralized "storage box" — a persistent workspace with
+its own file system, memory, browser, and tooling. Two root files orient you:
+
+  Agents.md — HOW to work this box. Development guidelines, coding philosophy,
+              gateway architecture, tool registration, browser architecture,
+              dreaming system, and the autonomous memory protocol. This is the
+              instruction set for any agent operating on this codebase.
+
+  README.md — WHAT this box is. Feature overview, setup steps, architecture
+              diagram, agent catalog. The entry point for discovery.
+
+Use storage.* tools to read these files at any time:
+  storage.read → { path: "Agents.md" }
+  storage.read → { path: "README.md" }
 
 
 ═══════════════════════════════════════════════════════════════
@@ -472,6 +491,12 @@ DOCUMENTATION — Knowledge Base Access
 Query the mcp_documentation/ and LLM_Docs knowledge bases.
 Covers project philosophy, coding standards, API references, and more.
 
+DOMAINS (call documentation.domains to see current list):
+  Workshop        — This project: workshop.md
+  LLM APIs        — Provider specs, protocols, gateway architecture
+  Web UI          — NUI browser-native component library
+  The Project     — Meta-architecture of the LLM ecosystem
+
 TYPICAL WORKFLOW:
   1. documentation.domains → discover what domains exist
   2. documentation.get → read a specific file you know the path of
@@ -487,7 +512,7 @@ TYPICAL WORKFLOW:
 
   documentation.get — { file*, lines?: [start,end] }
       Read a specific document. file format: "DomainName/filename.md"
-      (e.g. "coding-philosophy.md"). lines: [start, end] for partial reads.
+      (e.g. "Workshop/workshop.md"). lines: [start, end] for partial reads.
 
   documentation.query — { question*, domain?, files? }
       LLM-powered search and Q&A. The simplest way to find answers —
@@ -905,6 +930,7 @@ IMPORTANT RULES
 }
 
 start().catch(err => {
+    process.stderr.write(`FATAL: ${err?.stack || err}\n`);
     logger.error('Failed to start server', err, null, 'FATAL');
     process.exit(1);
 });

@@ -75,6 +75,63 @@ function handleError(op, userPath, err) {
 export async function init(context) {
     const agentConfig = context.config?.agents?.storage ?? {};
     initConfig(agentConfig);
+
+    // ── REST API ─────────────────────────────────────────────────────
+    const app = context.app;
+    if (app) {
+        const mimeMap = {
+            '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+            '.json': 'application/json', '.md': 'text/markdown', '.txt': 'text/plain',
+            '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif',
+            '.svg': 'image/svg+xml', '.webp': 'image/webp', '.ico': 'image/x-icon',
+            '.pdf': 'application/pdf', '.xml': 'application/xml',
+            '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf'
+        };
+
+        // GET /storage — list root directory
+        app.get('/storage', (_req, res) => {
+            const entries = fs.readdirSync(STORAGE_ROOT, { withFileTypes: true });
+            res.json({
+                path: '/',
+                entries: entries.map(e => ({
+                    name: e.name,
+                    type: e.isDirectory() ? 'dir' : 'file'
+                }))
+            });
+        });
+
+        // GET /storage/* — serve file content (middleware catches all sub-paths)
+        app.use('/storage', (req, res, next) => {
+            const urlPath = req.path.replace(/^\//, '');
+            if (!urlPath || urlPath === '/') return next(); // let /storage itself fall through
+            let target;
+            try {
+                target = safeResolve(urlPath);
+            } catch (err) {
+                return res.status(403).json({ error: err.message });
+            }
+            if (!fs.existsSync(target)) return res.status(404).json({ error: `Not found: "${urlPath}"` });
+
+            const stat = fs.statSync(target);
+            if (stat.isDirectory()) {
+                const entries = fs.readdirSync(target, { withFileTypes: true });
+                return res.json({
+                    path: '/' + urlPath,
+                    entries: entries.map(e => ({
+                        name: e.name,
+                        type: e.isDirectory() ? 'dir' : 'file',
+                        size: e.isFile() ? fs.statSync(path.join(target, e.name)).size : undefined
+                    }))
+                });
+            }
+
+            const ext = path.extname(urlPath).toLowerCase();
+            const mime = mimeMap[ext] || 'application/octet-stream';
+            res.set('Content-Type', mime);
+            fs.createReadStream(target).pipe(res);
+        });
+    }
+
     return { root: STORAGE_ROOT };
 }
 

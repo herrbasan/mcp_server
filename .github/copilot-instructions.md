@@ -34,7 +34,7 @@ Check open issues for pending tasks, bug reports, or feature requests that may b
 
 ## Bug Reports via GitHub Issues
 
-Report verifiable orchestrator issues as GitHub issues instead of memories:
+Report verifiable workshop issues as GitHub issues instead of memories:
 ```javascript
 mcp_workshop_tools({
   method: "git.issue_create",
@@ -53,7 +53,7 @@ mcp_workshop_tools({
 
 ---
 
-# MCP Server Orchestrator - Development Guidelines
+# MCP Server Workshop - Development Guidelines
 
 ## Project Overview
 
@@ -81,13 +81,13 @@ Centralized MCP server running as an **independent HTTP service**.
 ## Documentation
 
 Documentation is in `mcp_documentation/` folder:
-- `orchestrator.md` - Tools guide (main reference)
-- `coding-philosophy.md` - Deterministic mind doc
+- `workshop.md` - Tools guide (main reference)
+
 
 Access via MCP documentation tools:
 ```javascript
-mcp_workshop_tools({ method: "documentation.get", payload: { file: "coding-philosophy.md" } })   // ⚠️ START HERE
-mcp_workshop_tools({ method: "documentation.get", payload: { file: "orchestrator.md" } })        // Full tools reference
+mcp_workshop_tools({ method: "documentation.get", payload: { file: "Workshop/workshop.md" } })   // ⚠️ START HERE
+mcp_workshop_tools({ method: "documentation.get", payload: { file: "workshop.md" } })        // Full tools reference
 mcp_workshop_tools({ method: "documentation.query", payload: { question: "...", domain: "all" } })  // Search, Q&A, or spec alignment
 ```
 
@@ -95,7 +95,7 @@ mcp_workshop_tools({ method: "documentation.query", payload: { question: "...", 
 
 **Location**: `src/gateway-client.js` - WebSocket client to external LLM Gateway
 
-The orchestrator connects to a central LLM Gateway (localhost:3400) for all LLM operations. The Gateway handles model providers (LM Studio, Ollama, Gemini) internally.
+The workshop connects to a central LLM Gateway (localhost:3400) for all LLM operations. The Gateway handles model providers (LM Studio, Ollama, Gemini) internally.
 
 **Task-Based API** (Recommended):
 ```javascript
@@ -151,7 +151,7 @@ const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
 - **Client Config**: VS Code `mcp.json` with `{"type": "sse", "url": "http://IP:3100/sse"}` or `{"type": "http", "url": "http://IP:3100/mcp"}`
 
 ### MCP Endpoint Note
-The orchestrator exposes two MCP endpoints:
+The workshop exposes two MCP endpoints:
 - **`/mcp/compact`** — **Primary endpoint.** A single `tools` tool routes to all
   agent methods via `agent.action` format (e.g. `storage.write`, `memory.recall`).
   This is the endpoint we mainly use and the one new clients should target.
@@ -186,7 +186,7 @@ endpoint uses a single tool description, new agents must also be wired into it:
    - Add `agent.action` → `legacy_tool_name` mappings to `COMPACT_TO_LEGACY` so
      the router knows how to dispatch calls.
 
-4. **Restart the orchestrator** and **reconnect the client**. The tool list is
+4. **Restart the workshop** and **reconnect the client**. The tool list is
    built once at startup; the client may also cache tools per session.
 
 The legacy `/mcp` endpoint auto-registers tools from `loadAgents()` and does not

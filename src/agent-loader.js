@@ -102,12 +102,16 @@ export async function loadAgents(globalContext) {
         try {
             mod = await import(indexUrl);
         } catch (e) {
+            process.stderr.write(`FATAL: Failed to import ${folder}/index.js: ${e.stack || e.message}
+`);
             logger.error(`Failed to import ${folder}/index.js`, e, null, 'Loader');
             process.exit(1); // Hard fail
         }
 
         // Initialize
         if (typeof mod.init === 'function') {
+            process.stderr.write(`[loader] init ${config.agent}...
+`);
             try {
                 // Pass a locally scoped context
                 const localContext = {
@@ -116,7 +120,11 @@ export async function loadAgents(globalContext) {
                 };
                 const instance = await mod.init(localContext);
                 globalContext.agents.set(config.agent, instance);
+                process.stderr.write(`[loader] init ${config.agent} OK
+`);
             } catch (e) {
+                process.stderr.write(`FATAL: Failed to init ${config.agent}: ${e.stack || e.message}
+`);
                 logger.error(`Failed to initialize agent ${config.agent}`, e, null, 'Loader');
                 process.exit(1); // Hard fail
             }

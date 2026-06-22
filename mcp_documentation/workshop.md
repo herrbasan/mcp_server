@@ -13,7 +13,7 @@ Quick examples:
 ```javascript
 mcp_workshop_tools({ method: "memory.overview" })                         // Always first
 mcp_workshop_tools({ method: "memory.recall", payload: { query: "..." } }) // Search memories
-mcp_workshop_tools({ method: "documentation.get", payload: { file: "coding-philosophy.md" } })
+mcp_workshop_tools({ method: "documentation.get", payload: { file: "Workshop/workshop.md" } })
 mcp_workshop_tools({ method: "storage.list", payload: {} })
 ```
 
@@ -57,7 +57,7 @@ For SSE (legacy or clients that require it):
 
 ### nPM / Process Manager
 
-If you run the orchestrator via a process manager, set:
+If you run the workshop via a process manager, set:
 - **Path**: `D:\DEV\mcp_server\src`
 - **Executable**: `node`
 - **Arguments**: `server.js`
@@ -82,4 +82,4 @@ The server now loads `config.json` from the project root (`D:\DEV\mcp_server`), 
 2. Add `agents.<name>` defaults to `config.json` if needed.
 3. Wire `agent.action` methods into `COMPACT_TOOL.description` in `src/server.js`.
 4. Add `agent.action` → `legacy_tool_name` mappings to `COMPACT_TO_LEGACY` in `src/server.js`.
-5. Restart the orchestrator and reconnect the client.
+5. Restart the workshop and reconnect the client.

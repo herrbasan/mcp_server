@@ -43,11 +43,19 @@ function getDocsBase(context) {
 }
 
 function resolveDocPath(context, file) {
+    if (file.startsWith('Workshop/')) {
+        return join(getMcpDocsPath(), file.slice('Workshop/'.length));
+    }
     const base = getDocsBase(context);
     return join(base, 'Documentation', file);
 }
 
+function getMcpDocsPath() {
+    return join(__dirname, '..', '..', '..', 'mcp_documentation');
+}
+
 function getDomainDir(context, domain) {
+    if (domain === 'Workshop') return getMcpDocsPath();
     const base = getDocsBase(context);
     return join(base, 'Documentation', domain);
 }
@@ -100,6 +108,11 @@ function listAllDomains(context) {
         const result = scanDomain(join(docDir, entry.name), entry.name);
         if (result) domains.push(result);
     }
+    // Also scan the local mcp_documentation/ as the "Workshop" domain
+    const mcpPath = getMcpDocsPath();
+    const workshop = scanDomain(mcpPath, 'Workshop');
+    if (workshop) domains.push(workshop);
+
     return domains;
 }
 
@@ -313,6 +326,51 @@ You can explain concepts, relationships, patterns, and compare/contrast document
             text: `### Docs Query Result\n**Question:** ${question}\n**Docs loaded:** ${docsToLoad.length} (${(totalChars / 1024).toFixed(0)}KB)\n**Domains:** ${[...new Set(docsToLoad.map(d => d.file.split('/')[0]))].join(', ')}${domainNote}\n\n${answer}`
         }]
     };
+}
+
+// ── REST API ─────────────────────────────────────────────────────────
+
+export async function init(context) {
+    const app = context.app;
+    if (!app) return;
+
+    // GET /docs — list all domains
+    app.get('/docs', (_req, res) => {
+        const domains = listAllDomains(context);
+        res.json({
+            basePath: getDocsBase(context),
+            count: domains.length,
+            domains: domains.map(d => ({
+                domain: d.domain,
+                description: d.description,
+                fileCount: d.count,
+                files: d.docs.map(f => f.file)
+            }))
+        });
+    });
+
+    // GET /docs/:domain — list files in a domain
+    app.get('/docs/:domain', (req, res) => {
+        const dir = getDomainDir(context, req.params.domain);
+        const result = scanDomain(dir, req.params.domain);
+        if (!result) return res.status(404).json({ error: `Domain not found: "${req.params.domain}"` });
+        res.json(result);
+    });
+
+    // GET /docs/:domain/* — serve raw file content (middleware catches all sub-paths)
+    app.use('/docs', (req, res, next) => {
+        const urlPath = req.path.replace(/^\//, '');
+        if (!urlPath || urlPath === '/') return next(); // let /docs itself fall through to the listing route
+        const filePath = urlPath;
+        const fullPath = resolveDocPath(context, filePath);
+        if (!existsSync(fullPath)) return res.status(404).json({ error: `File not found: "${filePath}"` });
+
+        const content = readFileSync(fullPath, 'utf-8');
+        const { data: fm, body } = parseFrontmatter(content);
+        const ext = filePath.endsWith('.md') ? 'text/markdown' : 'text/plain';
+        res.set('Content-Type', `${ext}; charset=utf-8`);
+        res.send(body);
+    });
 }
 
 
