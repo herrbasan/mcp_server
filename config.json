@@ -1,6 +1,6 @@
 {
-  "orchestrator": {
-    "name": "mcp-orchestrator",
+  "workshop": {
+    "name": "mcp-workshop",
     "version": "2.0.0",
     "host": "0.0.0.0",
     "port": 3100

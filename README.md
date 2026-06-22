@@ -1,4 +1,4 @@
-﻿# MCP Server Orchestrator
+﻿# MCP Server Workshop
 
 A centralized Model Context Protocol (MCP) server that hosts multiple domain-specific agents and exposes a single unified interface to clients via Server-Sent Events (SSE).
 
@@ -50,7 +50,7 @@ In VS Code `mcp.json`:
 ```json
 {
     "servers": {
-        "orchestrator": {
+        "workshop": {
             "type": "sse",
             "url": "http://localhost:3100/sse"
         }
@@ -66,7 +66,7 @@ In VS Code `mcp.json`:
 Client (VS Code / CLI)
         | SSE (custom transport)
         v
-   MCP Orchestrator  (src/server.js)
+   MCP Workshop  (src/server.js)
         | WebSocket
         v
    LLM Gateway  (external — localhost:3400)

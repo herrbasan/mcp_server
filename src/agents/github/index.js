@@ -5,7 +5,7 @@ function headers() {
     return {
         Authorization: `token ${token}`,
         Accept: 'application/vnd.github.v3+json',
-        'User-Agent': 'mcp-server-orchestrator'
+        'User-Agent': 'mcp-server-workshop'
     };
 }
 
