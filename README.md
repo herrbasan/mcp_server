@@ -97,6 +97,7 @@ Client (VS Code / CLI)
 | `browser`  | `browser_session_create`, `browser_session_goto`, `browser_session_click`, … (14 tools) | Persistent Puppeteer browser with session management |
 | `documentation` | `documentation_list`, `documentation_get`, `documentation_query` | Browse and query LLM_Docs knowledge base with LLM-powered Q&A |
 | `dreaming` | `dream_generate`, `dream_status`, `dream_inject` | Autonomous memory consolidation into structured Map |
+| `forge`    | `forge_write`, `forge_update`, `forge_read`, `forge_list`, `forge_delete`, `forge_call`, `forge_history`, `forge_rollback`, `forge_help` (9 tools) | Git-versioned tool forge — LLMs create, version, and execute custom tools in isolated worker_threads with Gateway access |
 | `github`   | `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue` (15 tools) | GitHub repo relay — browse code, history, PRs, issues from any repo |
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |

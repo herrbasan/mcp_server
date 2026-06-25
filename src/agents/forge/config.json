@@ -1,0 +1,115 @@
+{
+    "agent": "forge",
+    "description": "Git-versioned tool forge — LLMs create, version, and execute custom tools in isolated worker_threads with Gateway access",
+    "tools": [
+        {
+            "name": "forge_write",
+            "description": "Create a new forged tool. Writes source to data/forge/tools/{name}.js, commits to git. The code must export a default async function(args, ctx) where ctx provides { gateway, progress, payload, workspacePath, toolStatePath, args }. Optional args schema for LLM discovery. Optional packages array (checked against allowlist).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name (snake_case, no spaces, 1-64 chars)" },
+                    "description": { "type": "string", "description": "What the tool does — shown in forge_list" },
+                    "code": { "type": "string", "description": "ES module source. Must export default async function(args, ctx)." },
+                    "args": { "type": "object", "description": "Optional args schema: { argName: { type, required, description } }" },
+                    "packages": { "type": "array", "items": { "type": "string" }, "description": "Optional npm packages (checked against allowlist)" }
+                },
+                "required": ["name", "description", "code"]
+            }
+        },
+        {
+            "name": "forge_update",
+            "description": "Update an existing tool's source code. Creates a new git commit — old version stays in history. Use forge_read with a ref to access historical versions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name to update" },
+                    "code": { "type": "string", "description": "New source code" },
+                    "message": { "type": "string", "description": "Commit message (default: auto-generated)" },
+                    "args": { "type": "object", "description": "Optional: update the args schema" },
+                    "description": { "type": "string", "description": "Optional: update the description" }
+                },
+                "required": ["name", "code"]
+            }
+        },
+        {
+            "name": "forge_read",
+            "description": "Read a tool's source code. Pass ref (commit hash) to read a historical version. Without ref, reads the current version.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name" },
+                    "ref": { "type": "string", "description": "Optional git ref (commit hash) for historical version" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "forge_list",
+            "description": "List all forged tools (summary form). Pass { name } to get the full manifest including args schema, version, and package status.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Optional: get full manifest for a specific tool" }
+                }
+            }
+        },
+        {
+            "name": "forge_delete",
+            "description": "Soft-delete a tool (removes file + state directory). Commits the deletion. Recoverable from git history via forge_rollback.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name to delete" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "forge_call",
+            "description": "Execute a forged tool by name. Resolves payload[] (local path, UNC path, or URL → Buffer[]), spawns a worker_thread, injects context via MessagePort, enforces timeout with worker.terminate(). Returns the tool's return value. Optional captureLogs captures console output.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name to execute" },
+                    "args": { "type": "object", "description": "Arguments object passed to the tool" },
+                    "payload": { "type": "array", "items": { "type": "string" }, "description": "Array of file paths or URLs to resolve to Buffers" },
+                    "timeout": { "type": "number", "description": "Execution timeout in ms (default: 300000, max: 600000)" },
+                    "captureLogs": { "type": "boolean", "description": "Capture console.log/warn/error from worker (default: false)" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "forge_history",
+            "description": "Show git log for a tool (or all tools). Each entry has hash, date, message.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Optional: filter to one tool" },
+                    "limit": { "type": "number", "description": "Max entries (default: 20)" }
+                }
+            }
+        },
+        {
+            "name": "forge_rollback",
+            "description": "Restore a tool to a specific commit. Current state is snapshotted to state/.rollback/{date}/, then state is reset. Creates a new commit — history is never rewritten.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Tool name" },
+                    "commit": { "type": "string", "description": "Commit hash to restore to" }
+                },
+                "required": ["name", "commit"]
+            }
+        },
+        {
+            "name": "forge_help",
+            "description": "Returns the full tool authoring guide — the ctx API, how to write tools, available gateway methods, payload handling, state persistence patterns, and best practices. Call this before writing your first tool or when unsure about the ctx API.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    ]
+}

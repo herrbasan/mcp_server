@@ -553,6 +553,55 @@ content that should survive beyond the current session.
 
 
 ═══════════════════════════════════════════════════════════════
+FORGE — Create & Execute Custom Tools
+═══════════════════════════════════════════════════════════════
+
+A git-versioned tool forge. Write ES module tools, version them via git,
+and execute them in isolated worker_threads with Gateway access.
+
+  forge.write — { name*, description*, code*, args?, packages? }
+      Create a new tool. code must export default async function(args, ctx).
+      ctx provides { gateway, progress, payload, workspacePath, toolStatePath }.
+      packages checked against allowlist — pending if unapproved.
+
+  forge.update — { name*, code*, message?, args?, description? }
+      Update tool source. New git commit. Old version in history.
+
+  forge.read — { name*, ref? }
+      Read source code. Pass ref (commit hash) for historical version.
+
+  forge.list — { name? }
+      List all tools (summary). Pass { name } for full manifest with args schema.
+
+  forge.delete — { name* }
+      Soft-delete tool + state. Commits deletion. Recoverable via rollback.
+
+  forge.call — { name*, args?, payload?, timeout?, captureLogs? }
+      Execute a tool. payload[] items (file paths or URLs) resolved to Buffers
+      on main thread before worker spawn. Timeout enforced via worker.terminate().
+
+  forge.history — { name?, limit? }
+      Git log for a tool or all tools.
+
+  forge.rollback — { name*, commit* }
+      Restore tool to commit. State snapshotted then reset. New commit, no rewrite.
+
+  forge.help — {}
+      Returns the full tool authoring guide — ctx API, gateway methods, payload
+      handling, state patterns, constraints. CALL THIS before writing your first tool.
+
+WRITING TOOLS — Quick Reference
+  Tools are ES modules: export default async function(args, ctx) { ... return result; }
+  ctx.gateway.chat({ task, messages, systemPrompt? }) → { content }
+  ctx.progress({ message, progress, total })
+  ctx.payload → Buffer[] (from payload[] file paths/URLs)
+  ctx.workspacePath → ephemeral per-call dir (deleted after)
+  ctx.toolStatePath → persistent per-tool state dir (survives across calls)
+  ctx.storagePath → persistent per-tool output dir (survives across calls, user-visible)
+  Use forge.help for the full guide with all methods and patterns.
+
+
+═══════════════════════════════════════════════════════════════
 IMPORTANT RULES
 ═══════════════════════════════════════════════════════════════
 
@@ -621,7 +670,13 @@ IMPORTANT RULES
 
         "storage.stat": "storage_stat", "storage.read": "storage_read",
         "storage.write": "storage_write", "storage.list": "storage_list",
-        "storage.move": "storage_move", "storage.delete": "storage_delete"
+        "storage.move": "storage_move", "storage.delete": "storage_delete",
+
+        "forge.write": "forge_write", "forge.update": "forge_update",
+        "forge.read": "forge_read", "forge.list": "forge_list",
+        "forge.delete": "forge_delete", "forge.call": "forge_call",
+        "forge.history": "forge_history", "forge.rollback": "forge_rollback",
+        "forge.help": "forge_help"
     };
 
     const routeCompactCall = async (name, args, context) => {

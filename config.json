@@ -51,6 +51,18 @@
     },
     "documentation": {
       "llmDocsPath": "D:\\DEV\\LLM_Docs"
+    },
+    "forge": {
+      "defaultTimeout": 300000,
+      "maxTimeout": 600000,
+      "maxPayloadSize": 104857600,
+      "maxPayloadItems": 10,
+      "maxConcurrentCalls": 8,
+      "queueTimeout": 30000,
+      "maxReturnSize": 10240,
+      "maxRollbackSnapshots": 10,
+      "allowedPackages": [],
+      "requireApprovalForNewPackages": true
     }
   }
 }
