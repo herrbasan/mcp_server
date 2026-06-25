@@ -52,9 +52,37 @@ Every session starts blind. Before writing any code, run the priming sequence be
 | `browser.research` | Web search + synthesis | Get oriented on a new topic — starting point, not final answer |
 | `git.read` / `git.search_code` | Read source from any org repo | Trace how something works across the architecture |
 | `llm.query` | Fresh LLM call with clean context | Second opinion, sanity check, escape context-window tunnel vision |
-| `storage.*` | Centralized filesystem | Rarely needed by IDE agents — chat app primary use case |
+| `forge.*` | Create, version, and execute custom tools | Build permanent tools that survive across sessions. Your own tool catalog. |
 
 Full details and common call patterns follow.
+
+### Forge — Your Persistent Tool Catalog
+
+**This changes your default workflow:**
+
+**At the start of every task, call `forge.list`.** Tools from past sessions are still there. A catalog of pre-built capabilities — codebase analyzers, data transformers, report generators — that you don't have to rewrite. You are not starting from zero. The tool you need might already exist.
+
+**When you solve a problem you'll face again, `forge.write` it.** Don't let the work evaporate when the session ends. A one-shot script dies with the chat. A forged tool becomes permanent infrastructure. The next session — yours or another model's — picks it up from `forge.list`.
+
+Call `forge.help` for the full authoring guide with the `ctx` API reference. Quick reference:
+
+| `ctx` field | What it is | Lifetime |
+|-------------|-----------|----------|
+| `ctx.gateway.chat(...)` | Full LLM Gateway (same as you) | Per-call proxy |
+| `ctx.progress(...)` | Real-time progress to client | Per-call relay |
+| `ctx.payload` | `Buffer[]` from file paths/URLs | Resolved before tool runs |
+| `ctx.storagePath` | Persistent output dir | Survives, user-visible |
+| `ctx.toolStatePath` | Persistent state (caches, indexes) | Survives, gitignored |
+| `ctx.workspacePath` | Ephemeral temp dir | Deleted after call |
+
+**Workflow:**
+1. `forge.list` — what's in the catalog?
+2. `forge.write` — need something new? Build it. Git-versioned from the first commit.
+3. `forge.call` — execute in isolated `worker_thread`. Timeout kills runaways.
+4. `forge.update` — iterate. Every version saved. `forge.rollback` to undo.
+5. `forge.list` — your tool is now permanent. Next session finds it.
+
+**Existing tools you wrote**: `codebase_summary` — feed it a directory + focus, get an architectural analysis from the Gateway, saved to storage.
 
 ### Workshop Memory (persistent cross-session memory)
 

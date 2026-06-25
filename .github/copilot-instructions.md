@@ -63,7 +63,7 @@ Centralized MCP server running as an **independent HTTP service**.
 - Server: src/server.js - Port 3100 (MCP via custom SSE)
 - Transport: Per-session SSE transport mapped by sessionId
 - Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, documentation, dreaming, github, inspector, llm, memory, research, storage, vision)
+- Agents: src/agents/ - (browser, documentation, dreaming, forge, github, inspector, llm, memory, research, storage, vision)
 
 ## File Referencing (Absolute Paths Only)
 
@@ -307,6 +307,34 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - Validate model IDs against available models before use
 - When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
 
+## Forge Architecture
+
+**Status**: Production — git-versioned tool forge for LLM-authored custom tools.
+
+**Location**: `src/agents/forge/` — 9 tools + worker bootstrap
+
+**Core concept**: Forged tools are NOT MCP endpoints. They are data (ES modules) stored in a nested git repository at `data/forge/`. LLMs write, version, and execute them through 9 management tools — the MCP surface stays at 9 tools regardless of how many tools are forged.
+
+**Execution model**: `worker_threads` with real `terminate()` — each `forge_call` spawns a dedicated Worker with MessagePort-injected context (`gateway`, `progress`, `payload`, `workspacePath`, `toolStatePath`, `storagePath`). Hard timeout kills runaways. Event-loop + heap isolation from the orchestrator.
+
+**Git versioning**: Nested repo at `data/forge/.git` (separate from the main project repo). Every write/update/delete/rollback = one commit. Linear history on `main`. Rollback snapshots current state before restoring.
+
+**Three output targets**:
+- `ctx.workspacePath` — ephemeral per-call dir (deleted after call)
+- `ctx.toolStatePath` — persistent per-tool state dir (gitignored, survives across calls)
+- `ctx.storagePath` — persistent per-tool output dir under the storage root (user-visible, cleaned on `forge_delete`)
+
+**Key files**:
+- `src/agents/forge/index.js` — all 9 tool handlers + git+worker+semaphore internals
+- `src/agents/forge/worker-bootstrap.js` — runs inside each Worker, sets up MessagePort proxies, imports and executes the tool
+- `src/agents/forge/config.json` — tool schemas
+
+**Package allowlist**: Packages declared in `forge_write` are checked against `config.json agents.forge.allowedPackages`. Unapproved tools are written but `forge_call` rejects them until the operator approves.
+
+**Payload resolution**: `payload[]` items (local paths, UNC, URLs) resolved to Buffers on the main thread before worker spawn. Failures surface before the tool runs.
+
+**Concurrency**: Per-call semaphore (default 8). Git writes are serialized through a single queue.
+
 ## Code Inspector Architecture
 
 **Status**: Production-ready LLM-based code analysis
@@ -320,6 +348,17 @@ Code should be **optimized for maintenance by LLMs**, not by humans. Human reada
 - UNC: `\\server\share\file.js`
 
 ## Historical Changes
+
+### June 2026 - Forge Agent
+- New `src/agents/forge/` — 9 tools for LLM-authored tool creation and execution
+- Tools: `forge_write`, `forge_update`, `forge_read`, `forge_list`, `forge_delete`, `forge_call`, `forge_history`, `forge_rollback`, `forge_help`
+- Git-versioned nested repo at `data/forge/` (separate from main project)
+- `worker_threads` execution with MessagePort-injected context (`gateway`, `progress`, `payload`, `workspacePath`, `toolStatePath`, `storagePath`)
+- Hard timeout via `worker.terminate()`
+- Payload resolution (file paths, UNC, URLs → Buffer[]) on main thread before worker spawn
+- Three output targets: ephemeral workspace, persistent state, persistent storage
+- Package allowlist with operator approval gate
+- `forge.help` returns full tool authoring guide
 
 ### June 2026 - Dreaming System
 - New `src/agents/dreaming/` — 3 tools for autonomous memory consolidation
