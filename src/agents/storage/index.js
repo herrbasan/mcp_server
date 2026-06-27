@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getLogger } from '../../utils/logger.js';
 
+const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -15,11 +17,13 @@ let STORAGE_ROOT;
 let CONFIG;
 
 function initConfig(agentConfig) {
-    const root = agentConfig?.root ?? DEFAULTS.root;
+    if (!agentConfig) throw new Error('storage.init: agentConfig is required');
+    const root = agentConfig.root ?? DEFAULTS.root;
+    if (!root) throw new Error('storage.init: agentConfig.root is required');
     STORAGE_ROOT = path.resolve(PROJECT_ROOT, root);
     CONFIG = {
-        maxReadSize: agentConfig?.maxReadSize ?? DEFAULTS.maxReadSize,
-        maxWriteSize: agentConfig?.maxWriteSize ?? DEFAULTS.maxWriteSize
+        maxReadSize: agentConfig.maxReadSize ?? DEFAULTS.maxReadSize,
+        maxWriteSize: agentConfig.maxWriteSize ?? DEFAULTS.maxWriteSize
     };
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 }
@@ -54,26 +58,18 @@ function safeRel(userPath) {
     return path.relative(PROJECT_ROOT, safeResolve(userPath));
 }
 
-function toMcp(ok, data, error) {
-    const text = JSON.stringify({ ok, ...data, error: error ? `${error.code ? error.code + ': ' : ''}${error.message}` : undefined }, null, 2);
+function toMcp(ok, data) {
+    const text = JSON.stringify({ ok, ...data }, null, 2);
     return { content: [{ type: 'text', text }] };
 }
 
-function result(ok, op, userPath, data, error) {
-    return toMcp(ok, {
-        op,
-        path: userPath,
-        size: data?.size ?? null,
-        ...data
-    }, error);
-}
-
-function handleError(op, userPath, err) {
-    return result(false, op, userPath, null, err);
+function result(ok, op, userPath, data) {
+    return toMcp(ok, { op, path: userPath, ...data });
 }
 
 export async function init(context) {
-    const agentConfig = context.config?.agents?.storage ?? {};
+    const agentConfig = context.config?.agents?.storage;
+    if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
     initConfig(agentConfig);
 
     // ── REST API ─────────────────────────────────────────────────────
@@ -135,93 +131,76 @@ export async function init(context) {
     return { root: STORAGE_ROOT };
 }
 
-function wrap(op, userPath, fn) {
-    try {
-        return fn();
-    } catch (err) {
-        return handleError(op, userPath, err);
-    }
-}
-
 export async function storage_stat(args) {
     const userPath = args.path;
-    return wrap('storage_stat', userPath, () => {
-        let target;
-        try {
-            target = safeResolve(userPath);
-        } catch (err) {
-            return handleError('storage_stat', userPath, err);
+    logger.info(`[Storage] storage_stat: "${userPath}"`, null, 'Storage');
+    if (!userPath) throw new Error('storage_stat: args.path is required');
+    const target = safeResolve(userPath);
+    try {
+        const stat = fs.statSync(target);
+        logger.info(`[Storage] storage_stat OK: "${userPath}" (${stat.isDirectory() ? 'dir' : 'file'}, ${stat.size}B)`, null, 'Storage');
+        return result(true, 'storage_stat', userPath, {
+            exists: true,
+            type: stat.isDirectory() ? 'dir' : 'file',
+            size: stat.size,
+            modified: stat.mtime.toISOString()
+        });
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            logger.info(`[Storage] storage_stat OK: "${userPath}" (not found)`, null, 'Storage');
+            return result(true, 'storage_stat', userPath, { exists: false });
         }
-        try {
-            const stat = fs.statSync(target);
-            return result(true, 'storage_stat', userPath, {
-                exists: true,
-                type: stat.isDirectory() ? 'dir' : 'file',
-                size: stat.size,
-                modified: stat.mtime.toISOString()
-            });
-        } catch (err) {
-            if (err.code === 'ENOENT') {
-                return result(true, 'storage_stat', userPath, { exists: false }, null);
-            }
-            return handleError('storage_stat', userPath, err);
-        }
-    });
+        throw err;
+    }
 }
 
 export async function storage_read(args) {
     const userPath = args.path;
+    logger.info(`[Storage] storage_read: "${userPath}"`, { encoding: args.encoding }, 'Storage');
+    if (!userPath) throw new Error('storage_read: args.path is required');
     const encoding = args.encoding || 'utf8';
     if (encoding !== 'utf8' && encoding !== 'base64') {
-        return handleError('storage_read', userPath, new Error(`Invalid encoding: ${encoding}`));
+        throw new Error(`storage_read: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
     }
-    return wrap('storage_read', userPath, () => {
-        let target;
-        try {
-            target = safeResolve(userPath);
-        } catch (err) {
-            return handleError('storage_read', userPath, err);
-        }
-        const stat = fs.statSync(target);
-        if (stat.isDirectory()) {
-            return handleError('storage_read', userPath, new Error('Cannot read a directory'));
-        }
-        if (stat.size > CONFIG.maxReadSize) {
-            return result(true, 'storage_read', userPath, {
-                truncated: true,
-                size: stat.size,
-                pointer: safeRel(userPath)
-            });
-        }
-        const content = fs.readFileSync(target, encoding === 'base64' ? undefined : 'utf8');
-        const out = encoding === 'base64' ? content.toString('base64') : content;
-        return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size });
-    });
+    const target = safeResolve(userPath);
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) {
+        throw new Error('storage_read: cannot read a directory');
+    }
+    if (stat.size > CONFIG.maxReadSize) {
+        return result(true, 'storage_read', userPath, {
+            truncated: true,
+            size: stat.size,
+            pointer: safeRel(userPath)
+        });
+    }
+    const content = fs.readFileSync(target, encoding === 'base64' ? undefined : 'utf8');
+    const out = encoding === 'base64' ? content.toString('base64') : content;
+    logger.info(`[Storage] storage_read OK: "${userPath}" (${stat.size}B, ${encoding})`, null, 'Storage');
+    return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size });
 }
 
 export async function storage_write(args) {
     const userPath = args.path;
+    const content = args.content;
+    logger.info(`[Storage] storage_write: "${userPath}" (${content?.length || 0} chars)`, null, 'Storage');
+    if (!userPath) throw new Error('storage_write: args.path is required');
+    if (content === undefined || content === null) throw new Error('storage_write: args.content is required');
     const encoding = args.encoding || 'utf8';
     if (encoding !== 'utf8' && encoding !== 'base64') {
-        return handleError('storage_write', userPath, new Error(`Invalid encoding: ${encoding}`));
+        throw new Error(`storage_write: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
     }
-    return wrap('storage_write', userPath, () => {
-        let target;
-        try {
-            target = safeResolve(userPath);
-        } catch (err) {
-            return handleError('storage_write', userPath, err);
-        }
-        const buffer = encoding === 'base64'
-            ? Buffer.from(args.content, 'base64')
-            : Buffer.from(args.content, 'utf8');
-        if (buffer.length > CONFIG.maxWriteSize) {
-            return handleError('storage_write', userPath, new Error(`Content exceeds maxWriteSize (${CONFIG.maxWriteSize} bytes)`));
-        }
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.writeFileSync(target, buffer);
-        return result(true, 'storage_write', userPath, { size: buffer.length });
-    });
+    const target = safeResolve(userPath);
+    const buffer = encoding === 'base64'
+        ? Buffer.from(content, 'base64')
+        : Buffer.from(content, 'utf8');
+    if (buffer.length > CONFIG.maxWriteSize) {
+        throw new Error(`storage_write: content exceeds maxWriteSize (${buffer.length} > ${CONFIG.maxWriteSize})`);
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, buffer);
+    logger.info(`[Storage] storage_write OK: "${userPath}" (${buffer.length}B)`, null, 'Storage');
+    return result(true, 'storage_write', userPath, { size: buffer.length });
 }
 
 function listEntry(fullPath, basePath) {
@@ -253,59 +232,47 @@ function listDir(dirPath, basePath, recursive) {
 export async function storage_list(args) {
     const userPath = args.path || '';
     const recursive = args.recursive || false;
-    return wrap('storage_list', userPath, () => {
-        let target;
-        try {
-            target = safeResolve(userPath);
-        } catch (err) {
-            return handleError('storage_list', userPath, err);
-        }
-        const stat = fs.statSync(target);
-        if (!stat.isDirectory()) {
-            return handleError('storage_list', userPath, new Error('Path is not a directory'));
-        }
-        const entries = listDir(target, STORAGE_ROOT, recursive);
-        return result(true, 'storage_list', userPath, { entries });
-    });
+    logger.info(`[Storage] storage_list: "${userPath}"`, { recursive }, 'Storage');
+    const target = safeResolve(userPath);
+    const stat = fs.statSync(target);
+    if (!stat.isDirectory()) {
+        throw new Error('storage_list: path is not a directory');
+    }
+    const entries = listDir(target, STORAGE_ROOT, recursive);
+    logger.info(`[Storage] storage_list OK: "${userPath}" (${entries.length} entries)`, null, 'Storage');
+    return result(true, 'storage_list', userPath, { entries });
 }
 
 export async function storage_move(args) {
     const fromPath = args.from;
     const toPath = args.to;
-    return wrap('storage_move', `${fromPath} -> ${toPath}`, () => {
-        let fromTarget, toTarget;
-        try {
-            fromTarget = safeResolve(fromPath);
-            toTarget = safeResolve(toPath);
-        } catch (err) {
-            return handleError('storage_move', `${fromPath} -> ${toPath}`, err);
-        }
-        if (fs.existsSync(toTarget)) {
-            return handleError('storage_move', toPath, new Error('Destination already exists'));
-        }
-        fs.mkdirSync(path.dirname(toTarget), { recursive: true });
-        fs.renameSync(fromTarget, toTarget);
-        const type = fs.statSync(toTarget).isDirectory() ? 'dir' : 'file';
-        return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: fromPath, to: toPath, type });
-    });
+    logger.info(`[Storage] storage_move: "${fromPath}" → "${toPath}"`, null, 'Storage');
+    if (!fromPath) throw new Error('storage_move: args.from is required');
+    if (!toPath) throw new Error('storage_move: args.to is required');
+    const fromTarget = safeResolve(fromPath);
+    const toTarget = safeResolve(toPath);
+    if (fs.existsSync(toTarget)) {
+        throw new Error(`storage_move: destination already exists: "${toPath}"`);
+    }
+    fs.mkdirSync(path.dirname(toTarget), { recursive: true });
+    fs.renameSync(fromTarget, toTarget);
+    const type = fs.statSync(toTarget).isDirectory() ? 'dir' : 'file';
+    logger.info(`[Storage] storage_move OK: "${fromPath}" → "${toPath}" (${type})`, null, 'Storage');
+    return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: fromPath, to: toPath, type });
 }
 
 export async function storage_delete(args) {
     const userPath = args.path;
+    logger.info(`[Storage] storage_delete: "${userPath}"`, { recursive: args.recursive }, 'Storage');
+    if (!userPath) throw new Error('storage_delete: args.path is required');
     const recursive = args.recursive || false;
-    return wrap('storage_delete', userPath, () => {
-        let target;
-        try {
-            target = safeResolve(userPath);
-        } catch (err) {
-            return handleError('storage_delete', userPath, err);
-        }
-        const stat = fs.statSync(target);
-        if (stat.isDirectory()) {
-            fs.rmdirSync(target, { recursive });
-        } else {
-            fs.unlinkSync(target);
-        }
-        return result(true, 'storage_delete', userPath, { deleted: true });
-    });
+    const target = safeResolve(userPath);
+    const stat = fs.statSync(target);
+    if (stat.isDirectory()) {
+        fs.rmdirSync(target, { recursive });
+    } else {
+        fs.unlinkSync(target);
+    }
+    logger.info(`[Storage] storage_delete OK: "${userPath}" (${stat.isDirectory() ? 'dir' : 'file'})`, null, 'Storage');
+    return result(true, 'storage_delete', userPath, { deleted: true });
 }
