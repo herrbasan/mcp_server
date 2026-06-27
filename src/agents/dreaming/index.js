@@ -25,7 +25,7 @@ function tokenEstimate(text) {
 }
 
 // Lenient JSON parser — handles common LLM output issues
-function parseJsonLenient(text) {
+function parseJsonLenient(text, fullText) {
     // Try raw parse first
     try { return JSON.parse(text); } catch (e) {
         logger.warn(`[Dreaming] Raw JSON parse failed: ${e.message}`, null, 'Dream');
@@ -34,7 +34,14 @@ function parseJsonLenient(text) {
     // Save raw output for debugging
     const debugPath = join(DATA_DIR, 'dream_raw_output.json');
     writeFileSync(debugPath, text);
-    logger.info(`[Dreaming] Saved raw output to ${debugPath} for inspection`, null, 'Dream');
+    logger.info(`[Dreaming] Saved extracted JSON (${text.length} chars) to ${debugPath} for inspection`, null, 'Dream');
+
+    // Also save the FULL response content if available and different from extracted
+    if (fullText && fullText !== text && fullText.length > text.length) {
+        const fullDebugPath = join(DATA_DIR, 'dream_raw_output_full.json');
+        writeFileSync(fullDebugPath, fullText);
+        logger.info(`[Dreaming] Saved FULL response (${fullText.length} chars) to ${fullDebugPath} for inspection`, null, 'Dream');
+    }
 
     // Repair strategies
     let repaired = text;
@@ -266,14 +273,36 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
     });
 
     // Parse the JSON response with repair
-    let mapText = response.content || '';
-    const firstBrace = mapText.indexOf('{');
-    const lastBrace = mapText.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        mapText = mapText.substring(firstBrace, lastBrace + 1);
-    }
+    const fullContent = response.content || '';
+    logger.info(`[Dreaming] Dreamer response: ${fullContent.length} chars`, null, 'Dream');
 
-    const map = parseJsonLenient(mapText);
+    // Strip ``` fences in case model ignored the "no code blocks" instruction
+    let mapText = fullContent
+        .replace(/^```(?:json)?\s*\n?/gm, '')
+        .replace(/\n?```\s*$/gm, '');
+
+    // Extract outermost JSON object by tracking brace depth — more robust
+    // than naive firstBrace/lastBrace when the model injects commentary
+    // or thinking tokens that contain stray braces.
+    const firstBrace = mapText.indexOf('{');
+    if (firstBrace !== -1) {
+        let depth = 0;
+        let lastBrace = -1;
+        for (let i = firstBrace; i < mapText.length; i++) {
+            const ch = mapText[i];
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) { lastBrace = i; break; }
+            }
+        }
+        if (lastBrace !== -1) {
+            mapText = mapText.substring(firstBrace, lastBrace + 1);
+        }
+    }
+    logger.info(`[Dreaming] Brace extraction: ${fullContent.length} chars → ${mapText.length} chars`, null, 'Dream');
+
+    const map = parseJsonLenient(mapText, fullContent);
 
     // Validate minimum structure
     if (!map.meta || !map.nodes || !Array.isArray(map.nodes)) {
@@ -467,11 +496,24 @@ async function runPipeline(force = false) {
 
         // Phase 1: Distillation
         const previousDistillate = loadJson(DISTILLATE_PATH, null);
+
+        // If nothing has changed since the last distillation AND there are no
+        // new memories since the last dream, the existing map is still current.
+        // Skip the expensive dreamer call rather than regenerating an identical map.
+        const snapshot = {};
+        for (const m of allMemories) snapshot[m.id] = m.timestamp;
+        const snapshotUnchanged = previousDistillate?.meta?.snapshot &&
+            Object.keys(snapshot).length === Object.keys(previousDistillate.meta.snapshot).length &&
+            Object.entries(snapshot).every(([id, ts]) => previousDistillate.meta.snapshot[id] === ts);
+
+        if (recentMemories.length === 0 && snapshotUnchanged) {
+            logger.info('[Dreaming] No new memories and no memory changes since last dream; skipping regeneration', null, 'Dream');
+            return { skipped: true, reason: 'no_changes_since_last_dream' };
+        }
+
         const { content: distillate, stats: distillateStats } = await distill(allMemories, previousDistillate, contextBudget);
 
         // Save distillate cache with snapshot of memory timestamps
-        const snapshot = {};
-        for (const m of allMemories) snapshot[m.id] = m.timestamp;
         saveJson(DISTILLATE_PATH, {
             meta: {
                 generated_at: new Date().toISOString(),
@@ -494,12 +536,12 @@ async function runPipeline(force = false) {
         // Attach distillate stats
         map.meta.distillate_stats = distillateStats;
 
-        // Coverage cutoff: newest memory timestamp that the map actually reflects.
-        // This tells consumers which memories are newer than the map (and need live recall).
-        const newestMemoryTs = allMemories.length > 0
-            ? allMemories.reduce((a, b) => a.timestamp > b.timestamp ? a : b).timestamp
-            : new Date().toISOString();
-        map.meta.coverage_cutoff = newestMemoryTs;
+        // Coverage cutoff: timestamp of the dream run itself.
+        // Memories created after this moment were not yet included in the map.
+        // Using the dream run time (rather than the newest memory timestamp)
+        // prevents the false impression that recent memories are unmapped when
+        // the memory bank has simply not changed since the last dream.
+        map.meta.coverage_cutoff = new Date().toISOString();
 
         // Ensure recall directive
         if (!map.recall_directive) {
