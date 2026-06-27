@@ -18,8 +18,10 @@ let progressPort = null;
 let initialized = false;
 let initData = {};
 
-// ── Console capture (optional) ───────────────────────────────────────────────
-if (workerData?.captureLogs) {
+// Console capture — ALWAYS ON. The LLM authoring the tool needs to see its
+// console.log/error output for debugging. This relays everything to the
+// orchestrator, which includes it in the forge_call response.
+{
     const origLog = console.log;
     const origWarn = console.warn;
     const origError = console.error;
@@ -40,24 +42,33 @@ function createGatewayProxy(port) {
             const resolver = pending.get(msg.id);
             if (!resolver) return;
             pending.delete(msg.id);
+            clearTimeout(resolver.timer);
             if (msg.error) resolver.reject(new Error(msg.error));
             else resolver.resolve(msg.result);
         }
     });
     port.start();
 
-    function call(type, params) {
+    function call(type, params, timeoutMs = 300000) {
         const id = ++reqId;
         return new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error(`Gateway proxy call timed out after ${timeoutMs}ms (task: ${type})`));
+            }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
             port.postMessage({ type: 'gateway-call', id, task: type, params });
         });
     }
 
-    function embed(text) {
+    function embed(text, timeoutMs = 60000) {
         const id = ++reqId;
         return new Promise((resolve, reject) => {
-            pending.set(id, { resolve, reject });
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error(`Gateway embed timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
             port.postMessage({ type: 'gateway-embed', id, text });
         });
     }
@@ -94,6 +105,15 @@ function createProgressProxy(port) {
 async function run() {
     const { source, args, payload, workspacePath, toolStatePath, storagePath } = { ...workerData, ...initData };
 
+    // Payload items arrive as Uint8Arrays after structured clone (postMessage strips
+    // Buffer prototype). Convert them back so Buffer.isBuffer() and .toString() work.
+    const resolvedPayload = (payload || []).map(item => {
+        if (item instanceof Uint8Array && !Buffer.isBuffer(item)) {
+            return Buffer.from(item.buffer, item.byteOffset, item.byteLength);
+        }
+        return item;
+    });
+
     // Write tool source to temp file and import it
     const tempFile = join(tmpdir(), `forge-${randomUUID()}.mjs`);
     await writeFile(tempFile, source);
@@ -101,27 +121,39 @@ async function run() {
     let mod;
     try {
         mod = await import(pathToFileURL(tempFile).href);
+    } catch (importErr) {
+        // Surface the actual error with source line context for self-debugging
+        const lines = source.split('\n');
+        throw new Error(
+            `Import failed: ${importErr.message}\n` +
+            `Source preview (first 10 lines):\n${lines.slice(0, 10).map((l, i) => `  ${i + 1}: ${l}`).join('\n')}`
+        );
     } finally {
         // Clean up temp file after import (module is cached in worker memory)
         await import('fs/promises').then(fs => fs.unlink(tempFile).catch(() => {}));
     }
 
     if (typeof mod.default !== 'function') {
-        throw new Error('Forged tool must export a default async function(args, ctx)');
+        const exports = Object.keys(mod).filter(k => k !== 'default' && !k.startsWith('_'));
+        throw new Error(
+            `Forged tool must export a default async function(args, ctx). ` +
+            `Got default type: ${typeof mod.default}. ` +
+            (exports.length ? `Non-default exports found: ${exports.join(', ')}` : 'No exports found.')
+        );
     }
 
     // Build context
     const ctx = {
         gateway: createGatewayProxy(gatewayPort),
         progress: createProgressProxy(progressPort),
-        payload: payload || [],
+        payload: resolvedPayload,
         workspacePath,
         toolStatePath,
         storagePath,
         args
     };
 
-    // Execute
+    // Execute — tool return value can be anything, including undefined
     const result = await mod.default(args, ctx);
     parentPort.postMessage({ type: 'result', result });
 }
@@ -144,7 +176,15 @@ parentPort.on('message', async (msg) => {
     }
 });
 
-// Handle uncaught errors in the worker
+// Handle uncaught errors in the worker — crash loudly, don't hang
 process.on('unhandledRejection', (err) => {
-    parentPort.postMessage({ type: 'error', error: `Unhandled rejection: ${err?.message || err}` });
+    parentPort.postMessage({ type: 'error', error: `Unhandled rejection: ${err?.message || err}`, stack: err?.stack });
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+});
+
+process.on('uncaughtException', (err) => {
+    parentPort.postMessage({ type: 'error', error: `Uncaught exception: ${err.message}`, stack: err.stack });
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
 });
