@@ -53,6 +53,7 @@
       "llmDocsPath": "D:\\DEV\\LLM_Docs"
     },
     "forge": {
+      "publicUrl": "http://192.168.0.100:3100",
       "defaultTimeout": 300000,
       "maxTimeout": 600000,
       "maxPayloadSize": 104857600,

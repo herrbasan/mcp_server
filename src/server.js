@@ -241,6 +241,44 @@ RESPONSE FORMAT
 
 
 ═══════════════════════════════════════════════════════════════
+EXECUTION CONTEXTS — Tools live in one of these
+═══════════════════════════════════════════════════════════════
+
+Tools are NOT interchangeable across contexts. Each tool executes in ONE place:
+
+  CONTEXT A: MCP Server (this server, port 3100)
+    Your top-level MCP calls land here. Tools: storage.*, memory.*,
+    forge.*, documentation.*, vision.*, research.*, llm.*, github.*,
+    inspector.*, dreaming.*.
+    Runs in the MCP server Node.js process.
+    CAN reach: filesystem, LLM Gateway, browser sessions, GitHub API.
+
+  CONTEXT B: Forge Worker (inside forge.call)
+    When you call forge.call, the forged tool runs in an ISOLATED
+    worker_thread in the server process. Tools in this context have ONLY:
+      ctx.payload    → input files as Buffer[] (from forge.call payload[])
+      ctx.gateway    → LLM Gateway only (LM Studio/Ollama/Gemini)
+      ctx.storagePath → output dir to write files (lands in D:\\MCP_Storage)
+    CANNOT reach: chat app session storage, other MCP tools
+    (storage.*/memory.*/browser.*), browser APIs, or any tool outside
+    this worker. If you need data from another tool to feed a forge tool,
+    fetch it at top level first, save with storage.write, then pass the
+    storage path as forge.call payload.
+
+  CONTEXT C: Chat App (the browser-based chat client)
+    Chat-app-specific tools run in the browser and access chat-app state.
+    Examples: chat_archive.*, chat_session.*. These are NOT in this
+    server's tool list. They live in the chat app and execute there.
+    To use chat-app data with MCP server tools: call the chat-app tool
+    first (returns data in the chat app), then call storage.write
+    (MCP tool) to persist it, then pass the storage URL to forge.call.
+
+A forge tool calling another MCP tool by HTTP fetch will always fail
+with 404. A forge tool calling a chat app tool will always fail with
+network error. There is no relay. Plan your data flow at the top level.
+
+
+═══════════════════════════════════════════════════════════════
 THE STORAGE BOX — Project Structure
 ═══════════════════════════════════════════════════════════════
 
@@ -686,6 +724,7 @@ IMPORTANT RULES
 
         const legacyName = COMPACT_TO_LEGACY[method.toLowerCase()];
         if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);
+        logger.info(`[Compact] Routing ${method} → ${legacyName}`, null, 'MCP');
         return routeToolCall(legacyName, payload, context);
     };
 
@@ -712,6 +751,7 @@ IMPORTANT RULES
     // POST /mcp/compact - JSON-RPC with compact single-tool routing
     app.post('/mcp/compact', express.json({ limit: '300mb' }), async (req, res) => {
         const msg = req.body;
+        logger.info(`[Compact] ${msg.method}`, msg.method === 'tools/call' ? { name: msg.params?.name, innerMethod: msg.params?.arguments?.method } : {}, 'MCP');
 
         if (msg.id === undefined || msg.id === null) {
             res.status(202).send('Accepted');
@@ -762,6 +802,7 @@ IMPORTANT RULES
                     sendEvent(jsonrpcResponse(msg.id, toolResult));
                 } catch (err) {
                     clearInterval(keepalive);
+                    logger.info(`[Compact] tools/call FAILED: ${err.message}`, null, 'MCP');
                     sendEvent(jsonrpcError(msg.id, -32603, err.message));
                 }
                 res.end();
@@ -886,6 +927,7 @@ IMPORTANT RULES
         if (!session) return res.status(404).send('Session not found');
 
         const msg = req.body;
+        logger.info(`[Compact:legacy] ${msg.method}`, msg.method === 'tools/call' ? { name: msg.params?.name, innerMethod: msg.params?.arguments?.method } : {}, 'MCP');
         if (msg.id === undefined || msg.id === null) {
             res.status(202).send('Accepted');
             return;
@@ -934,6 +976,20 @@ IMPORTANT RULES
 
         session.send(result);
         res.status(202).send('Accepted');
+    });
+
+    // ── Catch-all: unknown routes get a hard, bare 404 ──────────────────
+    // No guardrails. No hints. No endpoint menu. A hallucinated route
+    // must look unmistakably wrong — not like a documentation index to
+    // try variations against. The LLM sees "does not exist" and stops.
+    app.post(/.*/, (req, res) => {
+        logger.warn(`[Server] Unknown POST route: ${req.originalUrl}`, null, 'MCP');
+        res.status(404).json({ error: `Route does not exist: POST ${req.originalUrl}` });
+    });
+
+    app.all(/^\/(?!storage|mcp|sse|api|message|favicon\.ico).*/, (req, res) => {
+        logger.warn(`[Server] Unknown route: ${req.method} ${req.originalUrl}`, null, 'MCP');
+        res.status(404).json({ error: `Route does not exist: ${req.method} ${req.originalUrl}` });
     });
 
     const server = app.listen(PORT, HOST, () => {

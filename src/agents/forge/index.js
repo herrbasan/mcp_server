@@ -6,7 +6,9 @@ import { Worker } from 'worker_threads';
 import { MessageChannel } from 'worker_threads';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
+import { getLogger } from '../../utils/logger.js';
 
+const logger = getLogger();
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -16,6 +18,7 @@ let FORGE_ROOT;       // data/forge/
 let TOOLS_DIR;        // data/forge/tools/
 let WORKSPACE_DIR;    // data/forge/workspace/
 let STORAGE_ROOT;     // e.g. D:\MCP_Storage\forge\
+let PUBLIC_URL;       // e.g. http://192.168.0.100:3100 — used to build retrieval URLs
 let CONFIG;
 let GATEWAY_CLIENT;
 let GIT_WRITE_QUEUE;
@@ -195,13 +198,27 @@ async function resolvePayloadItem(item, index) {
         throw new Error(`payload[${index}] must be a string (file path or URL), got ${typeof item}`);
     }
 
-    // URL → fetch
+    // URL → fetch with abort timeout
     if (/^https?:\/\//i.test(item)) {
-        const resp = await fetch(item);
+        const controller = new AbortController();
+        const timeoutMs = 30000;
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let resp;
+        try {
+            resp = await fetch(item, { signal: controller.signal });
+        } catch (e) {
+            clearTimeout(timer);
+            if (e.name === 'AbortError') {
+                throw new Error(`payload[${index}] fetch timed out after ${timeoutMs}ms — ${item}`);
+            }
+            throw new Error(`payload[${index}] fetch failed: ${e.message} — ${item}`);
+        }
+        clearTimeout(timer);
         if (!resp.ok) {
             throw new Error(`payload[${index}] fetch failed: ${resp.status} ${resp.statusText} — ${item}`);
         }
-        const buf = Buffer.from(await resp.arrayBuffer());
+        const arrayBuf = await resp.arrayBuffer();
+        const buf = Buffer.from(arrayBuf);
         if (buf.length > CONFIG.maxPayloadSize) {
             throw new Error(`payload[${index}] exceeds maxPayloadSize (${buf.length} > ${CONFIG.maxPayloadSize}) — ${item}`);
         }
@@ -231,26 +248,63 @@ async function resolvePayload(payload) {
 }
 
 // ── Result Size Policy ───────────────────────────────────────────────────────
-function enforceResultSize(result, workspacePath) {
+// Oversized results are saved to the tool's persistent storagePath (NOT the
+// ephemeral workspace — that gets deleted immediately after the call returns).
+// The file then appears in _outputs like any other file the tool produced.
+function enforceResultSize(result, storagePathDir) {
     const serialized = typeof result === 'string' ? result : JSON.stringify(result);
     const buf = Buffer.from(serialized, 'utf8');
     if (buf.length <= CONFIG.maxReturnSize) {
         return { result, oversized: false };
     }
-    // Save to workspace, return pointer (scenario: large results)
-    const resultFile = path.join(workspacePath, 'result.json');
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const resultFile = path.join(storagePathDir, `result-${dateStr}.json`);
     fs.writeFileSync(resultFile, serialized);
     const preview = serialized.slice(0, 500);
     return {
         result: {
             oversized: true,
             path: resultFile,
-            summary: `Result was ${buf.length} bytes, saved to workspace`,
+            summary: `Result was ${buf.length} bytes, saved to storagePath`,
             preview,
             totalBytes: buf.length
         },
         oversized: true
     };
+}
+
+// ── Storage Snapshot & Diff ──────────────────────────────────────────────────
+// Snapshots the file list of a directory (relative paths + sizes + mtimes).
+// Used before and after tool execution to detect files the tool created.
+// Snapshots are stored in memory only — single call scope.
+function snapshotDir(dir) {
+    if (!fs.existsSync(dir)) return new Map();
+    const out = new Map();
+    const walk = (d) => {
+        const entries = fs.readdirSync(d, { withFileTypes: true });
+        for (const e of entries) {
+            const full = path.join(d, e.name);
+            if (e.isDirectory()) walk(full);
+            else if (e.isFile()) {
+                const stat = fs.statSync(full);
+                const rel = path.relative(dir, full).replace(/\\/g, '/');
+                out.set(rel, { size: stat.size, mtimeMs: stat.mtimeMs });
+            }
+        }
+    };
+    walk(dir);
+    return out;
+}
+
+function diffSnapshots(before, after) {
+    const added = [];
+    for (const [rel, info] of after) {
+        const prev = before.get(rel);
+        if (!prev || prev.mtimeMs !== info.mtimeMs) {
+            added.push({ rel, size: info.size });
+        }
+    }
+    return added;
 }
 
 // ── Workspace Lifecycle ──────────────────────────────────────────────────────
@@ -322,6 +376,7 @@ const WORKER_BOOTSTRAP = path.join(__dirname, 'worker-bootstrap.js');
 async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress }) {
     const sourcePath = toolPath(name);
     const source = fs.readFileSync(sourcePath, 'utf8');
+    logger.info(`[Forge:worker] Source loaded for "${name}": ${source.length} chars, spawning worker`, null, 'Forge');
 
     // Create MessageChannels for gateway and progress relay
     const { port1: gatewayPort1, port2: gatewayPort2 } = new MessageChannel();
@@ -341,19 +396,30 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     gatewayPort1.on('message', async (msg) => {
         if (msg.type === 'gateway-call') {
             const { id, task, params } = msg;
+            logger.info(`[Forge:worker] Gateway relay for "${name}": ${task}`, { id }, 'Forge');
+            const relayTimeout = 330000;
             try {
-                const result = await GATEWAY_CLIENT.chat({
-                    task,
-                    ...params
-                });
+                const result = await Promise.race([
+                    GATEWAY_CLIENT.chat({ task, ...params }),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error(`Gateway relay timed out after ${relayTimeout}ms`)), relayTimeout)
+                    )
+                ]);
                 gatewayPort1.postMessage({ type: 'gateway-result', id, result });
             } catch (err) {
+                logger.warn(`[Forge:worker] Gateway relay FAILED for "${name}": ${err.message}`, null, 'Forge');
                 gatewayPort1.postMessage({ type: 'gateway-result', id, error: err.message });
             }
         } else if (msg.type === 'gateway-embed') {
             const { id, text } = msg;
+            const embedTimeout = 90000;
             try {
-                const vector = await GATEWAY_CLIENT.embedText(text);
+                const vector = await Promise.race([
+                    GATEWAY_CLIENT.embedText(text),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error(`Gateway embed relay timed out after ${embedTimeout}ms`)), embedTimeout)
+                    )
+                ]);
                 gatewayPort1.postMessage({ type: 'gateway-result', id, result: vector });
             } catch (err) {
                 gatewayPort1.postMessage({ type: 'gateway-result', id, error: err.message });
@@ -372,7 +438,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             workspacePath,
             toolStatePath,
             storagePath,
-            captureLogs: captureLogs || false
+            captureLogs: captureLogs
         },
         resourceLimits: {
             maxOldGenerationSizeMb: 512,
@@ -384,14 +450,26 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // — transferring them requires them to be the exact objects in the transferList
     // and causes issues with some Node versions. The copy overhead is acceptable.
     worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, progressPort: progressPort2, payload: payloadBuffers }, [gatewayPort2, progressPort2]);
+    logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (timeout: ${timeout}ms)`, null, 'Forge');
 
     return new Promise((resolve, reject) => {
         let settled = false;
+        let receivedResult = false;
         let logs = [];
+
+        const cleanup = () => {
+            clearTimeout(timer);
+            // Close ports to prevent leaks — removeAllListeners isn't available
+            // on MessagePort, so we just stop them from accepting new messages.
+            try { gatewayPort1.close(); } catch {}
+            try { progressPort1.close(); } catch {}
+        };
 
         const timer = setTimeout(() => {
             if (settled) return;
             settled = true;
+            logger.warn(`[Forge:worker] TIMEOUT for "${name}" after ${timeout}ms — terminating`, null, 'Forge');
+            cleanup();
             worker.terminate().then(() => {
                 reject(new Error(`Tool "${name}" timed out after ${timeout}ms — worker terminated`));
             });
@@ -401,15 +479,20 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             if (msg.type === 'result') {
                 if (settled) return;
                 settled = true;
+                receivedResult = true;
+                logger.info(`[Forge:worker] Result from "${name}": ${typeof msg.result === 'string' ? msg.result.length + ' chars' : typeof msg.result}`, null, 'Forge');
                 clearTimeout(timer);
+                cleanup();
                 worker.terminate();
                 resolve({ result: msg.result, logs: captureLogs ? logs : undefined });
             } else if (msg.type === 'error') {
                 if (settled) return;
                 settled = true;
+                logger.warn(`[Forge:worker] Error from "${name}": ${msg.error.slice(0, 200)}`, null, 'Forge');
                 clearTimeout(timer);
+                cleanup();
                 worker.terminate();
-                reject(new Error(msg.error));
+                reject(new Error(msg.error + (msg.stack ? '\n' + msg.stack : '')));
             } else if (msg.type === 'log' && captureLogs) {
                 logs.push(msg);
             }
@@ -418,18 +501,28 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
         worker.on('error', (err) => {
             if (settled) return;
             settled = true;
+            logger.warn(`[Forge:worker] Worker error for "${name}": ${err.message}`, null, 'Forge');
             clearTimeout(timer);
+            cleanup();
             reject(err);
         });
 
         worker.on('exit', (code) => {
             if (settled) return;
             settled = true;
+            logger.warn(`[Forge:worker] Worker for "${name}" exited with code ${code} (receivedResult=${receivedResult}, logs=${logs.length})`, null, 'Forge');
             clearTimeout(timer);
-            if (code !== 0) {
-                reject(new Error(`Worker exited with code ${code}`));
-            } else {
+            cleanup();
+            // If the worker exited without sending a result or error message,
+            // it crashed — DON'T resolve with undefined, report it as a failure.
+            if (receivedResult) {
                 resolve({ result: undefined, logs: captureLogs ? logs : undefined });
+            } else {
+                reject(new Error(
+                    `Worker for "${name}" exited with code ${code} without sending a result. ` +
+                    `This means the tool crashed or the worker was killed. ` +
+                    `Check the tool source for syntax errors, infinite loops, or OOM.`
+                ));
             }
         });
     });
@@ -616,16 +709,22 @@ export async function forge_delete(args, context) {
 }
 
 export async function forge_call(args, context) {
-    const { name, args: toolArgs, payload, timeout: reqTimeout, captureLogs } = args;
+    const { name, args: toolArgs, payload, timeout: reqTimeout } = args;
+    const startedAt = Date.now();
+
+    logger.info(`[Forge] forge_call START: "${name}"`, { args: toolArgs, payload, timeout: reqTimeout }, 'Forge');
 
     if (!toolExists(name)) {
+        logger.warn(`[Forge] forge_call REJECT: "${name}" does not exist`, null, 'Forge');
         return mcpError(`Tool "${name}" does not exist. Use forge_list to see available tools.`);
     }
 
     // Check package approval status
     const manifest = readManifest(name);
     if (manifest?.packagesPending) {
-        return mcpError(`Tool "${name}" has pending unapproved packages: ${manifest.packages?.join(', ') || '(unknown)'}. Add them to config.json agents.forge.allowedPackages or the operator must approve.`);
+        const pkgList = manifest.packages?.length ? manifest.packages.join(', ') : '(no package list)';
+        logger.warn(`[Forge] forge_call REJECT: "${name}" has unapproved packages`, { packages: manifest.packages }, 'Forge');
+        return mcpError(`Tool "${name}" has pending unapproved packages: ${pkgList}. Add them to config.json agents.forge.allowedPackages or the operator must approve.`);
     }
 
     const timeout = Math.min(reqTimeout || CONFIG.defaultTimeout, CONFIG.maxTimeout);
@@ -634,15 +733,20 @@ export async function forge_call(args, context) {
     let payloadBuffers;
     try {
         payloadBuffers = await resolvePayload(payload);
+        logger.info(`[Forge] Payload resolved for "${name}": ${payloadBuffers.length} buffers`, { sizes: payloadBuffers.map(b => b.length) }, 'Forge');
     } catch (e) {
+        logger.warn(`[Forge] Payload resolution FAILED for "${name}": ${e.message}`, null, 'Forge');
         return mcpError(`Payload resolution failed: ${e.message}`);
     }
 
     // Acquire semaphore slot
     let release;
     try {
+        logger.info(`[Forge] Acquiring semaphore for "${name}"...`, null, 'Forge');
         release = await SEMAPHORE();
+        logger.info(`[Forge] Semaphore acquired for "${name}"`, null, 'Forge');
     } catch (e) {
+        logger.warn(`[Forge] Semaphore FAILED for "${name}": ${e.message}`, null, 'Forge');
         return mcpError(e.message);
     }
 
@@ -651,8 +755,14 @@ export async function forge_call(args, context) {
     const toolStoragePath = storagePath(name);
     const progress = context.progress;
 
+    // Snapshot storagePath BEFORE execution so we can diff after.
+    // The tool may not exist yet on first call — that's fine, snapshotDir returns empty Map.
+    const storageBefore = snapshotDir(toolStoragePath);
+
+    let workerData;
     try {
-        const { result, logs } = await executeInWorker({
+        logger.info(`[Forge] Spawning worker for "${name}" (timeout: ${timeout}ms)`, null, 'Forge');
+        workerData = await executeInWorker({
             name,
             args: toolArgs,
             payloadBuffers,
@@ -660,25 +770,66 @@ export async function forge_call(args, context) {
             toolStatePath,
             storagePath: toolStoragePath,
             timeout,
-            captureLogs,
+            captureLogs: true,
             progress
         });
-
-        const sizeChecked = enforceResultSize(result, workspacePath);
-
-        return mcpOk({
-            op: 'call',
-            name,
-            result: sizeChecked.result,
-            ...(logs ? { logs } : {}),
-            ...(sizeChecked.oversized ? { _note: 'Result was oversized, saved to workspace path' } : {})
-        });
+        logger.info(`[Forge] Worker DONE for "${name}": result type ${typeof workerData.result}, ${workerData.logs?.length || 0} log lines`, null, 'Forge');
     } catch (e) {
+        logger.info(`[Forge] Worker FAILED for "${name}": ${e.message}`, null, 'Forge');
         return mcpError(`Tool execution failed: ${e.message}`);
     } finally {
         release();
         cleanupWorkspace(workspacePath);
     }
+
+    const durationMs = Date.now() - startedAt;
+    const { result, logs } = workerData;
+    // Oversized results go to toolStoragePath (persistent) so they survive
+    // workspace cleanup and appear in _outputs.
+    const sizeChecked = enforceResultSize(result, toolStoragePath);
+
+    // Diff storagePath to find files the tool created or modified.
+    const newFiles = diffSnapshots(storageBefore, snapshotDir(toolStoragePath));
+    const outputs = newFiles.map(f => {
+        const storageReadPath = path.posix.join('forge', name, f.rel);
+        return {
+            name: f.rel,
+            path: storageReadPath,
+            url: `${PUBLIC_URL}/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`,
+            size: f.size
+        };
+    });
+    if (outputs.length > 0) {
+        logger.info(`[Forge] "${name}" produced ${outputs.length} output file(s)`, { outputs: outputs.map(o => o.path) }, 'Forge');
+    }
+
+    // Detect silently empty results
+    const resultIsEmpty = result === undefined || result === null ||
+        (typeof result === 'object' && Object.keys(result).length === 0);
+
+    const diagnostics = {
+        durationMs,
+        resultIsEmpty,
+        logCount: logs?.length || 0,
+        payloadCount: payloadBuffers?.length || 0,
+    };
+
+    if (resultIsEmpty) {
+        logger.warn(`[Forge] forge_call EMPTY RESULT for "${name}" (${durationMs}ms, ${logs?.length || 0} logs)`, null, 'Forge');
+    }
+
+    logger.info(`[Forge] forge_call COMPLETE: "${name}" (${durationMs}ms, empty=${resultIsEmpty})`, null, 'Forge');
+
+    return mcpOk({
+        op: 'call',
+        name,
+        result: sizeChecked.result,
+        _diagnostics: diagnostics,
+        _outputs: outputs,
+        ...(logs?.length ? { _logs: logs.map(l => ({ level: l.level, message: l.message })) } : {}),
+        ...(resultIsEmpty ? { _warning: 'Tool returned an empty result (undefined, null, or empty object). This is often a bug — check your console output (_logs) for errors.' } : {}),
+        ...(sizeChecked.oversized ? { _note: 'Result was oversized, saved to storagePath and listed in _outputs' } : {})
+    });
 }
 
 export async function forge_history(args, context) {
@@ -813,7 +964,8 @@ export async function forge_help(args, context) {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 export async function init(context) {
-    const agentConfig = context.config?.agents?.forge ?? {};
+    const agentConfig = context.config?.agents?.forge;
+    if (!agentConfig) throw new Error('forge.init: context.config.agents.forge is required — missing from config.json');
 
     CONFIG = {
         defaultTimeout: agentConfig.defaultTimeout ?? DEFAULTS.defaultTimeout,
@@ -841,6 +993,13 @@ export async function init(context) {
     }
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 
+    // Public URL for constructing retrieval links to forge outputs.
+    // Read from config.json agents.forge.publicUrl — must be reachable by clients.
+    // Falls back to http://localhost:{PORT} where PORT comes from env or default 3100.
+    PUBLIC_URL = agentConfig.publicUrl
+        || process.env.PUBLIC_URL
+        || `http://localhost:${process.env.PORT || 3100}`;
+
     GATEWAY_CLIENT = context.gateway;
 
     fs.mkdirSync(TOOLS_DIR, { recursive: true });
@@ -855,7 +1014,7 @@ export async function init(context) {
     // Startup health checks
     await startupHealthChecks();
 
-    process.stderr.write(`[forge] initialized — root: ${FORGE_ROOT}, maxConcurrent: ${CONFIG.maxConcurrentCalls}\n`);
+    logger.info(`[Forge] Initialized — root: ${FORGE_ROOT}, maxConcurrent: ${CONFIG.maxConcurrentCalls}`, null, 'Forge');
 }
 
 // ── Startup Health Checks ────────────────────────────────────────────────────
@@ -864,7 +1023,7 @@ async function startupHealthChecks() {
     try {
         await git(['fsck', '--quiet']);
     } catch (e) {
-        process.stderr.write(`[forge] WARNING: git fsck failed: ${e.message}\n`);
+        logger.warn(`[Forge] git fsck failed: ${e.message}`, null, 'Forge');
     }
 
     // 2. Sweep orphan workspace directories (scenario 9.5)
@@ -878,7 +1037,7 @@ async function startupHealthChecks() {
             }
         }
         if (swept > 0) {
-            process.stderr.write(`[forge] swept ${swept} orphan workspace directories\n`);
+            logger.info(`[Forge] Swept ${swept} orphan workspace directories`, null, 'Forge');
         }
     }
 }
