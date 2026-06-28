@@ -303,6 +303,14 @@ export function createGatewayClient(wsUrl, httpUrl) {
             return this.embed(text);
         },
 
+        async listModels(type) {
+            const url = type ? `${httpUrl}/v1/models?type=${encodeURIComponent(type)}` : `${httpUrl}/v1/models`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`Gateway listModels failed: HTTP ${res.status} ${res.statusText}`);
+            const data = await res.json();
+            return data.data || [];
+        },
+
         async embedBatch(texts) {
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',

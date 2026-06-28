@@ -373,7 +373,7 @@ function mcpError(message) {
 // The worker bootstrap file path
 const WORKER_BOOTSTRAP = path.join(__dirname, 'worker-bootstrap.js');
 
-async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress }) {
+async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress, defaultModel }) {
     const sourcePath = toolPath(name);
     const source = fs.readFileSync(sourcePath, 'utf8');
     logger.info(`[Forge:worker] Source loaded for "${name}": ${source.length} chars, spawning worker`, null, 'Forge');
@@ -396,7 +396,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     gatewayPort1.on('message', async (msg) => {
         if (msg.type === 'gateway-call') {
             const { id, task, params } = msg;
-            logger.info(`[Forge:worker] Gateway relay for "${name}": ${task}`, { id }, 'Forge');
+            logger.info(`[Forge:worker] Gateway relay for "${name}": task=${task} model=${params?.model || '(default)'}`, { id }, 'Forge');
             const relayTimeout = 330000;
             try {
                 const result = await Promise.race([
@@ -424,6 +424,21 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             } catch (err) {
                 gatewayPort1.postMessage({ type: 'gateway-result', id, error: err.message });
             }
+        } else if (msg.type === 'gateway-list-models') {
+            const { id, type } = msg;
+            const listTimeout = 30000;
+            try {
+                const models = await Promise.race([
+                    GATEWAY_CLIENT.listModels(type),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error(`Gateway listModels relay timed out after ${listTimeout}ms`)), listTimeout)
+                    )
+                ]);
+                gatewayPort1.postMessage({ type: 'gateway-result', id, result: models });
+            } catch (err) {
+                logger.warn(`[Forge:worker] listModels relay FAILED for "${name}": ${err.message}`, null, 'Forge');
+                gatewayPort1.postMessage({ type: 'gateway-result', id, error: err.message });
+            }
         }
     });
     gatewayPort1.start();
@@ -449,7 +464,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // Transfer ports to the worker. Payload Buffers are structured-cloned (copied)
     // — transferring them requires them to be the exact objects in the transferList
     // and causes issues with some Node versions. The copy overhead is acceptable.
-    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, progressPort: progressPort2, payload: payloadBuffers }, [gatewayPort2, progressPort2]);
+    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, [gatewayPort2, progressPort2]);
     logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (timeout: ${timeout}ms)`, null, 'Forge');
 
     return new Promise((resolve, reject) => {
@@ -709,10 +724,10 @@ export async function forge_delete(args, context) {
 }
 
 export async function forge_call(args, context) {
-    const { name, args: toolArgs, payload, timeout: reqTimeout } = args;
+    const { name, args: toolArgs, payload, timeout: reqTimeout, model } = args;
     const startedAt = Date.now();
 
-    logger.info(`[Forge] forge_call START: "${name}"`, { args: toolArgs, payload, timeout: reqTimeout }, 'Forge');
+    logger.info(`[Forge] forge_call START: "${name}"`, { args: toolArgs, payload, timeout: reqTimeout, model: model || '(default)' }, 'Forge');
 
     if (!toolExists(name)) {
         logger.warn(`[Forge] forge_call REJECT: "${name}" does not exist`, null, 'Forge');
@@ -771,7 +786,8 @@ export async function forge_call(args, context) {
             storagePath: toolStoragePath,
             timeout,
             captureLogs: true,
-            progress
+            progress,
+            defaultModel: model || null
         });
         logger.info(`[Forge] Worker DONE for "${name}": result type ${typeof workerData.result}, ${workerData.logs?.length || 0} log lines`, null, 'Forge');
     } catch (e) {
@@ -900,10 +916,21 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.args       — The args object passed to forge_call (same as first parameter)
 
 ctx.gateway API
-  await ctx.gateway.chat({ task, messages, systemPrompt?, maxTokens?, temperature? })
+  await ctx.gateway.chat({ task, model?, messages, systemPrompt?, maxTokens?, temperature? })
     → { content: string, ...meta }
     task: "query" | "inspect" | "synthesis" | "analysis" | "vision" | "embed"
-    messages: [{ role: "user"|"system"|"assistant", content: string }]
+    model: optional Gateway model id (e.g. "badkid-llama-chat"). Overrides the default
+            routing for THIS call. If you don't know what models exist, call
+            ctx.gateway.listModels() first — DO NOT hardcode model ids.
+    For backward compatibility: omit both task and model to use the Gateway default.
+    Compatibility note: forge_call can pin a default model for the whole tool — but
+    tools SHOULD NOT depend on a specific model. Write tools that work with whatever
+    the Gateway resolves for each task. The model param is for callers (top-level LLMs)
+    who want to route a particular call through a specific model.
+
+  await ctx.gateway.listModels(type?)  → [{ id, type, capabilities, ... }]
+    Lists models available on the Gateway. Use this to discover which model IDs are
+    valid before passing one to chat({ model: ... }). type filter: "chat" | "embedding".
 
   await ctx.gateway.embed(text)  → number[] (embedding vector)
   await ctx.gateway.embedText(text)  → number[] (alias)

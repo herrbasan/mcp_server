@@ -70,12 +70,20 @@ Call `forge.help` for the full authoring guide with the `ctx` API reference. Qui
 
 | `ctx` field | What it is | Lifetime |
 |-------------|-----------|----------|
-| `ctx.gateway.chat(...)` | Full LLM Gateway (same as you) | Per-call proxy |
+| `ctx.gateway.chat(...)` | Full LLM Gateway (same as you). Accepts `{ task?, model?, messages, systemPrompt?, ... }` — `task` resolves the Gateway's default for that task, `model` pins a specific Gateway model id (e.g. `'badkid-llama-chat'`). Omit both for full default routing. | Per-call proxy |
+| `ctx.gateway.listModels(type?)` | Lists models available on the Gateway. Use to discover valid `model` ids before passing one to `chat`. `type` filter: `'chat'` or `'embedding'`. | Per-call proxy |
 | `ctx.progress(...)` | Real-time progress to client | Per-call relay |
 | `ctx.payload` | `Buffer[]` from file paths/URLs | Resolved before tool runs |
 | `ctx.storagePath` | Persistent output dir | Survives, user-visible |
 | `ctx.toolStatePath` | Persistent state (caches, indexes) | Survives, gitignored |
 | `ctx.workspacePath` | Ephemeral temp dir | Deleted after call |
+
+**`forge_call` args** (top-level caller surface):
+- `name` — tool to execute (required)
+- `args` — passed to the tool
+- `payload` — file paths/URLs → `ctx.payload` Buffers
+- `timeout` — ms (default 300000, max 600000)
+- `model` — optional Gateway model id. When set, ALL `ctx.gateway.chat()` calls inside the tool route through this model unless the tool overrides per-call with its own `model` or non-default `task`. **Compatibility rule: tool authors should write model-agnostic tools** (omit `task` and `model` from chat calls) so the caller's pinned model takes effect. Hardcoding model ids in tools breaks portability.
 
 **Workflow:**
 1. `forge.list` — what's in the catalog?

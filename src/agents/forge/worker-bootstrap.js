@@ -17,6 +17,7 @@ let gatewayPort = null;
 let progressPort = null;
 let initialized = false;
 let initData = {};
+let defaultModel = null;
 
 // Console capture — ALWAYS ON. The LLM authoring the tool needs to see its
 // console.log/error output for debugging. This relays everything to the
@@ -56,8 +57,34 @@ function createGatewayProxy(port) {
                 pending.delete(id);
                 reject(new Error(`Gateway proxy call timed out after ${timeoutMs}ms (task: ${type})`));
             }, timeoutMs);
-            pending.set(id, { resolve, reject, timer });
-            port.postMessage({ type: 'gateway-call', id, task: type, params });
+
+            // Resolve routing for this single call. Precedence:
+            //   1. Explicit per-call `model` in params — wins over everything.
+            //   2. Explicit per-call `task` (any non-default) — wins over worker default model.
+            //   3. Worker-level `defaultModel` (set via forge_call's `model` arg) — applied silently.
+            //   4. Original `type` arg — Gateway's task-based default routing.
+            // This keeps tool authors model-agnostic while letting callers pin a model
+            // at the call site or per forge_call without breaking compatibility.
+            const callParams = params || {};
+            const callerModel = callParams.model != null;
+            const callerTask = type != null && type !== 'query';
+
+            let resolvedTask, finalParams;
+            if (callerModel) {
+                resolvedTask = null;
+                finalParams = { ...callParams };
+            } else if (callerTask) {
+                resolvedTask = type;
+                finalParams = { ...callParams };
+            } else if (defaultModel) {
+                resolvedTask = null;
+                finalParams = { ...callParams, model: defaultModel };
+            } else {
+                resolvedTask = type || null;
+                finalParams = { ...callParams };
+            }
+
+            port.postMessage({ type: 'gateway-call', id, task: resolvedTask, params: finalParams });
         });
     }
 
@@ -73,13 +100,31 @@ function createGatewayProxy(port) {
         });
     }
 
+    function listModels(type, timeoutMs = 30000) {
+        const id = ++reqId;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error(`Gateway listModels timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
+            port.postMessage({ type: 'gateway-list-models', id, type: type || null });
+        });
+    }
+
     return {
-        // Primary API: gateway.chat({ task, messages, systemPrompt, ... })
+        // Primary API: gateway.chat({ task, model?, messages, systemPrompt, ... })
+        // - task selects the Gateway-resolved default for that task
+        // - model overrides the task default with a specific model ID (e.g. "badkid-llama-chat")
+        // For compatibility: omit both to use the Gateway's default routing.
         chat: (params) => call(params?.task || 'query', params),
 
         // Embedding shortcut
         embed: embed,
         embedText: embed,
+
+        // List available models from the Gateway (forwarded as a MessagePort call)
+        listModels: listModels,
 
         // Predict adapter (for tools that use the older API shape)
         predict: (params) => call(params?.task || 'query', params),
@@ -166,6 +211,7 @@ parentPort.on('message', async (msg) => {
 
         gatewayPort = msg.gatewayPort;
         progressPort = msg.progressPort;
+        defaultModel = msg.defaultModel || null;
         initData = { payload: msg.payload || [] };
 
         try {
