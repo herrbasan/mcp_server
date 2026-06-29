@@ -102,9 +102,13 @@ export async function init(context) {
     if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
     initConfig(agentConfig);
 
-    // Public URL for constructing retrieval links for big files. Same pattern
-    // as forge — config.json override, env fallback, default localhost.
+    // Public URL for constructing retrieval links for big files. Lookup order:
+    // 1. agents.storage.publicUrl (storage-specific override)
+    // 2. agents.forge.publicUrl (server-wide setting — typically the same)
+    // 3. PUBLIC_URL env var
+    // 4. http://localhost:{PORT} — last resort, only works for same-machine clients
     PUBLIC_URL = agentConfig.publicUrl
+        || context.config?.agents?.forge?.publicUrl
         || process.env.PUBLIC_URL
         || `http://localhost:${process.env.PORT || 3100}`;
 

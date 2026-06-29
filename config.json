@@ -47,6 +47,7 @@
     "storage": {
       "root": "D:\\MCP_Storage",
       "uncShare": "\\\\BADKID\\Stuff\\MCP_Storage",
+      "publicUrl": "http://192.168.0.100:3100",
       "maxReadSize": 10485760,
       "maxWriteSize": 104857600
     },
