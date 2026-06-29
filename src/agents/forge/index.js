@@ -7,6 +7,7 @@ import { MessageChannel } from 'worker_threads';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createTranslatorFromConfig } from '../storage/path-translator.js';
 
 const logger = getLogger();
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,7 @@ let FORGE_ROOT;       // data/forge/
 let TOOLS_DIR;        // data/forge/tools/
 let WORKSPACE_DIR;    // data/forge/workspace/
 let STORAGE_ROOT;     // e.g. D:\MCP_Storage\forge\
+let STORAGE_TRANSLATOR;  // null when no uncShare is configured
 let PUBLIC_URL;       // e.g. http://192.168.0.100:3100 — used to build retrieval URLs
 let CONFIG;
 let GATEWAY_CLIENT;
@@ -226,8 +228,12 @@ async function resolvePayloadItem(item, index) {
     }
 
     // File path (local or UNC) → readFile
+    // Translate UNC form of the storage share to the local form first —
+    // works for both forge workers (which only see D:\MCP_Storage) and the
+    // main-thread resolver (which avoids going through SMB unnecessarily).
+    const translated = STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.toLocal(item) : item;
     // Resolve to absolute — relative paths are relative to PROJECT_ROOT (scenario 5.3)
-    const resolved = path.isAbsolute(item) ? item : path.resolve(PROJECT_ROOT, item);
+    const resolved = path.isAbsolute(translated) ? translated : path.resolve(PROJECT_ROOT, translated);
     const stat = fs.statSync(resolved);  // Throws ENOENT if missing (scenario 3.1), EACCES if no access
     if (stat.isDirectory()) {
         throw new Error(`payload[${index}] is a directory, not a file: ${item} (scenario 3.2)`);
@@ -808,10 +814,16 @@ export async function forge_call(args, context) {
     const newFiles = diffSnapshots(storageBefore, snapshotDir(toolStoragePath));
     const outputs = newFiles.map(f => {
         const storageReadPath = path.posix.join('forge', name, f.rel);
+        // Give callers a UNC path they can use from another LAN machine
+        // (e.g. \\BADKID\Stuff\MCP_Storage\forge\<tool>\<file>) in addition
+        // to the storage.read path. Skip when no translator is configured.
+        const absoluteLocal = path.join(toolStoragePath, f.rel);
+        const uncPath = STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.toUnc(absoluteLocal) : null;
         return {
             name: f.rel,
             path: storageReadPath,
             url: `${PUBLIC_URL}/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`,
+            ...(uncPath ? { uncPath } : {}),
             size: f.size
         };
     });
@@ -1012,13 +1024,20 @@ export async function init(context) {
     WORKSPACE_DIR = path.join(FORGE_ROOT, 'workspace');
 
     // Storage root: use the storage agent's root + /forge subdirectory
-    const storageRoot = context.config?.agents?.storage?.root;
+    const storageAgentConfig = context.config?.agents?.storage;
+    const storageRoot = storageAgentConfig?.root;
     if (storageRoot) {
         STORAGE_ROOT = path.resolve(storageRoot, 'forge');
     } else {
         STORAGE_ROOT = path.join(FORGE_ROOT, 'storage');
     }
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
+
+    // UNC ↔ local translator (null when uncShare not configured).
+    STORAGE_TRANSLATOR = createTranslatorFromConfig(storageAgentConfig);
+    if (STORAGE_TRANSLATOR) {
+        logger.info(`[Forge] UNC translator active: ${STORAGE_TRANSLATOR.uncShare} ↔ ${STORAGE_TRANSLATOR.localRoot}`, null, 'Forge');
+    }
 
     // Public URL for constructing retrieval links to forge outputs.
     // Read from config.json agents.forge.publicUrl — must be reachable by clients.

@@ -1,6 +1,6 @@
 {
     "agent": "storage",
-    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured).",
     "tools": [
         {
             "name": "storage_stat",

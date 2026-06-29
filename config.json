@@ -46,6 +46,7 @@
     },
     "storage": {
       "root": "D:\\MCP_Storage",
+      "uncShare": "\\\\BADKID\\Stuff\\MCP_Storage",
       "maxReadSize": 10485760,
       "maxWriteSize": 104857600
     },

@@ -57,6 +57,7 @@ function createGatewayProxy(port) {
                 pending.delete(id);
                 reject(new Error(`Gateway proxy call timed out after ${timeoutMs}ms (task: ${type})`));
             }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
 
             // Resolve routing for this single call. Precedence:
             //   1. Explicit per-call `model` in params — wins over everything.

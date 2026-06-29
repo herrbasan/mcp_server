@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createTranslatorFromConfig } from './path-translator.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +16,7 @@ const DEFAULTS = {
 
 let STORAGE_ROOT;
 let CONFIG;
+let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
 
 function initConfig(agentConfig) {
     if (!agentConfig) throw new Error('storage.init: agentConfig is required');
@@ -25,12 +27,20 @@ function initConfig(agentConfig) {
         maxReadSize: agentConfig.maxReadSize ?? DEFAULTS.maxReadSize,
         maxWriteSize: agentConfig.maxWriteSize ?? DEFAULTS.maxWriteSize
     };
+    TRANSLATOR = createTranslatorFromConfig(agentConfig);
+    if (TRANSLATOR) {
+        logger.info(`[Storage] UNC translator active: ${TRANSLATOR.uncShare} ↔ ${TRANSLATOR.localRoot}`, null, 'Storage');
+    }
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
 }
 
 function safeResolve(userPath) {
     if (typeof userPath !== 'string') throw new Error(`Path must be a string: ${userPath}`);
-    const resolved = path.resolve(STORAGE_ROOT, userPath);
+    // Translate UNC form of the storage share to the local form BEFORE
+    // path.resolve — otherwise UNC segments get appended as nested directories
+    // inside the storage root (silent corruption).
+    const normalized = TRANSLATOR ? TRANSLATOR.toLocal(userPath) : userPath;
+    const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(STORAGE_ROOT, normalized);
     const realRoot = fs.realpathSync(STORAGE_ROOT);
 
     // Walk up from resolved path until we hit an existing ancestor, realpath it,
