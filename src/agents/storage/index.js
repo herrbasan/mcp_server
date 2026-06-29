@@ -52,13 +52,30 @@ function listResources() {
 }
 
 function readResource(uri) {
-    // Path-encoded URI — look up the registered entry, then re-read from disk.
-    // If the file is gone (deleted/renamed) we return null. No TTL pressure.
-    const entry = RESOURCES.get(uri);
-    if (!entry) return null;
-    if (!fs.existsSync(entry.absolutePath)) return null;
-    const content = fs.readFileSync(entry.absolutePath, 'utf8');
-    return { uri: entry.uri, mimeType: entry.mimeType, text: content };
+    // Path-encoded URI: storage://<percent-encoded-absolute-path>. Decode the
+    // path and read from disk. Works for any file under the storage root, even
+    // if storage.read was never called to publish it — the URI is the path.
+    if (typeof uri !== 'string' || !uri.startsWith('storage://')) return null;
+    let absolutePath;
+    try {
+        absolutePath = decodeURIComponent(uri.slice('storage://'.length));
+    } catch {
+        return null;
+    }
+    // Path must be inside the storage root — no escaping.
+    const realRoot = fs.realpathSync(STORAGE_ROOT);
+    let realTarget;
+    try {
+        realTarget = fs.realpathSync(absolutePath);
+    } catch {
+        return null;  // file doesn't exist
+    }
+    if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+        return null;  // path escapes storage root
+    }
+    if (!fs.statSync(realTarget).isFile()) return null;
+    const content = fs.readFileSync(realTarget, 'utf8');
+    return { uri, mimeType: guessMime(realTarget), text: content };
 }
 
 function initConfig(agentConfig) {
