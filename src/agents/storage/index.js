@@ -19,57 +19,46 @@ let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
 
-// ── Resource registry ────────────────────────────────────────────────────────
-// storage_read can publish a file as a resource_link for files too big to
-// inline over MCP. The MCP client (chat app) fetches via resources/read.
-// Resources are kept in memory only and expire after RESOURCE_TTL_MS.
-const RESOURCES = new Map();   // uri → { uri, name, mimeType, text, size, expiresAt }
-const RESOURCE_TTL_MS = 5 * 60 * 1000;
+// ── Resource pointer registry ───────────────────────────────────────────────
+// storage_read returns a resource_link for files too big to inline. The URI
+// encodes the file path so resources/read can always re-read from disk —
+// no TTL, no in-memory cache. The pointer stays valid as long as the file
+// exists on disk.
+const RESOURCES = new Map();   // uri → { uri, name, mimeType, absolutePath, size }
 
-function publishResource({ userPath, absolutePath, content, mimeType }) {
-    const id = randomUUID().replace(/-/g, '').slice(0, 16);
-    const uri = `storage://res/${id}`;
-    const expiresAt = Date.now() + RESOURCE_TTL_MS;
-    RESOURCES.set(uri, {
+function publishResource({ userPath, absolutePath, content, mimeType, size }) {
+    // URI encodes the file path (percent-encoded) so resources/read can
+    // always resolve the file from disk. Path is the canonical reference;
+    // content/mimeType/size are cached for listResources only.
+    const enc = encodeURIComponent(absolutePath);
+    const uri = `storage://${enc}`;
+    const entry = {
         uri,
         name: path.basename(absolutePath),
         mimeType: mimeType || 'text/plain',
-        text: content,
-        size: Buffer.byteLength(content, 'utf8'),
         absolutePath,
-        userPath,
-        expiresAt
-    });
-    return RESOURCES.get(uri);
+        size: size ?? Buffer.byteLength(content, 'utf8')
+    };
+    RESOURCES.set(uri, entry);
+    return entry;
 }
 
 function listResources() {
-    const now = Date.now();
     const out = [];
-    for (const [uri, r] of RESOURCES) {
-        if (r.expiresAt <= now) { RESOURCES.delete(uri); continue; }
-        out.push({
-            uri: r.uri,
-            name: r.name,
-            mimeType: r.mimeType,
-            size: r.size
-        });
+    for (const [, r] of RESOURCES) {
+        out.push({ uri: r.uri, name: r.name, mimeType: r.mimeType, size: r.size });
     }
     return out;
 }
 
 function readResource(uri) {
-    const r = RESOURCES.get(uri);
-    if (!r) return null;
-    if (r.expiresAt <= Date.now()) { RESOURCES.delete(uri); return null; }
-    return { uri: r.uri, mimeType: r.mimeType, text: r.text };
-}
-
-function clearExpiredResources() {
-    const now = Date.now();
-    for (const [uri, r] of RESOURCES) {
-        if (r.expiresAt <= now) RESOURCES.delete(uri);
-    }
+    // Path-encoded URI — look up the registered entry, then re-read from disk.
+    // If the file is gone (deleted/renamed) we return null. No TTL pressure.
+    const entry = RESOURCES.get(uri);
+    if (!entry) return null;
+    if (!fs.existsSync(entry.absolutePath)) return null;
+    const content = fs.readFileSync(entry.absolutePath, 'utf8');
+    return { uri: entry.uri, mimeType: entry.mimeType, text: content };
 }
 
 function initConfig(agentConfig) {
@@ -280,13 +269,13 @@ export async function storage_read(args) {
     // client (chat app) fetches via resources/read — bypasses the JSON-RPC
     // message-size limit. Below the threshold, inline as today.
     if (stat.size > INLINE_BYTE_LIMIT) {
-        clearExpiredResources();
         const mime = guessMime(userPath);
         const resource = publishResource({
             userPath,
             absolutePath: target,
             content: out,
-            mimeType: mime
+            mimeType: mime,
+            size: stat.size
         });
         return toMcpWithContent(
             {
