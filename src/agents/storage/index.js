@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 
@@ -17,6 +18,59 @@ const DEFAULTS = {
 let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
+
+// ── Resource registry ────────────────────────────────────────────────────────
+// storage_read can publish a file as a resource_link for files too big to
+// inline over MCP. The MCP client (chat app) fetches via resources/read.
+// Resources are kept in memory only and expire after RESOURCE_TTL_MS.
+const RESOURCES = new Map();   // uri → { uri, name, mimeType, text, size, expiresAt }
+const RESOURCE_TTL_MS = 5 * 60 * 1000;
+
+function publishResource({ userPath, absolutePath, content, mimeType }) {
+    const id = randomUUID().replace(/-/g, '').slice(0, 16);
+    const uri = `storage://res/${id}`;
+    const expiresAt = Date.now() + RESOURCE_TTL_MS;
+    RESOURCES.set(uri, {
+        uri,
+        name: path.basename(absolutePath),
+        mimeType: mimeType || 'text/plain',
+        text: content,
+        size: Buffer.byteLength(content, 'utf8'),
+        absolutePath,
+        userPath,
+        expiresAt
+    });
+    return RESOURCES.get(uri);
+}
+
+function listResources() {
+    const now = Date.now();
+    const out = [];
+    for (const [uri, r] of RESOURCES) {
+        if (r.expiresAt <= now) { RESOURCES.delete(uri); continue; }
+        out.push({
+            uri: r.uri,
+            name: r.name,
+            mimeType: r.mimeType,
+            size: r.size
+        });
+    }
+    return out;
+}
+
+function readResource(uri) {
+    const r = RESOURCES.get(uri);
+    if (!r) return null;
+    if (r.expiresAt <= Date.now()) { RESOURCES.delete(uri); return null; }
+    return { uri: r.uri, mimeType: r.mimeType, text: r.text };
+}
+
+function clearExpiredResources() {
+    const now = Date.now();
+    for (const [uri, r] of RESOURCES) {
+        if (r.expiresAt <= now) RESOURCES.delete(uri);
+    }
+}
 
 function initConfig(agentConfig) {
     if (!agentConfig) throw new Error('storage.init: agentConfig is required');
@@ -68,9 +122,37 @@ function safeRel(userPath) {
     return path.relative(PROJECT_ROOT, safeResolve(userPath));
 }
 
+// Files larger than this go through the resource_link path — their content is
+// published as a resource the MCP client fetches via resources/read, bypassing
+// the JSON-RPC message-size limit that kills inline text transport on large
+// files (chat-app clients without filesystem access).
+const INLINE_BYTE_LIMIT = 64 * 1024;
+
+const TEXT_MIME = {
+    '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
+    '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.xml': 'text/xml',
+    '.yaml': 'text/yaml', '.yml': 'text/yaml', '.html': 'text/html', '.htm': 'text/html',
+    '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
+    '.log': 'text/plain', '.sql': 'text/plain'
+};
+
+function guessMime(p) {
+    const ext = path.extname(p).toLowerCase();
+    return TEXT_MIME[ext] || 'application/octet-stream';
+}
+
 function toMcp(ok, data) {
     const text = JSON.stringify({ ok, ...data }, null, 2);
     return { content: [{ type: 'text', text }] };
+}
+
+// toMcpWithContent emits an MCP result with one or more typed content items.
+// First item is always a small JSON text summary; the rest may be resource_link
+// items for large data the client should fetch separately.
+function toMcpWithContent(summary, extras = []) {
+    const content = [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
+    for (const e of extras) content.push(e);
+    return { content };
 }
 
 function result(ok, op, userPath, data) {
@@ -138,7 +220,12 @@ export async function init(context) {
         });
     }
 
-    return { root: STORAGE_ROOT };
+    return {
+        root: STORAGE_ROOT,
+        listResources,
+        readResource,
+        publishResource
+    };
 }
 
 export async function storage_stat(args) {
@@ -181,13 +268,47 @@ export async function storage_read(args) {
         return result(true, 'storage_read', userPath, {
             truncated: true,
             size: stat.size,
-            pointer: safeRel(userPath)
+            pointer: safeRel(userPath),
+            note: `File exceeds maxReadSize (${stat.size} > ${CONFIG.maxReadSize}). Use the REST endpoint or chunk via offset/length.`
         });
     }
     const content = fs.readFileSync(target, encoding === 'base64' ? undefined : 'utf8');
     const out = encoding === 'base64' ? content.toString('base64') : content;
     logger.info(`[Storage] storage_read OK: "${userPath}" (${stat.size}B, ${encoding})`, null, 'Storage');
-    return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size });
+
+    // Files above the inline threshold are published as a resource. The MCP
+    // client (chat app) fetches via resources/read — bypasses the JSON-RPC
+    // message-size limit. Below the threshold, inline as today.
+    if (stat.size > INLINE_BYTE_LIMIT) {
+        clearExpiredResources();
+        const mime = guessMime(userPath);
+        const resource = publishResource({
+            userPath,
+            absolutePath: target,
+            content: out,
+            mimeType: mime
+        });
+        return toMcpWithContent(
+            {
+                ok: true,
+                op: 'storage_read',
+                path: userPath,
+                size: stat.size,
+                encoding,
+                inline: false,
+                resourceUri: resource.uri,
+                note: 'File is above the inline size threshold. Use resources/read (uri shown) to fetch the content — this avoids transport-size failures on large payloads.'
+            },
+            [{
+                type: 'resource_link',
+                uri: resource.uri,
+                name: resource.name,
+                mimeType: resource.mimeType,
+                description: `${stat.size}B ${userPath} — fetch via resources/read`
+            }]
+        );
+    }
+    return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });
 }
 
 export async function storage_write(args) {

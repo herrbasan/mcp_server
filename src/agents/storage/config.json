@@ -15,7 +15,7 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above maxReadSize return a pointer instead of inline content.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above maxReadSize return a pointer instead of inline content. Files above the inline threshold (default 64 KB) are returned as a resource_link — fetch the actual content via the MCP resources/read method (e.g. ReadResource tool in chat clients). This bypasses the JSON-RPC message-size limit that kills inline transport for large payloads. The text summary in the response still includes the resource URI, size, and mimeType so you know how to fetch it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
