@@ -719,6 +719,13 @@ IMPORTANT RULES
     const compactTools = [COMPACT_TOOL];
 
     const COMPACT_TO_LEGACY = {
+        // MCP-native methods (slash form per spec, dot form for chat-client compat).
+        // The chat presents methods with dots; the legacy /mcp endpoint handles
+        // the slash form. Both forward to the same handler logic.
+        "resources.read": "resources_read", "resources.read": "resources_read",
+        "resources/list": "resources_list", "resources.list": "resources_list",
+        "resources/read": "resources_read", "resources/list": "resources_list",
+
         "memory.store": "memory_store", "memory.recall": "memory_recall", "memory.get": "memory_get",
         "memory.update": "memory_update", "memory.list": "memory_list", "memory.forget": "memory_forget",
         "memory.overview": "memory_overview",
@@ -763,6 +770,33 @@ IMPORTANT RULES
         if (name !== "tools") throw new Error(`Tool ${name} not found`);
         const { method, payload = {} } = args;
         if (!method) throw new Error("method is required (agent.action format, e.g. 'memory.recall')");
+
+        // MCP-native protocol methods — handle inline, not via the agent-tool router.
+        // The chat app calls these with dot notation (e.g. "resources.read") but
+        // the MCP spec uses slashes ("resources/read"). Accept both.
+        const normalized = method.toLowerCase();
+        if (normalized === "resources/read" || normalized === "resources.read") {
+            const uri = payload?.uri;
+            if (!uri) throw new Error("resources/read: uri is required");
+            const storageInstance = globalContext.agents.get('storage');
+            if (!storageInstance || typeof storageInstance.readResource !== 'function') {
+                throw new Error(`Resource not found: ${uri}`);
+            }
+            const result = storageInstance.readResource(uri);
+            if (!result) throw new Error(`Resource not found or expired: ${uri}`);
+            return {
+                content: [{ type: 'text', text: JSON.stringify({
+                    contents: [{ uri: result.uri, mimeType: result.mimeType, text: result.text }]
+                }, null, 2) }]
+            };
+        }
+        if (normalized === "resources/list" || normalized === "resources.list") {
+            const storageInstance = globalContext.agents.get('storage');
+            const items = (storageInstance?.listResources?.() || []).map(r => ({
+                uri: r.uri, name: r.name, mimeType: r.mimeType, size: r.size
+            }));
+            return { content: [{ type: 'text', text: JSON.stringify({ resources: items }, null, 2) }] };
+        }
 
         const legacyName = COMPACT_TO_LEGACY[method.toLowerCase()];
         if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);
