@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 
@@ -18,65 +17,13 @@ const DEFAULTS = {
 let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
+let PUBLIC_URL;  // e.g. http://192.168.0.100:3100 — used to build retrieval URLs for big files
 
-// ── Resource pointer registry ───────────────────────────────────────────────
-// storage_read returns a resource_link for files too big to inline. The URI
-// encodes the file path so resources/read can always re-read from disk —
-// no TTL, no in-memory cache. The pointer stays valid as long as the file
-// exists on disk.
-const RESOURCES = new Map();   // uri → { uri, name, mimeType, absolutePath, size }
-
-function publishResource({ userPath, absolutePath, content, mimeType, size }) {
-    // URI encodes the file path (percent-encoded) so resources/read can
-    // always resolve the file from disk. Path is the canonical reference;
-    // content/mimeType/size are cached for listResources only.
-    const enc = encodeURIComponent(absolutePath);
-    const uri = `storage://${enc}`;
-    const entry = {
-        uri,
-        name: path.basename(absolutePath),
-        mimeType: mimeType || 'text/plain',
-        absolutePath,
-        size: size ?? Buffer.byteLength(content, 'utf8')
-    };
-    RESOURCES.set(uri, entry);
-    return entry;
-}
-
-function listResources() {
-    const out = [];
-    for (const [, r] of RESOURCES) {
-        out.push({ uri: r.uri, name: r.name, mimeType: r.mimeType, size: r.size });
-    }
-    return out;
-}
-
-function readResource(uri) {
-    // Path-encoded URI: storage://<percent-encoded-absolute-path>. Decode the
-    // path and read from disk. Works for any file under the storage root, even
-    // if storage.read was never called to publish it — the URI is the path.
-    if (typeof uri !== 'string' || !uri.startsWith('storage://')) return null;
-    let absolutePath;
-    try {
-        absolutePath = decodeURIComponent(uri.slice('storage://'.length));
-    } catch {
-        return null;
-    }
-    // Path must be inside the storage root — no escaping.
-    const realRoot = fs.realpathSync(STORAGE_ROOT);
-    let realTarget;
-    try {
-        realTarget = fs.realpathSync(absolutePath);
-    } catch {
-        return null;  // file doesn't exist
-    }
-    if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
-        return null;  // path escapes storage root
-    }
-    if (!fs.statSync(realTarget).isFile()) return null;
-    const content = fs.readFileSync(realTarget, 'utf8');
-    return { uri, mimeType: guessMime(realTarget), text: content };
-}
+// Threshold above which storage_read returns a URL pointer instead of inline
+// content. The MCP transport chokes on large inline responses (chat-app side
+// hits "MCP stream ended without response" around 400 KB). Below the threshold
+// the response is small enough to fit; above it, the LLM fetches via HTTP.
+const INLINE_BYTE_LIMIT = 64 * 1024;
 
 function initConfig(agentConfig) {
     if (!agentConfig) throw new Error('storage.init: agentConfig is required');
@@ -128,12 +75,6 @@ function safeRel(userPath) {
     return path.relative(PROJECT_ROOT, safeResolve(userPath));
 }
 
-// Files larger than this go through the resource_link path — their content is
-// published as a resource the MCP client fetches via resources/read, bypassing
-// the JSON-RPC message-size limit that kills inline text transport on large
-// files (chat-app clients without filesystem access).
-const INLINE_BYTE_LIMIT = 64 * 1024;
-
 const TEXT_MIME = {
     '.md': 'text/markdown', '.txt': 'text/plain', '.json': 'application/json',
     '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.xml': 'text/xml',
@@ -152,15 +93,6 @@ function toMcp(ok, data) {
     return { content: [{ type: 'text', text }] };
 }
 
-// toMcpWithContent emits an MCP result with one or more typed content items.
-// First item is always a small JSON text summary; the rest may be resource_link
-// items for large data the client should fetch separately.
-function toMcpWithContent(summary, extras = []) {
-    const content = [{ type: 'text', text: JSON.stringify(summary, null, 2) }];
-    for (const e of extras) content.push(e);
-    return { content };
-}
-
 function result(ok, op, userPath, data) {
     return toMcp(ok, { op, path: userPath, ...data });
 }
@@ -169,6 +101,12 @@ export async function init(context) {
     const agentConfig = context.config?.agents?.storage;
     if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
     initConfig(agentConfig);
+
+    // Public URL for constructing retrieval links for big files. Same pattern
+    // as forge — config.json override, env fallback, default localhost.
+    PUBLIC_URL = agentConfig.publicUrl
+        || process.env.PUBLIC_URL
+        || `http://localhost:${process.env.PORT || 3100}`;
 
     // ── REST API ─────────────────────────────────────────────────────
     const app = context.app;
@@ -227,10 +165,7 @@ export async function init(context) {
     }
 
     return {
-        root: STORAGE_ROOT,
-        listResources,
-        readResource,
-        publishResource
+        root: STORAGE_ROOT
     };
 }
 
@@ -282,37 +217,21 @@ export async function storage_read(args) {
     const out = encoding === 'base64' ? content.toString('base64') : content;
     logger.info(`[Storage] storage_read OK: "${userPath}" (${stat.size}B, ${encoding})`, null, 'Storage');
 
-    // Files above the inline threshold are published as a resource. The MCP
-    // client (chat app) fetches via resources/read — bypasses the JSON-RPC
-    // message-size limit. Below the threshold, inline as today.
+    // Files above the inline threshold are NOT inlined. The MCP transport
+    // chokes on large responses (chat-app client hits "MCP stream ended without
+    // response" around 400 KB). Instead, return a URL pointer to the existing
+    // HTTP endpoint, which serves the file via streaming createReadStream.
+    // The LLM fetches via fetch_webpage (or the chat client follows the URL).
     if (stat.size > INLINE_BYTE_LIMIT) {
-        const mime = guessMime(userPath);
-        const resource = publishResource({
-            userPath,
-            absolutePath: target,
-            content: out,
-            mimeType: mime,
-            size: stat.size
+        const urlPath = userPath.replace(/\\/g, '/');
+        const httpUrl = `${PUBLIC_URL}/storage/${encodeURI(urlPath)}`;
+        return result(true, 'storage_read', userPath, {
+            size: stat.size,
+            inline: false,
+            httpUrl,
+            encoding,
+            note: 'File is above the inline size threshold. Fetch the content via fetch_webpage using the httpUrl — the chat client streams the file via HTTP, which has no MCP transport-size limit.'
         });
-        return toMcpWithContent(
-            {
-                ok: true,
-                op: 'storage_read',
-                path: userPath,
-                size: stat.size,
-                encoding,
-                inline: false,
-                resourceUri: resource.uri,
-                note: 'File is above the inline size threshold. Use resources/read (uri shown) to fetch the content — this avoids transport-size failures on large payloads.'
-            },
-            [{
-                type: 'resource_link',
-                uri: resource.uri,
-                name: resource.name,
-                mimeType: resource.mimeType,
-                description: `${stat.size}B ${userPath} — fetch via resources/read`
-            }]
-        );
     }
     return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });
 }

@@ -15,7 +15,7 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above maxReadSize return a pointer instead of inline content. Files above the inline threshold (default 64 KB) are returned as a resource_link — fetch the actual content via the MCP resources/read method (e.g. ReadResource tool in chat clients). This bypasses the JSON-RPC message-size limit that kills inline transport for large payloads. The text summary in the response still includes the resource URI, size, and mimeType so you know how to fetch it.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer (httpUrl field) instead of inline content — fetch the actual file via fetch_webpage using that URL. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients, the same file is also reachable via the UNC share configured in agents.storage.uncShare.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
