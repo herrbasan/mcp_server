@@ -15,7 +15,7 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer (httpUrl field) instead of inline content — fetch the actual file via fetch_webpage using that URL. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients, the same file is also reachable via the UNC share configured in agents.storage.uncShare.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer instead of inline content. The response includes: (1) httpUrl — a fully-qualified URL with the LAN IP of the MCP server, e.g. 'http://192.168.0.100:3100/storage/...', use it VERBATIM with fetch_webpage (do NOT replace the host with 'localhost' — localhost resolves to the client machine, not the server); (2) nextStep — a copy-pasteable action like 'fetch_webpage({ url: \"<httpUrl>\" })'. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients on the same machine, the same file is also reachable via the UNC share configured in agents.storage.uncShare.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
