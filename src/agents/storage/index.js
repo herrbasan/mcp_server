@@ -221,7 +221,8 @@ export async function storage_read(args) {
     // chokes on large responses (chat-app client hits "MCP stream ended without
     // response" around 400 KB). Instead, return a URL pointer to the existing
     // HTTP endpoint, which serves the file via streaming createReadStream.
-    // The LLM fetches via fetch_webpage (or the chat client follows the URL).
+    // The LLM fetches via fetch_webpage (or any HTTP fetch primitive the chat
+    // client supports).
     if (stat.size > INLINE_BYTE_LIMIT) {
         const urlPath = userPath.replace(/\\/g, '/');
         const httpUrl = `${PUBLIC_URL}/storage/${encodeURI(urlPath)}`;
@@ -230,7 +231,8 @@ export async function storage_read(args) {
             inline: false,
             httpUrl,
             encoding,
-            note: 'File is above the inline size threshold. Fetch the content via fetch_webpage using the httpUrl — the chat client streams the file via HTTP, which has no MCP transport-size limit.'
+            nextStep: `fetch_webpage({ url: "${httpUrl}" })`,
+            note: 'File is above the inline size threshold. Call fetch_webpage with the httpUrl above to stream the file. The HTTP endpoint has no MCP transport-size limit.'
         });
     }
     return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });
