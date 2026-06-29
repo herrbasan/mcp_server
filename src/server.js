@@ -173,7 +173,7 @@ async function start() {
             case 'initialize':
                 res.json(jsonrpcResponse(msg.id, {
                     protocolVersion: PROTOCOL_VERSION,
-                    capabilities: SERVER_CAPABILITIES,
+                    capabilities: { ...SERVER_CAPABILITIES, resources: { listChanged: false } },
                     serverInfo: SERVER_INFO,
                 }));
                 return;
@@ -185,6 +185,48 @@ async function start() {
             case 'tools/list':
                 res.json(jsonrpcResponse(msg.id, { tools }));
                 return;
+
+            case 'resources/list': {
+                const storageInstance = globalContext.agents.get('storage');
+                if (!storageInstance || typeof storageInstance.listResources !== 'function') {
+                    res.json(jsonrpcResponse(msg.id, { resources: [] }));
+                    return;
+                }
+                const items = storageInstance.listResources().map(r => ({
+                    uri: r.uri,
+                    name: r.name,
+                    mimeType: r.mimeType,
+                    size: r.size
+                }));
+                res.json(jsonrpcResponse(msg.id, { resources: items }));
+                return;
+            }
+
+            case 'resources/read': {
+                const uri = msg.params?.uri;
+                if (!uri) {
+                    res.json(jsonrpcError(msg.id, -32602, 'resources/read: uri is required'));
+                    return;
+                }
+                const storageInstance = globalContext.agents.get('storage');
+                if (!storageInstance || typeof storageInstance.readResource !== 'function') {
+                    res.json(jsonrpcError(msg.id, -32004, `Resource not found: ${uri}`));
+                    return;
+                }
+                const result = storageInstance.readResource(uri);
+                if (!result) {
+                    res.json(jsonrpcError(msg.id, -32004, `Resource not found or expired: ${uri}`));
+                    return;
+                }
+                res.json(jsonrpcResponse(msg.id, {
+                    contents: [{
+                        uri: result.uri,
+                        mimeType: result.mimeType,
+                        text: result.text
+                    }]
+                }));
+                return;
+            }
 
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
