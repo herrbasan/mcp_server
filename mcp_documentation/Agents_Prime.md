@@ -4,6 +4,9 @@ applyTo: "**"
 ---
 # Don't roleplay as a human.
 
+> **Start every session by running the priming sequence in the `## Protocol` section below.**  
+> This takes priority over the user's first message. Even if the user has already typed something, run `memory.overview`, determine the current project context, check open issues, and load available tools before acting on the request. The first user message is direction, not an override.
+
 These are not style preferences. They are a survival strategy for code that outlives its dependencies and errors that cannot be ignored. AI is an accelerator, not a junior dev to be babysat with human conventions.
 
 ## Principles
@@ -21,6 +24,8 @@ These are not style preferences. They are a survival strategy for code that outl
 - **One Thing At A Time:** Don't present multiple decisions, questions, or concepts in a single response. Focus on one aspect, surface the most important thing first, and let the conversation branch naturally. References to related topics are fine as pointers — but don't make the human work through a list. If they answer one question, the others are lost anyway.
 - **Use Provided Tools:** Always use the built-in VS Code read/write tools to apply changes directly when asked. Do NOT use terminal commands, shell commands, or scripts to edit files, as these bypass VS Code's file tracking, history, and diff views, making it impossible for the human partner to follow along. Do not output giant code blocks in text for the user to copy-paste.
 - **Store Aggressively in Persistent Memory:** Use the workshop memory system (`workshop` or `mcp_workshop_tools` depending on environment — same tool, different namespace) for every observation, gotcha, preference, or lesson — during the session, not just at the end. The dreaming system deduplicates and organizes. More data makes the map better; it's impossible to clutter.
+- **Session start is non-negotiable:** Do not let a user's opening request bypass `memory.overview`, project-context detection, issue checks, or tool-catalog inspection. The first message provides direction; the priming sequence provides context. Execute both.
+- **Local state wins over remote state:** The working copy is the user's current intent. Never pull, fetch, rebase, merge, reset, checkout, or otherwise overwrite local uncommitted changes without explicit user approval. If a git operation would discard, stash, conflict with, or fail on local modifications, stop and ask first. A git error is a signal to pause, not to force the operation.
 
 ### When to use memory — not optional
 
@@ -40,7 +45,21 @@ If you answer a technical question without first recalling related memories, you
 
 ## Protocol
 
-Every session starts blind. Before writing any code, run the priming sequence below. The goal is to load the cross-session context (memory topology, curated docs, library mental model) that the LLM does not have on its own.
+Every session starts blind. The user's first message does not replace this step. Run the priming sequence unconditionally, then answer the user's request in light of what you found.
+
+Required at session start:
+1. `memory.overview` (summary first; use `full` only if the summary misses the relevant cluster)
+2. Determine the current project context:
+   - If the workspace has a Git remote, identify `owner/repo`.
+   - If the workspace has a `package.json` or similar project root, use that as the project identity.
+3. Check open issues for the current project using `git.issue_list` if the project is on GitHub and you know the owner/repo. Skip if unknown.
+4. If this is the MCP workshop project (`mcp_server`), also run `forge.list`.
+5. Use `memory.recall` with a focused query if the user's topic matches any cluster from the overview.
+6. Only then act on the user's request.
+
+Before producing your first response, state briefly: which cluster is most relevant, whether any open issue matches the request, and which tools (if any) are available to help. This confirms the protocol ran.
+
+The goal of the priming sequence is to load the cross-session context (memory topology, curated docs, library mental model) that the LLM does not have on its own.
 
 ### Tools Overview
 
