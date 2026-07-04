@@ -50,6 +50,16 @@ function createGitWriteQueue() {
     };
 }
 
+function isLocalhostUrl(url) {
+    if (!url) return true;
+    try {
+        const u = new URL(url);
+        return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
+    } catch {
+        return false;
+    }
+}
+
 // ── Concurrency Semaphore ────────────────────────────────────────────────────
 function createSemaphore(max, queueTimeout) {
     let active = 0;
@@ -819,13 +829,18 @@ export async function forge_call(args, context) {
         // to the storage.read path. Skip when no translator is configured.
         const absoluteLocal = path.join(toolStoragePath, f.rel);
         const uncPath = STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.toUnc(absoluteLocal) : null;
-        return {
+        const url = `${PUBLIC_URL}/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`;
+        const out = {
             name: f.rel,
             path: storageReadPath,
-            url: `${PUBLIC_URL}/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`,
+            url,
             ...(uncPath ? { uncPath } : {}),
             size: f.size
         };
+        if (isLocalhostUrl(url)) {
+            out.warning = `url points to localhost (${url}). It will fail from any machine other than the server. Configure agents.forge.publicUrl to the server's LAN IP (e.g. http://192.168.0.100:3100) and restart.`;
+        }
+        return out;
     });
     if (outputs.length > 0) {
         logger.info(`[Forge] "${name}" produced ${outputs.length} output file(s)`, { outputs: outputs.map(o => o.path) }, 'Forge');
@@ -1042,9 +1057,18 @@ export async function init(context) {
     // Public URL for constructing retrieval links to forge outputs.
     // Read from config.json agents.forge.publicUrl — must be reachable by clients.
     // Falls back to http://localhost:{PORT} where PORT comes from env or default 3100.
+    // IMPORTANT: this URL must use the server's LAN IP (e.g. http://192.168.0.100:3100),
+    // not localhost/127.0.0.1, otherwise cross-machine clients cannot fetch outputs.
     PUBLIC_URL = agentConfig.publicUrl
+        || context.config?.agents?.storage?.publicUrl
         || process.env.PUBLIC_URL
         || `http://localhost:${process.env.PORT || 3100}`;
+
+    if (isLocalhostUrl(PUBLIC_URL)) {
+        logger.warn(`[Forge] PUBLIC_URL is set to localhost (${PUBLIC_URL}). Forge output URLs will be unreachable from other LAN machines. Set agents.forge.publicUrl to the server's LAN IP, e.g. http://192.168.0.100:3100`, null, 'Forge');
+    } else {
+        logger.info(`[Forge] Public URL for outputs: ${PUBLIC_URL}`, null, 'Forge');
+    }
 
     GATEWAY_CLIENT = context.gateway;
 

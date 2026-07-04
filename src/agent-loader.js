@@ -168,7 +168,17 @@ export async function loadAgents(globalContext) {
                 prompts: requestContext.prompts.get(route.agentName) || {}
             };
 
-            logger.info(`Executing tool ${name}...`, { args }, `Agent:${route.agentName}`);
+            // Log args without echoing large content strings — logging full content
+            // bloats the log and can noticeably slow large storage/memory writes.
+            const argsSummary = {};
+            for (const [k, v] of Object.entries(args || {})) {
+                if (typeof v === 'string' && v.length > 200) {
+                    argsSummary[k] = `[string ${v.length} chars]`;
+                } else {
+                    argsSummary[k] = v;
+                }
+            }
+            logger.info(`Executing tool ${name}...`, { args: argsSummary }, `Agent:${route.agentName}`);
 
             try {
                 const result = await route.handler(args, localScopeCtx);

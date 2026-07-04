@@ -97,6 +97,16 @@ function result(ok, op, userPath, data) {
     return toMcp(ok, { op, path: userPath, ...data });
 }
 
+function isLocalhostUrl(url) {
+    if (!url) return true;
+    try {
+        const u = new URL(url);
+        return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
+    } catch {
+        return false;
+    }
+}
+
 export async function init(context) {
     const agentConfig = context.config?.agents?.storage;
     if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
@@ -111,6 +121,12 @@ export async function init(context) {
         || context.config?.agents?.forge?.publicUrl
         || process.env.PUBLIC_URL
         || `http://localhost:${process.env.PORT || 3100}`;
+
+    if (isLocalhostUrl(PUBLIC_URL)) {
+        logger.warn(`[Storage] PUBLIC_URL is set to localhost (${PUBLIC_URL}). Large files will return URLs that are unreachable from other LAN machines. Set agents.storage.publicUrl to the server's LAN IP, e.g. http://192.168.0.100:3100`, null, 'Storage');
+    } else {
+        logger.info(`[Storage] Public URL for large files: ${PUBLIC_URL}`, null, 'Storage');
+    }
 
     // ── REST API ─────────────────────────────────────────────────────
     const app = context.app;
@@ -230,19 +246,24 @@ export async function storage_read(args) {
     if (stat.size > INLINE_BYTE_LIMIT) {
         const urlPath = userPath.replace(/\\/g, '/');
         const httpUrl = `${PUBLIC_URL}/storage/${encodeURI(urlPath)}`;
-        return result(true, 'storage_read', userPath, {
+        const response = {
             size: stat.size,
             inline: false,
             httpUrl,
             encoding,
             nextStep: `fetch_webpage({ url: "${httpUrl}" })`,
-            note: 'File is above the inline size threshold. Call fetch_webpage with the httpUrl above to stream the file. The HTTP endpoint has no MCP transport-size limit.'
-        });
+            note: `File is above the inline size threshold. Call fetch_webpage with the httpUrl above to stream the file. The HTTP endpoint has no MCP transport-size limit. ${isLocalhostUrl(httpUrl) ? 'WARNING: this URL points to localhost/127.0.0.1, so it is only reachable from the server machine. For LAN access, set agents.storage.publicUrl to the server LAN IP (e.g. http://192.168.0.100:3100) and restart.' : 'This URL uses the configured public address and should be reachable from LAN clients.'}`
+        };
+        if (isLocalhostUrl(httpUrl)) {
+            response.warning = `httpUrl points to localhost (${httpUrl}). It will fail from any machine other than the server. Configure agents.storage.publicUrl to the server's LAN IP (e.g. http://192.168.0.100:3100) and restart.`;
+        }
+        return result(true, 'storage_read', userPath, response);
     }
     return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });
 }
 
 export async function storage_write(args) {
+    const t0 = Date.now();
     const userPath = args.path;
     const content = args.content;
     logger.info(`[Storage] storage_write: "${userPath}" (${content?.length || 0} chars)`, null, 'Storage');
@@ -252,16 +273,21 @@ export async function storage_write(args) {
     if (encoding !== 'utf8' && encoding !== 'base64') {
         throw new Error(`storage_write: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
     }
+    const t1 = Date.now();
     const target = safeResolve(userPath);
+    const t2 = Date.now();
     const buffer = encoding === 'base64'
         ? Buffer.from(content, 'base64')
         : Buffer.from(content, 'utf8');
+    const t3 = Date.now();
     if (buffer.length > CONFIG.maxWriteSize) {
         throw new Error(`storage_write: content exceeds maxWriteSize (${buffer.length} > ${CONFIG.maxWriteSize})`);
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
+    const t4 = Date.now();
     fs.writeFileSync(target, buffer);
-    logger.info(`[Storage] storage_write OK: "${userPath}" (${buffer.length}B)`, null, 'Storage');
+    const t5 = Date.now();
+    logger.info(`[Storage] storage_write OK: "${userPath}" (${buffer.length}B, total=${t5 - t0}ms phases: validate=${t1 - t0} safeResolve=${t2 - t1} buffer=${t3 - t2} mkdir=${t4 - t3} write=${t5 - t4})`, null, 'Storage');
     return result(true, 'storage_write', userPath, { size: buffer.length });
 }
 
