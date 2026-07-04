@@ -1,419 +1,87 @@
-# Master Prompt
+# MCP Server Workshop — LLM Briefing
 
-**MCP Memory Protocol** - You have full autonomy to manage memories without user prompting.
+**Project**: `mcp_server` (herrbasan/mcp_server)
+**Purpose**: Centralized MCP server running as an independent HTTP service. Meta-MCP with nested agent modules.
+**Prime directive**: `mcp_documentation/Agents_Prime.md` — read this first on every session.
+**Tool reference**: `mcp_documentation/workshop.md` — full tool catalog and usage patterns.
 
-## Autonomous Memory Workflow
+## Architecture
 
-**Session Start** (automatic):
-```javascript
-mcp_workshop_tools({ method: "memory.overview" })
-mcp_workshop_tools({ method: "git.issue_list", payload: { owner: "herrbasan", repo: "mcp_server", state: "open" } })
-```
-Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
-Check open issues for pending tasks, bug reports, or feature requests that may be relevant to current work.
+- **Entry point**: `src/server.js` — HTTP server on port 3100.
+- **Transport**: Per-session SSE mapped by `sessionId`.
+- **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
+- **Agents**: `src/agents/` — browser, documentation, dreaming, forge, github, inspector, llm, memory, research, storage, vision.
+- **Loader**: `src/agent-loader.js` — loads agents and registers tools.
+- **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 
-**During Work** (proactive):
-- **Store aggressively** via `memory_store` — observations, failed approaches, working context, hunches, user preferences. Over-store rather than under-store.
-- Query before implementation: `memory_recall({ query: "..." })`
-- Check for prior failed approaches: `memory_recall({ query: "what went wrong with ..." })`
-- Update memories freely as understanding evolves — nothing is permanent
+## Important Conventions
 
-**Memory Maintenance** (self-directed):
-- Update memories as understanding deepens: `memory_update({ id, description, confidence })`
-- Delete obsolete/wrong memories: `memory_forget({ id })`
-- Consolidate related memories periodically
+- **Vanilla JS only** (ES modules). No TypeScript. No unnecessary abstractions.
+- **Fail fast, fail loud**: no silent fallbacks, no defensive defaults.
+- **Use IDE file tools** for edits; do not use terminal scripts to modify files.
+- **Absolute paths only** for file references in tools (`D:\...` or `\\server\share\...`).
+- **Local git state wins**: never pull/fetch/rebase/merge/reset/checkout over uncommitted changes without explicit user approval.
 
-## Memory Schema
+## MCP Endpoints
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `description` | string | Short summary (shown in listings and search) |
-| `category` | string | Freeform domain descriptor: "notes", "personal preference", "hardware", "coding style", etc. |
-| `confidence` | number | 0-1 reliability score (default 0.5). 1.0 = verified fact, 0.0 = wild guess |
-| `data` | string | Optional extended content (only visible via `memory_get`, not in listings) |
+- **`/mcp/compact`** — primary. Single `tools` tool routes all agent methods via `agent.action` (e.g. `storage.write`, `memory.recall`).
+- **`/mcp`** — legacy. Exposes every tool separately; kept for backward compatibility.
 
-## Bug Reports via GitHub Issues
+## Adding a New Tool
 
-Report verifiable workshop issues as GitHub issues instead of memories:
-```javascript
-mcp_workshop_tools({
-  method: "git.issue_create",
-  payload: {
-    owner: "herrbasan",
-    repo: "mcp_server",
-    title: "Short summary of the issue",
-    body: "## Reproducible context\n- Tool/API that failed\n- Parameters used\n- Expected vs actual behavior\n\n## Impact\n- Blocked task, degraded performance, or wrong output\n\n## Suggested fix\n- If obvious",
-    labels: ["bug"]
-  }
-});
-```
+1. Create agent under `src/agents/<name>/`:
+   - `config.json` with `agent`, `description`, `tools[]`
+   - `index.js` exporting `init(context)` + one handler per tool
+2. Add defaults to `config.json` under `agents.<name>` if needed.
+3. Wire into `src/server.js`:
+   - Add methods to `COMPACT_TOOL` description.
+   - Add `agent.action` → `legacy_tool_name` mappings in `COMPACT_TO_LEGACY`.
+4. Restart server and reconnect client.
 
-**Report**: Reproducible failures, performance degradation, data corruption, API violations
-**Skip**: Subjective opinions, expected behavior, user errors, isolated failures
+## Tool Handler Return Format
 
----
-
-# MCP Server Workshop - Development Guidelines
-
-## Project Overview
-
-Centralized MCP server running as an **independent HTTP service**.
-
-**Architecture**: Meta-MCP with nested agent modules
-- Server: src/server.js - Port 3100 (MCP via custom SSE)
-- Transport: Per-session SSE transport mapped by sessionId
-- Gateway: Talks to central LLM Gateway at localhost:3400
-- Agents: src/agents/ - (browser, documentation, dreaming, forge, github, inspector, llm, memory, research, storage, vision)
-
-## File Referencing (Absolute Paths Only)
-
-**IMPORTANT**: Only absolute file paths are supported in `inspect_code` and `query_model`.
-
-**Valid formats**:
-- Windows: `D:\Work\_GIT\Project\file.js`
-- UNC: `\\server\share\file.js`
-
-**Invalid formats** (removed):
-- ❌ Hash IDs: `e8580ad5e276908e773ad9273e57e6c6`
-- ❌ SPACE:path format: `COOLKID-Work:_GIT/file.js`
-- ❌ Relative paths: `src/file.js`
-
-## Documentation
-
-Documentation is in `mcp_documentation/` folder:
-- `workshop.md` - Tools guide (main reference)
-
-
-Access via MCP documentation tools:
-```javascript
-mcp_workshop_tools({ method: "documentation.get", payload: { file: "Workshop/workshop.md" } })   // ⚠️ START HERE
-mcp_workshop_tools({ method: "documentation.get", payload: { file: "workshop.md" } })        // Full tools reference
-mcp_workshop_tools({ method: "documentation.query", payload: { question: "...", domain: "all" } })  // Search, Q&A, or spec alignment
-```
-
-## Gateway Client Architecture
-
-**Location**: `src/gateway-client.js` - WebSocket client to external LLM Gateway
-
-The workshop connects to a central LLM Gateway (localhost:3400) for all LLM operations. The Gateway handles model providers (LM Studio, Ollama, Gemini) internally.
-
-**Task-Based API** (Recommended):
-```javascript
-import { createGatewayClient } from './src/gateway-client.js';
-
-const gateway = createGatewayClient(wsUrl, httpUrl);
-
-// Chat with streaming support using tasks
-const response = await gateway.chat({
-  task: 'query',  // Gateway resolves model, prompt, temperature, etc.
-  messages: [{ role: 'user', content: 'Hello' }],
-  systemPrompt: 'You are helpful',  // Optional override
-  maxTokens: 500,                    // Optional override
-  temperature: 0.7,                  // Optional override
-  responseFormat: { type: 'json_schema', ... },  // Optional structured output
-  onDelta: (chunk, meta) => console.log(chunk),  // Streaming deltas
-  onProgress: (phase, context) => console.log(phase)  // Progress notifications
-});
-
-// Prediction (adapter for old router API)
-const result = await gateway.predict({
-  prompt: 'Explain async/await',
-  systemPrompt: '...',
-  task: 'query',  // Gateway-managed task
-  maxTokens: 500,
-  temperature: 0.7,
-  responseFormat: { schema: {...} }  // Returns parsed JSON if schema provided
-});
-
-// Embeddings (uses task='embed' automatically)
-const vector = await gateway.embedText('search query');
-const vectors = await gateway.embedBatch(['text1', 'text2', 'text3']);
-```
-
-**Available Tasks** (managed by Gateway):
-
-| Task Key | Used By | Purpose |
-|----------|---------|---------|
-| `query` | `query_model` tool | General LLM queries |
-| `inspect` | `inspect_code` tool | Code analysis |
-| `synthesis` | `research_topic` | Research synthesis |
-| `analysis` | `analyze_codebase`, `search_codebase` (with `analyze: true`) | Code analysis |
-| `embed` | `memory_store`, `memory_recall`, code indexing | Text embeddings |
-| `vision` | `vision_analyze` | Image analysis |
-
-**Note**: Model routing is now handled entirely by the Gateway. The `models` section in `config.json` has been removed. To change which model handles a task, update the Gateway's configuration instead.
-
-## Deployment & Configuration
-- **Environment**: `.env` file for sensitive config (Gateway endpoints, host/port binding)
-- **Config**: `config.json` for non-sensitive settings (models, nIndexer connection, agent options)
-- **Start**: `npm start` (or `npm run dev` for watch mode)
-- **Binding**: `HOST` in .env must be `0.0.0.0` for remote access (not localhost)
-- **Client Config**: VS Code `mcp.json` with `{"type": "sse", "url": "http://IP:3100/sse"}` or `{"type": "http", "url": "http://IP:3100/mcp"}`
-
-### MCP Endpoint Note
-The workshop exposes two MCP endpoints:
-- **`/mcp/compact`** — **Primary endpoint.** A single `tools` tool routes to all
-  agent methods via `agent.action` format (e.g. `storage.write`, `memory.recall`).
-  This is the endpoint we mainly use and the one new clients should target.
-- **`/mcp`** — Legacy endpoint. Exposes every tool as a separate MCP tool.
-  Kept for backward compatibility but will eventually be removed.
-
-### Tool Handler Return Format
-
-All tool handlers in `src/agents/<name>/index.js` must return the MCP result shape:
+All handlers must return:
 
 ```javascript
 { content: [{ type: 'text', text: '...' }], isError: false }
 ```
 
-Returning a plain object (e.g. `{ ok: true, ... }`) will cause compact-endpoint
-clients to fail with `r.content is not iterable`.
+Plain objects cause compact-endpoint clients to fail with `r.content is not iterable`.
 
-### How to register a new tool
+## Gateway Client
 
-Adding an agent under `src/agents/<name>/` is not enough. Because the compact
-endpoint uses a single tool description, new agents must also be wired into it:
+Use task-based routing. Examples:
 
-1. **Create the agent** in `src/agents/<name>/`:
-   - `config.json` with `agent`, `description`, and `tools[]` schemas
-   - `index.js` exporting `init(context)` and one handler per tool name
-
-2. **Add config defaults** to `config.json` under `agents.<name>` if needed.
-
-3. **Wire into the compact endpoint** in `src/server.js`:
-   - Add the agent's methods to the `COMPACT_TOOL` description string so clients
-     know they exist.
-   - Add `agent.action` → `legacy_tool_name` mappings to `COMPACT_TO_LEGACY` so
-     the router knows how to dispatch calls.
-
-4. **Restart the workshop** and **reconnect the client**. The tool list is
-   built once at startup; the client may also cache tools per session.
-
-The legacy `/mcp` endpoint auto-registers tools from `loadAgents()` and does not
-need manual wiring. However, since we primarily use `/mcp/compact`, the manual
-step in `server.js` is required for new tools to appear.
-
-## Browser Architecture
-
-**Consolidated to browser.js** - Single persistent browser with lingering tab support:
-- **browser.js**: Central browser service (used by all modules)
-  - Persistent browser with idle timeout (5 min default)
-  - Lingering tabs (10-30s random delay) for realistic behavior
-  - Exported APIs:
-    - `browser_session_create/goto/click/fill/scroll/type/evaluate/content/metadata` - MCP browser tools
-    - `browser_session_inspect/console/wait/list/close` - Session management tools
-    - Supports: `text` / `html` / `markdown` / `screenshot` content modes
-- **google-adapter.js**: Uses `browserServer.getPage()` for search
-- **duckduckgo-adapter.js**: Uses `browserServer.getPage()` for search  
-- **web-research.js**: Uses `browserServer.getPage()` and `fetch()` for scraping
-
-## Web Research Module
-
-Major refactoring completed with significant reliability and performance improvements:
-
-**Content Extraction Hardening:**
-- **4-tier fallback strategy**: Readability → Semantic → Density → Raw fallback
-- **Pre-cleaning**: Removes scripts/styles/nav before DOM parsing
-- **Content validation**: Bot detection, link density checks, minimum length enforcement
-- **Metadata extraction**: Multi-selector fallback for title, description, OG tags
-
-**Search Adapter Fixes:**
-- **Google**: Updated selectors (`.g`, `div[data-hveid]`, `.tF2Cxc`) + faster `domcontentloaded` wait
-- **DuckDuckGo**: Direct URL `/?q=QUERY&ia=web` with data-testid selectors
-
-**Performance Optimizations:**
-- **Streaming research pipeline**: Scrape + synthesize concurrently, early termination when sufficient content found (3+ quality sources)
-- **URL prioritization**: Docs > StackOverflow > GitHub > blogs (heuristic ranking, no LLM wait)
-- **Dual-engine support**: Both Google and DuckDuckGo queried in parallel, deduplicated by URL
-
-**Embedding Model Configuration:**
-- All providers now have endpoint-specific embedding models (e.g., `LM_STUDIO_EMBEDDING_MODEL`, `GEMINI_EMBEDDING_MODEL`)
-- **Recommended**: Use local embeddings (LM Studio/Ollama) for speed - cloud embeddings (Gemini) work but have network latency
-
-## Memory System Philosophy
-Memory exists to improve OUTPUT QUALITY. **Store aggressively** — the Dreaming System (background process every 15 min) consolidates memories into a weighted graph (the "Map") that provides topology, priority, and relationships. Noisy, redundant, or partial memories are automatically compressed during dreaming. It is always better to over-store than to lose context.
-
-Category is a freeform domain descriptor for filtering (e.g. "hardware", "coding style", "notes"). Confidence (0-1) tracks reliability separately from category. Use `data` field for extended content that shouldn't clutter listings.
-
-## Dreaming System Architecture
-
-**Location**: `src/agents/dreaming/` - Autonomous memory consolidation
-
-Two-phase LLM pipeline that runs every 15 minutes (or on startup) to produce a structured Map of all memories:
-
-**Phase 1: Distillation**
-- LLM compresses all memories into dense thematic summaries
-- Incremental caching: only re-distills new/updated memories (tracks ID → timestamp snapshot)
-- Output cached in `/data/dream_distillate.json`
-
-**Phase 2: Dreaming**
-- LLM analyzes distillate + full recent memories + previous map → produces Map JSON v3.0
-- Connection momentum: nodes gaining connections get promoted, losing connections get demoted
-- Progressive compression: full → summary → title-only based on connection trends
-- Output saved to `/data/dream_map.json` with 5-version backup rotation
-
-**Map Structure**:
-- **Clusters**: Thematic groupings with hub nodes
-- **Bridges**: Cross-cluster semantic links
-- **Nodes**: Scored memories with type, state, connections, momentum
-- **Wildcards**: 5 random/dormant nodes for "mental drift"
-- **Recall directive**: Timestamp cutoff for memories not yet in the map
-
-**Configuration** (`config.json` → `agents.dreaming`):
-```json
-{
-  "intervalMinutes": 15,
-  "contextBudget": 800000,
-  "autoStart": true,
-  "distillerTask": "query",
-  "dreamerTask": "query"
-}
+```javascript
+const gateway = createGatewayClient(wsUrl, httpUrl);
+await gateway.chat({ task: 'query', messages: [...], systemPrompt: '...' });
+await gateway.embedText('query');
 ```
 
-**Tools**: `dream_generate` (run pipeline), `dream_status` (check state), `dream_inject` (get map for prompt injection)
+Model routing is handled by the Gateway. Do not rely on a `models` section in `config.json`.
 
-## Code Style & Philosophy
-- **Language**: Vanilla JavaScript (ES modules) - NO TypeScript
-- **Approach**: Lean, simple, fast code
-- **Priority**: Performance and conciseness over readability/maintainability
-- **Rationale**: Code is maintained by LLM, not humans
-- **Style**: Minimal abstractions, direct implementations, no unnecessary complexity
-- **Comments**: Avoid - code should be self-documenting
-- **Hardening**: Use promise locks, validate inputs, proper error rollback, URL constructor for endpoints
+## Key Directories
 
-## LLM-Optimized Code Design
-Code should be **optimized for maintenance by LLMs**, not by humans. Human readability concerns are secondary. Prioritize patterns that LLMs handle well:
+- `src/` — server, gateway client, agent loader, agents.
+- `src/agents/` — agent implementations.
+- `mcp_documentation/` — curated docs served by the documentation agent.
+- `docs/` — working documents (plans, handovers, notes).
+- `data/` — runtime data: memories, dream maps, forge tools, storage.
+- `tests/` — benchmarks and quick tests.
+- `_Archive/` — archived modules and old plans.
 
-| LLM-Friendly | Avoid |
-|--------------|-------|
-| Clear function boundaries | Deep inheritance chains |
-| Explicit state (visible mutations) | Hidden state in `this.*` properties |
-| Flat structures | Deep hierarchies, decorator patterns |
-| Minimal abstraction layers | Over-DRY code that scatters logic |
-| Complete context in one place | Framework magic/conventions |
+## Running
 
-**What humans find "unreadable" (dense, compact, inline logic) is often easier for LLMs to reason about because it reduces indirection.** LLMs don't get tired reading long files - they prefer complete context over jumping between 10 files.
+```bash
+npm start       # production
+npm run dev     # watch mode
+```
 
-## Key Principles
-- **Avoid OOP meta-state**: No classes with scattered `this.*` properties mixing data and behavior
-- **Closures with state are fine**: Functions can capture and maintain local state - that's natural JS
-- **Pass what's needed**: Don't reach for globals, but don't be religious about "pure functions"
-- Use modern ES6+ features (async/await, destructuring, etc.)
-- Keep functions small and focused
-- Avoid over-engineering
-- Inline code when it makes execution faster
-- Minimal dependencies - build custom solutions over third-party libraries
-- Preserve stack traces in errors, throw don't log
-- Validate model IDs against available models before use
-- When prompting local LLMs for structured output: ask the model how it wants to be prompted (meta-prompting)
-
-## Forge Architecture
-
-**Status**: Production — git-versioned tool forge for LLM-authored custom tools.
-
-**Location**: `src/agents/forge/` — 9 tools + worker bootstrap
-
-**Core concept**: Forged tools are NOT MCP endpoints. They are data (ES modules) stored in a nested git repository at `data/forge/`. LLMs write, version, and execute them through 9 management tools — the MCP surface stays at 9 tools regardless of how many tools are forged.
-
-**Execution model**: `worker_threads` with real `terminate()` — each `forge_call` spawns a dedicated Worker with MessagePort-injected context (`gateway`, `progress`, `payload`, `workspacePath`, `toolStatePath`, `storagePath`). Hard timeout kills runaways. Event-loop + heap isolation from the orchestrator.
-
-**Git versioning**: Nested repo at `data/forge/.git` (separate from the main project repo). Every write/update/delete/rollback = one commit. Linear history on `main`. Rollback snapshots current state before restoring.
-
-**Three output targets**:
-- `ctx.workspacePath` — ephemeral per-call dir (deleted after call)
-- `ctx.toolStatePath` — persistent per-tool state dir (gitignored, survives across calls)
-- `ctx.storagePath` — persistent per-tool output dir under the storage root (user-visible, cleaned on `forge_delete`)
-
-**Key files**:
-- `src/agents/forge/index.js` — all 9 tool handlers + git+worker+semaphore internals
-- `src/agents/forge/worker-bootstrap.js` — runs inside each Worker, sets up MessagePort proxies, imports and executes the tool
-- `src/agents/forge/config.json` — tool schemas
-
-**Package allowlist**: Packages declared in `forge_write` are checked against `config.json agents.forge.allowedPackages`. Unapproved tools are written but `forge_call` rejects them until the operator approves.
-
-**Payload resolution**: `payload[]` items (local paths, UNC, URLs) resolved to Buffers on the main thread before worker spawn. Failures surface before the tool runs.
-
-**Concurrency**: Per-call semaphore (default 8). Git writes are serialized through a single queue.
-
-## Code Inspector Architecture
-
-**Status**: Production-ready LLM-based code analysis
-
-**Implementation**:
-- `src/agents/inspector/index.js` - LLM-based code analysis
-- Tool: inspect_code
-
-**File Referencing**: Only absolute paths supported
-- Windows: `D:\project\file.js`
-- UNC: `\\server\share\file.js`
-
-## Historical Changes
-
-### June 2026 - Forge Agent
-- New `src/agents/forge/` — 9 tools for LLM-authored tool creation and execution
-- Tools: `forge_write`, `forge_update`, `forge_read`, `forge_list`, `forge_delete`, `forge_call`, `forge_history`, `forge_rollback`, `forge_help`
-- Git-versioned nested repo at `data/forge/` (separate from main project)
-- `worker_threads` execution with MessagePort-injected context (`gateway`, `progress`, `payload`, `workspacePath`, `toolStatePath`, `storagePath`)
-- Hard timeout via `worker.terminate()`
-- Payload resolution (file paths, UNC, URLs → Buffer[]) on main thread before worker spawn
-- Three output targets: ephemeral workspace, persistent state, persistent storage
-- Package allowlist with operator approval gate
-- `forge.help` returns full tool authoring guide
-
-### June 2026 - Dreaming System
-- New `src/agents/dreaming/` — 3 tools for autonomous memory consolidation
-- Tools: `dream_generate`, `dream_status`, `dream_inject`
-- Two-phase LLM pipeline: Distillation (incremental cache) → Dreaming (Map v3.0)
-- Connection momentum: nodes gain/lose score based on connection changes across dreams
-- Progressive compression: full → summary → title-only for decaying nodes
-- Incremental distillation: tracks ID → timestamp snapshot, only re-distills changed memories
-- Runs every 15 min + on startup, produces structured Map with clusters, bridges, wildcards
-- Updated `gateway-client.js`: added `enableThinking` parameter for disabling reasoning
-- Updated memory tool descriptions to encourage aggressive storage
-
-### May 2026 - GitHub Relay Agent
-- New `src/agents/github/` — 15 tools for remote repo browsing via GitHub REST API
-- Tools: `git_read_file`, `git_list_tree`, `git_log`, `git_get_commit`, `git_diff`, `git_list_branches`, `git_search_repos`, `git_search_code`, `git_search_issues`, `git_repo_info`, `git_pr_list`, `git_get_pr`, `git_issue_list`, `git_get_issue`, `git_create_issue`
-- Uses `GIT_TOKEN` from `.env` — no external MCP server dependency
-- Fixed `.env` loading to use absolute path (works regardless of CWD)
-
-### April 2026 - Task-Based Gateway API
-- Migrated to Gateway's task-based query system
-- Removed `models` section from `config.json` — Gateway is now ground truth for model routing
-- All agents now use `task` parameter (`query`, `inspect`, `synthesis`, `analysis`, `vision`, `embed`) instead of explicit model names
-- `gateway-client.js` simplified: no longer accepts `embedModel` or `models` parameters
-- Embedding calls automatically use `task: 'embed'`
-- `predict()` adapter updated: `taskType` → `task` parameter
-
-### April 2026 - Architecture Simplification
-- Removed local LLM Router (`src/router/`)
-- Now uses external LLM Gateway exclusively via `src/gateway-client.js`
-- Simplified model configuration in config.json
-- Added nIndexer integration for codebase indexing (separate service on port 3666)
-
-### March 2026 - Search Optimizations
-- `grep_codebase`: Added result caching, early termination, multi-threading
-- `grep_codebase`: New options `maxMatchesPerFile`, `caseSensitive`, `pathPattern`, `noCache`
-- `search_keyword`: Added true content search with inverted index
-- Tool descriptions updated to guide LLMs toward faster alternatives
-
-### Feb 2026 - Code Search Removed
-- Code Search module archived to `_Archive/code-search/`
-- File referencing simplified to absolute paths only
-- Removed hash IDs and SPACE:path format support
-- Tool count: 30 → 16 (removed 14 code-search tools)
-
-## Contributors
-- **@herrbasan** - Initial architecture, LM Studio integration, memory system
-- **GitHub Copilot (Claude Sonnet 4.5)** - Web research iterative refinement, anti-bot hardening, dreaming system implementation
-- **GitHub Copilot (Claude Opus 4.5)** - Local Agent and Code Search (now archived)
-- **Kimi K 2.5 (Kimi Code CLI)** - Web research content extraction hardening, streaming research pipeline
+Bind `HOST=0.0.0.0` in `.env` for remote access.
 
 ## Useful Links
-- x.ai Grok API Reference - https://docs.x.ai/developers/api-reference
-- OpenAI API Reference - https://platform.openai.com/docs/api-reference/introduction
-- LM Studio API Reference - https://lmstudio.ai/docs/developer/rest
-- Ollama API Reference - https://docs.ollama.com/quickstart
-- Gemini API Reference - https://ai.google.dev/gemini-api/docs#rest
 
-
+- Prime directive: `mcp_documentation/Agents_Prime.md`
+- Tool reference: `mcp_documentation/workshop.md`
+- LLM Gateway WebSocket API: `docs/LLM_GATEWAY_WEBSOCKET_API.md`
+- LLM Gateway REST API: `docs/LLM_GATEWAY_REST_API.md`
