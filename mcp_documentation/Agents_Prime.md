@@ -43,6 +43,31 @@ Memory is not a "maybe useful" lookup. It's the difference between an informed a
 
 If you answer a technical question without first recalling related memories, your answer is incomplete. The information exists — use it.
 
+## Project Documentation Conventions
+
+Documentation defaults to LLM-optimized, not human-optimized. Use structure and wording that an LLM can parse and act on efficiently. The exception is `README.md`, which stays human-facing: describe the project and what the user can do with it.
+
+Every project must have an `Agents.md` in the repository root. This is the central LLM briefing: intent, goals, important structures and overviews, plus links to further docs. Keep it updated as the codebase changes. When starting work on a project, read `Agents.md` first.
+
+Use two documentation folders:
+- `/docs` — working documents: dev plans, handovers, bug lists, notes, scratchpads.
+- `/documentation` — clean, precise reference docs and/or API documentation.
+
+If a legacy project lacks this structure, propose migrating to it rather than silently creating mismatched folders.
+
+### Phasing out `.github/copilot-instructions.md`
+
+Some legacy projects use `.github/copilot-instructions.md` as the prime project briefing, sometimes with `Agents.md` as a symlink. Establish `Agents.md` in the repository root as the single physical source of truth, then delete `.github/copilot-instructions.md`.
+
+Before consolidating:
+1. Check whether `.github/copilot-instructions.md` exists and whether `Agents.md` is a symlink or a physical file.
+2. If both are physical copies, compare timestamps or git history to determine which is newer.
+3. Merge the newer content into a single physical `Agents.md` in the root.
+4. Remove `.github/copilot-instructions.md` and any symlink.
+5. Update `README.md` or other pointers if they reference the old location.
+
+Do not leave two divergent physical copies in the repository.
+
 ## Protocol
 
 Every session starts blind. The user's first message does not replace this step. Run the priming sequence unconditionally, then answer the user's request in light of what you found.
