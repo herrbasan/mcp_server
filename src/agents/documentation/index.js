@@ -1,6 +1,10 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { getLogger } from '../../utils/logger.js';
+import { searchDocuments } from '../vdb/index.js';
+
+const logger = getLogger();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -230,6 +234,8 @@ export async function documentation_query(args, context) {
     const { gateway, progress } = context;
 
     let docsToLoad = [];
+    let retrievalMethod = 'vdb';
+    let domainNote = '';
 
     if (files && Array.isArray(files) && files.length > 0) {
         // Load specific files
@@ -242,47 +248,74 @@ export async function documentation_query(args, context) {
             const content = readFileSync(fullPath, 'utf-8');
             docsToLoad.push({ file, content });
         }
+        retrievalMethod = 'files';
     } else {
-        // Load domain(s) — use LLM to resolve if domain name is inexact
-        const allDomains = listAllDomains(context);
-        const availNames = allDomains.map(d => d.domain);
-
-        let domainsToLoad;
-        let domainNote = '';
-
-        if (!domain || domain === 'all') {
-            domainsToLoad = availNames;
-        } else {
-            // Check for exact match first (fast path, no LLM call)
-            const exact = allDomains.find(d => d.domain === domain);
-            if (exact) {
-                domainsToLoad = [exact.domain];
-            } else {
-                // Inexact — ask LLM to resolve
-                if (progress) progress(`Resolving domain "${domain}" via LLM...`, 2, 100);
-                const resolved = await resolveDomainViaLLM(domain, allDomains, question, gateway);
-                domainsToLoad = resolved.domains;
-                domainNote = resolved.note;
-            }
-        }
-
-        for (const dom of domainsToLoad) {
-            const dir = getDomainDir(context, dom);
-            if (!existsSync(dir)) continue;
-            const entries = readdirSync(dir).filter(f => {
-                const full = join(dir, f);
-                return statSync(full).isFile() && f.endsWith('.md');
+        // Try vector search first (simple RAG)
+        try {
+            if (progress) progress(`Searching documentation vectors...`, 5, 100);
+            const vdbResults = await searchDocuments({
+                query: question,
+                collections: ['documentation'],
+                folder: domain && domain !== 'all' ? domain : undefined,
+                top_k: 12,
+                include_content: true
             });
-            for (const file of entries) {
-                const fullPath = join(dir, file);
+
+            const seenFiles = new Set();
+            for (const r of vdbResults) {
+                const fileName = r.path.replace(/\\/g, '/');
+                if (seenFiles.has(fileName)) continue;
+                seenFiles.add(fileName);
+                const fullPath = r.absolutePath;
+                if (!existsSync(fullPath)) continue;
                 const content = readFileSync(fullPath, 'utf-8');
-                docsToLoad.push({ file: `${dom}/${file}`, content });
+                let docFile = fileName;
+                if (r.domain) docFile = `${r.domain}/${fileName}`;
+                docsToLoad.push({ file: docFile, content, score: r.score });
             }
+
+            if (docsToLoad.length) {
+                retrievalMethod = 'vdb';
+            }
+        } catch (e) {
+            logger.warn(`[Documentation] VDB search failed, falling back to full domain load: ${e.message}`, null, 'Docs');
         }
 
-        // Prepend domain note to the answer later
-        if (domainNote && docsToLoad.length) {
-            docsToLoad._domainNote = domainNote;
+        // Fallback: load entire domain(s)
+        if (!docsToLoad.length) {
+            retrievalMethod = domain ? 'domain' : 'all';
+            const allDomains = listAllDomains(context);
+            const availNames = allDomains.map(d => d.domain);
+
+            let domainsToLoad;
+
+            if (!domain || domain === 'all') {
+                domainsToLoad = availNames;
+            } else {
+                const exact = allDomains.find(d => d.domain === domain);
+                if (exact) {
+                    domainsToLoad = [exact.domain];
+                } else {
+                    if (progress) progress(`Resolving domain "${domain}" via LLM...`, 2, 100);
+                    const resolved = await resolveDomainViaLLM(domain, allDomains, question, gateway);
+                    domainsToLoad = resolved.domains;
+                    domainNote = resolved.note;
+                }
+            }
+
+            for (const dom of domainsToLoad) {
+                const dir = getDomainDir(context, dom);
+                if (!existsSync(dir)) continue;
+                const entries = readdirSync(dir).filter(f => {
+                    const full = join(dir, f);
+                    return statSync(full).isFile() && f.endsWith('.md');
+                });
+                for (const file of entries) {
+                    const fullPath = join(dir, file);
+                    const content = readFileSync(fullPath, 'utf-8');
+                    docsToLoad.push({ file: `${dom}/${file}`, content });
+                }
+            }
         }
     }
 
@@ -294,12 +327,12 @@ export async function documentation_query(args, context) {
 
     const totalChars = docsToLoad.reduce((s, d) => s + d.content.length, 0);
     const docsContext = docsToLoad.map(d =>
-        `### DOC: ${d.file}\n\`\`\`markdown\n${d.content}\n\`\`\``
+        `### DOC: ${d.file}${d.score !== undefined ? ` (relevance: ${(d.score * 100).toFixed(1)}%)` : ''}\n\`\`\`markdown\n${d.content}\n\`\`\``
     ).join('\n\n---\n\n');
 
     if (progress) progress(`Context: ${docsToLoad.length} docs, ${(totalChars / 1024).toFixed(0)}KB. Querying LLM...`, 30, 100);
 
-    const systemPrompt = `You are a documentation expert with access to the COMPLETE knowledge base loaded below. Answer the user's question using ONLY the provided documentation. Cite specific documents by filename when relevant. If the docs don't cover the answer, say so clearly — do not fabricate.
+    const systemPrompt = `You are a documentation expert with access to the knowledge base loaded below. Answer the user's question using ONLY the provided documentation. Cite specific documents by filename when relevant. If the docs don't cover the answer, say so clearly — do not fabricate.
 
 Use documentation.query for:
 - **Search**: Find where a concept, API, or feature is documented across the knowledge base
@@ -318,12 +351,11 @@ You can explain concepts, relationships, patterns, and compare/contrast document
     });
 
     const answer = typeof result === 'string' ? result : result?.content || '';
-    const domainNote = docsToLoad._domainNote || '';
 
     return {
         content: [{
             type: 'text',
-            text: `### Docs Query Result\n**Question:** ${question}\n**Docs loaded:** ${docsToLoad.length} (${(totalChars / 1024).toFixed(0)}KB)\n**Domains:** ${[...new Set(docsToLoad.map(d => d.file.split('/')[0]))].join(', ')}${domainNote}\n\n${answer}`
+            text: `### Docs Query Result\n**Question:** ${question}\n**Retrieval:** ${retrievalMethod}\n**Docs loaded:** ${docsToLoad.length} (${(totalChars / 1024).toFixed(0)}KB)\n**Domains:** ${[...new Set(docsToLoad.map(d => d.file.split('/')[0]))].join(', ')}${domainNote ? `\n**Domain note:** ${domainNote}` : ''}\n\n${answer}`
         }]
     };
 }

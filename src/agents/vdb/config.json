@@ -1,0 +1,43 @@
+{
+    "agent": "vdb",
+    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and documentation. Indexes text files on a timer and exposes ranked search across collections.",
+    "tools": [
+        {
+            "name": "vdb_search",
+            "description": "Semantic search over the vector database. Searches one or more collections (storage, documentation) and returns ranked matches with path, score, and snippet. Use filters to narrow by folder, domain, or file extension.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query or natural language question." },
+                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "documentation", "memory"] }, "description": "Collections to search. Default: all enabled collections." },
+                    "folder": { "type": "string", "description": "Filter to a specific folder (storage) or domain (documentation)." },
+                    "extension": { "type": "string", "description": "Filter to files with this extension, e.g. '.md'." },
+                    "top_k": { "type": "number", "default": 10, "description": "Number of top matches to return." },
+                    "approximate": { "type": "boolean", "default": false, "description": "Use HNSW approximate search. Requires index to be built." },
+                    "include_content": { "type": "boolean", "default": false, "description": "If true, include the matched chunk text in results." }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "vdb_status",
+            "description": "Show vector database status: enabled collections, document counts, last scan time, pending changes, and whether nVDB is loaded.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "vdb_trigger_scan",
+            "description": "Manually trigger a re-scan of all watched folders. Returns when the scan is complete or reports that a scan is already running.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "vdb_build_index",
+            "description": "Build or rebuild the HNSW approximate-search index for one or more collections. Use after large ingestions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "documentation", "memory"] }, "description": "Collections to index. Default: all." }
+                }
+            }
+        }
+    ]
+}

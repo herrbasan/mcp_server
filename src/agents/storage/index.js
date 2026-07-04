@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from './path-translator.js';
+import { searchDocuments } from '../vdb/index.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -363,4 +364,34 @@ export async function storage_delete(args) {
     }
     logger.info(`[Storage] storage_delete OK: "${userPath}" (${stat.isDirectory() ? 'dir' : 'file'})`, null, 'Storage');
     return result(true, 'storage_delete', userPath, { deleted: true });
+}
+
+export async function storage_search(args) {
+    const { query, folder, extension, top_k = 10, include_content = false } = args || {};
+    if (!query) throw new Error('storage_search: query is required');
+    logger.info(`[Storage] storage_search: "${query}"`, { folder, extension, top_k }, 'Storage');
+
+    const results = await searchDocuments({
+        query,
+        collections: ['storage'],
+        folder,
+        extension,
+        top_k,
+        include_content
+    });
+
+    const formatted = results.map(r => {
+        const line = `[${r.path}] score: ${r.score.toFixed(4)}${r.folder ? ` folder:${r.folder}` : ''}`;
+        if (include_content && r.content) {
+            return `${line}\n--- snippet ---\n${r.content.slice(0, 500)}${r.content.length > 500 ? '...' : ''}`;
+        }
+        return line;
+    }).join('\n\n');
+
+    return {
+        content: [{
+            type: 'text',
+            text: `Storage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+        }]
+    };
 }

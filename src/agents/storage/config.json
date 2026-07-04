@@ -72,6 +72,21 @@
                 },
                 "required": ["path"]
             }
+        },
+        {
+            "name": "storage_search",
+            "description": "Semantic search over files in storage using the vector database. Returns ranked matches with path, score, and optional content snippet. Filter by folder or file extension.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Natural language search query." },
+                    "folder": { "type": "string", "description": "Filter to a specific top-level folder in storage." },
+                    "extension": { "type": "string", "description": "Filter to files with this extension, e.g. '.md'." },
+                    "top_k": { "type": "number", "default": 10, "description": "Number of top matches to return." },
+                    "include_content": { "type": "boolean", "default": false, "description": "Include the matched chunk text in results." }
+                },
+                "required": ["query"]
+            }
         }
     ]
 }

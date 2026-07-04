@@ -248,8 +248,8 @@ Tools are NOT interchangeable across contexts. Each tool executes in ONE place:
 
   CONTEXT A: MCP Server (this server, port 3100)
     Your top-level MCP calls land here. Tools: storage.*, memory.*,
-    forge.*, documentation.*, vision.*, research.*, llm.*, github.*,
-    inspector.*, dreaming.*.
+    forge.*, documentation.*, vdb.*, vision.*, research.*, llm.*,
+    github.*, inspector.*, dreaming.*.
     Runs in the MCP server Node.js process.
     CAN reach: filesystem, LLM Gateway, browser sessions, GitHub API.
 
@@ -553,9 +553,32 @@ TYPICAL WORKFLOW:
       (e.g. "Workshop/workshop.md"). lines: [start, end] for partial reads.
 
   documentation.query — { question*, domain?, files? }
-      LLM-powered search and Q&A. The simplest way to find answers —
-      just ask a question. domain is flexible — an LLM pass resolves
-      inexact names to the closest real domain(s). Prefer domain over files.
+      LLM-powered search and Q&A. First runs a vector search over the
+      documentation collection, then asks the LLM to answer using only the
+      retrieved documents. Simple RAG by default; use vdb.search directly for
+      advanced multi-step retrieval.
+
+
+═══════════════════════════════════════════════════════════════
+VDB — Vector Database (nVDB)
+═══════════════════════════════════════════════════════════════
+
+Embedded vector database backed by nVDB. Indexes storage files and
+documentation on a timer (default 5 minutes) and exposes semantic search.
+
+  vdb.search — { query*, collections?, folder?, extension?, top_k?,
+                 approximate?, include_content? }
+      Semantic search over storage and/or documentation collections.
+      Use folder= for storage folder or documentation domain filters.
+
+  vdb.status — {}
+      Show collection counts, last scan, and whether nVDB is loaded.
+
+  vdb.trigger_scan — {}
+      Manually re-scan all watched folders.
+
+  vdb.build_index — { collections? }
+      Build HNSW approximate-search index.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -588,6 +611,9 @@ content that should survive beyond the current session.
 
   storage.delete — { path*, recursive? }
       Delete a file or directory. Set recursive:true to delete non-empty dirs.
+
+  storage.search — { query*, folder?, extension?, top_k?, include_content? }
+      Semantic search over files in storage via the vector database.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -706,9 +732,13 @@ IMPORTANT RULES
         "documentation.domains": "documentation_domains",
         "documentation.list": "documentation_list", "documentation.get": "documentation_get", "documentation.query": "documentation_query",
 
+        "vdb.search": "vdb_search", "vdb.status": "vdb_status",
+        "vdb.trigger_scan": "vdb_trigger_scan", "vdb.build_index": "vdb_build_index",
+
         "storage.stat": "storage_stat", "storage.read": "storage_read",
         "storage.write": "storage_write", "storage.list": "storage_list",
         "storage.move": "storage_move", "storage.delete": "storage_delete",
+        "storage.search": "storage_search",
 
         "forge.write": "forge_write", "forge.update": "forge_update",
         "forge.read": "forge_read", "forge.list": "forge_list",

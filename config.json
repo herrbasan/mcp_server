@@ -54,6 +54,27 @@
     "documentation": {
       "llmDocsPath": "D:\\DEV\\LLM_Docs"
     },
+    "vdb": {
+      "enabled": true,
+      "dbPath": "data/nvdb",
+      "scanIntervalMinutes": 5,
+      "scanTimeoutMinutes": 30,
+      "embeddingDim": 2560,
+      "chunkMaxTokens": 1024,
+      "chunkOverlapTokens": 128,
+      "chunkTokCharsRatio": 2.5,
+      "maxFileSizeBytes": 10485760,
+      "batchTokenLimit": 29000,
+      "maxBatchTexts": 32,
+      "filesPerGroup": 100,
+      "maxRetries": 1,
+      "batchDelayMs": 100,
+      "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
+      "watch": {
+        "storage": { "enabled": true },
+        "documentation": { "enabled": true }
+      }
+    },
     "forge": {
       "publicUrl": "http://192.168.0.100:3100",
       "defaultTimeout": 300000,
