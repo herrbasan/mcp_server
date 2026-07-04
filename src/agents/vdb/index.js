@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { loadNvdb, isNvdbAvailable } from './nvdb-loader.js';
-import { makeChunker, isGarbageChunk, isGarbageFile } from './chunker.js';
+import { makeChunker } from './chunker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -237,51 +237,19 @@ function readTextFile(absolutePath) {
 function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metadata = {}) {
     const relPath = safeRel(sourceRoot, absolutePath);
     const content = readTextFile(absolutePath);
-
-    // File-level garbage gate: reject the whole file before chunking if the
-    // opening sample is filler, hex dump, or binary. Saves the chunker work
-    // and keeps pure-garbage files out of the index entirely.
-    const fileCheck = isGarbageFile(content);
-    if (!fileCheck.ok) {
-        logger.warn(`[VDB] Skipping garbage file ${absolutePath}: ${fileCheck.reason}`, null, 'VDB');
-        return null;
-    }
-
     const contentHash = hashContent(content);
     const chunks = CHUNKER(content);
     const ext = path.extname(absolutePath).toLowerCase();
     const docBaseId = `${collectionName}:${relPath}`;
 
-    // Per-chunk garbage gate: a large file may have some good chunks and some
-    // bad ones (e.g. a diary with an embedded hex dump). Filter individually.
-    // splitIdx is preserved from the original chunker output so include_content
-    // can still re-locate the chunk by its original index.
-    const preparedChunks = [];
-    let rejected = 0;
-    for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const check = isGarbageChunk(chunk.text);
-        if (!check.ok) {
-            rejected++;
-            continue;
-        }
-        preparedChunks.push({
-            docId: chunks.length === 1 ? docBaseId : `${docBaseId}#${i}`,
-            text: chunk.text,
-            splitIdx: chunk.splitIdx,
-            charOffset: chunk.charOffset,
-            isLastChunk: chunk.isLastChunk,
-            tokEst: chunk.tokEst
-        });
-    }
-
-    if (preparedChunks.length === 0) {
-        logger.warn(`[VDB] All ${chunks.length} chunks rejected for ${absolutePath} (${rejected} garbage)`, null, 'VDB');
-        return null;
-    }
-    if (rejected > 0) {
-        logger.info(`[VDB] ${absolutePath}: ${rejected}/${chunks.length} chunks rejected as garbage`, null, 'VDB');
-    }
+    const preparedChunks = chunks.map((chunk, i) => ({
+        docId: chunks.length === 1 ? docBaseId : `${docBaseId}#${i}`,
+        text: chunk.text,
+        splitIdx: chunk.splitIdx,
+        charOffset: chunk.charOffset,
+        isLastChunk: chunk.isLastChunk,
+        tokEst: chunk.tokEst
+    }));
 
     return {
         docBaseId,
@@ -308,34 +276,6 @@ function deleteExistingChunks(docBaseId) {
             logger.warn(`[VDB] deleteExistingChunks: failed to delete ${chunkId}: ${e.message}`, null, 'VDB');
         }
     }
-}
-
-// Delete vectors for a file that has no scan-index entry (e.g. garbage file
-// whose index entry was removed, or a file that was indexed before the scan
-// index existed). Tries chunk IDs #0..#maxChunks-1 plus the bare docBaseId.
-// nVDB delete() returns false for unknown ids, so over-scanning is safe.
-const ORPHAN_SCAN_MAX_CHUNKS = 500;
-function deleteOrphanChunks(collectionName, docBaseId) {
-    const coll = getCollection(collectionName);
-    let deleted = 0;
-    // Try single-chunk form first.
-    try { if (coll.delete(docBaseId)) deleted++; } catch (e) {
-        logger.warn(`[VDB] deleteOrphanChunks: failed to delete ${docBaseId}: ${e.message}`, null, 'VDB');
-    }
-    // Try multi-chunk form #0..#N.
-    for (let i = 0; i < ORPHAN_SCAN_MAX_CHUNKS; i++) {
-        const chunkId = `${docBaseId}#${i}`;
-        try {
-            if (coll.delete(chunkId)) deleted++;
-        } catch (e) {
-            // delete() throws on missing id in some nVDB versions — stop scanning.
-            break;
-        }
-    }
-    if (deleted > 0) {
-        logger.info(`[VDB] deleteOrphanChunks: removed ${deleted} orphaned chunks for ${docBaseId}`, null, 'VDB');
-    }
-    return deleted;
 }
 
 // ── Content-hash dedup ───────────────────────────────────────────────
@@ -506,25 +446,6 @@ async function scanCollection(collectionName) {
             }
 
             const prepared = prepareFileForIndexing(collectionName, absolutePath, root, metadata);
-            if (prepared === null) {
-                // Garbage file — don't index. Back out the added/updated count
-                // and remove from the scan index so it's not tracked as known.
-                if (existing) stats.updated--;
-                else stats.added--;
-                stats.skipped++;
-                // Delete old vectors: if the file was previously indexed,
-                // deleteExistingChunks handles it. If the scan-index entry was
-                // removed (e.g. manual cleanup), deleteOrphanChunks sweeps the
-                // DB for any surviving vectors under this docBaseId.
-                if (existing) {
-                    deleteExistingChunks(docBaseId);
-                } else {
-                    deleteOrphanChunks(collectionName, docBaseId);
-                }
-                delete index.files[docBaseId];
-                unregisterHash(index, existing?.contentHash);
-                continue;
-            }
 
             // Content-hash dedup: if another file with identical content is
             // already indexed (previous scan) OR already prepared in this scan,
