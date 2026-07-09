@@ -46,7 +46,7 @@
         },
         {
             "name": "forge_list",
-            "description": "List all forged tools (summary form). Pass { name } to get the full manifest including args schema, version, and package status.",
+            "description": "List all forged tools (summary form). Pass { name } to get the full manifest including args schema, version, and package status. When packagesPending is true, the tool has unapproved npm packages. To approve, add those packages to config.json agents.forge.allowedPackages (or disable approval by setting requireApprovalForNewPackages=false) and restart the server. Until approved, forge_call will reject with a clear error listing the missing packages.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

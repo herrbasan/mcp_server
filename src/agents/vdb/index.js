@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { loadNvdb, isNvdbAvailable } from './nvdb-loader.js';
 import { makeChunker } from './chunker.js';
+import { createContextEnhancer } from './context-enhancer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -25,7 +26,8 @@ const DEFAULTS = {
     filesPerGroup: 100,
     maxRetries: 1,
     batchDelayMs: 100,
-    textExtensions: ['.md', '.txt', '.json', '.js', '.mjs', '.css', '.html', '.htm', '.log', '.yaml', '.yml', '.xml', '.csv', '.tsv', '.sql']
+    textExtensions: ['.md', '.txt', '.json', '.js', '.mjs', '.css', '.html', '.htm', '.log', '.yaml', '.yml', '.xml', '.csv', '.tsv', '.sql'],
+    ignore: []
 };
 
 const COLLECTIONS = {
@@ -49,6 +51,7 @@ let STORAGE_ROOT = null;
 let DOCS_ROOT = null;
 let MCP_DOCS_ROOT = null;
 let CHUNKER = null;
+let CONTEXT_ENHANCER = null;
 
 const INDEX_PATH = () => path.resolve(PROJECT_ROOT, CONFIG?.indexPath || path.join(CONFIG?.dbPath || DEFAULTS.dbPath, 'scan-index.json'));
 
@@ -81,10 +84,53 @@ function safeRel(root, absolutePath) {
     return path.relative(root, absolutePath).replace(/\\/g, '/');
 }
 
-function toLocalStoragePath(userPath) {
-    if (STORAGE_TRANSLATOR) return STORAGE_TRANSLATOR.toLocal(userPath);
-    return userPath;
+// ── Ignore logic (.nvdb_ignore files + config defaults) ──────────────
+
+const IGNORE_FILE_NAME = '.nvdb_ignore';
+
+function parseIgnoreFile(filePath) {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const patterns = [];
+    for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        patterns.push(trimmed);
+    }
+    return patterns;
 }
+
+function matchIgnorePattern(name, pattern) {
+    if (pattern === '*') return true;
+    if (pattern.includes('*') || pattern.includes('?')) {
+        // Minimal glob: only * and ? supported.
+        const regex = new RegExp(
+            '^' + pattern.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$'
+        );
+        return regex.test(name);
+    }
+    return name === pattern;
+}
+
+function isIgnored(name, patterns) {
+    if (!patterns || patterns.length === 0) return false;
+    for (const pattern of patterns) {
+        if (matchIgnorePattern(name, pattern)) return true;
+    }
+    return false;
+}
+
+// Collect ignore patterns that apply to a directory.
+// Includes .nvdb_ignore in that directory plus any inherited directory-level
+// "*" rules from parents? For now keep it simple: only local .nvdb_ignore.
+function getIgnorePatternsForDir(dir, collectionDefaults) {
+    const filePatterns = parseIgnoreFile(path.join(dir, IGNORE_FILE_NAME));
+    const defaults = collectionDefaults || [];
+    if (!filePatterns) return defaults;
+    return [...defaults, ...filePatterns];
+}
+
+const ENHANCEMENT_CACHE_COLLECTION = '__enhancement_cache';
 
 function getCollection(name) {
     if (COLLECTION_INSTANCES.has(name)) return COLLECTION_INSTANCES.get(name);
@@ -100,9 +146,39 @@ function getCollection(name) {
     return coll;
 }
 
+function createEnhancementCache() {
+    if (!DATABASE) return null;
+    const coll = getCollection(ENHANCEMENT_CACHE_COLLECTION);
+    // nVDB requires a vector even though we only use get(id). Zero vector is fine.
+    const zeroVector = new Array(CONFIG.embeddingDim).fill(0);
+
+    return {
+        get(contentHash) {
+            try {
+                const raw = coll.get(contentHash);
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                return parsed;
+            } catch (e) {
+                logger.warn(`[VDB] Enhancement cache get failed: ${e.message}`, null, 'VDB');
+                return null;
+            }
+        },
+        set(contentHash, value) {
+            try {
+                coll.insert(contentHash, zeroVector, JSON.stringify(value));
+            } catch (e) {
+                logger.warn(`[VDB] Enhancement cache set failed: ${e.message}`, null, 'VDB');
+            }
+        }
+    };
+}
+
 async function embedText(text) {
     if (!GATEWAY) throw new Error('VDB: gateway not available');
-    const embedding = await GATEWAY.embed(text);
+    const embedding = CONFIG.embeddingModel
+        ? await GATEWAY.embed(text, CONFIG.embeddingModel)
+        : await GATEWAY.embed(text);
     if (!Array.isArray(embedding) || embedding.length !== CONFIG.embeddingDim) {
         throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(embedding) ? embedding.length : typeof embedding}`);
     }
@@ -125,7 +201,9 @@ function withTimeout(promise, ms, label) {
 async function embedViaGateway(texts, retries) {
     if (!GATEWAY_HTTP_URL) throw new Error('VDB: gateway HTTP URL not configured');
     const url = `${GATEWAY_HTTP_URL}/v1/embeddings`;
-    const body = JSON.stringify({ input: texts, task: 'embed' });
+    const body = CONFIG.embeddingModel
+        ? JSON.stringify({ input: texts, model: CONFIG.embeddingModel })
+        : JSON.stringify({ input: texts, task: 'embed' });
     retries = retries ?? CONFIG.maxRetries ?? 1;
     let lastErr;
 
@@ -234,13 +312,14 @@ function readTextFile(absolutePath) {
     return fs.readFileSync(absolutePath, 'utf-8');
 }
 
-function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metadata = {}) {
+async function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metadata = {}) {
     const relPath = safeRel(sourceRoot, absolutePath);
     const content = readTextFile(absolutePath);
     const contentHash = hashContent(content);
     const chunks = CHUNKER(content);
     const ext = path.extname(absolutePath).toLowerCase();
     const docBaseId = `${collectionName}:${relPath}`;
+    const tokCharsRatio = CONFIG.chunkTokCharsRatio || 2.5;
 
     const preparedChunks = chunks.map((chunk, i) => ({
         docId: chunks.length === 1 ? docBaseId : `${docBaseId}#${i}`,
@@ -251,16 +330,26 @@ function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metada
         tokEst: chunk.tokEst
     }));
 
-    return {
+    const stat = fs.statSync(absolutePath);
+    let prepared = {
         docBaseId,
         collectionName,
         relPath,
         absolutePath,
         contentHash,
         extension: ext,
+        tokCharsRatio,
+        size: stat.size,
+        content,
         metadata,
         chunks: preparedChunks
     };
+
+    if (CONTEXT_ENHANCER) {
+        prepared = await CONTEXT_ENHANCER.enhance(prepared);
+    }
+
+    return prepared;
 }
 
 function deleteExistingChunks(docBaseId) {
@@ -376,26 +465,52 @@ function deleteFileFromIndex(docBaseId) {
 
 function listWatchedFiles(collectionName) {
     const files = [];
+    const collectionDefaults = CONFIG.ignore || [];
     if (collectionName === 'storage') {
         if (!STORAGE_ROOT || !fs.existsSync(STORAGE_ROOT)) return files;
-        walk(STORAGE_ROOT, STORAGE_ROOT, files, { collection: 'storage' });
+        const watchFolders = CONFIG.watchFolders;
+        if (Array.isArray(watchFolders) && watchFolders.length > 0) {
+            for (const folder of watchFolders) {
+                const folderPath = path.join(STORAGE_ROOT, folder);
+                if (!fs.existsSync(folderPath)) {
+                    logger.warn(`[VDB] watchFolders entry not found: ${folderPath}`, null, 'VDB');
+                    continue;
+                }
+                walk(folderPath, STORAGE_ROOT, files, { collection: 'storage', watchFolder: folder }, collectionDefaults);
+            }
+        } else {
+            walk(STORAGE_ROOT, STORAGE_ROOT, files, { collection: 'storage' }, collectionDefaults);
+        }
     } else if (collectionName === 'documentation') {
         if (DOCS_ROOT && fs.existsSync(DOCS_ROOT)) {
-            walk(DOCS_ROOT, DOCS_ROOT, files, { collection: 'documentation', sourceType: 'llm_docs' });
+            walk(DOCS_ROOT, DOCS_ROOT, files, { collection: 'documentation', sourceType: 'llm_docs' }, collectionDefaults);
         }
         if (MCP_DOCS_ROOT && fs.existsSync(MCP_DOCS_ROOT)) {
-            walk(MCP_DOCS_ROOT, MCP_DOCS_ROOT, files, { collection: 'documentation', sourceType: 'mcp_docs' });
+            walk(MCP_DOCS_ROOT, MCP_DOCS_ROOT, files, { collection: 'documentation', sourceType: 'mcp_docs' }, collectionDefaults);
         }
     }
     return files;
 }
 
-function walk(dir, root, out, baseMeta) {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
+function walk(dir, root, out, baseMeta, collectionDefaults) {
+    const ignorePatterns = getIgnorePatternsForDir(dir, collectionDefaults);
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+        logger.warn(`[VDB] Cannot read directory ${dir}: ${e.message}`, null, 'VDB');
+        return;
+    }
     for (const entry of entries) {
         const full = path.join(dir, entry.name);
+        const name = entry.name;
+        if (name === IGNORE_FILE_NAME) continue;
+        if (isIgnored(name, ignorePatterns)) {
+            logger.debug(`[VDB] Ignoring ${full} by pattern`, null, 'VDB');
+            continue;
+        }
         if (entry.isDirectory()) {
-            walk(full, root, out, baseMeta);
+            walk(full, root, out, baseMeta, collectionDefaults);
         } else if (entry.isFile() && isTextFile(full)) {
             let metadata = { ...baseMeta };
             if (baseMeta.collection === 'storage') {
@@ -445,7 +560,7 @@ async function scanCollection(collectionName) {
                 stats.added++;
             }
 
-            const prepared = prepareFileForIndexing(collectionName, absolutePath, root, metadata);
+            const prepared = await prepareFileForIndexing(collectionName, absolutePath, root, metadata);
 
             // Content-hash dedup: if another file with identical content is
             // already indexed (previous scan) OR already prepared in this scan,
@@ -571,6 +686,11 @@ async function runScan() {
         const scanPromise = (async () => {
             for (const name of Object.keys(CONFIG.watch || {})) {
                 if (!COLLECTIONS[name]) continue;
+                const collConfig = CONFIG.watch[name];
+                if (collConfig && collConfig.enabled === false) {
+                    logger.debug(`[VDB] Skipping disabled collection: ${name}`, null, 'VDB');
+                    continue;
+                }
                 logger.info(`[VDB] Scanning collection: ${name}`, null, 'VDB');
                 const stats = await scanCollection(name);
                 for (const k of Object.keys(totalStats)) totalStats[k] += stats[k];
@@ -773,7 +893,8 @@ export async function vdb_status(args, context) {
             embeddingDim: CONFIG?.embeddingDim,
             chunkMaxTokens: CONFIG?.chunkMaxTokens,
             chunkOverlapTokens: CONFIG?.chunkOverlapTokens,
-            batchDelayMs: CONFIG?.batchDelayMs
+            batchDelayMs: CONFIG?.batchDelayMs,
+            contextEnhancement: CONFIG?.contextEnhancement
         },
         collections: {},
         lastScanAt: LAST_SCAN_AT,
@@ -792,7 +913,7 @@ export async function vdb_status(args, context) {
                     totalSegmentDocs: stats.totalSegmentDocs,
                     segmentCount: stats.segmentCount,
                     hasIndex: coll.hasIndex ? coll.hasIndex() : false,
-                    watched: !!CONFIG.watch?.[name]
+                    watched: CONFIG.watch?.[name]?.enabled !== false
                 };
             } catch (e) {
                 status.collections[name] = { error: e.message };
@@ -851,6 +972,7 @@ export async function init(context) {
         indexPath: agentConfig.indexPath || null,
         scanIntervalMinutes: agentConfig.scanIntervalMinutes ?? DEFAULTS.scanIntervalMinutes,
         scanTimeoutMinutes: agentConfig.scanTimeoutMinutes ?? DEFAULTS.scanTimeoutMinutes,
+        embeddingModel: agentConfig.embeddingModel || null,
         embeddingDim: agentConfig.embeddingDim ?? DEFAULTS.embeddingDim,
         chunkMaxTokens: agentConfig.chunkMaxTokens ?? DEFAULTS.chunkMaxTokens,
         chunkOverlapTokens: agentConfig.chunkOverlapTokens ?? DEFAULTS.chunkOverlapTokens,
@@ -862,7 +984,10 @@ export async function init(context) {
         maxRetries: agentConfig.maxRetries ?? DEFAULTS.maxRetries,
         batchDelayMs: agentConfig.batchDelayMs ?? DEFAULTS.batchDelayMs,
         textExtensions: agentConfig.textExtensions ?? DEFAULTS.textExtensions,
-        watch: agentConfig.watch || { storage: true, documentation: true }
+        ignore: agentConfig.ignore ?? DEFAULTS.ignore,
+        watchFolders: agentConfig.watchFolders ?? null,
+        watch: agentConfig.watch || { storage: true, documentation: true },
+        contextEnhancement: agentConfig.contextEnhancement || { enabled: false }
     };
 
     GATEWAY = context.gateway;
@@ -906,6 +1031,12 @@ export async function init(context) {
     // Pre-open configured collections so stats work
     for (const name of Object.keys(CONFIG.watch || {})) {
         if (Object.keys(COLLECTIONS).includes(name)) getCollection(name);
+    }
+
+    const enhancementCache = createEnhancementCache();
+    CONTEXT_ENHANCER = createContextEnhancer(CONFIG.contextEnhancement, GATEWAY, logger, enhancementCache);
+    if (CONTEXT_ENHANCER) {
+        logger.info(`[VDB] Context enhancement enabled (task=${CONFIG.contextEnhancement.task || 'local'})`, null, 'VDB');
     }
 
     startScanner();

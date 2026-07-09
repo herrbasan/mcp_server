@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { searchDocuments } from '../vdb/index.js';
+import * as resources from './resource-provider.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,14 @@ export async function init(context) {
         logger.info(`[Storage] Public URL for large files: ${PUBLIC_URL}`, null, 'Storage');
     }
 
+    // Initialize the MCP resource provider so resources/list and resources/read work.
+    resources.initResourceProvider({
+        storageRoot: STORAGE_ROOT,
+        translator: TRANSLATOR,
+        publicUrl: PUBLIC_URL,
+        inlineByteLimit: INLINE_BYTE_LIMIT
+    });
+
     // ── REST API ─────────────────────────────────────────────────────
     const app = context.app;
     if (app) {
@@ -186,7 +195,13 @@ export async function init(context) {
     }
 
     return {
-        root: STORAGE_ROOT
+        root: STORAGE_ROOT,
+        resources: {
+            listResources: resources.listResources,
+            listResourceTemplates: resources.listResourceTemplates,
+            readResource: resources.readResource,
+            subscribeResource: resources.subscribeResource
+        }
     };
 }
 
@@ -394,4 +409,38 @@ export async function storage_search(args) {
             text: `Storage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
         }]
     };
+}
+
+// ── MCP Resource bridge tools ────────────────────────────────────────────────
+// These expose the MCP Resource provider as regular tools so clients that only
+// support tools/call (like this chat environment's compact MCP wrapper) can
+// still discover and read resources. The implementation delegates to the same
+// provider used by the native resources/* JSON-RPC methods.
+
+function getResourceProvider() {
+    if (!resources) throw new Error('storage resource provider is not available');
+    return resources;
+}
+
+export async function storage_resources_list(args) {
+    const provider = getResourceProvider();
+    const listResult = provider.listResources(args || {});
+    logger.info(`[Storage] storage_resources_list: ${listResult.resources.length} resources`, { hasNextCursor: !!listResult.nextCursor }, 'Storage');
+    return result(true, 'storage_resources_list', '', listResult);
+}
+
+export async function storage_resources_read(args) {
+    const provider = getResourceProvider();
+    const { uri, encoding } = args || {};
+    if (!uri) throw new Error('storage_resources_read: uri is required');
+    const contents = provider.readResource({ uri, encoding });
+    logger.info(`[Storage] storage_resources_read: "${uri}" (${contents.length} content item(s))`, null, 'Storage');
+    return result(true, 'storage_resources_read', uri, { contents });
+}
+
+export async function storage_resources_templates(args) {
+    const provider = getResourceProvider();
+    const resourceTemplates = provider.listResourceTemplates();
+    logger.info(`[Storage] storage_resources_templates: ${resourceTemplates.length} template(s)`, null, 'Storage');
+    return result(true, 'storage_resources_templates', '', { resourceTemplates });
 }

@@ -59,6 +59,7 @@
       "dbPath": "data/nvdb",
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
+      "embeddingModel": "or-qwen-embed",
       "embeddingDim": 2560,
       "chunkMaxTokens": 1024,
       "chunkOverlapTokens": 128,
@@ -70,6 +71,15 @@
       "maxRetries": 1,
       "batchDelayMs": 100,
       "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
+      "ignore": ["forge", "temp"],
+      "contextEnhancement": {
+        "enabled": true,
+        "task": "local",
+        "maxInputChars": 60000,
+        "maxOutputTokens": 512,
+        "temperature": 0.3,
+        "truncation": "headmidtail"
+      },
       "watch": {
         "storage": { "enabled": true },
         "documentation": { "enabled": true }

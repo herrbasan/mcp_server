@@ -288,19 +288,22 @@ export function createGatewayClient(wsUrl, httpUrl) {
             }
         },
 
-        async embed(text) {
+        async embed(text, model) {
+            const body = model
+                ? { input: text, model }
+                : { input: text, task: 'embed' };
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ input: text, task: 'embed' })
+                body: JSON.stringify(body)
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
             const data = await res.json();
             return data.data[0].embedding;
         },
 
-        async embedText(text) {
-            return this.embed(text);
+        async embedText(text, model) {
+            return this.embed(text, model);
         },
 
         async listModels(type) {

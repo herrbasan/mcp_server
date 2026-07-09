@@ -1,6 +1,6 @@
 {
     "agent": "vdb",
-    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and documentation. Indexes text files on a timer and exposes ranked search across collections.",
+    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and documentation. Indexes text files on a timer and exposes ranked search across collections. Directories and files can be excluded from indexing via .nvdb_ignore files or the agents.vdb.ignore config list.",
     "tools": [
         {
             "name": "vdb_search",

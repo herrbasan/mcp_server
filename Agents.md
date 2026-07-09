@@ -66,9 +66,18 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `src/agents/` — agent implementations.
 - `mcp_documentation/` — curated docs served by the documentation agent.
 - `docs/` — working documents (plans, handovers, notes).
-- `data/` — runtime data: memories, dream maps, forge tools, storage.
+- `data/` — runtime data: memories, dream maps, forge tools, storage, VDB index.
 - `tests/` — benchmarks and quick tests.
 - `_Archive/` — archived modules and old plans.
+
+## VDB Indexing
+
+The `vdb` agent indexes text files from configured watched roots (`storage`, `documentation`) for semantic search. Exclusions work at two levels:
+
+- **Config-level**: `agents.vdb.ignore` in `config.json` lists directory/file names to skip everywhere.
+- **Directory-level**: any watched directory may contain a `.nvdb_ignore` file with one pattern per line (`name`, `*`, or simple globs like `*.tmp`). Patterns apply to entries in that directory only.
+
+Current default ignores: `forge` (transient forge tool output), `temp` (fleeting user temp files).
 
 ## Running
 

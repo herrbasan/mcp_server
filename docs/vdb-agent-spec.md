@@ -48,6 +48,41 @@ Internal API (`searchDocuments`) is used by the documentation agent for RAG-styl
 - Defensive split-on-fallback if a batch still fails.
 - Generous 5-minute timeout per embedding request (deadlock guard, not a performance target).
 
+### 2.2.1 Optional context enhancement (local LLM)
+
+When `agents.vdb.contextEnhancement.enabled` is `true`, each file is first sent to a local LLM routed by task name (`local` by default). The model produces a small metadata object:
+
+- `summary` — one-sentence description
+- `keywords` — 5-10 search keywords
+- `entities` — named entities (projects, tools, people, formats)
+- `docType` — file category (`spec`, `code`, `note`, `log`, etc.)
+
+This metadata is:
+
+1. **Prepended to every chunk's embedding text** as a header, so the vector captures the file's topic even when the chunk itself is narrow.
+2. **Stored in the nVDB payload** so search results can surface it later.
+
+The input is truncated to `maxInputChars` (default 12,000) to fit the local model's context window. Enhancement is best-effort: if the local model fails, the file is still indexed without the header.
+
+Configuration (`config.json` under `agents.vdb`):
+
+```json
+"contextEnhancement": {
+  "enabled": false,
+  "task": "local",
+  "maxInputChars": 12000,
+  "maxOutputTokens": 512,
+  "temperature": 0.3,
+  "truncation": "head"
+}
+```
+
+`truncation` controls how long files are squeezed into the local model's context window:
+- `headmidtail` (default) — three equal segments: beginning, middle, and end. Best overall coverage.
+- `head` — keep the beginning, drop the tail. Fastest; good when introductions establish context.
+- `headtail` — 70% head + 30% tail. Good for files with important conclusions.
+- `middle` — first half + last half, dropping the middle. Rarely useful.
+
 ### 2.3 Scanning
 
 - Runs every **5 minutes** (`scanIntervalMinutes`).
@@ -134,6 +169,7 @@ Six bugs were found and fixed in a single session:
 - `src/agents/vdb/index.js` — main agent logic (scanning, indexing, search, compaction).
 - `src/agents/vdb/chunker.js` — text chunking + garbage detection (`isGarbageChunk`, `isGarbageFile`).
 - `src/agents/vdb/nvdb-loader.js` — native module loader.
+- `src/agents/vdb/context-enhancer.js` — local-LLM metadata generation for enriched embeddings.
 - `src/agents/vdb/config.json` — tool schemas.
 - `config.json` — runtime config under `agents.vdb`.
 - `src/server.js` — compact endpoint tool registration.

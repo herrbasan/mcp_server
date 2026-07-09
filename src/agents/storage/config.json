@@ -1,6 +1,6 @@
 {
     "agent": "storage",
-    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured).",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). For files that are fleeting or temporary and should NOT be included in the VDB semantic index, write them to <root>\\temp\\*. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
     "tools": [
         {
             "name": "storage_stat",
@@ -15,7 +15,7 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer instead of inline content. The response includes: (1) httpUrl — a fully-qualified URL using the server's LAN IP from config.json agents.storage.publicUrl (currently http://192.168.0.100:3100). Use this URL VERBATIM with fetch_webpage. NEVER change the host to 'localhost' or '127.0.0.1' — those resolve to the client machine, not the server, and the file will be unreachable. (2) nextStep — a copy-pasteable action like 'fetch_webpage({ url: \"<httpUrl>\" })'. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients on the same machine, the same file is also reachable via the UNC share configured in agents.storage.uncShare.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer instead of inline content. The response includes: (1) httpUrl — a fully-qualified URL using the server's LAN IP from config.json agents.storage.publicUrl (currently http://192.168.0.100:3100). Use this URL VERBATIM with fetch_webpage. NEVER change the host to 'localhost' or '127.0.0.1' — those resolve to the client machine, not the server, and the file will be unreachable. (2) nextStep — a copy-pasteable action like 'fetch_webpage({ url: \"<httpUrl>\" })'. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients on the same machine, the same file is also reachable via the UNC share configured in agents.storage.uncShare. Spec-compliant alternative: this server also exposes storage files as MCP resources via resources/list and resources/read using the URI scheme storage://<relative-path>.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -86,6 +86,36 @@
                     "include_content": { "type": "boolean", "default": false, "description": "Include the matched chunk text in results." }
                 },
                 "required": ["query"]
+            }
+        },
+        {
+            "name": "storage_resources_list",
+            "description": "MCP Resources bridge: list all storage resources as MCP resource URIs. Returns paginated resources using the custom URI scheme storage://<relative-path>. Each resource has uri, name, mimeType, size, and annotations (directory: true for directories). Use the cursor field to page through large result sets. To read a resource, call storage_resources_read with its uri.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "cursor": { "type": "string", "description": "Pagination cursor from a previous response. Omit for the first page." }
+                }
+            }
+        },
+        {
+            "name": "storage_resources_read",
+            "description": "MCP Resources bridge: read the content of a storage resource by URI. Returns inline text for small files and a fetchable HTTP URL for files above the inline threshold (default 64 KB). For binary files, set encoding=base64. URI format: storage://<relative-path>. Find URIs with storage_resources_list or storage_resources_templates.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "uri": { "type": "string", "description": "Resource URI, e.g. storage://Agents.md" },
+                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8 for text, base64 for binaries)" }
+                },
+                "required": ["uri"]
+            }
+        },
+        {
+            "name": "storage_resources_templates",
+            "description": "MCP Resources bridge: list available resource URI templates. Currently exposes storage://{path} for arbitrary files under the storage root.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
             }
         }
     ]

@@ -24,7 +24,10 @@ const SERVER_INFO = {
         'Then: documentation.get({ file: "Workshop/workshop.md" }) for the full tools reference.\n' +
         'For questions: documentation.query({ question: "...", domain: "all" }) — use for search, Q&A, or spec alignment.'
 };
-const SERVER_CAPABILITIES = { tools: { listChanged: true } };
+const SERVER_CAPABILITIES = {
+    tools: { listChanged: true },
+    resources: { listChanged: false, subscribe: false }
+};
 
 const app = express();
 const PORT = process.env.PORT || 3100;
@@ -185,6 +188,66 @@ async function start() {
             case 'tools/list':
                 res.json(jsonrpcResponse(msg.id, { tools }));
                 return;
+
+            case 'resources/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                try {
+                    const result = provider.listResources(msg.params || {});
+                    res.json(jsonrpcResponse(msg.id, result));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/read': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                const { uri, encoding } = msg.params || {};
+                if (!uri) {
+                    res.json(jsonrpcError(msg.id, -32602, 'Missing required parameter: uri'));
+                    return;
+                }
+                try {
+                    const result = provider.readResource({ uri, encoding });
+                    res.json(jsonrpcResponse(msg.id, { contents: result }));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/templates/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                try {
+                    const result = provider.listResourceTemplates();
+                    res.json(jsonrpcResponse(msg.id, { resourceTemplates: result }));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/subscribe':
+            case 'resources/unsubscribe': {
+                // Accepted but no-op: storage agent has no file watchers yet.
+                res.json(jsonrpcResponse(msg.id, {}));
+                return;
+            }
 
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
@@ -739,6 +802,9 @@ IMPORTANT RULES
         "storage.write": "storage_write", "storage.list": "storage_list",
         "storage.move": "storage_move", "storage.delete": "storage_delete",
         "storage.search": "storage_search",
+        "storage.resources_list": "storage_resources_list",
+        "storage.resources_read": "storage_resources_read",
+        "storage.resources_templates": "storage_resources_templates",
 
         "forge.write": "forge_write", "forge.update": "forge_update",
         "forge.read": "forge_read", "forge.list": "forge_list",
@@ -804,6 +870,65 @@ IMPORTANT RULES
             case 'tools/list':
                 res.json(jsonrpcResponse(msg.id, { tools: compactTools }));
                 return;
+
+            case 'resources/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                try {
+                    const result = provider.listResources(msg.params || {});
+                    res.json(jsonrpcResponse(msg.id, result));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/read': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                const { uri, encoding } = msg.params || {};
+                if (!uri) {
+                    res.json(jsonrpcError(msg.id, -32602, 'Missing required parameter: uri'));
+                    return;
+                }
+                try {
+                    const result = provider.readResource({ uri, encoding });
+                    res.json(jsonrpcResponse(msg.id, { contents: result }));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/templates/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    res.json(jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider'));
+                    return;
+                }
+                try {
+                    const result = provider.listResourceTemplates();
+                    res.json(jsonrpcResponse(msg.id, { resourceTemplates: result }));
+                } catch (err) {
+                    res.json(jsonrpcError(msg.id, -32603, err.message));
+                }
+                return;
+            }
+
+            case 'resources/subscribe':
+            case 'resources/unsubscribe': {
+                res.json(jsonrpcResponse(msg.id, {}));
+                return;
+            }
 
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
@@ -901,6 +1026,64 @@ IMPORTANT RULES
                 result = jsonrpcResponse(msg.id, { tools });
                 break;
 
+            case 'resources/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    try {
+                        const listResult = provider.listResources(msg.params || {});
+                        result = jsonrpcResponse(msg.id, listResult);
+                    } catch (err) {
+                        result = jsonrpcError(msg.id, -32603, err.message);
+                    }
+                }
+                break;
+            }
+
+            case 'resources/read': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    const { uri, encoding } = msg.params || {};
+                    if (!uri) {
+                        result = jsonrpcError(msg.id, -32602, 'Missing required parameter: uri');
+                    } else {
+                        try {
+                            const readResult = provider.readResource({ uri, encoding });
+                            result = jsonrpcResponse(msg.id, { contents: readResult });
+                        } catch (err) {
+                            result = jsonrpcError(msg.id, -32603, err.message);
+                        }
+                    }
+                }
+                break;
+            }
+
+            case 'resources/templates/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    try {
+                        const templates = provider.listResourceTemplates();
+                        result = jsonrpcResponse(msg.id, { resourceTemplates: templates });
+                    } catch (err) {
+                        result = jsonrpcError(msg.id, -32603, err.message);
+                    }
+                }
+                break;
+            }
+
+            case 'resources/subscribe':
+            case 'resources/unsubscribe':
+                result = jsonrpcResponse(msg.id, {});
+                break;
+
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
                 const progressToken = msg.params?._meta?.progressToken;
@@ -968,7 +1151,7 @@ IMPORTANT RULES
             case 'initialize':
                 result = jsonrpcResponse(msg.id, {
                     protocolVersion: PROTOCOL_VERSION,
-                    capabilities: { tools: { listChanged: true } },
+                    capabilities: { tools: { listChanged: true }, resources: { listChanged: false, subscribe: false } },
                     serverInfo: { ...SERVER_INFO, name: 'workshop' },
                 });
                 break;
@@ -978,6 +1161,65 @@ IMPORTANT RULES
             case 'tools/list':
                 result = jsonrpcResponse(msg.id, { tools: compactTools });
                 break;
+
+            case 'resources/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    try {
+                        const listResult = provider.listResources(msg.params || {});
+                        result = jsonrpcResponse(msg.id, listResult);
+                    } catch (err) {
+                        result = jsonrpcError(msg.id, -32603, err.message);
+                    }
+                }
+                break;
+            }
+
+            case 'resources/read': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    const { uri, encoding } = msg.params || {};
+                    if (!uri) {
+                        result = jsonrpcError(msg.id, -32602, 'Missing required parameter: uri');
+                    } else {
+                        try {
+                            const readResult = provider.readResource({ uri, encoding });
+                            result = jsonrpcResponse(msg.id, { contents: readResult });
+                        } catch (err) {
+                            result = jsonrpcError(msg.id, -32603, err.message);
+                        }
+                    }
+                }
+                break;
+            }
+
+            case 'resources/templates/list': {
+                const storageAgent = globalContext.agents.get('storage');
+                const provider = storageAgent?.resources;
+                if (!provider) {
+                    result = jsonrpcError(msg.id, -32002, 'Resources not available: storage agent has no resource provider');
+                } else {
+                    try {
+                        const templates = provider.listResourceTemplates();
+                        result = jsonrpcResponse(msg.id, { resourceTemplates: templates });
+                    } catch (err) {
+                        result = jsonrpcError(msg.id, -32603, err.message);
+                    }
+                }
+                break;
+            }
+
+            case 'resources/subscribe':
+            case 'resources/unsubscribe':
+                result = jsonrpcResponse(msg.id, {});
+                break;
+
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
                 const progressToken = msg.params?._meta?.progressToken;
