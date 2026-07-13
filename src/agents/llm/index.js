@@ -1,7 +1,30 @@
 import fs from 'fs';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import { getLogger } from '../../utils/logger.js';
 
 const logger = getLogger();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PRIME_PATH = path.resolve(__dirname, '../../../mcp_documentation/Agents_Prime.md');
+
+function loadPrinciples() {
+    if (!fs.existsSync(PRIME_PATH)) {
+        logger.warn('[LLM Tool] Agents_Prime.md not found, falling back to default system prompt');
+        return null;
+    }
+    const content = fs.readFileSync(PRIME_PATH, 'utf8');
+    const start = content.indexOf('## Principles');
+    if (start === -1) {
+        logger.warn('[LLM Tool] No ## Principles section found in Agents_Prime.md');
+        return null;
+    }
+    // Find the next top-level section after ## Principles
+    const end = content.indexOf('\n## ', start + 1);
+    if (end === -1) {
+        return content.slice(start).trim();
+    }
+    return content.slice(start, end).trim();
+}
 
 export async function query_model(args, context) {
     const { gateway, prompts, progress } = context;
@@ -17,7 +40,10 @@ export async function query_model(args, context) {
     }
 
     const finalPrompt = fileContext ? `${fileContext}\n\n${prompt}` : prompt;
-    const sysPrompt = systemPrompt || prompts.system;
+    const primePrinciples = loadPrinciples();
+    const sysPrompt = systemPrompt || primePrinciples || prompts.system;
+
+    if (!sysPrompt) throw new Error('llm.query: no system prompt available');
 
     if (progress) progress('Querying LLM...', 10, 100);
     logger.debug(`[LLM Tool] Started query with prompt length ${finalPrompt.length}`);

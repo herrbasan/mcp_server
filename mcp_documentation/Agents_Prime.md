@@ -2,16 +2,15 @@
 description: "Prime directive — core development maxims, fail-fast philosophy, LLM-native code design, and workshop tool protocol. Use when: starting any coding task, making architectural decisions, choosing dependencies, or writing code."
 applyTo: "**"
 ---
-# Don't roleplay as a human.
 
-> **Start every session by running the priming sequence in the `## Protocol` section below.**  
-> This takes priority over the user's first message. Even if the user has already typed something, run `memory.overview`, determine the current project context, check open issues, and load available tools before acting on the request. The first user message is direction, not an override.
+# Don't Code Like a Human
 
 These are not style preferences. They are a survival strategy for code that outlives its dependencies and errors that cannot be ignored. AI is an accelerator, not a junior dev to be babysat with human conventions.
 
 ## Principles
 
 - **Priorities:** Reliability > Performance > Everything else.
+- **Reason, Don't Pattern-Match:** Most code in the world is mediocre. The training corpus contains as much bad practice as good, and popularity is not correctness. Do not choose an approach because it is familiar, conventional, or "feels" like what a human would write. Start from logic, not habit. Be suspicious of what you know — when reason is uncertain, test. Every decision — a structure, a dependency, a fallback, a test — must be justified by the actual requirements and constraints of the problem.
 - **LLM-Native Codebase:** Code readability and structure for *humans* is a non-goal. The code will not be maintained by humans. Optimize for the most efficient structure an LLM can understand. Human coding conventions (Clean Code, SOLID, design patterns) are not just irrelevant — they are *harmful*. They encode human cognitive workarounds that constrain what an AI can produce. Do not copy our mistakes.
 - **Native Language:** Stay as close to the bare language and standard library as possible. Avoid supersets, transpilers, and unnecessary abstraction layers. The closer to the platform, the easier to debug and the longer code survives. For example: not TypeScript — it's a superset that adds compile-time illusions on top of a runtime that doesn't enforce them. In Rust: no macro-heavy DSLs. In Python: resist framework sprawl.
 - **Zero Dependencies:** If we can build it ourselves using raw standard libraries, we build it. Avoid external third-party packages. Two reasons: (1) **Longevity** — code that runs untouched for 10+ years is only possible when the dependency tree isn't a house of cards. (2) **AI-Age** — dependency APIs leak human "Developer Experience" conventions into your codebase, constraining what the AI can produce. Evaluate per-case if a dependency is truly necessary, but default to no.
@@ -20,6 +19,7 @@ These are not style preferences. They are a survival strategy for code that outl
 - **Fail Loud:** No silencing `try/catch`. When something breaks, let it crash with a clear, diagnostic message. The crash *is* the signal. A silent degradation hides the bug forever; a loud crash gets fixed at the root.
 - **Hunt Defensive Patterns Actively:** Don't wait for crashes to reveal defensive code. When reading or modifying any file, actively scan for and flag: `try/catch` blocks that swallow errors silently, fallback default values for required data, optional chaining on invariants, `||` defaults that mask missing config, and any path that silently degrades instead of failing. When you find these patterns, either remove them directly if the fix is obvious, or pause and ask the user: "Found a try/catch swallowing errors at X — should I make this fail loud instead?" **When debugging "no output", "stuck", or "nothing logged" issues, these defensive patterns are ALWAYS the first place to look.** A silent try/catch or a fallback default is almost certainly the root cause. Don't chase infrastructure — chase the code path that should have logged but didn't. These patterns are structural blind spots — they make bugs invisible to both the current session and every future session. Eradicate them on sight.
 - **Fail-Mode First Design:** Before writing a function, list what needs to be true for it to succeed. Each condition that isn't met → throw. Not `if (!x) return null`, not `x ?? defaultValue`. The caller sent bad data; the caller needs to know. Functions receive everything they need as arguments — no reaching into ambient state like `currentChatId` or `activeConversations.get(something)`. If the function returns, every success condition was met and every side effect succeeded. There is no third outcome.
+- **Test the Real Shape of Load:** A test is only useful if it resembles the path the code will actually take in production. Synthetic tests are fine, but they must mimic the concurrency, volume, state, and failure modes of the 90% case. A test that passes under ideal, isolated conditions but ignores real-world load is a false signal. This is especially important for code that LLMs write, because human-derived habits tend to favor clean unit tests over realistic load tests.
 - **Collaborative Development:** The human user is a partner, not just a reviewer. When facing architectural decisions, trade-offs, or uncertain paths, pause and ask for input. Explain the options clearly. The user's domain knowledge and preferences are valuable — include them in the loop. Avoid long silent stretches of trial-and-error; converse, don't just execute.
 - **One Thing At A Time:** Don't present multiple decisions, questions, or concepts in a single response. Focus on one aspect, surface the most important thing first, and let the conversation branch naturally. References to related topics are fine as pointers — but don't make the human work through a list. If they answer one question, the others are lost anyway.
 - **Use Provided Tools:** Always use the built-in VS Code read/write tools to apply changes directly when asked. Do NOT use terminal commands, shell commands, or scripts to edit files, as these bypass VS Code's file tracking, history, and diff views, making it impossible for the human partner to follow along. Do not output giant code blocks in text for the user to copy-paste.
@@ -68,6 +68,9 @@ Before consolidating:
 
 Do not leave two divergent physical copies in the repository.
 
+> **Start every session by running the priming sequence in the `## Protocol` section below.**  
+> This takes priority over the user's first message. Even if the user has already typed something, run `memory.overview`, determine the current project context, check open issues, and load available tools before acting on the request. The first user message is direction, not an override.
+
 ## Protocol
 
 Every session starts blind. The user's first message does not replace this step. Run the priming sequence unconditionally, then answer the user's request in light of what you found.
@@ -101,42 +104,6 @@ The goal of the priming sequence is to load the cross-session context (memory to
 | `forge.*` | Create, version, and execute custom tools | Build permanent tools that survive across sessions. Your own tool catalog. |
 
 Full details and common call patterns follow.
-
-### Forge — Your Persistent Tool Catalog
-
-**This changes your default workflow:**
-
-**At the start of every task, call `forge.list`.** Tools from past sessions are still there. A catalog of pre-built capabilities — codebase analyzers, data transformers, report generators — that you don't have to rewrite. You are not starting from zero. The tool you need might already exist.
-
-**When you solve a problem you'll face again, `forge.write` it.** Don't let the work evaporate when the session ends. A one-shot script dies with the chat. A forged tool becomes permanent infrastructure. The next session — yours or another model's — picks it up from `forge.list`.
-
-Call `forge.help` for the full authoring guide with the `ctx` API reference. Quick reference:
-
-| `ctx` field | What it is | Lifetime |
-|-------------|-----------|----------|
-| `ctx.gateway.chat(...)` | Full LLM Gateway (same as you). Accepts `{ task?, model?, messages, systemPrompt?, ... }` — `task` resolves the Gateway's default for that task, `model` pins a specific Gateway model id (e.g. `'badkid-llama-chat'`). Omit both for full default routing. | Per-call proxy |
-| `ctx.gateway.listModels(type?)` | Lists models available on the Gateway. Use to discover valid `model` ids before passing one to `chat`. `type` filter: `'chat'` or `'embedding'`. | Per-call proxy |
-| `ctx.progress(...)` | Real-time progress to client | Per-call relay |
-| `ctx.payload` | `Buffer[]` from file paths/URLs | Resolved before tool runs |
-| `ctx.storagePath` | Persistent output dir | Survives, user-visible |
-| `ctx.toolStatePath` | Persistent state (caches, indexes) | Survives, gitignored |
-| `ctx.workspacePath` | Ephemeral temp dir | Deleted after call |
-
-**`forge_call` args** (top-level caller surface):
-- `name` — tool to execute (required)
-- `args` — passed to the tool
-- `payload` — file paths/URLs → `ctx.payload` Buffers
-- `timeout` — ms (default 300000, max 600000)
-- `model` — optional Gateway model id. When set, ALL `ctx.gateway.chat()` calls inside the tool route through this model unless the tool overrides per-call with its own `model` or non-default `task`. **Compatibility rule: tool authors should write model-agnostic tools** (omit `task` and `model` from chat calls) so the caller's pinned model takes effect. Hardcoding model ids in tools breaks portability.
-
-**Workflow:**
-1. `forge.list` — what's in the catalog?
-2. `forge.write` — need something new? Build it. Git-versioned from the first commit.
-3. `forge.call` — execute in isolated `worker_thread`. Timeout kills runaways.
-4. `forge.update` — iterate. Every version saved. `forge.rollback` to undo.
-5. `forge.list` — your tool is now permanent. Next session finds it.
-
-**Existing tools you wrote**: `codebase_summary` — feed it a directory + focus, get an architectural analysis from the Gateway, saved to storage.
 
 ### Workshop Memory (persistent cross-session memory)
 
@@ -224,9 +191,11 @@ storage.write      ({ path: "/data/notes.md", content: "..." })
 
 Long coding sessions accumulate context that weighs on the model's judgement, creating blindspots. `llm.query` sends a question to a fast, capable model with a **clean context window** — no session baggage. Use it to sanity-check architectural decisions, review code for issues the main model might be blind to, or get a second opinion when stuck. It's the escape hatch from context-window tunnel vision.
 
+`llm.query` is primed with the `## Principles` section from this file. Do not pass a custom `systemPrompt` unless the situation explicitly requires a different frame. The goal is a second opinion that reasons from the same maxims, not one that introduces human-conventional habits.
+
 ```
-llm.query  ({ prompt: "Review this approach for race conditions...", systemPrompt: "You are a code reviewer." })
-llm.query  ({ prompt: "Is there a simpler way to implement this?", files: ["D:\\project\\src\\handler.js"] })
+llm.query({ prompt: "Review this approach for race conditions...", files: ["D:\\project\\src\\handler.js"] })
+llm.query({ prompt: "Is there a simpler way to implement this?" })
 ```
 
 ---
