@@ -48,7 +48,8 @@ if (fs.existsSync(configPath)) serverConfig = JSON.parse(fs.readFileSync(configP
 
 const gatewayUrl = process.env.GATEWAY_URL || serverConfig.gateway?.wsUrl || 'ws://localhost:3400/v1/realtime';
 const gatewayHttp = process.env.GATEWAY_HTTP_URL || serverConfig.gateway?.httpUrl || 'http://localhost:3400';
-const gatewayClient = createGatewayClient(gatewayUrl, gatewayHttp);
+const gatewayAccessKey = process.env.GATEWAY_ACCESS_KEY || serverConfig.gateway?.accessKey || null;
+const gatewayClient = createGatewayClient(gatewayUrl, gatewayHttp, gatewayAccessKey);
 
 const globalContext = {
     gateway: gatewayClient,

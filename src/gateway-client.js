@@ -3,7 +3,7 @@ import { getLogger } from './utils/logger.js';
 
 const logger = getLogger();
 
-export function createGatewayClient(wsUrl, httpUrl) {
+export function createGatewayClient(wsUrl, httpUrl, accessKey) {
     let ws = null;
     let isClosed = false;
     let reconnectAttempts = 0;
@@ -11,6 +11,14 @@ export function createGatewayClient(wsUrl, httpUrl) {
     const pendingRequests = new Map();
     
     let client = null;
+
+    function authHeaders() {
+        const headers = { 'Content-Type': 'application/json' };
+        if (accessKey) {
+            headers['Authorization'] = `Bearer ${accessKey}`;
+        }
+        return headers;
+    }
 
     function summarizeText(text, maxLength = 120) {
         if (!text) return '';
@@ -294,7 +302,7 @@ export function createGatewayClient(wsUrl, httpUrl) {
                 : { input: text, task: 'embed' };
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders(),
                 body: JSON.stringify(body)
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
@@ -308,7 +316,7 @@ export function createGatewayClient(wsUrl, httpUrl) {
 
         async listModels(type) {
             const url = type ? `${httpUrl}/v1/models?type=${encodeURIComponent(type)}` : `${httpUrl}/v1/models`;
-            const res = await fetch(url);
+            const res = await fetch(url, { headers: authHeaders() });
             if (!res.ok) throw new Error(`Gateway listModels failed: HTTP ${res.status} ${res.statusText}`);
             const data = await res.json();
             return data.data || [];
@@ -317,7 +325,7 @@ export function createGatewayClient(wsUrl, httpUrl) {
         async embedBatch(texts) {
             const res = await fetch(`${httpUrl}/v1/embeddings`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders(),
                 body: JSON.stringify({ input: texts, task: 'embed' })
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
