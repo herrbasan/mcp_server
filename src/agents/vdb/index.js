@@ -47,6 +47,7 @@ let LAST_SCAN_AT = null;
 let SCAN_STATS = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0 };
 let GATEWAY = null;
 let GATEWAY_HTTP_URL = null;
+let GATEWAY_ACCESS_KEY = null;
 let STORAGE_ROOT = null;
 let DOCS_ROOT = null;
 let MCP_DOCS_ROOT = null;
@@ -210,9 +211,11 @@ async function embedViaGateway(texts, retries) {
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             // Long timeout: the endpoint is local but large batches can take 10-20s.
+            const headers = { 'Content-Type': 'application/json' };
+            if (GATEWAY_ACCESS_KEY) headers['Authorization'] = `Bearer ${GATEWAY_ACCESS_KEY}`;
             const res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body,
                 signal: AbortSignal.timeout(5 * 60 * 1000)
             });
@@ -992,6 +995,7 @@ export async function init(context) {
 
     GATEWAY = context.gateway;
     GATEWAY_HTTP_URL = context.config?.gateway?.httpUrl;
+    GATEWAY_ACCESS_KEY = process.env.GATEWAY_ACCESS_KEY || context.config?.gateway?.accessKey || null;
     if (!GATEWAY) throw new Error('vdb.init: gateway is required');
     if (!GATEWAY_HTTP_URL) throw new Error('vdb.init: context.config.gateway.httpUrl is required');
 

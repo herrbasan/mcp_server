@@ -80,13 +80,17 @@ function jsonrpcError(id, code, message) {
 async function start() {
     // Query available models from gateway and save to data/models.json
     try {
-        const modelsResponse = await fetch(`${gatewayHttp}/v1/models`);
+        const modelsHeaders = {};
+        if (gatewayAccessKey) modelsHeaders['Authorization'] = `Bearer ${gatewayAccessKey}`;
+        const modelsResponse = await fetch(`${gatewayHttp}/v1/models`, { headers: modelsHeaders });
         if (modelsResponse.ok) {
             const modelsData = await modelsResponse.json();
             const dataDir = path.join(__dirname, '../data');
             if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
             fs.writeFileSync(path.join(dataDir, 'models.json'), JSON.stringify(modelsData, null, 2));
             logger.info(`[Startup] Saved ${modelsData.data?.length || 0} available models to data/models.json`);
+        } else {
+            logger.warn(`[Startup] Gateway models fetch failed: HTTP ${modelsResponse.status}`);
         }
     } catch (e) {
         logger.warn(`[Startup] Could not query gateway models: ${e.message}`);

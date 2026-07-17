@@ -32,9 +32,16 @@ function saveMemories() {
     writeFileSync(storePath, JSON.stringify(memories, null, 2));
 }
 
+// Serialize a data payload for display/embedding. Objects must be
+// JSON.stringify'd — template interpolation yields '[object Object]'.
+function serializeData(data) {
+    if (data == null) return '';
+    return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+}
+
 function embedText(gateway, description, data, maxChars) {
     const parts = [description];
-    if (data) parts.push(data);
+    if (data) parts.push(serializeData(data));
     const combined = parts.join(' ');
     const safe = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
     return gateway.embed(safe);
@@ -134,7 +141,7 @@ export async function memory_get(args, context) {
     const conf = memory.confidence ?? 0.5;
     let result = `[#${memory.id}] [${memory.category}] conf:${conf.toFixed(1)}\n`;
     result += `Description: ${memory.description}\n`;
-    if (memory.data) result += `Data: ${memory.data}\n`;
+    if (memory.data) result += `Data: ${serializeData(memory.data)}\n`;
     result += `Created: ${memory.timestamp}`;
 
     return { content: [{ type: 'text', text: result }] };
