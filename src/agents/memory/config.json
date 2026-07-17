@@ -86,6 +86,16 @@
                     "format": { "type": "string", "description": "Output format: 'summary' (clusters, bridges, top nodes) or 'full' (all nodes with details). Default: 'summary'.", "enum": ["summary", "full"] }
                 }
             }
+        },
+        {
+            "name": "memory_embed_heal",
+            "description": "Re-embed memories that were stored without embeddings during an embed provider outage (embedding: null). Self-heal also runs automatically in the background on memory_overview; call this to force a larger pass manually, e.g. after a provider recovery.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "batchLimit": { "type": "number", "description": "Max memories to re-embed in this pass (default 50)" }
+                }
+            }
         }
     ]
 }

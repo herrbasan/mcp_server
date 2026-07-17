@@ -71,7 +71,18 @@ export async function memory_store(args, context) {
     }
 
     progress('Generating embedding...', 50);
-    const embedding = await embedText(gateway, description, data, maxChars);
+
+    // Memory must survive embed provider failures. Store unconditionally;
+    // a null embedding is healed later by memoryEmbedHeal() (triggered from
+    // memory_overview and callable directly). Never lose a thought because
+    // OpenRouter is busy.
+    let embedding = null;
+    let embedError = null;
+    try {
+        embedding = await embedText(gateway, description, data, maxChars);
+    } catch (err) {
+        embedError = err.message || 'embed failed';
+    }
 
     const memory = {
         id: memories.nextId++,
@@ -81,10 +92,17 @@ export async function memory_store(args, context) {
         embedding,
         timestamp: now
     };
+    if (embedError) memory.embedError = embedError;
     if (data) memory.data = data;
 
     memories.memories.push(memory);
     saveMemories();
+
+    if (embedError) {
+        return {
+            content: [{ type: 'text', text: `✓ #${memory.id} [${category}] stored WITHOUT embedding (provider error: ${embedError.slice(0, 120)}). The memory is durable and visible via memory_get/list, but invisible to memory_recall until the self-heal re-embeds it (runs automatically on memory_overview).` }]
+        };
+    }
 
     progress('Embedding complete', 100);
     return {
@@ -101,10 +119,32 @@ export async function memory_recall(args, context) {
     progress('Embedding query...', 50);
     const maxChars = context.config.maxMemoryChars || 6000;
     const safeQuery = query.length > maxChars ? query.slice(0, maxChars) : query;
-    const queryEmbed = await gateway.embed(safeQuery);
+
+    let queryEmbed = null;
+    try {
+        queryEmbed = await gateway.embed(safeQuery);
+    } catch (err) {
+        // Provider down — degrade to recency so the model still gets context.
+        queryEmbed = null;
+    }
 
     let candidates = memories.memories;
     if (category) candidates = candidates.filter(m => m.category === category);
+
+    if (!queryEmbed) {
+        const recent = candidates.slice(-limit).reverse();
+        if (!recent.length) {
+            return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
+        }
+        const results = recent.map(m => {
+            const conf = m.confidence ?? 0.5;
+            const hasData = m.data ? ' [has data]' : '';
+            return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
+        }).join('\n\n');
+        return {
+            content: [{ type: 'text', text: `⚠ Semantic search unavailable (embed provider error) — returning ${recent.length} most recent memories instead:\n\n${results}` }]
+        };
+    }
 
     const scored = candidates.map(m => {
         const conf = m.confidence ?? 0.5;
@@ -194,11 +234,20 @@ export async function memory_update(args, context) {
     }
 
     const textChanged = (description && description !== memory.description) || (data !== undefined && data !== memory.data);
+    let updateEmbedFailed = false;
     if (textChanged) {
         const newDesc = description || memory.description;
         const newData = data !== undefined ? data : memory.data;
         const maxChars = context.config.maxMemoryChars || 6000;
-        memory.embedding = await embedText(gateway, newDesc, newData, maxChars);
+        try {
+            memory.embedding = await embedText(gateway, newDesc, newData, maxChars);
+            delete memory.embedError;
+        } catch (err) {
+            // Content update must not be lost to an embed provider failure.
+            memory.embedding = null;
+            memory.embedError = err.message || 'embed failed';
+            updateEmbedFailed = true;
+        }
     }
 
     if (description) memory.description = description;
@@ -215,8 +264,55 @@ export async function memory_update(args, context) {
     memory.timestamp = new Date().toISOString();
     saveMemories();
 
+    if (updateEmbedFailed) {
+        return {
+            content: [{ type: 'text', text: `Updated #${id} WITHOUT re-embedding (provider error: ${memory.embedError.slice(0, 120)}). Content is durable; recall visibility returns after self-heal.` }]
+        };
+    }
+
     return {
         content: [{ type: 'text', text: `Updated #${id}. Use memory_recall to verify.` }]
+    };
+}
+
+// ============================================
+// Self-heal: re-embed memories stored during provider outages.
+// Triggered from memory_overview (every session start) and exposed as
+// the memory_embed_heal tool for manual runs. Rate-limited: at most one
+// pass per minute, at most `batchLimit` embeddings per pass, so a heal
+// never hammers a recovering provider.
+// ============================================
+
+let lastHealAt = 0;
+
+async function memoryEmbedHeal(context, batchLimit = 10) {
+    const { gateway } = context;
+    if (!gateway) return { healed: 0, remaining: 0, skipped: 'no gateway' };
+
+    const pending = memories.memories.filter(m => !m.embedding);
+    if (pending.length === 0) return { healed: 0, remaining: 0 };
+
+    const maxChars = context.config.maxMemoryChars || 6000;
+    let healed = 0;
+    for (const m of pending.slice(0, batchLimit)) {
+        try {
+            m.embedding = await embedText(gateway, m.description, m.data, maxChars);
+            delete m.embedError;
+            healed++;
+        } catch (err) {
+            // Provider still down — stop the pass, try again next trigger.
+            m.embedError = err.message || 'embed failed';
+            break;
+        }
+    }
+    if (healed > 0) saveMemories();
+    return { healed, remaining: pending.length - healed };
+}
+
+export async function memory_embed_heal(args, context) {
+    const result = await memoryEmbedHeal(context, args?.batchLimit || 50);
+    return {
+        content: [{ type: 'text', text: `Embed heal: ${result.healed} re-embedded, ${result.remaining} still pending${result.skipped ? ` (${result.skipped})` : ''}.` }]
     };
 }
 
@@ -237,6 +333,15 @@ export async function memory_overview(args, context) {
     const { format = 'summary' } = args;
     const mapPath = join(__dirname, '..', '..', '..', 'data', 'dream_map.json');
 
+    // Self-heal trigger: session start is the natural cadence. Fire in the
+    // background (rate-limited to 1 pass/min, 10 embeddings per pass) so
+    // overview never blocks on a slow/recovering provider.
+    const pendingEmbedCount = memories.memories.filter(m => !m.embedding).length;
+    if (pendingEmbedCount > 0 && Date.now() - lastHealAt > 60000) {
+        lastHealAt = Date.now();
+        memoryEmbedHeal(context, 10).catch(() => {});
+    }
+
     if (!existsSync(mapPath)) {
         return { content: [{ type: 'text', text: 'No knowledge map available yet. It is generated automatically every 15 minutes, or run dream_generate to create one now.' }] };
     }
@@ -245,6 +350,10 @@ export async function memory_overview(args, context) {
     const lines = [`[Your Knowledge — generated ${map.meta?.generated_at || 'unknown'}]`];
     const memCount = memories.memories.length;
     const nodeCount = map.nodes?.length || 0;
+
+    if (pendingEmbedCount > 0) {
+        lines.push(`⚠ ${pendingEmbedCount} ${pendingEmbedCount === 1 ? 'memory' : 'memories'} pending re-embed (stored during provider outage) — self-heal running in background.\n`);
+    }
 
     // TL;DR — one-line narrative synthesized from top clusters and bridges
     const tldrParts = [];
