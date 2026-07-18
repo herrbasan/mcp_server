@@ -171,6 +171,20 @@ export async function init(context) {
         logger.warn(`[Memory] ${backfillResult.marked} memories lost their embeddings (no legacy data) — marked pending`, null, 'Memory');
     }
 
+    // Clean up orphaned vectors: soft-deleted nDB documents may still have
+    // vectors in nVDB if the delete didn't flush properly. Remove them.
+    if (MEM_COLL) {
+        const deletedIds = DB.deletedIds().filter(id => id.startsWith('mem_'));
+        let cleaned = 0;
+        for (const id of deletedIds) {
+            try { MEM_COLL.delete(id); cleaned++; } catch {}
+        }
+        if (cleaned > 0) {
+            MEM_COLL.flush();
+            logger.info(`[Memory] Cleaned up ${cleaned} orphaned vectors from nVDB`, null, 'Memory');
+        }
+    }
+
     const memCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
     logger.info(`[Memory] Initialized: ${memCount} memories in nDB at ${dbPath}`, null, 'Memory');
 
@@ -315,8 +329,14 @@ export async function memory_recall(args, context) {
     const seenIds = new Set();
 
     for (const hit of searchResults) {
-        const payload = hit.payload ? JSON.parse(hit.payload) : {};
-        const doc = DB.get(hit.id);
+        // DB.get throws for soft-deleted documents. A vector may linger in
+        // nVDB after its nDB doc was deleted (tombstoned) — skip those hits.
+        let doc;
+        try {
+            doc = DB.get(hit.id);
+        } catch {
+            continue;
+        }
         if (!doc || !doc._id?.startsWith('mem_')) continue;
         if (seenIds.has(doc.id)) continue;
         if (category && doc.category !== category) continue;
