@@ -90,7 +90,8 @@ Structure:
 }
 
 **Rules:**
-- Include ALL nodes from the input. None may be dropped.
+- **You do NOT need to include every memory as a node.** Include only nodes that are structurally important: cluster hubs, bridges, wildcards, high-connectivity nodes, and recently active/promoted nodes. A memory that is isolated, dormant, or low-value does NOT need its own node.
+- Target 150-200 nodes maximum. The map is a navigation aid, not an exhaustive index — `memory_recall` exists for detail retrieval.
 - `connections` must reference other node IDs that exist in the nodes array.
 - `hub_id` must be the highest-scoring node in its cluster.
 - `summary` must be under 10 words.

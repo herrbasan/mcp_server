@@ -267,7 +267,7 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
         task: agentConfig.dreamerTask || 'query',
         messages: [{ role: 'user', content: dreamerPrompt + input }],
         systemPrompt: 'You are a memory topology agent. Output ONLY valid JSON. No markdown. No code blocks.',
-        maxTokens: 64000,
+        maxTokens: 32000,
         temperature: 0.3,
         enableThinking: false
     });
