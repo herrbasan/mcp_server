@@ -115,18 +115,18 @@ export async function init(context) {
     logger.info(`[Memory] Initialized: ${memCount} memories in nDB at ${dbPath}`, null, 'Memory');
 
     return {
-        // Dreaming agent compatibility: expose .memories as a getter that
-        // returns a fresh array of memory documents (no embeddings).
-        get memories() {
-            return DB.iter().filter(d => d._id.startsWith('mem_'));
-        },
-        // Explicit iter() for clarity
-        iter: () => DB.iter().filter(d => d._id.startsWith('mem_')),
-        get: (memId) => {
-            const ndbId = findNdbIdByMemId(memId);
-            return ndbId ? DB.get(ndbId) : null;
-        },
-        count: () => DB.iter().filter(d => d._id.startsWith('mem_')).length
+        // Dreaming agent compatibility: expose .memories as an object with
+        // .iter() (returns array of memory docs) and .memories (getter alias
+        // for backward compatibility with the old JSON-backed agent).
+        memories: {
+            iter: () => DB.iter().filter(d => d._id.startsWith('mem_')),
+            get memories() { return DB.iter().filter(d => d._id.startsWith('mem_')); },
+            get: (memId) => {
+                const ndbId = findNdbIdByMemId(memId);
+                return ndbId ? DB.get(ndbId) : null;
+            },
+            count: () => DB.iter().filter(d => d._id.startsWith('mem_')).length
+        }
     };
 }
 
