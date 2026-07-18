@@ -18,7 +18,6 @@
     },
     "memory": {
       "dbPath": "data/memories.jsonl",
-      "storePath": "data/memories.json",
       "maxMemoryChars": 6000
     },
     "research": {

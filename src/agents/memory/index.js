@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
@@ -17,7 +17,6 @@ let MEM_COLL = null;      // nVDB 'memory' collection
 let GATEWAY = null;       // LLM Gateway client
 let CONFIG = null;        // Memory agent config
 let EMBEDDING_DIM = 2560; // Must match VDB agent + gateway model
-let OLD_STORE_PATH = null; // Path to legacy memories.json (for vector backfill)
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -62,67 +61,6 @@ function incrementNextId() {
     return meta.nextId;
 }
 
-// ── Vector backfill: read embeddings from legacy memories.json ───────
-
-let legacyEmbeddings = null;
-
-function loadLegacyEmbeddings() {
-    if (legacyEmbeddings !== null) return;
-    if (!OLD_STORE_PATH || !existsSync(OLD_STORE_PATH)) {
-        legacyEmbeddings = {};
-        return;
-    }
-    try {
-        const raw = JSON.parse(readFileSync(OLD_STORE_PATH, 'utf-8'));
-        legacyEmbeddings = {};
-        for (const m of raw.memories || []) {
-            if (Array.isArray(m.embedding) && m.embedding.length === EMBEDDING_DIM) {
-                legacyEmbeddings[m.id] = m.embedding;
-            }
-        }
-        logger.info(`[Memory] Loaded ${Object.keys(legacyEmbeddings).length} legacy embeddings from ${OLD_STORE_PATH}`, null, 'Memory');
-    } catch (e) {
-        logger.warn(`[Memory] Failed to load legacy embeddings: ${e.message}`, null, 'Memory');
-        legacyEmbeddings = {};
-    }
-}
-
-// Check which memories have embedStatus='embedded' but no vector in nVDB.
-// Backfill them from legacy data or mark as pending.
-function backfillVectors() {
-    if (!MEM_COLL) return { backfilled: 0, marked: 0, checked: 0 };
-
-    const memDocs = DB.iter().filter(d => d._id.startsWith('mem_') && d.embedStatus === 'embedded');
-    let backfilled = 0;
-    let marked = 0;
-
-    loadLegacyEmbeddings();
-
-    for (const doc of memDocs) {
-        // Check if vector already exists in nVDB
-        const existing = MEM_COLL.get(doc._id);
-        if (existing) continue;
-
-        // Try to find the embedding in legacy data
-        const legacyVec = legacyEmbeddings[doc.id];
-        if (legacyVec) {
-            MEM_COLL.insert(doc._id, legacyVec, JSON.stringify({ id: doc.id }));
-            backfilled++;
-        } else {
-            // No legacy embedding — mark as pending for self-heal
-            DB.set(doc._id, 'embedStatus', 'pending');
-            marked++;
-        }
-    }
-
-    if (backfilled > 0 || marked > 0) {
-        MEM_COLL.flush();
-        DB.flush();
-    }
-
-    return { backfilled, marked, checked: memDocs.length };
-}
-
 // ── Init / Shutdown ──────────────────────────────────────────────────
 
 export async function init(context) {
@@ -138,9 +76,6 @@ export async function init(context) {
     if (!DB.hasIndex('id')) DB.createIndex('id');
     if (!DB.hasIndex('category')) DB.createIndex('category');
     if (!DB.hasIndex('embedStatus')) DB.createIndex('embedStatus');
-
-    // Path to legacy memories.json for vector backfill
-    OLD_STORE_PATH = resolve(PROJECT_ROOT, CONFIG.storePath || 'data/memories.json');
 
     // Get the VDB agent and access the memory collection
     VDB_AGENT = context.agents?.get('vdb');
@@ -160,15 +95,6 @@ export async function init(context) {
         }
     } else {
         logger.warn('[Memory] VDB agent not available — recall will degrade to recency', null, 'Memory');
-    }
-
-    // Backfill vectors from legacy memories.json if needed
-    const backfillResult = backfillVectors();
-    if (backfillResult.backfilled > 0) {
-        logger.info(`[Memory] Backfilled ${backfillResult.backfilled} vectors from legacy store`, null, 'Memory');
-    }
-    if (backfillResult.marked > 0) {
-        logger.warn(`[Memory] ${backfillResult.marked} memories lost their embeddings (no legacy data) — marked pending`, null, 'Memory');
     }
 
     // Clean up orphaned vectors: soft-deleted nDB documents may still have
