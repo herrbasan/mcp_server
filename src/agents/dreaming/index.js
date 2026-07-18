@@ -477,8 +477,9 @@ async function runPipeline(force = false) {
     const startTime = Date.now();
 
     try {
-        // Get memories from the memory agent
-        const allMemories = memoryAgent?.memories?.memories;
+        // Get memories from the memory agent.
+        // New nDB-backed agent exposes .iter(); legacy JSON agent exposes .memories array.
+        const allMemories = memoryAgent?.memories?.iter?.() || memoryAgent?.memories?.memories;
         if (!allMemories || allMemories.length === 0) {
             logger.info('[Dreaming] No memories to dream on', null, 'Dream');
             return { skipped: true, reason: 'no_memories' };

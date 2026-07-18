@@ -66,9 +66,21 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `src/agents/` — agent implementations.
 - `mcp_documentation/` — curated docs served by the documentation agent.
 - `docs/` — working documents (plans, handovers, notes).
-- `data/` — runtime data: memories, dream maps, forge tools, storage, VDB index.
+- `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index.
+- `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
 - `tests/` — benchmarks and quick tests.
 - `_Archive/` — archived modules and old plans.
+
+## Memory System (nDB + nVDB)
+
+The `memory` agent uses a two-database architecture (mirrors the LLM Gateway Chat app):
+
+- **nDB** (`data/memories.jsonl`) — document store for memory metadata. O(1) lookups, indexed queries (`category`, `id`, `embedStatus`), append-only JSONL persistence, soft-delete via tombstones. Loaded via `src/agents/memory/ndb-loader.js` (native binary from `nDB/` submodule).
+- **nVDB** (`data/nvdb/`, `memory` collection) — vector index for embedding search. The memory agent accesses the VDB agent's nVDB instance via `dependsOn: "vdb"` and `vdbAgent.getCollection('memory')`.
+
+The legacy `data/memories.json` (37MB, inline embeddings) is kept as a cold backup and vector source for backfill. It is no longer read or written by the memory agent at runtime.
+
+The dreaming agent accesses memories via `memoryAgent.memories.iter()` (with fallback to `.memories` array for backward compatibility).
 
 ## VDB Indexing
 

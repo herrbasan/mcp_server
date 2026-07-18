@@ -1,6 +1,7 @@
 {
     "agent": "memory",
     "description": "Semantic persistent memory store",
+    "dependsOn": "vdb",
     "maxMemoryChars": 6000,
     "tools": [
         {

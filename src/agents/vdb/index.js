@@ -1049,7 +1049,13 @@ export async function init(context) {
     setTimeout(() => runScan().catch(e => logger.error(`[VDB] Initial scan failed: ${e.message}`, null, 'VDB')), 2000);
 
     logger.info(`[VDB] Initialized at ${dbPath}`, null, 'VDB');
-    return { enabled: true, dbPath };
+    return {
+        enabled: true,
+        dbPath,
+        // Expose collection access for other agents (e.g. memory agent uses the 'memory' collection)
+        getCollection: (name) => getCollection(name),
+        embeddingDim: CONFIG.embeddingDim
+    };
 }
 
 export async function shutdown() {

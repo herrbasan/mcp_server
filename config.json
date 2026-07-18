@@ -17,7 +17,9 @@
       "userDataDir": "data/chrome-profile"
     },
     "memory": {
-      "storePath": "data/memories.json"
+      "dbPath": "data/memories.jsonl",
+      "storePath": "data/memories.json",
+      "maxMemoryChars": 6000
     },
     "research": {
       "maxPages": 10,

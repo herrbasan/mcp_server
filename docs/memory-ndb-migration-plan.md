@@ -1,6 +1,6 @@
 # Memory System Migration Plan: JSON → nDB + nVDB
 
-> **Status**: Draft — pending approval
+> **Status**: ✅ COMPLETED — 2026-07-18
 > **Date**: 2026-07-18
 > **Goal**: Migrate the memory store from a single 37MB `memories.json` file to nDB (document store) + nVDB (vector index), mirroring the proven architecture used by the LLM Gateway Chat app.
 
