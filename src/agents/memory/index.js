@@ -314,10 +314,10 @@ export async function memory_recall(args, context) {
         };
     }
 
-    // Semantic search via nVDB
+    // Semantic search via nVDB — over-fetch so the summary tier has headroom
     const searchResults = MEM_COLL.search({
         vector: queryEmbed,
-        topK: Math.max(limit * 3, 15)
+        topK: Math.max(limit * 5, 25)
     });
 
     if (searchResults.length === 0) {
@@ -348,7 +348,12 @@ export async function memory_recall(args, context) {
     }
 
     scored.sort((a, b) => b.weightedScore - a.weightedScore);
+
+    // Split into full-text tier (top `limit`) and summary tier (the rest
+    // above a score floor, so the LLM knows what else was found).
+    const SCORE_FLOOR = 0.35;
     const top = scored.slice(0, limit);
+    const also = scored.slice(limit).filter(m => m.score >= SCORE_FLOOR);
 
     if (!top.length) {
         return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
@@ -360,9 +365,23 @@ export async function memory_recall(args, context) {
         return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}% conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
     }).join('\n\n');
 
+    // Compact summary of second-tier results: one line each, no description.
+    let summary = '';
+    if (also.length > 0) {
+        const lines = also.map(m =>
+            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%`
+        ).join('  ');
+        summary = `\n\n--- also found ---\n${lines}`;
+    }
+
+    const totalFound = scored.length;
+    const header = also.length > 0
+        ? `Found ${totalFound} memories (showing top ${top.length} with details):`
+        : `Found ${top.length} memories:`;
+
     progress('Search complete', 100);
     return {
-        content: [{ type: 'text', text: `Found ${top.length} memories:\n\n${results}` }]
+        content: [{ type: 'text', text: `${header}\n\n${results}${summary}` }]
     };
 }
 
