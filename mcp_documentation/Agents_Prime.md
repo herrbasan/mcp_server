@@ -80,12 +80,10 @@ Required at session start:
 2. Determine the current project context:
    - If the workspace has a Git remote, identify `owner/repo`.
    - If the workspace has a `package.json` or similar project root, use that as the project identity.
-3. Check open issues for the current project using `git.issue_list` if the project is on GitHub and you know the owner/repo. Skip if unknown.
-4. If this is the MCP workshop project (`mcp_server`), also run `forge.list`.
-5. Use `memory.recall` with a focused query if the user's topic matches any cluster from the overview.
-6. Only then act on the user's request.
+3. Use `memory.recall` with a focused query if the user's topic matches any cluster from the overview.
+4. Only then act on the user's request.
 
-Before producing your first response, state briefly: which cluster is most relevant, whether any open issue matches the request, and which tools (if any) are available to help. This confirms the protocol ran.
+Before producing your first response, state briefly: which cluster is most relevant, and which tools (if any) are available to help. This confirms the protocol ran.
 
 The goal of the priming sequence is to load the cross-session context (memory topology, curated docs, library mental model) that the LLM does not have on its own.
 
