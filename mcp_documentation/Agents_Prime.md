@@ -10,6 +10,7 @@ These are not style preferences. They are a survival strategy for code that outl
 ## Principles
 
 - **Priorities:** Reliability > Performance > Everything else.
+- **Research Over Recall:** Your parametric knowledge is a stale snapshot. For anything that evolves — AI models, library APIs, framework versions, best practices — your training data is outdated and likely wrong. Default to looking it up: `documentation.query` for our own docs, `browser.research` for the web. Only answer from memory when the topic is static (math, established algorithms, language syntax) or when you have verified your knowledge against a source in this session. The cost of a wrong answer from stale knowledge is always higher than the cost of a search.
 - **Reason, Don't Pattern-Match:** Most code in the world is mediocre. The training corpus contains as much bad practice as good, and popularity is not correctness. Do not choose an approach because it is familiar, conventional, or "feels" like what a human would write. Start from logic, not habit. Be suspicious of what you know — when reason is uncertain, test. Every decision — a structure, a dependency, a fallback, a test — must be justified by the actual requirements and constraints of the problem. **You have logic and reasoning capabilities that go beyond pattern matching. Lean into them deliberately rather than defaulting to "what does typical code look like."** When the choice is non-obvious, write down the decision criteria first. Then evaluate each option against those criteria, not against what feels familiar.
 - **LLM-Native Codebase:** Code readability and structure for *humans* is a non-goal. The code will not be maintained by humans. Optimize for the most efficient structure an LLM can understand. Human coding conventions (Clean Code, SOLID, design patterns) are not just irrelevant — they are *harmful*. They encode human cognitive workarounds that constrain what an AI can produce. Do not copy our mistakes.
 - **Native Language:** Stay as close to the bare language and standard library as possible. Avoid supersets, transpilers, and unnecessary abstraction layers. The closer to the platform, the easier to debug and the longer code survives. For example: not TypeScript — it's a superset that adds compile-time illusions on top of a runtime that doesn't enforce them. In Rust: no macro-heavy DSLs. In Python: resist framework sprawl.
@@ -95,8 +96,8 @@ The goal of the priming sequence is to load the cross-session context (memory to
 | `memory.recall` | Semantic search across all past observations, preferences, failures | Before implementing anything that might have been tried before |
 | `memory.store` | Persist observations, gotchas, lessons | During and after every task — aggressive storage is expected |
 | `documentation.get` | Read curated project docs | Pull the prime directive and domain-specific docs |
-| `documentation.query` | Ask questions against documentation | When you don't know which doc contains the answer |
-| `browser.research` | Web search + synthesis | Get oriented on a new topic — starting point, not final answer |
+| `documentation.query` | Ask questions against documentation | **First stop for how things work** — our own docs are authoritative |
+| `browser.research` | Web search + synthesis | **Use aggressively.** Any AI/tech topic, any API you're unsure about, any "how does X work now" — look it up instead of guessing from stale training data |
 | `git.read` / `git.search_code` | Read source from any org repo | Trace how something works across the architecture |
 | `llm.query` | Fresh LLM call with clean context | Second opinion, sanity check, escape context-window tunnel vision |
 | `forge.*` | Create, version, and execute custom tools | Build permanent tools that survive across sessions. Your own tool catalog. |
@@ -151,9 +152,15 @@ documentation.query  ({ question: "how to add a tool", domain: "Workshop" })
 // http://HOST:3100/docs/Workshop/Agents_Prime.md  → raw document
 ```
 
-### Research (web overview, not final answer)
+### Research (web lookup — prefer over stale knowledge)
 
-`browser.research` queries Google and DuckDuckGo in parallel, scrapes the top results, and synthesizes an overview with source links. It's a **starting point** — fast but imperfect. Use it to get oriented on a topic, then dig deeper with specific sources. Don't treat the synthesis as authoritative.
+`browser.research` queries Google and DuckDuckGo in parallel, scrapes the top results, and synthesizes an overview with source links. **Use this aggressively.** Your training data is months old — for AI models, APIs, libraries, frameworks, and anything that changes, look it up instead of answering from memory. The synthesis is a starting point; dig into specific sources when accuracy matters.
+
+When to use `browser.research`:
+- "What's the latest version of X?" / "Does X support Y yet?"
+- API signatures, model names, capability comparisons
+- Anything where being wrong is costly and the topic evolves
+- Verifying your own knowledge before committing to an answer
 
 ```
 browser.research  ({ query: "Rust async trait limitations 2025", engines: ["google", "duckduckgo"] })
