@@ -208,66 +208,214 @@ async function distill(allMemories, previousDistillate, contextBudget) {
 
 // ─── Phase 2: Dreaming ───
 
-async function dream(distillate, recentMemories, previousMap, contextBudget) {
-    const dreamerPrompt = prompts.dreamer;
-    if (!dreamerPrompt) throw new Error('Dreamer prompt not loaded');
+// Merge a delta patch from the dreamer into the previous map.
+// Pure computation — no LLM calls. Carries forward unchanged nodes,
+// applies add/update/remove operations for nodes, clusters, and bridges.
+function mergeDelta(delta, previousMap) {
+    const nodeMap = new Map();
+    const clusterMap = new Map();
+    let bridges = [];
+    let wildcards = [];
+    let meta = { ...previousMap.meta };
+    let recallDirective = previousMap.recall_directive;
 
-    // Build the input: distillate + full recent memories + previous map context
-    let input = '';
-
-    // Distilled history
-    if (distillate) {
-        input += '=== DISTILLED HISTORY ===\n';
-        input += distillate;
-        input += '\n\n';
+    // Seed with previous map's data
+    for (const node of previousMap.nodes || []) {
+        nodeMap.set(node.id, { ...node });
     }
+    for (const cluster of previousMap.clusters || []) {
+        clusterMap.set(cluster.id, { ...cluster });
+    }
+    bridges = (previousMap.bridges || []).map(b => ({ ...b }));
 
-    // Full recent memories (no compression)
-    if (recentMemories.length > 0) {
-        input += '=== FULL RECENT MEMORIES (since last dream) ===\n';
-        for (const m of recentMemories) {
-            input += formatMemory(m) + '\n\n';
+    // Apply cluster changes
+    for (const change of delta.cluster_changes || []) {
+        if (change.op === 'add' || change.op === 'update') {
+            clusterMap.set(change.cluster.id, { ...change.cluster });
         }
     }
 
-    // Previous map for momentum
-    if (previousMap?.nodes) {
-        input += '=== PREVIOUS MAP (for connection momentum) ===\n';
-        input += 'Node connections from previous dream:\n';
-        for (const node of previousMap.nodes) {
-            if (node.connections?.length > 0) {
-                input += `#${node.id}: connections=[${node.connections.join(',')}] momentum=${JSON.stringify(node.momentum || { delta: 0, consecutive_decay: 0 })}\n`;
+    // Apply bridge changes
+    for (const change of delta.bridge_changes || []) {
+        if (change.op === 'add') {
+            bridges.push({ ...change.bridge });
+        } else if (change.op === 'remove') {
+            bridges = bridges.filter(b =>
+                !(b.from_id === change.bridge.from_id && b.to_id === change.bridge.to_id)
+            );
+        }
+    }
+
+    // Apply node changes
+    let nodesAdded = 0;
+    let nodesUpdated = 0;
+    for (const change of delta.node_changes || []) {
+        if (change.op === 'add') {
+            nodeMap.set(change.node.id, { ...change.node });
+            nodesAdded++;
+        } else if (change.op === 'update') {
+            const existing = nodeMap.get(change.node.id);
+            if (existing) {
+                nodeMap.set(change.node.id, { ...existing, ...change.node });
+                nodesUpdated++;
             }
         }
-        input += '\n';
+    }
+
+    // Replace wildcards entirely if provided
+    if (delta.wildcards) {
+        wildcards = delta.wildcards;
+    } else {
+        wildcards = previousMap.wildcards || [];
+    }
+
+    // Update meta
+    if (delta.meta) {
+        meta = { ...meta, ...delta.meta };
+        meta.version = '3.0';
+        meta.generated_at = new Date().toISOString();
+    }
+    if (delta.recall_directive) {
+        recallDirective = delta.recall_directive;
+    }
+
+    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes`, null, 'Dream');
+
+    return {
+        meta,
+        clusters: [...clusterMap.values()],
+        bridges,
+        wildcards,
+        nodes: [...nodeMap.values()],
+        recall_directive: recallDirective
+    };
+}
+
+// Compact a map that exceeds the token budget by dropping low-value nodes.
+// Keeps: all cluster hubs, all bridges, all wildcards, nodes above scoreFloor.
+// Compresses remaining nodes to title-only state (id + cluster_id + score).
+function compactMap(map, maxTokens) {
+    const nodes = map.nodes || [];
+    const estimate = (obj) => Math.ceil(JSON.stringify(obj).length / 4);
+
+    if (estimate(map) <= maxTokens) return map;
+
+    logger.info(`[Dreaming] Map exceeds budget (${estimate(map)} tokens > ${maxTokens}), compacting...`, null, 'Dream');
+
+    const hubIds = new Set((map.clusters || []).map(c => c.hub_id));
+    const bridgeIds = new Set();
+    for (const b of map.bridges || []) {
+        bridgeIds.add(b.from_id);
+        bridgeIds.add(b.to_id);
+    }
+    const wildcardIds = new Set((map.wildcards || []).map(w => w.id));
+
+    const kept = [];
+    const dropped = [];
+    const SCORE_FLOOR = 0.25;
+
+    for (const node of nodes) {
+        const isHub = hubIds.has(node.id);
+        const isBridge = bridgeIds.has(node.id) || node.is_bridge;
+        const isWildcard = wildcardIds.has(node.id);
+        const score = node.score ?? 0.3;
+
+        if (isHub || isBridge || isWildcard || score >= 0.5) {
+            kept.push(node);
+        } else if (score >= SCORE_FLOOR) {
+            // Compress to minimal fields
+            kept.push({
+                id: node.id,
+                state: 'title',
+                category: node.category,
+                score: node.score,
+                cluster_id: node.cluster_id
+            });
+        } else {
+            dropped.push(node.id);
+        }
+    }
+
+    logger.info(`[Dreaming] Compaction: kept ${kept.length}, dropped ${dropped.length} nodes`, null, 'Dream');
+
+    return {
+        ...map,
+        nodes: kept
+    };
+}
+
+async function dream(distillate, recentMemories, previousMap, contextBudget) {
+    // Delta mode: if we have a previous map, only ask the dreamer for changes.
+    // Full mode: no previous map, generate from scratch.
+    const hasPreviousMap = previousMap?.nodes && previousMap.nodes.length > 0;
+    const dreamerPrompt = hasPreviousMap ? (prompts['dreamer-delta'] || prompts.dreamer) : prompts.dreamer;
+    if (!dreamerPrompt) throw new Error('Dreamer prompt not loaded');
+
+    let input = '';
+
+    if (hasPreviousMap) {
+        // DELTA MODE: send the full previous map + only new memories
+        input += '=== EXISTING MAP ===\n';
+        input += JSON.stringify({
+            meta: { generated_at: previousMap.meta?.generated_at },
+            clusters: previousMap.clusters,
+            bridges: previousMap.bridges,
+            nodes: previousMap.nodes.map(n => ({
+                id: n.id,
+                state: n.state,
+                summary: n.summary,
+                category: n.category,
+                score: n.score,
+                connections: n.connections,
+                cluster_id: n.cluster_id,
+                is_bridge: n.is_bridge,
+                momentum: n.momentum
+            }))
+        }, null, 2);
+        input += '\n\n';
+
+        if (recentMemories.length > 0) {
+            input += '=== NEW/UPDATED MEMORIES (since last dream) ===\n';
+            for (const m of recentMemories) {
+                input += formatMemory(m) + '\n\n';
+            }
+        }
+    } else {
+        // FULL MODE: send distillate + recent memories (original behavior)
+        if (distillate) {
+            input += '=== DISTILLED HISTORY ===\n';
+            input += distillate;
+            input += '\n\n';
+        }
+
+        if (recentMemories.length > 0) {
+            input += '=== FULL RECENT MEMORIES (since last dream) ===\n';
+            for (const m of recentMemories) {
+                input += formatMemory(m) + '\n\n';
+            }
+        }
     }
 
     // Check if input fits budget
     const promptTokens = tokenEstimate(dreamerPrompt);
     const inputTokens = tokenEstimate(input);
-    const totalNeeded = promptTokens + inputTokens + 4000; // output reserve
+    const totalNeeded = promptTokens + inputTokens + 4000;
 
     if (totalNeeded > contextBudget) {
-        logger.warn(`[Dreaming] Input (${inputTokens} tokens) + prompt (${promptTokens}) exceeds budget (${contextBudget}). Truncating distillate.`, null, 'Dream');
+        logger.warn(`[Dreaming] Input (${inputTokens} tokens) + prompt (${promptTokens}) exceeds budget (${contextBudget}). Truncating.`, null, 'Dream');
         const maxInputTokens = contextBudget - promptTokens - 4000;
-        const distillateBudget = maxInputTokens - tokenEstimate(
-            '=== FULL RECENT MEMORIES ===\n' +
-            recentMemories.map(formatMemory).join('\n\n') +
-            '\n=== PREVIOUS MAP ===\n'
-        );
-        if (distillateBudget > 0) {
-            const maxChars = distillateBudget * 4;
-            input = input.replace(distillate, distillate.slice(0, maxChars));
+        if (maxInputTokens > 0) {
+            input = input.slice(0, maxInputTokens * 4);
         }
     }
 
-    logger.info(`[Dreaming] Running dreamer (${inputTokens} tokens input, ${promptTokens} prompt)`, null, 'Dream');
+    logger.info(`[Dreaming] Running dreamer (${hasPreviousMap ? 'DELTA' : 'FULL'} mode, ${inputTokens} tokens input, ${promptTokens} prompt)`, null, 'Dream');
 
     const response = await gateway.chat({
         task: agentConfig.dreamerTask || 'query',
         messages: [{ role: 'user', content: dreamerPrompt + input }],
         systemPrompt: 'You are a memory topology agent. Output ONLY valid JSON. No markdown. No code blocks.',
-        maxTokens: 64000,
+        maxTokens: hasPreviousMap ? 16000 : 64000,
         temperature: 0.3,
         enableThinking: false
     });
@@ -276,14 +424,12 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
     const fullContent = response.content || '';
     logger.info(`[Dreaming] Dreamer response: ${fullContent.length} chars`, null, 'Dream');
 
-    // Strip ``` fences in case model ignored the "no code blocks" instruction
+    // Strip ``` fences
     let mapText = fullContent
         .replace(/^```(?:json)?\s*\n?/gm, '')
         .replace(/\n?```\s*$/gm, '');
 
-    // Extract outermost JSON object by tracking brace depth — more robust
-    // than naive firstBrace/lastBrace when the model injects commentary
-    // or thinking tokens that contain stray braces.
+    // Extract outermost JSON object by tracking brace depth
     const firstBrace = mapText.indexOf('{');
     if (firstBrace !== -1) {
         let depth = 0;
@@ -302,18 +448,38 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
     }
     logger.info(`[Dreaming] Brace extraction: ${fullContent.length} chars → ${mapText.length} chars`, null, 'Dream');
 
-    const map = parseJsonLenient(mapText, fullContent);
+    const parsed = parseJsonLenient(mapText, fullContent);
 
-    // Validate minimum structure
-    if (!map.meta || !map.nodes || !Array.isArray(map.nodes)) {
-        throw new Error('Dreamer output missing required fields (meta, nodes)');
+    if (hasPreviousMap) {
+        // DELTA MODE: merge the patch into the previous map
+        if (!parsed.node_changes && !parsed.cluster_changes && !parsed.bridge_changes) {
+            // Model may have output a full map instead of a delta — detect and handle
+            if (parsed.nodes && Array.isArray(parsed.nodes)) {
+                logger.info('[Dreaming] Delta mode but model output full map — using as-is', null, 'Dream');
+                const map = parsed;
+                map.meta = map.meta || {};
+                map.meta.version = '3.0';
+                map.meta.generated_at = new Date().toISOString();
+                return map;
+            }
+            throw new Error('Dreamer delta output missing required fields (node_changes, cluster_changes, bridge_changes)');
+        }
+
+        const merged = mergeDelta(parsed, previousMap);
+
+        // Compact if the merged map exceeds budget
+        const MAX_MAP_TOKENS = 120000; // ~480K chars — leaves room for growth
+        return compactMap(merged, MAX_MAP_TOKENS);
+    } else {
+        // FULL MODE: use the output directly (original behavior)
+        if (!parsed.meta || !parsed.nodes || !Array.isArray(parsed.nodes)) {
+            throw new Error('Dreamer output missing required fields (meta, nodes)');
+        }
+
+        parsed.meta.version = '3.0';
+        parsed.meta.generated_at = new Date().toISOString();
+        return parsed;
     }
-
-    // Ensure version tag and override LLM-generated timestamps with actual wall-clock time
-    map.meta.version = '3.0';
-    map.meta.generated_at = new Date().toISOString();
-
-    return map;
 }
 
 // ─── Phase 2b: Serendipity Injection ───
