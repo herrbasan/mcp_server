@@ -452,6 +452,17 @@ export async function storage_append(args) {
     return result(true, 'storage_append', userPath, { size: engineResult.size });
 }
 
+export async function storage_replace(args) {
+    const { path: userPath, marker, replacement, occurrence } = args;
+    logger.info(`[Storage] storage_replace: "${userPath}" occurrence=${occurrence ?? 'first'}`, null, 'Storage');
+    if (!userPath) throw new Error('storage_replace: args.path is required');
+    if (marker === undefined || marker === null) throw new Error('storage_replace: args.marker is required');
+    if (replacement === undefined || replacement === null) throw new Error('storage_replace: args.replacement is required');
+    const engineResult = await OPS.replace(userPath, marker, replacement, { occurrence });
+    logger.info(`[Storage] storage_replace OK: "${userPath}" (${engineResult.replacements} replacement(s), ${engineResult.size}B)`, null, 'Storage');
+    return result(true, 'storage_replace', userPath, engineResult);
+}
+
 export async function storage_grep(args) {
     const { path: userPath, pattern, maxMatches, context, ignoreCase } = args;
     logger.info(`[Storage] storage_grep: "${userPath}" pattern="${pattern}"`, null, 'Storage');

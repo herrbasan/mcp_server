@@ -469,6 +469,9 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             workspacePath,
             toolStatePath,
             storagePath,
+            storageRoot: STORAGE_ROOT,
+            uncShare: STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.uncShare : null,
+            localRoot: STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.localRoot : null,
             captureLogs: captureLogs
         },
         resourceLimits: {
@@ -940,7 +943,31 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.workspacePath    — Absolute path to ephemeral per-call directory (deleted after call)
   ctx.toolStatePath    — Absolute path to persistent per-tool state directory (survives across calls)
   ctx.storagePath      — Absolute path to persistent per-tool output directory (survives across calls, user-visible)
+  ctx.fileops          — Confined + versioned file ops rooted at ctx.storagePath (PREFER THIS over raw fs)
   ctx.args       — The args object passed to forge_call (same as first parameter)
+
+ctx.fileops API (the fileops engine — same as the storage agent uses)
+  Every mutation is atomic (temp+rename) and auto-snapshots the prior state —
+  mistakes are recoverable. Paths are confined to the tool's storage dir;
+  escapes throw. Prefer this over raw fs for anything user-visible.
+
+  await ctx.fileops.read(path, { encoding? })              → { content, size }
+  await ctx.fileops.write(path, content, { overwrite? })   → { size }  (throws if exists without overwrite:true)
+  await ctx.fileops.append(path, content)                  → { size }
+  await ctx.fileops.replace(path, marker, replacement, { occurrence? })  → { size, replacements }
+      Server-side marker swap. occurrence: 'first' (default) | 'last' | 'all'.
+      Throws if marker not found. The large-file edit path — no read-modify-write round trip.
+  await ctx.fileops.readWindow(path, { offset,length } | { head } | { tail })  → { content, size, window }
+  await ctx.fileops.copy(from, to, { overwrite? })         → { from, to, size }
+  await ctx.fileops.move(from, to)                         → { from, to, type }
+  await ctx.fileops.remove(path, { recursive? })           → { deleted: true }
+  await ctx.fileops.list(path?, { recursive?, pattern? })  → { entries }
+  await ctx.fileops.stat(path)                             → { exists, type, size, modified }
+  await ctx.fileops.grep(path, pattern, { context?, ignoreCase? })  → { matches, truncated }
+  await ctx.fileops.hash(path, { algo? })                  → { hash, size }
+  await ctx.fileops.history(path)                          → { versions }
+  await ctx.fileops.restore(path, { steps? })              → { restored, from }
+  await ctx.fileops.batch(ops, { onError? })               → { results }
 
 ctx.gateway API
   await ctx.gateway.chat({ task, model?, messages, systemPrompt?, maxTokens?, temperature? })
@@ -989,8 +1016,9 @@ STATE PATTERNS
     await writeFile(cacheFile, JSON.stringify(data));
 
   Persistent output (survives across calls, user-visible via storage):
-    const outFile = join(ctx.storagePath, 'report.md');
-    await writeFile(outFile, markdown);
+    // PREFERRED: use ctx.fileops — atomic, versioned, confined
+    await ctx.fileops.write('report.md', markdown);
+    // (raw fs still works, but bypasses versioning + confinement)
 
   Ephemeral temp files (deleted after call):
     const tmpFile = join(ctx.workspacePath, 'intermediate.bin');

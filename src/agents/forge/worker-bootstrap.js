@@ -4,6 +4,8 @@ import { writeFile, mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
+import { createFileOps } from '../../lib/fileops.js';
+import { createPathTranslator } from '../storage/path-translator.js';
 
 // ── Worker Bootstrap ──────────────────────────────────────────────────────────
 // Runs inside each worker_thread. Receives { source, args, payload, workspacePath,
@@ -149,7 +151,7 @@ function createProgressProxy(port) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function run() {
-    const { source, args, payload, workspacePath, toolStatePath, storagePath } = { ...workerData, ...initData };
+    const { source, args, payload, workspacePath, toolStatePath, storagePath, uncShare, localRoot } = { ...workerData, ...initData };
 
     // Payload items arrive as Uint8Arrays after structured clone (postMessage strips
     // Buffer prototype). Convert them back so Buffer.isBuffer() and .toString() work.
@@ -188,6 +190,14 @@ async function run() {
         );
     }
 
+    // Build ctx.fileops — confined + versioned file ops rooted at THIS tool's
+    // storage dir. Forged tools should prefer this over raw fs: every mutation
+    // is atomic and auto-snapshotted, and confinement prevents path escapes.
+    // workspacePath/toolStatePath intentionally stay raw — ephemeral per-call
+    // scratch and git-internal state don't need versioning.
+    const translator = (uncShare && localRoot) ? createPathTranslator({ uncShare, localRoot }) : null;
+    const fileops = createFileOps({ root: storagePath, translator });
+
     // Build context
     const ctx = {
         gateway: createGatewayProxy(gatewayPort),
@@ -196,6 +206,7 @@ async function run() {
         workspacePath,
         toolStatePath,
         storagePath,
+        fileops,
         args
     };
 

@@ -149,6 +149,20 @@
             }
         },
         {
+            "name": "storage_replace",
+            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. occurrence: 'first' (default), 'last', or 'all'. Throws if the marker is not found, so a wrong mental model of the file fails loud instead of silently no-op'ing. The prior state is snapshotted automatically (see storage_history/storage_restore).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "marker": { "type": "string", "description": "Exact string to find (byte-exact, not a regex). Must uniquely identify the edit site unless occurrence is 'all'." },
+                    "replacement": { "type": "string", "description": "String to substitute in place of the marker" },
+                    "occurrence": { "type": "string", "enum": ["first", "last", "all"], "description": "Which occurrence(s) to replace (default: first)" }
+                },
+                "required": ["path", "marker", "replacement"]
+            }
+        },
+        {
             "name": "storage_grep",
             "description": "Search file contents with a regex, server-side. Returns only matching lines (path, line number, text, optional context lines) — file bodies never enter your context. The primary way to find text in storage. Skips binary and >50MB files. Set context:N for surrounding lines.",
             "inputSchema": {

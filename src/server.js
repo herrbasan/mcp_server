@@ -808,6 +808,7 @@ IMPORTANT RULES
         "storage.move": "storage_move", "storage.delete": "storage_delete",
         "storage.search": "storage_search",
         "storage.copy": "storage_copy", "storage.append": "storage_append",
+        "storage.replace": "storage_replace",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
         "storage.history": "storage_history", "storage.restore": "storage_restore",
         "storage.resources_list": "storage_resources_list",

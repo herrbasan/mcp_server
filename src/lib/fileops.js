@@ -380,6 +380,63 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
     }
 
     // ============================================
+    // Public: replace
+    // ============================================
+
+    // Server-side marker swap: read file, replace occurrence(s) of marker
+    // with replacement, write back via snapshot + atomicWrite. This is the
+    // large-file edit path — content never leaves the server.
+    // occurrence: 'first' (default) | 'last' | 'all'.
+    // Throws when marker is absent (fail loud — the caller's mental model
+    // of the file is wrong, silently no-op'ing would hide that).
+    async function replace(userPath, marker, replacement, { occurrence = 'first' } = {}) {
+        if (typeof marker !== 'string' || marker.length === 0) {
+            throw new Error('replace: marker must be a non-empty string');
+        }
+        if (typeof replacement !== 'string') {
+            throw new Error('replace: replacement must be a string');
+        }
+        if (occurrence !== 'first' && occurrence !== 'last' && occurrence !== 'all') {
+            throw new Error('replace: occurrence must be first, last, or all');
+        }
+        const abs = resolve(userPath);
+        if (!fs.existsSync(abs)) throw new Error('replace: path does not exist: ' + userPath);
+        const st = fs.statSync(abs);
+        if (st.isDirectory()) throw new Error('replace: cannot replace in a directory: ' + userPath);
+
+        const original = fs.readFileSync(abs, 'utf8');
+        let updated;
+        let count = 0;
+
+        if (occurrence === 'all') {
+            // Count first so a zero-match fails the same way as first/last
+            const parts = original.split(marker);
+            count = parts.length - 1;
+            if (count === 0) throw new Error('replace: marker not found in ' + userPath);
+            updated = parts.join(replacement);
+        } else if (occurrence === 'last') {
+            const idx = original.lastIndexOf(marker);
+            if (idx === -1) throw new Error('replace: marker not found in ' + userPath);
+            updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
+            count = 1;
+        } else {
+            const idx = original.indexOf(marker);
+            if (idx === -1) throw new Error('replace: marker not found in ' + userPath);
+            updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
+            count = 1;
+        }
+
+        if (updated === original) {
+            throw new Error('replace: replacement is identical to marker — no change');
+        }
+
+        const targetRel = rel(abs);
+        snapshot(targetRel, 'replace');
+        atomicWrite(abs, Buffer.from(updated, 'utf8'));
+        return { size: Buffer.byteLength(updated, 'utf8'), replacements: count };
+    }
+
+    // ============================================
     // Public: readWindow
     // ============================================
 
@@ -591,6 +648,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             remove:       (a) => remove(a.path, pickOpts(a, ['recursive'])),
             copy:         (a) => copy(a.from, a.to, pickOpts(a, ['overwrite'])),
             append:       (a) => append(a.path, reqContent(a), pickOpts(a, ['encoding'])),
+            replace:      (a) => replace(a.path, a.marker, a.replacement, pickOpts(a, ['occurrence'])),
             readWindow:   (a) => readWindow(a.path, pickOpts(a, ['offset', 'length', 'head', 'tail'])),
             grep:         (a) => grep(a.path, a.pattern, pickOpts(a, ['maxMatches', 'context', 'ignoreCase'])),
             hash:         (a) => hash(a.path, pickOpts(a, ['algo'])),
@@ -752,6 +810,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         remove,
         copy,
         append,
+        replace,
         readWindow,
         grep,
         batch,

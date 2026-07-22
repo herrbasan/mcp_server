@@ -77,6 +77,7 @@ Every mutating op auto-snapshots the target's prior state before mutating.
 |---------|-----------|-----------------------------------------|
 | write   | yes       | prior content of target (if exists)     |
 | append  | yes       | prior content (after inode-break)       |
+| replace | yes       | prior content of target                 |
 | copy    | yes       | prior content of target (if overwrite)  |
 | move    | yes       | source entry (op tag `move`)            |
 | remove  | yes       | the file itself before unlink           |
@@ -107,6 +108,11 @@ root-relative with forward slashes.
 - `write(path, content, { encoding, overwrite = false })` → `{ size }`.
   Atomic. Requires `overwrite: true` if target exists.
 - `append(path, content, { encoding })` → `{ size }`. O(1), breaks sharing first.
+- `replace(path, marker, replacement, { occurrence = 'first' })` →
+  `{ size, replacements }`. Server-side marker swap — the large-file edit path.
+  Byte-exact string match (not regex). `occurrence`: `'first'` | `'last'` |
+  `'all'`. Throws if marker absent (fail loud) or replacement is identical to
+  marker. Reads whole file into memory — fine for text docs, not for binaries.
 - `copy(from, to, { overwrite = false })` → `{ from, to, size }`. File or dir.
 - `move(from, to)` → `{ from, to, type }`. Refuses overwrite.
 - `remove(path, { recursive = false })` → `{ deleted: true }`.
@@ -135,7 +141,7 @@ paths for mutations:
 | storage_move | `OPS.move` | |
 | storage_delete | `OPS.remove` | |
 | storage_read | `OPS.readWindow` (window args) / legacy inline (no window) | non-window path is agent-level MCP transport policy (INLINE_BYTE_LIMIT, PUBLIC_URL pointer) — correctly stays in agent |
-| storage_copy/append/grep/batch/history/restore | corresponding `OPS.*` | new tools |
+| storage_copy/append/replace/grep/batch/history/restore | corresponding `OPS.*` | new tools |
 
 `safeResolve`/`safeRel` remain only for `storage_read`'s non-window path and
 the `/storage` REST endpoint. That is correct separation, not debt.
@@ -152,7 +158,7 @@ export, (3) `COMPACT_TO_LEGACY` entry in `server.js`. Missing (3) →
 
 ## Verified state (2026-07-22)
 
-- 55 node:test tests green (54 pass, 1 symlink env-skip on Windows without dev mode).
+- 64 node:test tests green (63 pass, 1 symlink env-skip on Windows without dev mode).
 - Bench: copy 100MB = 29ms; grep 50MB/610k lines = 167ms; 1000 writes ≈ 705ms
   (fs-bound — batch vs individual identical; batch's value is orchestration, not disk).
 - E2E via workshop MCP tools: copy, grep, append, windowed read, batch

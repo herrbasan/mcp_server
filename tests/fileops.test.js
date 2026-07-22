@@ -194,6 +194,101 @@ test('append: after snapshot exists (nlink>1) version bytes unchanged', async ()
 });
 
 // ============================================
+// replace
+// ============================================
+
+test('replace: first occurrence (default)', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'alpha MARKER omega MARKER tail');
+    const r = await ops.replace('doc.md', 'MARKER', 'BETA');
+    assert.equal(r.replacements, 1);
+    const readBack = await ops.read('doc.md');
+    assert.equal(readBack.content, 'alpha BETA omega MARKER tail');
+    cleanup(root);
+});
+
+test('replace: last occurrence', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'alpha MARKER omega MARKER tail');
+    const r = await ops.replace('doc.md', 'MARKER', 'BETA', { occurrence: 'last' });
+    assert.equal(r.replacements, 1);
+    const readBack = await ops.read('doc.md');
+    assert.equal(readBack.content, 'alpha MARKER omega BETA tail');
+    cleanup(root);
+});
+
+test('replace: all occurrences', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'x MARKER y MARKER z MARKER w');
+    const r = await ops.replace('doc.md', 'MARKER', 'Q', { occurrence: 'all' });
+    assert.equal(r.replacements, 3);
+    const readBack = await ops.read('doc.md');
+    assert.equal(readBack.content, 'x Q y Q z Q w');
+    cleanup(root);
+});
+
+test('replace: marker not found throws', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'some content');
+    await assert.rejects(() => ops.replace('doc.md', 'ABSENT', 'x'), /marker not found/);
+    cleanup(root);
+});
+
+test('replace: multiline marker across chunk boundaries', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    const body = 'part one\n'.repeat(1000) + '## SECTION\nold content\n## NEXT\n' + 'part two\n'.repeat(1000);
+    await ops.write('big.md', body);
+    const r = await ops.replace('big.md', '## SECTION\nold content\n', '## SECTION\nnew content\n');
+    assert.equal(r.replacements, 1);
+    const readBack = await ops.read('big.md');
+    assert.ok(readBack.content.includes('## SECTION\nnew content\n'));
+    assert.ok(!readBack.content.includes('old content'));
+    cleanup(root);
+});
+
+test('replace: prior state is versioned', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'before MARKER after');
+    await ops.replace('doc.md', 'MARKER', 'CHANGED');
+    const hist = await ops.history('doc.md');
+    assert.ok(hist.versions.length >= 1);
+    // restore steps back to the pre-replace state
+    await ops.restore('doc.md');
+    const readBack = await ops.read('doc.md');
+    assert.equal(readBack.content, 'before MARKER after');
+    cleanup(root);
+});
+
+test('replace: identical replacement throws', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'alpha MARKER omega');
+    await assert.rejects(() => ops.replace('doc.md', 'MARKER', 'MARKER'), /identical/);
+    cleanup(root);
+});
+
+test('replace: empty marker throws', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await ops.write('doc.md', 'content');
+    await assert.rejects(() => ops.replace('doc.md', '', 'x'), /non-empty string/);
+    cleanup(root);
+});
+
+test('replace: missing file throws', async () => {
+    const root = freshRoot();
+    const ops = createFileOps({ root });
+    await assert.rejects(() => ops.replace('nope.md', 'M', 'x'), /does not exist/);
+    cleanup(root);
+});
+
+// ============================================
 // readWindow
 // ============================================
 
