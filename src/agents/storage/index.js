@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from './path-translator.js';
+import { createFileOps } from '../../lib/fileops.js';
 import { searchDocuments } from '../vdb/index.js';
 import * as resources from './resource-provider.js';
 
@@ -19,6 +20,7 @@ const DEFAULTS = {
 let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
+let OPS;          // createFileOps engine — copy, append, readWindow, grep, batch, history, restore
 let PUBLIC_URL;  // e.g. http://192.168.0.100:3100 — used to build retrieval URLs for big files
 
 // Threshold above which storage_read returns a URL pointer instead of inline
@@ -41,6 +43,11 @@ function initConfig(agentConfig) {
         logger.info(`[Storage] UNC translator active: ${TRANSLATOR.uncShare} ↔ ${TRANSLATOR.localRoot}`, null, 'Storage');
     }
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
+    OPS = createFileOps({
+        root: STORAGE_ROOT,
+        translator: TRANSLATOR,
+        keepVersions: agentConfig.keepVersions ?? 10
+    });
 }
 
 function safeResolve(userPath) {
@@ -209,29 +216,42 @@ export async function storage_stat(args) {
     const userPath = args.path;
     logger.info(`[Storage] storage_stat: "${userPath}"`, null, 'Storage');
     if (!userPath) throw new Error('storage_stat: args.path is required');
-    const target = safeResolve(userPath);
-    try {
-        const stat = fs.statSync(target);
-        logger.info(`[Storage] storage_stat OK: "${userPath}" (${stat.isDirectory() ? 'dir' : 'file'}, ${stat.size}B)`, null, 'Storage');
-        return result(true, 'storage_stat', userPath, {
-            exists: true,
-            type: stat.isDirectory() ? 'dir' : 'file',
-            size: stat.size,
-            modified: stat.mtime.toISOString()
-        });
-    } catch (err) {
-        if (err.code === 'ENOENT') {
-            logger.info(`[Storage] storage_stat OK: "${userPath}" (not found)`, null, 'Storage');
-            return result(true, 'storage_stat', userPath, { exists: false });
-        }
-        throw err;
+    const st = await OPS.stat(userPath);
+    if (!st.exists) {
+        logger.info(`[Storage] storage_stat OK: "${userPath}" (not found)`, null, 'Storage');
+        return result(true, 'storage_stat', userPath, { exists: false });
     }
+    logger.info(`[Storage] storage_stat OK: "${userPath}" (${st.type}, ${st.size}B)`, null, 'Storage');
+    return result(true, 'storage_stat', userPath, {
+        exists: true,
+        type: st.type,
+        size: st.size,
+        modified: new Date(st.modified).toISOString()
+    });
 }
 
 export async function storage_read(args) {
     const userPath = args.path;
     logger.info(`[Storage] storage_read: "${userPath}"`, { encoding: args.encoding }, 'Storage');
     if (!userPath) throw new Error('storage_read: args.path is required');
+
+    // Windowed read: delegate to OPS.readWindow when any window arg is present.
+    const hasWindow = args.offset !== undefined || args.length !== undefined ||
+                      args.head !== undefined || args.tail !== undefined;
+    if (hasWindow) {
+        if (args.offset !== undefined && args.length === undefined) {
+            throw new Error('storage_read: length is required when offset is given');
+        }
+        const wResult = await OPS.readWindow(userPath, {
+            offset: args.offset,
+            length: args.length,
+            head: args.head,
+            tail: args.tail
+        });
+        logger.info(`[Storage] storage_read OK: "${userPath}" (windowed, ${wResult.size}B)`, null, 'Storage');
+        return result(true, 'storage_read', userPath, wResult);
+    }
+
     const encoding = args.encoding || 'utf8';
     if (encoding !== 'utf8' && encoding !== 'base64') {
         throw new Error(`storage_read: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
@@ -289,62 +309,33 @@ export async function storage_write(args) {
     if (encoding !== 'utf8' && encoding !== 'base64') {
         throw new Error(`storage_write: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
     }
-    const t1 = Date.now();
-    const target = safeResolve(userPath);
-    const t2 = Date.now();
     const buffer = encoding === 'base64'
         ? Buffer.from(content, 'base64')
         : Buffer.from(content, 'utf8');
-    const t3 = Date.now();
     if (buffer.length > CONFIG.maxWriteSize) {
         throw new Error(`storage_write: content exceeds maxWriteSize (${buffer.length} > ${CONFIG.maxWriteSize})`);
     }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    const t4 = Date.now();
-    fs.writeFileSync(target, buffer);
-    const t5 = Date.now();
-    logger.info(`[Storage] storage_write OK: "${userPath}" (${buffer.length}B, total=${t5 - t0}ms phases: validate=${t1 - t0} safeResolve=${t2 - t1} buffer=${t3 - t2} mkdir=${t4 - t3} write=${t5 - t4})`, null, 'Storage');
-    return result(true, 'storage_write', userPath, { size: buffer.length });
-}
-
-function listEntry(fullPath, basePath) {
-    const stat = fs.statSync(fullPath);
-    const rel = path.relative(basePath, fullPath);
-    return {
-        name: path.basename(fullPath),
-        type: stat.isDirectory() ? 'dir' : 'file',
-        size: stat.size,
-        modified: stat.mtime.toISOString(),
-        path: rel
-    };
-}
-
-function listDir(dirPath, basePath, recursive) {
-    const entries = [];
-    const items = fs.readdirSync(dirPath);
-    for (const name of items) {
-        const fullPath = path.join(dirPath, name);
-        const entry = listEntry(fullPath, basePath);
-        entries.push(entry);
-        if (recursive && entry.type === 'dir') {
-            entries.push(...listDir(fullPath, basePath, true));
-        }
-    }
-    return entries;
+    // Route through the engine: versions the prior content, writes atomically
+    // (temp+rename). overwrite:true here preserves the historical silent-overwrite
+    // contract of storage_write while gaining snapshot + crash-safe write.
+    const engineResult = await OPS.write(userPath, content, { encoding, overwrite: true });
+    logger.info(`[Storage] storage_write OK: "${userPath}" (${engineResult.size}B, total=${Date.now() - t0}ms)`, null, 'Storage');
+    return result(true, 'storage_write', userPath, { size: engineResult.size });
 }
 
 export async function storage_list(args) {
     const userPath = args.path || '';
     const recursive = args.recursive || false;
     logger.info(`[Storage] storage_list: "${userPath}"`, { recursive }, 'Storage');
-    const target = safeResolve(userPath);
-    const stat = fs.statSync(target);
-    if (!stat.isDirectory()) {
+    const st = await OPS.stat(userPath);
+    if (!st.exists || st.type !== 'dir') {
         throw new Error('storage_list: path is not a directory');
     }
-    const entries = listDir(target, STORAGE_ROOT, recursive);
-    logger.info(`[Storage] storage_list OK: "${userPath}" (${entries.length} entries)`, null, 'Storage');
-    return result(true, 'storage_list', userPath, { entries });
+    const { entries } = await OPS.list(userPath, { recursive });
+    // Normalize modified to ISO string to preserve the legacy response shape.
+    const normalized = entries.map(e => ({ ...e, modified: new Date(e.modified).toISOString() }));
+    logger.info(`[Storage] storage_list OK: "${userPath}" (${normalized.length} entries)`, null, 'Storage');
+    return result(true, 'storage_list', userPath, { entries: normalized });
 }
 
 export async function storage_move(args) {
@@ -353,16 +344,10 @@ export async function storage_move(args) {
     logger.info(`[Storage] storage_move: "${fromPath}" → "${toPath}"`, null, 'Storage');
     if (!fromPath) throw new Error('storage_move: args.from is required');
     if (!toPath) throw new Error('storage_move: args.to is required');
-    const fromTarget = safeResolve(fromPath);
-    const toTarget = safeResolve(toPath);
-    if (fs.existsSync(toTarget)) {
-        throw new Error(`storage_move: destination already exists: "${toPath}"`);
-    }
-    fs.mkdirSync(path.dirname(toTarget), { recursive: true });
-    fs.renameSync(fromTarget, toTarget);
-    const type = fs.statSync(toTarget).isDirectory() ? 'dir' : 'file';
-    logger.info(`[Storage] storage_move OK: "${fromPath}" → "${toPath}" (${type})`, null, 'Storage');
-    return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: fromPath, to: toPath, type });
+    // Engine refuses overwrite and snapshots the source before moving.
+    const engineResult = await OPS.move(fromPath, toPath);
+    logger.info(`[Storage] storage_move OK: "${fromPath}" → "${toPath}" (${engineResult.type})`, null, 'Storage');
+    return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: engineResult.from, to: engineResult.to, type: engineResult.type });
 }
 
 export async function storage_delete(args) {
@@ -370,14 +355,11 @@ export async function storage_delete(args) {
     logger.info(`[Storage] storage_delete: "${userPath}"`, { recursive: args.recursive }, 'Storage');
     if (!userPath) throw new Error('storage_delete: args.path is required');
     const recursive = args.recursive || false;
-    const target = safeResolve(userPath);
-    const stat = fs.statSync(target);
-    if (stat.isDirectory()) {
-        fs.rmdirSync(target, { recursive });
-    } else {
-        fs.unlinkSync(target);
-    }
-    logger.info(`[Storage] storage_delete OK: "${userPath}" (${stat.isDirectory() ? 'dir' : 'file'})`, null, 'Storage');
+    // Engine snapshots before deleting; non-empty dir requires recursive:true.
+    const st = await OPS.stat(userPath);
+    if (!st.exists) throw new Error(`storage_delete: path does not exist: "${userPath}"`);
+    await OPS.remove(userPath, { recursive });
+    logger.info(`[Storage] storage_delete OK: "${userPath}" (${st.type})`, null, 'Storage');
     return result(true, 'storage_delete', userPath, { deleted: true });
 }
 
@@ -443,4 +425,68 @@ export async function storage_resources_templates(args) {
     const resourceTemplates = provider.listResourceTemplates();
     logger.info(`[Storage] storage_resources_templates: ${resourceTemplates.length} template(s)`, null, 'Storage');
     return result(true, 'storage_resources_templates', '', { resourceTemplates });
+}
+
+// ── fileops-bridged tools ───────────────────────────────────────────────────
+// These delegate to the OPS engine (createFileOps). Each follows the existing
+// house pattern: validate required args (throw if missing), log, call engine,
+// wrap via result(). Engine errors propagate — no try/catch wrapping.
+
+export async function storage_copy(args) {
+    const { from, to, overwrite } = args;
+    logger.info(`[Storage] storage_copy: "${from}" → "${to}"`, null, 'Storage');
+    if (!from) throw new Error('storage_copy: args.from is required');
+    if (!to) throw new Error('storage_copy: args.to is required');
+    const engineResult = await OPS.copy(from, to, { overwrite: !!overwrite });
+    logger.info(`[Storage] storage_copy OK: "${from}" → "${to}" (${engineResult.size}B)`, null, 'Storage');
+    return result(true, 'storage_copy', `${from} -> ${to}`, engineResult);
+}
+
+export async function storage_append(args) {
+    const { path: userPath, content, encoding } = args;
+    logger.info(`[Storage] storage_append: "${userPath}" (${content?.length || 0} chars)`, null, 'Storage');
+    if (!userPath) throw new Error('storage_append: args.path is required');
+    if (content === undefined || content === null) throw new Error('storage_append: args.content is required');
+    const engineResult = await OPS.append(userPath, content, { encoding });
+    logger.info(`[Storage] storage_append OK: "${userPath}" (total=${engineResult.size}B)`, null, 'Storage');
+    return result(true, 'storage_append', userPath, { size: engineResult.size });
+}
+
+export async function storage_grep(args) {
+    const { path: userPath, pattern, maxMatches, context, ignoreCase } = args;
+    logger.info(`[Storage] storage_grep: "${userPath}" pattern="${pattern}"`, null, 'Storage');
+    if (!userPath) throw new Error('storage_grep: args.path is required');
+    if (!pattern) throw new Error('storage_grep: args.pattern is required');
+    const engineResult = await OPS.grep(userPath, pattern, { maxMatches, context, ignoreCase });
+    logger.info(`[Storage] storage_grep OK: "${userPath}" (${engineResult.matches.length} match(es))`, null, 'Storage');
+    return result(true, 'storage_grep', userPath, { matches: engineResult.matches, truncated: engineResult.truncated });
+}
+
+export async function storage_batch(args) {
+    const { ops, onError } = args;
+    logger.info(`[Storage] storage_batch: ${ops?.length || 0} op(s)`, null, 'Storage');
+    if (!ops || !Array.isArray(ops) || ops.length === 0) {
+        throw new Error('storage_batch: args.ops must be a non-empty array');
+    }
+    const engineResult = await OPS.batch(ops, { onError });
+    logger.info(`[Storage] storage_batch OK: ${engineResult.results.length} result(s)`, null, 'Storage');
+    return result(true, 'storage_batch', '', { results: engineResult.results });
+}
+
+export async function storage_history(args) {
+    const { path: userPath } = args;
+    logger.info(`[Storage] storage_history: "${userPath}"`, null, 'Storage');
+    if (!userPath) throw new Error('storage_history: args.path is required');
+    const engineResult = await OPS.history(userPath);
+    logger.info(`[Storage] storage_history OK: "${userPath}" (${engineResult.versions.length} version(s))`, null, 'Storage');
+    return result(true, 'storage_history', userPath, { versions: engineResult.versions });
+}
+
+export async function storage_restore(args) {
+    const { path: userPath, steps } = args;
+    logger.info(`[Storage] storage_restore: "${userPath}" steps=${steps ?? 1}`, null, 'Storage');
+    if (!userPath) throw new Error('storage_restore: args.path is required');
+    const engineResult = await OPS.restore(userPath, { steps: steps ?? 1 });
+    logger.info(`[Storage] storage_restore OK: "${userPath}" from=${engineResult.from}`, null, 'Storage');
+    return result(true, 'storage_restore', userPath, { restored: engineResult.restored, from: engineResult.from });
 }

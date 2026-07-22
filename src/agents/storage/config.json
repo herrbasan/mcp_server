@@ -15,12 +15,16 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer instead of inline content. The response includes: (1) httpUrl — a fully-qualified URL using the server's LAN IP from config.json agents.storage.publicUrl (currently http://192.168.0.100:3100). Use this URL VERBATIM with fetch_webpage. NEVER change the host to 'localhost' or '127.0.0.1' — those resolve to the client machine, not the server, and the file will be unreachable. (2) nextStep — a copy-pasteable action like 'fetch_webpage({ url: \"<httpUrl>\" })'. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients on the same machine, the same file is also reachable via the UNC share configured in agents.storage.uncShare. Spec-compliant alternative: this server also exposes storage files as MCP resources via resources/list and resources/read using the URI scheme storage://<relative-path>.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. Files above the inline threshold (default 64 KB) return a URL pointer instead of inline content. The response includes: (1) httpUrl — a fully-qualified URL using the server's LAN IP from config.json agents.storage.publicUrl (currently http://192.168.0.100:3100). Use this URL VERBATIM with fetch_webpage. NEVER change the host to 'localhost' or '127.0.0.1' — those resolve to the client machine, not the server, and the file will be unreachable. (2) nextStep — a copy-pasteable action like 'fetch_webpage({ url: \"<httpUrl>\" })'. The REST endpoint streams the file directly from disk, bypassing the MCP transport-size limit that kills inline text responses on large files (chat-app client hits 'MCP stream ended without response' around 400 KB). For LAN clients on the same machine, the same file is also reachable via the UNC share configured in agents.storage.uncShare. Spec-compliant alternative: this server also exposes storage files as MCP resources via resources/list and resources/read using the URI scheme storage://<relative-path>. Optional windowed read: pass offset+length (byte window), head (first N lines), or tail (last N lines) to read only part of a file — strongly prefer tail for logs instead of reading whole files.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path within storage root" },
-                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8)" }
+                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8)" },
+                    "offset": { "type": "number", "description": "Byte offset for windowed read (requires length)" },
+                    "length": { "type": "number", "description": "Number of bytes to read from offset" },
+                    "head": { "type": "number", "description": "Read first N lines of the file" },
+                    "tail": { "type": "number", "description": "Read last N lines of the file" }
                 },
                 "required": ["path"]
             }
@@ -116,6 +120,82 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {}
+            }
+        },
+        {
+            "name": "storage_copy",
+            "description": "Copy a file or directory within storage, server-side. Content never enters your context — prefer this over read+write for duplicating or staging files. Refuses to overwrite unless overwrite:true.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Source path within storage root" },
+                    "to": { "type": "string", "description": "Destination path within storage root" },
+                    "overwrite": { "type": "boolean", "description": "Allow overwriting an existing destination (default: false)" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "storage_append",
+            "description": "Append content to a file (creates it if missing). O(1) — the existing file is NOT read into context. Use for logs, journals, growing notes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "content": { "type": "string", "description": "Content to append (utf8 text, or base64-encoded binary)" },
+                    "encoding": { "type": "string", "enum": ["utf8", "base64"], "description": "Content encoding (default: utf8)" }
+                },
+                "required": ["path", "content"]
+            }
+        },
+        {
+            "name": "storage_grep",
+            "description": "Search file contents with a regex, server-side. Returns only matching lines (path, line number, text, optional context lines) — file bodies never enter your context. The primary way to find text in storage. Skips binary and >50MB files. Set context:N for surrounding lines.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File or directory path within storage root" },
+                    "pattern": { "type": "string", "description": "JavaScript regex pattern to match against each line" },
+                    "maxMatches": { "type": "number", "description": "Maximum matches to return (default: 100)" },
+                    "context": { "type": "number", "description": "Number of surrounding lines to include before and after each match" },
+                    "ignoreCase": { "type": "boolean", "description": "Case-insensitive matching (default: false)" }
+                },
+                "required": ["path", "pattern"]
+            }
+        },
+        {
+            "name": "storage_batch",
+            "description": "Run multiple storage operations in ONE call. ops is an array of {op, ...args} where op is a storage op name (stat, read, write, list, move, remove, copy, append, readWindow, grep, hash, snapshotDir). Executes in order, returns per-op results. onError:'collect' (default) runs all; 'abort' stops at first failure. Use this for multi-step reorganizations instead of many calls.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ops": { "type": "array", "description": "Array of {op, ...args} objects. Each op is a storage operation name with its arguments as fields." },
+                    "onError": { "type": "string", "enum": ["collect", "abort"], "description": "collect (default): run all ops, return individual results; abort: stop at first error" }
+                },
+                "required": ["ops"]
+            }
+        },
+        {
+            "name": "storage_history",
+            "description": "List prior versions of a file (newest first). Every mutating storage op auto-snapshots the prior state, so recent history is recoverable. Returns versions with version number, op, size, modified.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path within storage root" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "storage_restore",
+            "description": "Restore a file to a previous version (steps back through history, default 1). The current state is snapshotted first, so a restore is itself undoable.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path within storage root" },
+                    "steps": { "type": "number", "description": "Number of versions to step back (default: 1)" }
+                },
+                "required": ["path"]
             }
         }
     ]
