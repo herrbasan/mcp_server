@@ -21,7 +21,6 @@ let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
 let OPS;          // createFileOps engine — copy, append, readWindow, grep, batch, history, restore
-let PUBLIC_URL;  // e.g. http://192.168.0.100:3100 — used to build retrieval URLs for big files
 
 // Threshold above which storage_read returns a URL pointer instead of inline
 // content. The MCP transport chokes on large inline responses (chat-app side
@@ -106,42 +105,20 @@ function result(ok, op, userPath, data) {
     return toMcp(ok, { op, path: userPath, ...data });
 }
 
-function isLocalhostUrl(url) {
-    if (!url) return true;
-    try {
-        const u = new URL(url);
-        return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
-    } catch {
-        return false;
-    }
-}
-
 export async function init(context) {
     const agentConfig = context.config?.agents?.storage;
     if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
     initConfig(agentConfig);
 
-    // Public URL for constructing retrieval links for big files. Lookup order:
-    // 1. agents.storage.publicUrl (storage-specific override)
-    // 2. agents.forge.publicUrl (server-wide setting — typically the same)
-    // 3. PUBLIC_URL env var
-    // 4. http://localhost:{PORT} — last resort, only works for same-machine clients
-    PUBLIC_URL = agentConfig.publicUrl
-        || context.config?.agents?.forge?.publicUrl
-        || process.env.PUBLIC_URL
-        || `http://localhost:${process.env.PORT || 3100}`;
-
-    if (isLocalhostUrl(PUBLIC_URL)) {
-        logger.warn(`[Storage] PUBLIC_URL is set to localhost (${PUBLIC_URL}). Large files will return URLs that are unreachable from other LAN machines. Set agents.storage.publicUrl to the server's LAN IP, e.g. http://192.168.0.100:3100`, null, 'Storage');
-    } else {
-        logger.info(`[Storage] Public URL for large files: ${PUBLIC_URL}`, null, 'Storage');
-    }
+    // NOTE: the storage agent deliberately does NOT stamp a host into pointer
+    // responses. Large-file reads return a RELATIVE path (/storage/...); the
+    // client prepends its own MCP origin. The server cannot know how each
+    // client reaches it (LAN IP, dyndns, localhost), so it never guesses.
 
     // Initialize the MCP resource provider so resources/list and resources/read work.
     resources.initResourceProvider({
         storageRoot: STORAGE_ROOT,
         translator: TRANSLATOR,
-        publicUrl: PUBLIC_URL,
         inlineByteLimit: INLINE_BYTE_LIMIT
     });
 
@@ -281,18 +258,19 @@ export async function storage_read(args) {
     // client supports).
     if (stat.size > INLINE_BYTE_LIMIT) {
         const urlPath = userPath.replace(/\\/g, '/');
-        const httpUrl = `${PUBLIC_URL}/storage/${encodeURI(urlPath)}`;
+        // Return a RELATIVE path, not an absolute URL. The server cannot know
+        // how each client reaches it (LAN IP, dyndns, localhost), so it does
+        // not stamp a host. The client prepends its own base — the address it
+        // already uses for MCP — and fetches it. No rewriting, no guessing.
+        const path = `/storage/${encodeURI(urlPath)}`;
         const response = {
             size: stat.size,
             inline: false,
-            httpUrl,
+            path,
             encoding,
-            nextStep: `fetch_webpage({ url: "${httpUrl}" })`,
-            note: `File is above the inline size threshold. Call fetch_webpage with the httpUrl above to stream the file. The HTTP endpoint has no MCP transport-size limit. ${isLocalhostUrl(httpUrl) ? 'WARNING: this URL points to localhost/127.0.0.1, so it is only reachable from the server machine. For LAN access, set agents.storage.publicUrl to the server LAN IP (e.g. http://192.168.0.100:3100) and restart.' : 'This URL uses the configured public address and should be reachable from LAN clients.'}`
+            nextStep: `Fetch the file over HTTP: prepend your MCP server origin to "path" and pass the full URL to your fetch tool (e.g. browser_fetch). The HTTP endpoint streams the file, bypassing the MCP transport-size limit.`,
+            note: 'File is above the inline size threshold. Chunked alternative: call storage_read again with offset+length to page through the file in MCP-sized windows.'
         };
-        if (isLocalhostUrl(httpUrl)) {
-            response.warning = `httpUrl points to localhost (${httpUrl}). It will fail from any machine other than the server. Configure agents.storage.publicUrl to the server's LAN IP (e.g. http://192.168.0.100:3100) and restart.`;
-        }
         return result(true, 'storage_read', userPath, response);
     }
     return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });

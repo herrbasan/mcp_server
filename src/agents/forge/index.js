@@ -20,7 +20,6 @@ let TOOLS_DIR;        // data/forge/tools/
 let WORKSPACE_DIR;    // data/forge/workspace/
 let STORAGE_ROOT;     // e.g. D:\MCP_Storage\forge\
 let STORAGE_TRANSLATOR;  // null when no uncShare is configured
-let PUBLIC_URL;       // e.g. http://192.168.0.100:3100 — used to build retrieval URLs
 let CONFIG;
 let GATEWAY_CLIENT;
 let GIT_WRITE_QUEUE;
@@ -48,16 +47,6 @@ function createGitWriteQueue() {
         chain = run.then(() => {}, () => {});
         return run;
     };
-}
-
-function isLocalhostUrl(url) {
-    if (!url) return true;
-    try {
-        const u = new URL(url);
-        return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
-    } catch {
-        return false;
-    }
 }
 
 // ── Concurrency Semaphore ────────────────────────────────────────────────────
@@ -832,7 +821,8 @@ export async function forge_call(args, context) {
         // to the storage.read path. Skip when no translator is configured.
         const absoluteLocal = path.join(toolStoragePath, f.rel);
         const uncPath = STORAGE_TRANSLATOR ? STORAGE_TRANSLATOR.toUnc(absoluteLocal) : null;
-        const url = `${PUBLIC_URL}/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`;
+        // Relative URL — the client prepends its own MCP origin (same as storage_read).
+        const url = `/storage/${storageReadPath.split('/').map(encodeURIComponent).join('/')}`;
         const out = {
             name: f.rel,
             path: storageReadPath,
@@ -840,9 +830,6 @@ export async function forge_call(args, context) {
             ...(uncPath ? { uncPath } : {}),
             size: f.size
         };
-        if (isLocalhostUrl(url)) {
-            out.warning = `url points to localhost (${url}). It will fail from any machine other than the server. Configure agents.forge.publicUrl to the server's LAN IP (e.g. http://192.168.0.100:3100) and restart.`;
-        }
         return out;
     });
     if (outputs.length > 0) {
@@ -1082,21 +1069,9 @@ export async function init(context) {
         logger.info(`[Forge] UNC translator active: ${STORAGE_TRANSLATOR.uncShare} ↔ ${STORAGE_TRANSLATOR.localRoot}`, null, 'Forge');
     }
 
-    // Public URL for constructing retrieval links to forge outputs.
-    // Read from config.json agents.forge.publicUrl — must be reachable by clients.
-    // Falls back to http://localhost:{PORT} where PORT comes from env or default 3100.
-    // IMPORTANT: this URL must use the server's LAN IP (e.g. http://192.168.0.100:3100),
-    // not localhost/127.0.0.1, otherwise cross-machine clients cannot fetch outputs.
-    PUBLIC_URL = agentConfig.publicUrl
-        || context.config?.agents?.storage?.publicUrl
-        || process.env.PUBLIC_URL
-        || `http://localhost:${process.env.PORT || 3100}`;
-
-    if (isLocalhostUrl(PUBLIC_URL)) {
-        logger.warn(`[Forge] PUBLIC_URL is set to localhost (${PUBLIC_URL}). Forge output URLs will be unreachable from other LAN machines. Set agents.forge.publicUrl to the server's LAN IP, e.g. http://192.168.0.100:3100`, null, 'Forge');
-    } else {
-        logger.info(`[Forge] Public URL for outputs: ${PUBLIC_URL}`, null, 'Forge');
-    }
+    // NOTE: forge deliberately does NOT stamp a host into output URLs (same
+    // design as the storage agent). Output `url` fields are RELATIVE paths
+    // (/storage/...); the client prepends its own MCP origin.
 
     GATEWAY_CLIENT = context.gateway;
 

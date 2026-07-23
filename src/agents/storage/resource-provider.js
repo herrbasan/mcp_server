@@ -16,16 +16,14 @@ const logger = getLogger();
 
 let STORAGE_ROOT;
 let STORAGE_TRANSLATOR;
-let PUBLIC_URL;
 let INLINE_BYTE_LIMIT;
 
 const URI_SCHEME = 'storage';
 
-export function initResourceProvider({ storageRoot, translator, publicUrl, inlineByteLimit }) {
+export function initResourceProvider({ storageRoot, translator, inlineByteLimit }) {
     if (!storageRoot) throw new Error('storage.resourceProvider: storageRoot is required');
     STORAGE_ROOT = storageRoot;
     STORAGE_TRANSLATOR = translator || null;
-    PUBLIC_URL = publicUrl || '';
     INLINE_BYTE_LIMIT = inlineByteLimit ?? 64 * 1024;
 }
 
@@ -166,15 +164,12 @@ export function readResource({ uri, encoding }) {
 
     if (stat.size > INLINE_BYTE_LIMIT) {
         const urlPath = safeRel(target).replace(/\\/g, '/');
-        const httpUrl = `${PUBLIC_URL}/storage/${encodeURI(urlPath)}`;
-        // Spec-compliant fallback: we cannot inline the file, so we return a
-        // text explanation that includes the canonical HTTP retrieval URL.
-        // Strict MCP clients may fetch this URL themselves; others can call
-        // storage.read for the same URL pointer.
+        // Return a RELATIVE path — the client prepends its own MCP origin.
+        const relPath = `/storage/${encodeURI(urlPath)}`;
         return [{
             uri,
             mimeType: 'text/plain',
-            text: `File is too large to inline (${stat.size} bytes). Fetch it via the HTTP URL: ${httpUrl}`
+            text: `File is too large to inline (${stat.size} bytes). Fetch it via HTTP at this relative path (prepend your MCP server origin): ${relPath}`
         }];
     }
 
