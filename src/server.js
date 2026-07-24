@@ -38,7 +38,7 @@ const corsOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',
 app.use(cors({
     origin: corsOrigins,
     credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept']
 }));
 

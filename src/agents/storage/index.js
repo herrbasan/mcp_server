@@ -147,7 +147,9 @@ export async function init(context) {
         });
 
         // GET /storage/* — serve file content (middleware catches all sub-paths)
+        // Method guard: only handle GET/HEAD, pass through PUT etc. to the next handler.
         app.use('/storage', (req, res, next) => {
+            if (req.method !== 'GET' && req.method !== 'HEAD') return next();
             const urlPath = req.path.replace(/^\//, '');
             if (!urlPath || urlPath === '/') return next(); // let /storage itself fall through
             let target;
@@ -175,6 +177,69 @@ export async function init(context) {
             const mime = mimeMap[ext] || 'application/octet-stream';
             res.set('Content-Type', mime);
             fs.createReadStream(target).pipe(res);
+        });
+
+        // PUT /storage/* — upload raw binary body to a path.
+        // Accepts any Content-Type. The body is streamed to a temp file then
+        // atomically renamed (crash-safe). No base64, no JSON wrapping —
+        // just raw bytes over HTTP, bypassing MCP JSON-RPC transport limits.
+        // Uses app.use (not app.put) because Express 5 / path-to-regexp
+        // rejects the '*' wildcard in route paths. We gate on req.method inside.
+        app.use('/storage', (req, res, next) => {
+            if (req.method !== 'PUT') return next();
+            const urlPath = req.path.replace(/^\//, '');
+            if (!urlPath || urlPath === '/') {
+                return res.status(400).json({ error: 'PUT /storage requires a file path' });
+            }
+            let target;
+            try {
+                target = safeResolve(urlPath);
+            } catch (err) {
+                return res.status(403).json({ error: err.message });
+            }
+
+            // Stream the request body to a temp file, then rename atomically.
+            const tmp = target + '.upload-' + Date.now() + '-' + process.pid;
+            const writeStream = fs.createWriteStream(tmp);
+            let bytesReceived = 0;
+
+            req.on('data', (chunk) => {
+                bytesReceived += chunk.length;
+                if (bytesReceived > CONFIG.maxWriteSize) {
+                    req.destroy();
+                    writeStream.destroy();
+                    try { fs.unlinkSync(tmp); } catch (_) { /* already cleaned up */ }
+                    res.status(413).json({
+                        error: `Upload exceeds maxWriteSize (${bytesReceived} > ${CONFIG.maxWriteSize})`
+                    });
+                }
+            });
+            writeStream.on('error', (err) => {
+                try { fs.unlinkSync(tmp); } catch (_) { /* tmp may not exist */ }
+                if (!res.headersSent) {
+                    res.status(500).json({ error: `Write failed: ${err.message}` });
+                }
+            });
+            req.pipe(writeStream);
+            writeStream.on('finish', () => {
+                fs.rename(tmp, target, (err) => {
+                    if (err) {
+                        try { fs.unlinkSync(tmp); } catch (_) { /* tmp may not exist */ }
+                        if (!res.headersSent) {
+                            res.status(500).json({ error: `Rename failed: ${err.message}` });
+                        }
+                        return;
+                    }
+                    const stat = fs.statSync(target);
+                    logger.info(`[Storage] PUT /storage/${urlPath} (${stat.size}B)`, null, 'Storage');
+                    res.json({
+                        ok: true,
+                        path: '/' + urlPath,
+                        size: stat.size,
+                        content_type: req.headers['content-type'] || 'application/octet-stream'
+                    });
+                });
+            });
         });
     }
 
