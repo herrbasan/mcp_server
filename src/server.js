@@ -621,6 +621,17 @@ Scoped file storage under the configured storage root.
 Use for saving documents, blog posts, project files, or any persistent
 content that should survive beyond the current session.
 
+⚠️  CRITICAL: storage.write is FULL-FILE REPLACEMENT.
+    "content" MUST be the ENTIRE file content, not a section or fragment.
+    Writing a partial update (e.g. just one section) DESTROYS all other
+    sections. This has happened multiple times and required manual recovery.
+    For targeted edits use storage.replace (marker-based swap, server-side).
+    For append-only use storage.append.
+    For multi-step edits use storage.batch.
+    BEFORE writing: call storage.read to get the full current content.
+    AFTER a mistake: call storage.history to list versions, storage.restore to
+    recover. Every write auto-snapshots the previous version.
+
   storage.stat — { path* }
       Get file or directory metadata (size, modified time, type).
 
@@ -629,14 +640,18 @@ content that should survive beyond the current session.
 
   storage.write — { path*, content*, encoding?: "utf8"|"base64" }
       Write a file. Creates parent directories automatically.
-      Overwrites existing files.
+      ⚠️  FULL-FILE REPLACEMENT — content must be the ENTIRE file.
+          This is NOT a section/append/partial update. Writing only a section
+          DESTROYS all other content. Use storage.read first to get the current
+          file, modify it, then write the COMPLETE result.
+          For targeted edits without reading the full file, use storage.replace.
       ⚠️  payload MUST be a JSON object with "path" and "content" fields.
           Do NOT put raw text directly as the payload value.
       EXAMPLE: {"method":"storage.write","payload":{"path":"notes/idea.md","content":"# My Idea\n\nHello world."}}
 
   storage.list — { path?, recursive? }
-      List directory contents. Omit path for root. Set recursive:true for
-      full tree.
+      List directory contents. Omit path (or use "/") for storage root.
+      Set recursive:true for full tree.
 
   storage.move — { from*, to* }
       Move or rename a file or directory.
@@ -646,6 +661,35 @@ content that should survive beyond the current session.
 
   storage.search — { query*, folder?, extension?, top_k?, include_content? }
       Semantic search over files in storage via the vector database.
+
+  storage.copy — { from*, to*, overwrite? }
+      Copy a file or directory. Set overwrite:true to replace target.
+
+  storage.append — { path*, content*, encoding? }
+      Append content to a file. O(1). Safer than write for adding to logs.
+
+  storage.replace — { path*, marker*, replacement*, occurrence? }
+      Targeted edit: replace a byte-exact string "marker" with "replacement"
+      inside the file. occurrence: "first" (default), "last", or "all".
+      Throws if marker not found — fail loud, no silent no-op.
+      PREFER THIS over storage.write for single-section edits.
+
+  storage.grep — { path*, pattern*, maxMatches?, context?, ignoreCase? }
+      Search for a pattern in files. Streams line-by-line, skips >50MB files.
+
+  storage.batch — { ops*, onError? }
+      Run multiple storage ops atomically. ops is an array of {op, ...args}.
+      onError: "collect" (default) or "abort".
+
+  storage.history — { path* }
+      List all saved versions of a file. Each version has: version (timestamp),
+      op (what triggered it), size, modified. Newest first.
+      USE THIS to recover from a bad write — every write auto-snapshots.
+
+  storage.restore — { path*, steps? }
+      Restore a previous version. steps: how many versions back (default 1).
+      Current state is snapshotted first so restore is undoable.
+      USE THIS after storage.history shows the version you need.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -720,8 +764,14 @@ IMPORTANT RULES
    fields: {"method":"storage.write","payload":{"path":"...","content":"..."}}
    If you're building a new agent, follow this shape or clients will error.
 
-6. Error responses have isError:true — Check for this before assuming success.
-   The error message is in content[0].text.`,
+7. Error responses have isError:true — Check for this before assuming success.
+   The error message is in content[0].text.
+
+8. ⚠️  storage.write DESTROYS DATA if misused. It replaces the ENTIRE file.
+   If you intend to edit one section: use storage.replace (marker-based swap).
+   Before writing: ALWAYS storage.read the current file first.
+   After a bad write: storage.history → storage.restore to recover.
+   Every write auto-snapshots; the safety net exists — USE IT.`,
         inputSchema: {
             type: "object",
             properties: {

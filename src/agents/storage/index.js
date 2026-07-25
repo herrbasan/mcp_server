@@ -96,6 +96,13 @@ function guessMime(p) {
     return TEXT_MIME[ext] || 'application/octet-stream';
 }
 
+// Normalize root-path probes: LLMs often try "/" or "\\" which on Windows
+// resolve as absolute drive root and fail confinement. Map them to "" (storage root).
+function normPath(userPath) {
+    if (!userPath || userPath === '/' || userPath === '\\') return '';
+    return userPath;
+}
+
 function toMcp(ok, data) {
     const text = JSON.stringify({ ok, ...data }, null, 2);
     return { content: [{ type: 'text', text }] };
@@ -255,9 +262,9 @@ export async function init(context) {
 }
 
 export async function storage_stat(args) {
-    const userPath = args.path;
+    const userPath = normPath(args.path);
     logger.info(`[Storage] storage_stat: "${userPath}"`, null, 'Storage');
-    if (!userPath) throw new Error('storage_stat: args.path is required');
+    if (args.path === undefined || args.path === null) throw new Error('storage_stat: args.path is required');
     const st = await OPS.stat(userPath);
     if (!st.exists) {
         logger.info(`[Storage] storage_stat OK: "${userPath}" (not found)`, null, 'Storage');
@@ -367,7 +374,7 @@ export async function storage_write(args) {
 }
 
 export async function storage_list(args) {
-    const userPath = args.path || '';
+    const userPath = normPath(args.path ?? '');
     const recursive = args.recursive || false;
     logger.info(`[Storage] storage_list: "${userPath}"`, { recursive }, 'Storage');
     const st = await OPS.stat(userPath);
