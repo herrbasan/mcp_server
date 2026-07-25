@@ -2,15 +2,17 @@
 
 **Project**: `mcp_server` (herrbasan/mcp_server)
 **Purpose**: Centralized MCP server running as an independent HTTP service. Meta-MCP with nested agent modules.
-**Prime directive**: `mcp_documentation/Agents_Prime.md` — read this first on every session.
-**Tool reference**: `mcp_documentation/workshop.md` — full tool catalog and usage patterns.
+**Prime directive**: `D:\MCP_Storage\docs\Workshop\Agents_Prime.md` (in storage) — read this first on every session.
+**Tool reference**: `D:\MCP_Storage\docs\Workshop\workshop.md` (in storage) — full tool catalog and usage patterns.
+
+> **Documentation is a storage citizen.** The `documentation` agent was removed (2026-07-25). All curated docs live under `D:\MCP_Storage\docs\` and are indexed by the VDB `storage` collection (folder `docs`). Access them with `storage.read`/`storage.write` (paths like `docs/Workshop/workshop.md`) and `vdb.search` (folder `docs`). There is no separate documentation endpoint.
 
 ## Architecture
 
 - **Entry point**: `src/server.js` — HTTP server on port 3100.
 - **Transport**: Per-session SSE mapped by `sessionId`.
 - **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
-- **Agents**: `src/agents/` — browser, documentation, dreaming, forge, github, inspector, llm, memory, research, storage, vision.
+- **Agents**: `src/agents/` — browser, dreaming, forge, github, inspector, llm, memory, research, storage, vision.
 - **Loader**: `src/agent-loader.js` — loads agents and registers tools.
 - **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 
@@ -64,8 +66,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 
 - `src/` — server, gateway client, agent loader, agents.
 - `src/agents/` — agent implementations.
-- `mcp_documentation/` — curated docs served by the documentation agent.
-- `docs/` — working documents (plans, handovers, notes).
+- `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\docs\`, not here.)
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index.
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
 - `tests/` — benchmarks and quick tests.
@@ -84,7 +85,7 @@ The dreaming agent accesses memories via `memoryAgent.memories.iter()` (with fal
 
 ## VDB Indexing
 
-The `vdb` agent indexes text files from configured watched roots (`storage`, `documentation`) for semantic search. Exclusions work at two levels:
+The `vdb` agent indexes text files from the storage root (`agents.storage.root`, which includes `docs/`) for semantic search. Exclusions work at two levels:
 
 - **Config-level**: `agents.vdb.ignore` in `config.json` lists directory/file names to skip everywhere.
 - **Directory-level**: any watched directory may contain a `.nvdb_ignore` file with one pattern per line (`name`, `*`, or simple globs like `*.tmp`). Patterns apply to entries in that directory only.
@@ -102,7 +103,7 @@ Bind `HOST=0.0.0.0` in `.env` for remote access.
 
 ## Useful Links
 
-- Prime directive: `mcp_documentation/Agents_Prime.md`
-- Tool reference: `mcp_documentation/workshop.md`
+- Prime directive: `D:\MCP_Storage\docs\Workshop\Agents_Prime.md`
+- Tool reference: `D:\MCP_Storage\docs\Workshop\workshop.md`
 - LLM Gateway WebSocket API: `docs/LLM_GATEWAY_WEBSOCKET_API.md`
 - LLM Gateway REST API: `docs/LLM_GATEWAY_REST_API.md`

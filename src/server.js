@@ -20,9 +20,9 @@ const SERVER_INFO = {
     name: 'mcp-server-workshop',
     version: '2.0.0',
     description:
-        '⚠️ START HERE: documentation.get({ file: "Workshop/Agents_Prime.md" }) — prime directive.\n' +
-        'Then: documentation.get({ file: "Workshop/workshop.md" }) for the full tools reference.\n' +
-        'For questions: documentation.query({ question: "...", domain: "all" }) — use for search, Q&A, or spec alignment.'
+        '⚠️ START HERE: storage.read({ path: "docs/Workshop/Agents_Prime.md" }) — prime directive.\n' +
+        'Then: storage.read({ path: "docs/Workshop/workshop.md" }) for the full tools reference.\n' +
+        'Docs live in storage under docs/ — use vdb.search to find content, storage.read/write for files.'
 };
 const SERVER_CAPABILITIES = {
     tools: { listChanged: true },
@@ -316,7 +316,7 @@ Tools are NOT interchangeable across contexts. Each tool executes in ONE place:
 
   CONTEXT A: MCP Server (this server, port 3100)
     Your top-level MCP calls land here. Tools: storage.*, memory.*,
-    forge.*, documentation.*, vdb.*, vision.*, research.*, llm.*,
+    forge.*, vdb.*, vision.*, research.*, llm.*,
     github.*, inspector.*, dreaming.*.
     Runs in the MCP server Node.js process.
     CAN reach: filesystem, LLM Gateway, browser sessions, GitHub API.
@@ -591,53 +591,17 @@ or tasks that need a different model than the current one.
 
 
 ═══════════════════════════════════════════════════════════════
-DOCUMENTATION — Knowledge Base Access
-═══════════════════════════════════════════════════════════════
-
-Query the mcp_documentation/ and LLM_Docs knowledge bases.
-Covers project philosophy, coding standards, API references, and more.
-
-DOMAINS (call documentation.domains to see current list):
-  Workshop        — This project: workshop.md
-  LLM APIs        — Provider specs, protocols, gateway architecture
-  Web UI          — NUI browser-native component library
-  The Project     — Meta-architecture of the LLM ecosystem
-
-TYPICAL WORKFLOW:
-  1. documentation.domains → discover what domains exist
-  2. documentation.get → read a specific file you know the path of
-  OR documentation.query → ask a question, LLM searches for answers
-
-  documentation.domains — {}
-      ⚠️ START HERE. Lightweight list of all available documentation domains
-      (names, descriptions, file counts). No per-file details — fast.
-
-  documentation.list — { domain? }
-      Full listing with per-file metadata (title, scope, tags).
-      Omit domain to see everything; pass domain to filter.
-
-  documentation.get — { file*, lines?: [start,end] }
-      Read a specific document. file format: "DomainName/filename.md"
-      (e.g. "Workshop/workshop.md"). lines: [start, end] for partial reads.
-
-  documentation.query — { question*, domain?, files? }
-      LLM-powered search and Q&A. First runs a vector search over the
-      documentation collection, then asks the LLM to answer using only the
-      retrieved documents. Simple RAG by default; use vdb.search directly for
-      advanced multi-step retrieval.
-
-
-═══════════════════════════════════════════════════════════════
 VDB — Vector Database (nVDB)
 ═══════════════════════════════════════════════════════════════
 
-Embedded vector database backed by nVDB. Indexes storage files and
-documentation on a timer (default 5 minutes) and exposes semantic search.
+Embedded vector database backed by nVDB. Indexes storage files (including
+docs/ — the former documentation knowledge base) on a timer (default 5
+minutes) and exposes semantic search.
 
   vdb.search — { query*, collections?, folder?, extension?, top_k?,
                  approximate?, include_content? }
-      Semantic search over storage and/or documentation collections.
-      Use folder= for storage folder or documentation domain filters.
+      Semantic search over storage files. Docs are under folder 'docs';
+      use folder= to scope to a top-level storage folder.
 
   vdb.status — {}
       Show collection counts, last scan, and whether nVDB is loaded.
@@ -797,8 +761,6 @@ IMPORTANT RULES
         "vision.analyze": "vision_analyze",
 
         "llm.query": "query_model",
-        "documentation.domains": "documentation_domains",
-        "documentation.list": "documentation_list", "documentation.get": "documentation_get", "documentation.query": "documentation_query",
 
         "vdb.search": "vdb_search", "vdb.status": "vdb_status",
         "vdb.trigger_scan": "vdb_trigger_scan", "vdb.build_index": "vdb_build_index",

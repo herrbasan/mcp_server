@@ -5,14 +5,26 @@ import { getLogger } from '../../utils/logger.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PRIME_PATH = path.resolve(__dirname, '../../../mcp_documentation/Agents_Prime.md');
 
-function loadPrinciples() {
-    if (!fs.existsSync(PRIME_PATH)) {
+// Agents_Prime.md now lives in storage under docs/Workshop/ (the documentation
+// agent was removed and docs became storage citizens). Resolve from the
+// storage root in config; fall back to the old repo path for safety.
+function resolvePrimePath(context) {
+    const storageRoot = context?.config?.agents?.storage?.root;
+    if (storageRoot) {
+        const p = path.resolve(storageRoot, 'docs', 'Workshop', 'Agents_Prime.md');
+        if (fs.existsSync(p)) return p;
+    }
+    return path.resolve(__dirname, '../../../mcp_documentation/Agents_Prime.md');
+}
+
+function loadPrinciples(context) {
+    const primePath = resolvePrimePath(context);
+    if (!fs.existsSync(primePath)) {
         logger.warn('[LLM Tool] Agents_Prime.md not found, falling back to default system prompt');
         return null;
     }
-    const content = fs.readFileSync(PRIME_PATH, 'utf8');
+    const content = fs.readFileSync(primePath, 'utf8');
     const start = content.indexOf('## Principles');
     if (start === -1) {
         logger.warn('[LLM Tool] No ## Principles section found in Agents_Prime.md');
@@ -40,7 +52,7 @@ export async function query_model(args, context) {
     }
 
     const finalPrompt = fileContext ? `${fileContext}\n\n${prompt}` : prompt;
-    const primePrinciples = loadPrinciples();
+    const primePrinciples = loadPrinciples(context);
     const sysPrompt = systemPrompt || primePrinciples || prompts.system;
 
     if (!sysPrompt) throw new Error('llm.query: no system prompt available');

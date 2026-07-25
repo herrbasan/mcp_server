@@ -53,15 +53,12 @@
       "maxReadSize": 10485760,
       "maxWriteSize": 104857600
     },
-    "documentation": {
-      "llmDocsPath": "D:\\DEV\\LLM_Docs"
-    },
     "vdb": {
       "enabled": true,
       "dbPath": "data/nvdb",
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
-      "embeddingModel": "or-qwen-embed",
+      "embeddingModel": null,
       "embeddingDim": 2560,
       "chunkMaxTokens": 1024,
       "chunkOverlapTokens": 128,
@@ -78,13 +75,12 @@
         "enabled": true,
         "task": "local",
         "maxInputChars": 60000,
-        "maxOutputTokens": 512,
+        "maxOutputTokens": 1536,
         "temperature": 0.3,
         "truncation": "headmidtail"
       },
       "watch": {
-        "storage": { "enabled": true },
-        "documentation": { "enabled": true }
+        "storage": { "enabled": true }
       }
     },
     "forge": {

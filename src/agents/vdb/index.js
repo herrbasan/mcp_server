@@ -32,7 +32,6 @@ const DEFAULTS = {
 
 const COLLECTIONS = {
     storage: { description: 'Storage files under agents.storage.root' },
-    documentation: { description: 'Documentation under agents.documentation.llmDocsPath and mcp_documentation' },
     memory: { description: 'Memories (reserved for future migration)' }
 };
 
@@ -49,8 +48,6 @@ let GATEWAY = null;
 let GATEWAY_HTTP_URL = null;
 let GATEWAY_ACCESS_KEY = null;
 let STORAGE_ROOT = null;
-let DOCS_ROOT = null;
-let MCP_DOCS_ROOT = null;
 let CHUNKER = null;
 let CONTEXT_ENHANCER = null;
 
@@ -329,6 +326,7 @@ async function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, 
         text: chunk.text,
         splitIdx: chunk.splitIdx,
         charOffset: chunk.charOffset,
+        charLen: chunk.charLen,
         isLastChunk: chunk.isLastChunk,
         tokEst: chunk.tokEst
     }));
@@ -415,6 +413,7 @@ function insertPreparedFile(prepared, embeddings) {
             extension,
             splitIdx: chunk.splitIdx,
             charOffset: chunk.charOffset,
+            charLen: chunk.charLen,
             isLastChunk: chunk.isLastChunk,
             tokEst: chunk.tokEst,
             contentHash,
@@ -484,13 +483,6 @@ function listWatchedFiles(collectionName) {
         } else {
             walk(STORAGE_ROOT, STORAGE_ROOT, files, { collection: 'storage' }, collectionDefaults);
         }
-    } else if (collectionName === 'documentation') {
-        if (DOCS_ROOT && fs.existsSync(DOCS_ROOT)) {
-            walk(DOCS_ROOT, DOCS_ROOT, files, { collection: 'documentation', sourceType: 'llm_docs' }, collectionDefaults);
-        }
-        if (MCP_DOCS_ROOT && fs.existsSync(MCP_DOCS_ROOT)) {
-            walk(MCP_DOCS_ROOT, MCP_DOCS_ROOT, files, { collection: 'documentation', sourceType: 'mcp_docs' }, collectionDefaults);
-        }
     }
     return files;
 }
@@ -518,13 +510,6 @@ function walk(dir, root, out, baseMeta, collectionDefaults) {
             let metadata = { ...baseMeta };
             if (baseMeta.collection === 'storage') {
                 metadata.folder = safeRel(STORAGE_ROOT, path.dirname(full)).split('/')[0] || 'root';
-            } else if (baseMeta.collection === 'documentation') {
-                if (baseMeta.sourceType === 'mcp_docs') {
-                    metadata.domain = 'Workshop';
-                } else {
-                    const relDir = safeRel(root, path.dirname(full));
-                    metadata.domain = relDir.split('/')[0] || 'root';
-                }
             }
             out.push({ absolutePath: full, root, metadata });
         }
@@ -727,7 +712,6 @@ function buildFilter(collectionName, folder, extension) {
     const filters = [];
     if (folder) {
         if (collectionName === 'storage') filters.push(FILTER_BUILDER.eq('folder', folder));
-        else if (collectionName === 'documentation') filters.push(FILTER_BUILDER.eq('domain', folder));
     }
     if (extension) filters.push(FILTER_BUILDER.eq('extension', extension.toLowerCase()));
     if (filters.length === 0) return null;
@@ -851,7 +835,12 @@ export async function searchDocuments({ query, collections, folder, extension, t
 function readChunkContent(payload, chunker) {
     if (!payload?.absolutePath) return '';
     try {
-        // Fast path: slice by charOffset + estimated chunk length.
+        // Fast path: exact slice by charOffset + charLen (structure-aware chunks).
+        if (payload.charOffset !== undefined && payload.charLen !== undefined) {
+            const content = fs.readFileSync(payload.absolutePath, 'utf-8');
+            return content.slice(payload.charOffset, payload.charOffset + payload.charLen);
+        }
+        // Legacy path: estimate chunk length from tokEst (char-slice chunks).
         if (payload.charOffset !== undefined && payload.tokEst !== undefined) {
             const content = fs.readFileSync(payload.absolutePath, 'utf-8');
             const chunkLen = payload.tokEst * (CONFIG?.chunkTokCharsRatio || 2.5);
@@ -989,7 +978,7 @@ export async function init(context) {
         textExtensions: agentConfig.textExtensions ?? DEFAULTS.textExtensions,
         ignore: agentConfig.ignore ?? DEFAULTS.ignore,
         watchFolders: agentConfig.watchFolders ?? null,
-        watch: agentConfig.watch || { storage: true, documentation: true },
+        watch: agentConfig.watch || { storage: true },
         contextEnhancement: agentConfig.contextEnhancement || { enabled: false }
     };
 
@@ -1004,15 +993,6 @@ export async function init(context) {
     if (storageConfig?.root) {
         STORAGE_ROOT = path.resolve(PROJECT_ROOT, storageConfig.root);
     }
-
-    // Pull documentation root from documentation agent config.
-    // The natural structure is D:\DEV\LLM_Docs\Documentation\<Domain>\*.md,
-    // so we point the watch root at the Documentation folder.
-    const docsConfig = context.config?.agents?.documentation;
-    if (docsConfig?.llmDocsPath) {
-        DOCS_ROOT = path.resolve(path.resolve(PROJECT_ROOT, docsConfig.llmDocsPath), 'Documentation');
-    }
-    MCP_DOCS_ROOT = path.resolve(PROJECT_ROOT, 'mcp_documentation');
 
     CHUNKER = makeChunker({
         maxTokens: CONFIG.chunkMaxTokens,
