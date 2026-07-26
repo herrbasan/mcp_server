@@ -1,16 +1,23 @@
-import { randomUUID } from 'crypto';
 import { getLogger } from './utils/logger.js';
 
 const logger = getLogger();
 
-export function createGatewayClient(wsUrl, httpUrl, accessKey) {
-    let ws = null;
-    let isClosed = false;
-    let reconnectAttempts = 0;
-    
-    const pendingRequests = new Map();
-    
-    let client = null;
+/**
+ * LLM Gateway client — SSE transport.
+ *
+ * Talks to the gateway exclusively over HTTP REST:
+ *   chat()        → POST /v1/chat/completions (stream: true, SSE)
+ *   embed()       → POST /v1/embeddings
+ *   listModels()  → GET /v1/models
+ *
+ * Cancellation uses AbortController; the gateway aborts the upstream
+ * provider request when the client disconnects.
+ *
+ * The first argument (legacy wsUrl) is accepted for call-site compatibility
+ * and ignored — the WS transport was removed from the gateway (2026-07-26).
+ */
+export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
+    const baseUrl = httpUrl.replace(/\/+$/, '');
 
     function authHeaders() {
         const headers = { 'Content-Type': 'application/json' };
@@ -25,150 +32,173 @@ export function createGatewayClient(wsUrl, httpUrl, accessKey) {
         return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
     }
 
-    function connect() {
-        if (isClosed) return;
-        
-        logger.info(`Connecting to WebSocket: ${wsUrl}`, null, 'Gateway');
-        ws = new WebSocket(wsUrl);
+    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress }) {
+        const fullMessages = systemPrompt
+            ? [{ role: 'system', content: systemPrompt }, ...messages]
+            : messages;
 
-        ws.onopen = () => {
-            logger.info('WebSocket connected', null, 'Gateway');
-            reconnectAttempts = 0;
+        const body = {
+            messages: fullMessages,
+            stream: true,
+            strip_thinking: true
         };
+        if (maxTokens != null) body.max_tokens = maxTokens;
+        if (temperature != null) body.temperature = temperature;
+        if (responseFormat != null) body.response_format = responseFormat;
+        if (enableThinking != null) body.enable_thinking = enableThinking;
+        if (task) body.task = task;
+        else if (model) body.model = model;
 
-        ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
+        logger.info('[Gateway] POST /v1/chat/completions', {
+            task,
+            model,
+            messageCount: fullMessages.length,
+            promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),
+            maxTokens,
+            hasResponseFormat: Boolean(responseFormat)
+        });
 
-                if (msg.method) {
-                    if (msg.method === 'chat.delta') {
-                        const { request_id, choices } = msg.params;
-                        const req = pendingRequests.get(request_id);
-                        if (req) {
-                            const content = choices?.[0]?.delta?.content || '';
-                            req.deltaCount = (req.deltaCount || 0) + 1;
-                            req.totalChars = (req.totalChars || 0) + content.length;
-                            const deltaMeta = {
-                                requestId: request_id,
-                                deltaCount: req.deltaCount,
-                                totalChars: req.totalChars,
-                                chunkChars: content.length,
-                                elapsedMs: Date.now() - req.startedAt,
-                                hasContent: Boolean(content)
-                            };
-                            if (content && !req.loggedFirstDelta) {
-                                req.loggedFirstDelta = true;
-                                logger.info(`[Gateway] First delta for ${request_id}`, {
-                                    preview: summarizeText(content),
-                                    chars: content.length
-                                });
-                            }
-                            // Log at 25%, 50%, 75% of maxTokens (char-based estimate)
-                            if (content && req.maxTokens && !req.lastProgressLog) req.lastProgressLog = 0;
-                            if (content && req.maxTokens) {
-                                const pct = Math.floor((req.totalChars / (req.maxTokens * 4)) * 100);
-                                const milestone = Math.floor(pct / 25) * 25;
-                                if (milestone > req.lastProgressLog && milestone > 0 && milestone <= 75) {
-                                    req.lastProgressLog = milestone;
-                                    logger.info(`[Gateway] Stream ${request_id} at ${milestone}%`, {
-                                        totalChars: req.totalChars,
-                                        deltaCount: req.deltaCount
-                                    });
-                                }
-                            }
-                            if (req.onDelta) { 
-                                req.onDelta(content, deltaMeta); 
-                            }
-                            if (content) req.response.content += content;
-                            
-                            if (req.hardLimit && req.totalChars > req.hardLimit) {
-                                logger.warn(`[Gateway] Hard CHAR limit exceeded for ${request_id}: ${req.totalChars} chars > ${req.hardLimit}. Cancelling...`);
-                                client.cancel(request_id);
-                            } else if (req.deltaCount === 1000 && req.totalChars === 0) {
-                                logger.warn(`[Gateway] Model thinking for ${request_id}: ${req.deltaCount} deltas, 0 output chars so far. Waiting...`);
-                            } else if (req.deltaCount % 5000 === 0 && req.totalChars === 0) {
-                                logger.warn(`[Gateway] Model still thinking for ${request_id}: ${req.deltaCount} deltas, 0 output chars. Waiting...`);
-                            }
-                        }
-                    } else if (msg.method === 'chat.progress') {
-                        const { request_id, phase, context } = msg.params;
-                        const req = pendingRequests.get(request_id);
-                        if (req && req.onProgress) {
-                            req.onProgress(phase, context);
-                        }
-                    } else if (msg.method === 'chat.done') {
-                        const { request_id, cancelled } = msg.params;
-                        const req = pendingRequests.get(request_id);
-                        if (req) {
-                            logger.info(`[Gateway] chat.done for ${request_id}`, {
-                                cancelled,
-                                durationMs: Date.now() - req.startedAt,
-                                deltaCount: req.deltaCount || 0,
-                                totalChars: req.totalChars || 0
-                            });
-                            req.response.cancelled = cancelled;
-                            req.resolve(req.response);
-                            pendingRequests.delete(request_id);
-                        }
-                    } else if (msg.method === 'chat.error') {
-                        const { request_id, error } = msg.params;
-                        const req = pendingRequests.get(request_id);
-                        if (req) {
-                            logger.info(`[Gateway] chat.error for ${request_id}`, {
-                                durationMs: Date.now() - req.startedAt,
-                                deltaCount: req.deltaCount || 0,
-                                totalChars: req.totalChars || 0,
-                                error: error?.message || String(error)
-                            });
-                            req.reject(new Error(error?.message || String(error)));
-                            pendingRequests.delete(request_id);
-                        }
-                    }
-                }
-                
-                if (msg.id && !msg.method && msg.error) {
-                    const req = pendingRequests.get(msg.id);
-                    if (req) {
-                        req.reject(new Error(msg.error.message || 'Unknown RPC error'));
-                        pendingRequests.delete(msg.id);
-                    }
-                }
-            } catch (err) {
-                logger.error('Failed to parse message:', err, null, 'Gateway');
-            }
-        };
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        const response = { content: '', cancelled: false };
 
-        ws.onclose = () => {
-            if (isClosed) return;
-            for (const [id, req] of pendingRequests.entries()) {
-                req.reject(new Error('WebSocket disconnected'));
-            }
-            pendingRequests.clear();
+        const hardLimit = maxTokens ? Math.floor(maxTokens * 4.5) : null;
+        let deltaCount = 0;
+        let totalChars = 0;
+        let loggedFirstDelta = false;
+        let lastProgressLog = 0;
+        let contextReported = false;
 
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            reconnectAttempts++;
-            logger.info(`WebSocket disconnected. Reconnecting in ${delay}ms...`, null, 'Gateway');
-            setTimeout(connect, delay);
-        };
-
-        ws.onerror = (err) => {
-            logger.error('WebSocket error', err, null, 'Gateway');
-        };
-    }
-
-    function send(msg) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            throw new Error('Gateway WebSocket not connected');
+        let res;
+        try {
+            res = await fetch(`${baseUrl}/v1/chat/completions`, {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+        } catch (err) {
+            throw new Error(`Gateway connection failed: ${err.message}`);
         }
-        ws.send(JSON.stringify(msg));
+
+        if (!res.ok) {
+            const errText = await res.text().catch(() => res.statusText);
+            throw new Error(`Gateway error ${res.status}: ${errText}`);
+        }
+
+        const contentType = res.headers.get('content-type') || '';
+        if (!contentType.includes('text/event-stream')) {
+            const raw = await res.text();
+            throw new Error(`Gateway returned non-SSE response (${contentType}): ${raw.slice(0, 300)}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.startsWith('data:')) continue;
+                    const data = line.slice(line.startsWith('data: ') ? 6 : 5).trim();
+                    if (!data || data === '[DONE]') continue;
+
+                    let chunk;
+                    try {
+                        chunk = JSON.parse(data);
+                    } catch {
+                        logger.warn('[Gateway] Unparseable SSE data line', { preview: data.slice(0, 200) }, 'Gateway');
+                        continue;
+                    }
+
+                    if (chunk.error) {
+                        const message = chunk.error.message || JSON.stringify(chunk.error);
+                        const err = new Error(`Gateway stream error: ${message}`);
+                        err.code = chunk.error.code;
+                        throw err;
+                    }
+
+                    // Gateway context telemetry rides the finish_reason chunk.
+                    // Reported once via onProgress — mid-stream phase events
+                    // (routing/reasoning_started) died with the WS transport.
+                    if (!contextReported && chunk.context && onProgress) {
+                        contextReported = true;
+                        onProgress('context_stats', chunk.context);
+                    }
+
+                    const choice = chunk.choices?.[0];
+                    const content = choice?.delta?.content || '';
+                    if (!content) continue;
+
+                    deltaCount++;
+                    totalChars += content.length;
+                    response.content += content;
+
+                    if (onDelta) {
+                        onDelta(content, {
+                            deltaCount,
+                            totalChars,
+                            chunkChars: content.length,
+                            elapsedMs: Date.now() - startedAt,
+                            hasContent: true
+                        });
+                    }
+
+                    if (!loggedFirstDelta) {
+                        loggedFirstDelta = true;
+                        logger.info('[Gateway] First delta', {
+                            preview: summarizeText(content),
+                            chars: content.length
+                        });
+                    }
+
+                    if (maxTokens) {
+                        const pct = Math.floor((totalChars / (maxTokens * 4)) * 100);
+                        const milestone = Math.floor(pct / 25) * 25;
+                        if (milestone > lastProgressLog && milestone > 0 && milestone <= 75) {
+                            lastProgressLog = milestone;
+                            logger.info(`[Gateway] Stream at ${milestone}%`, { totalChars, deltaCount });
+                        }
+                    }
+
+                    if (hardLimit && totalChars > hardLimit) {
+                        logger.warn(`[Gateway] Hard CHAR limit exceeded: ${totalChars} chars > ${hardLimit}. Aborting...`);
+                        response.cancelled = true;
+                        controller.abort();
+                    }
+                }
+            }
+        } catch (err) {
+            if (err.name === 'AbortError' && response.cancelled) {
+                // Self-inflicted hard-limit abort — fall through to resolve below.
+            } else {
+                throw err;
+            }
+        }
+
+        logger.info('[Gateway] chat complete', {
+            cancelled: response.cancelled,
+            durationMs: Date.now() - startedAt,
+            deltaCount,
+            totalChars
+        });
+
+        return response;
     }
 
-    connect();
-
-    client = {
+    return {
         get connected() {
-            return ws && ws.readyState === WebSocket.OPEN;
+            return true; // HTTP is connectionless; kept for interface compatibility
         },
+
+        chat,
 
         async predict({ prompt, systemPrompt, task, temperature, maxTokens, responseFormat }) {
             let gatewayFormat = responseFormat;
@@ -178,7 +208,7 @@ export function createGatewayClient(wsUrl, httpUrl, accessKey) {
                     json_schema: { name: 'response', strict: true, schema: responseFormat }
                 };
             }
-            const response = await this.chat({
+            const response = await chat({
                 task,
                 messages: [{ role: 'user', content: prompt }],
                 systemPrompt,
@@ -187,120 +217,22 @@ export function createGatewayClient(wsUrl, httpUrl, accessKey) {
                 responseFormat: gatewayFormat
             });
             if (gatewayFormat?.type === 'json_schema') {
-                let text = response.content || '';
-                console.log('[DEBUG] response.content length:', text.length, 'preview:', text.slice(0, 100));
+                const text = response.content || '';
                 const firstBrace = text.indexOf('{');
                 const lastBrace = text.lastIndexOf('}');
-                console.log('[DEBUG] firstBrace:', firstBrace, 'lastBrace:', lastBrace);
-                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                    text = text.substring(firstBrace, lastBrace + 1);
+                if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+                    throw new Error(`Gateway predict: no JSON object in response (${text.length} chars)`);
                 }
-                console.log('[DEBUG] text to parse preview:', text.slice(0, 100));
-                return JSON.parse(text);
+                return JSON.parse(text.substring(firstBrace, lastBrace + 1));
             }
             return response.content;
-        },
-
-        async chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress }) {
-            const id = randomUUID();
-            const fullMessages = systemPrompt
-                ? [{ role: 'system', content: systemPrompt }, ...messages]
-                : messages;
-            return new Promise((resolve, reject) => {
-                pendingRequests.set(id, {
-                    resolve,
-                    reject,
-                    onDelta,
-                    onProgress,
-                    response: { content: '' },
-                    startedAt: Date.now(),
-                    deltaCount: 0,
-                    totalChars: 0,
-                    loggedFirstDelta: false,
-                    maxTokens: maxTokens || null,
-                    hardLimit: maxTokens ? Math.floor(maxTokens * 4.5) : null
-                });
-                try {
-                    const logModel = task || model || 'unspecified';
-                    logger.info(`[Gateway] Sending chat.create for ${id}`, {
-                        task,
-                        model,
-                        messageCount: fullMessages.length,
-                        promptChars: fullMessages.reduce((total, message) => total + (message.content?.length || 0), 0),
-                        maxTokens: maxTokens,
-                        stream: true,
-                        hasResponseFormat: Boolean(responseFormat)
-                    });
-                    const params = {
-                        messages: fullMessages,
-                        max_tokens: maxTokens,
-                        temperature,
-                        response_format: responseFormat,
-                        strip_thinking: true,
-                        stream: true
-                    };
-                    if (enableThinking != null) params.enable_thinking = enableThinking;
-                    if (task) {
-                        params.task = task;
-                    } else if (model) {
-                        params.model = model;
-                    }
-                    send({
-                        jsonrpc: "2.0",
-                        id,
-                        method: "chat.create",
-                        params
-                    });
-                } catch (err) {
-                    pendingRequests.delete(id);
-                    reject(err);
-                }
-            });
-        },
-
-        async append({ model, message, onDelta }) {
-            const id = randomUUID();
-            return new Promise((resolve, reject) => {
-                pendingRequests.set(id, { resolve, reject, onDelta, response: { content: '' } });
-                try {
-                    send({
-                        jsonrpc: "2.0",
-                        id,
-                        method: "chat.append",
-                        params: {
-                            model,
-                            message
-                        }
-                    });
-                } catch (err) {
-                    pendingRequests.delete(id);
-                    reject(err);
-                }
-            });
-        },
-
-        cancel(requestId) {
-            try {
-                send({
-                    jsonrpc: "2.0",
-                    method: "chat.cancel",
-                    params: { request_id: requestId }
-                });
-            } catch (err) {
-                // Ignore if disconnected
-            }
-            const req = pendingRequests.get(requestId);
-            if (req) {
-                req.reject(new Error("Cancelled"));
-                pendingRequests.delete(requestId);
-            }
         },
 
         async embed(text, model) {
             const body = model
                 ? { input: text, model }
                 : { input: text, task: 'embed' };
-            const res = await fetch(`${httpUrl}/v1/embeddings`, {
+            const res = await fetch(`${baseUrl}/v1/embeddings`, {
                 method: 'POST',
                 headers: authHeaders(),
                 body: JSON.stringify(body)
@@ -314,16 +246,8 @@ export function createGatewayClient(wsUrl, httpUrl, accessKey) {
             return this.embed(text, model);
         },
 
-        async listModels(type) {
-            const url = type ? `${httpUrl}/v1/models?type=${encodeURIComponent(type)}` : `${httpUrl}/v1/models`;
-            const res = await fetch(url, { headers: authHeaders() });
-            if (!res.ok) throw new Error(`Gateway listModels failed: HTTP ${res.status} ${res.statusText}`);
-            const data = await res.json();
-            return data.data || [];
-        },
-
         async embedBatch(texts) {
-            const res = await fetch(`${httpUrl}/v1/embeddings`, {
+            const res = await fetch(`${baseUrl}/v1/embeddings`, {
                 method: 'POST',
                 headers: authHeaders(),
                 body: JSON.stringify({ input: texts, task: 'embed' })
@@ -333,17 +257,17 @@ export function createGatewayClient(wsUrl, httpUrl, accessKey) {
             return data.data.map(d => d.embedding);
         },
 
+        async listModels(type) {
+            const url = type ? `${baseUrl}/v1/models?type=${encodeURIComponent(type)}` : `${baseUrl}/v1/models`;
+            const res = await fetch(url, { headers: authHeaders() });
+            if (!res.ok) throw new Error(`Gateway listModels failed: HTTP ${res.status} ${res.statusText}`);
+            const data = await res.json();
+            return data.data || [];
+        },
+
         close() {
-            isClosed = true;
-            if (ws) {
-                ws.close();
-            }
-            for (const req of pendingRequests.values()) {
-                req.reject(new Error('Gateway client closed'));
-            }
-            pendingRequests.clear();
+            // No persistent connection to close; per-request AbortControllers
+            // die with their fetch.
         }
     };
-    
-    return client;
 }
