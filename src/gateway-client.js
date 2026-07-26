@@ -216,7 +216,13 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
                 temperature,
                 responseFormat: gatewayFormat
             });
-            if (gatewayFormat?.type === 'json_schema') {
+            if (gatewayFormat?.type === 'json_schema' || gatewayFormat?.type === 'json_object') {
+                // response may be an already-parsed object (upstream honored
+                // the format) or a raw string containing JSON (model ignored
+                // the hint and emitted plain text). Handle both.
+                if (response.content != null && typeof response.content === 'object') {
+                    return response.content;
+                }
                 const text = response.content || '';
                 const firstBrace = text.indexOf('{');
                 const lastBrace = text.lastIndexOf('}');
