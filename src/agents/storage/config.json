@@ -1,6 +1,6 @@
 {
     "agent": "storage",
-    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). For files that are fleeting or temporary and should NOT be included in the VDB semantic index, write them to <root>\\temp\\*. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. FULL TOOL CATALOG (16 ops): storage_stat, storage_read, storage_write, storage_list, storage_move, storage_delete, storage_search, storage_copy, storage_append, storage_replace, storage_find, storage_grep, storage_batch, storage_history, storage_restore, storage_resources_list/read/templates. EDITING CHEATSHEET: targeted text edit = storage_replace (marker+replacement, aliases oldString/newString) — pre-flight with storage_find; add to end = storage_append; full rewrite = storage_write; locate text = storage_grep (regex, line numbers) or storage_find (exact string); undo = storage_history + storage_restore. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). For files that are fleeting or temporary and should NOT be included in the VDB semantic index, write them to <root>\\temp\\*. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
     "tools": [
         {
             "name": "storage_stat",
@@ -15,7 +15,7 @@
         },
         {
             "name": "storage_read",
-            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. HOW TO GET ANY FILE, regardless of size: call storage_read with just the path. Small files come back inline as content — done. Larger files come back as a pointer with a RELATIVE 'path' field like /storage/somefile.md (no host): prepend your MCP server origin and fetch it with your HTTP fetch tool (e.g. browser_fetch). To read only PART of a file: pass offset+length (byte window), head (first N lines), or tail (last N lines) — strongly prefer tail for logs. Spec-compliant alternative: this server also exposes storage files as MCP resources via resources/list and resources/read using the URI scheme storage://<relative-path>.",
+            "description": "Read a file from storage. Returns utf8 text by default; use encoding=base64 for binaries. HOW TO GET ANY FILE, regardless of size: call storage_read with just the path. Small files come back inline as content — done. Larger files come back as a pointer with a RELATIVE 'path' field like /storage/somefile.md (no host): prepend your MCP server origin and fetch it with your HTTP fetch tool (e.g. browser_fetch). To read only PART of a file: pass offset+length (byte window), head (first N lines), or tail (last N lines) — strongly prefer tail for logs. TRUST NOTE: this tool never truncates inline content — if the server returned inline:true with a content field, you have the COMPLETE file (compare size with storage_stat if in doubt). Some chat clients page large tool results into a temp file for display; that is your client's rendering, NOT truncation by this tool. Spec-compliant alternative: this server also exposes storage files as MCP resources via resources/list and resources/read using the URI scheme storage://<relative-path>.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -31,7 +31,7 @@
         },
         {
             "name": "storage_write",
-            "description": "Write a file to storage. Creates parent directories automatically. Overwrites existing files. Content can be utf8 text or base64-encoded binary. Files above maxWriteSize are rejected.",
+            "description": "Write a file to storage. Creates parent directories automatically. Overwrites existing files. Content can be utf8 text or base64-encoded binary. Files above maxWriteSize are rejected. FULL-FILE REPLACEMENT only — for targeted edits use storage_replace (marker swap, server-side, no full content needed), for adding to the end use storage_append. The response is self-verifying: after writing, the server re-stats the file on disk and returns verified:true with size and mtime. If the post-write check fails, the call throws instead of returning ok — ok:true means the bytes are provably on disk.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -67,7 +67,7 @@
         },
         {
             "name": "storage_delete",
-            "description": "Delete a file or directory. Requires recursive=true to delete non-empty directories.",
+            "description": "Delete a file or directory. Requires recursive=true to delete non-empty directories. Self-verifying: the response includes verified:true, confirming the path is gone from disk.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -124,7 +124,7 @@
         },
         {
             "name": "storage_copy",
-            "description": "Copy a file or directory within storage, server-side. Content never enters your context — prefer this over read+write for duplicating or staging files. Refuses to overwrite unless overwrite:true.",
+            "description": "Copy a file or directory within storage, server-side. Content never enters your context — prefer this over read+write for duplicating or staging files. Refuses to overwrite unless overwrite:true. Self-verifying: the response includes verified:true, confirming the destination exists on disk (with size check for file copies).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -137,7 +137,7 @@
         },
         {
             "name": "storage_append",
-            "description": "Append content to a file (creates it if missing). O(1) — the existing file is NOT read into context. Use for logs, journals, growing notes.",
+            "description": "Append content to a file (creates it if missing). O(1) — the existing file is NOT read into context. Use for logs, journals, growing notes. Self-verifying: the response re-stats the file on disk and includes verified:true with the new total size.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -150,16 +150,29 @@
         },
         {
             "name": "storage_replace",
-            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. occurrence: 'first' (default), 'last', or 'all'. Throws if the marker is not found, so a wrong mental model of the file fails loud instead of silently no-op'ing. The prior state is snapshotted automatically (see storage_history/storage_restore).",
+            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. Args: marker (alias: oldString), replacement (alias: newString), occurrence: 'first' (default), 'last', or 'all'. Throws with a DETAILED diagnostic if the marker is not found (file size, closest anchor position, line number, actual file snippet near the anchor) so you can repair the marker from the error alone — no blind retries. Pre-flight with storage_find if unsure whether the marker exists. The prior state is snapshotted automatically (see storage_history/storage_restore). Self-verifying: the response re-stats the file on disk and includes verified:true with the post-edit size — ok:true means the edit provably landed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Relative path within storage root" },
-                    "marker": { "type": "string", "description": "Exact string to find (byte-exact, not a regex). Must uniquely identify the edit site unless occurrence is 'all'." },
-                    "replacement": { "type": "string", "description": "String to substitute in place of the marker" },
+                    "marker": { "type": "string", "description": "Exact string to find (byte-exact, not a regex). Must uniquely identify the edit site unless occurrence is 'all'. Alias: oldString also accepted." },
+                    "replacement": { "type": "string", "description": "String to substitute in place of the marker. Alias: newString also accepted." },
                     "occurrence": { "type": "string", "enum": ["first", "last", "all"], "description": "Which occurrence(s) to replace (default: first)" }
                 },
                 "required": ["path", "marker", "replacement"]
+            }
+        },
+        {
+            "name": "storage_find",
+            "description": "Check whether an exact string exists in a file WITHOUT reading the file into your context and without changing anything. Returns { found, count, line, offset, snippet } — snippet shows the matching line so you can confirm it is the right occurrence. The pre-flight check for storage_replace: find first, replace only on found:true. For regex or multi-file search use storage_grep instead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "marker": { "type": "string", "description": "Exact string to locate (byte-exact, not a regex). Aliases: oldString, pattern also accepted." },
+                    "occurrence": { "type": "string", "enum": ["first", "last", "all"], "description": "Report position of first/last occurrence, or just the count for 'all' (default: first)" }
+                },
+                "required": ["path", "marker"]
             }
         },
         {

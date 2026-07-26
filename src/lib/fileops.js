@@ -383,6 +383,52 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
     // Public: replace
     // ============================================
 
+    // Build a diagnostic error when a marker isn't found. The goal: the caller
+    // (usually an LLM) should be able to fix its next attempt from THIS message
+    // alone — file size, how much of the marker anchored, and what the file
+    // actually contains at the best-guess location. No blind retries.
+    function markerNotFoundError(op, userPath, original, marker) {
+        const size = Buffer.byteLength(original, 'utf8');
+        // Longest prefix of marker (>=8 chars) that exists in the file — tells
+        // the caller whether the marker diverges early (wrong section) or late
+        // (whitespace/escaping near the tail).
+        let anchorLen = 0;
+        const maxProbe = Math.min(marker.length, 256);
+        for (let n = maxProbe; n >= 8; n--) {
+            const probe = marker.slice(0, n);
+            if (original.includes(probe)) { anchorLen = n; break; }
+        }
+        const lines = [
+            `${op}: marker not found in ${userPath}`,
+            `  file: ${size} bytes, ${original.split('\n').length} lines`,
+            `  marker: ${marker.length} chars`
+        ];
+        if (anchorLen > 0) {
+            const idx = original.indexOf(marker.slice(0, anchorLen));
+            const lineNum = original.slice(0, idx).split('\n').length;
+            const fileLines = original.split('\n');
+            const from = Math.max(0, lineNum - 2);
+            const to = Math.min(fileLines.length, lineNum + 3);
+            const snippet = fileLines.slice(from, to)
+                .map((l, i) => `  ${from + i + 1}| ${l.slice(0, 200)}`)
+                .join('\n');
+            lines.push(
+                `  closest anchor: first ${anchorLen}/${marker.length} chars match at line ${lineNum}`,
+                `  marker diverges after: ${JSON.stringify(marker.slice(0, anchorLen).slice(-60))}`,
+                `  marker continues with: ${JSON.stringify(marker.slice(anchorLen, anchorLen + 60))}`,
+                `  file near anchor:\n${snippet}`,
+                `  hint: re-read the target region (storage.read with offset/length or storage.grep) and rebuild the marker byte-exact — check whitespace, quotes and unicode dashes.`
+            );
+        } else {
+            lines.push(
+                `  no prefix of the marker (>=8 chars) appears anywhere in the file`,
+                `  marker starts with: ${JSON.stringify(marker.slice(0, 80))}`,
+                `  hint: the target content is not in this file (already changed, wrong path, or wrong section). Probe first with storage.find or locate it with storage.grep.`
+            );
+        }
+        return new Error(lines.join('\n'));
+    }
+
     // Server-side marker swap: read file, replace occurrence(s) of marker
     // with replacement, write back via snapshot + atomicWrite. This is the
     // large-file edit path — content never leaves the server.
@@ -412,16 +458,16 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             // Count first so a zero-match fails the same way as first/last
             const parts = original.split(marker);
             count = parts.length - 1;
-            if (count === 0) throw new Error('replace: marker not found in ' + userPath);
+            if (count === 0) throw markerNotFoundError('replace', userPath, original, marker);
             updated = parts.join(replacement);
         } else if (occurrence === 'last') {
             const idx = original.lastIndexOf(marker);
-            if (idx === -1) throw new Error('replace: marker not found in ' + userPath);
+            if (idx === -1) throw markerNotFoundError('replace', userPath, original, marker);
             updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
             count = 1;
         } else {
             const idx = original.indexOf(marker);
-            if (idx === -1) throw new Error('replace: marker not found in ' + userPath);
+            if (idx === -1) throw markerNotFoundError('replace', userPath, original, marker);
             updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
             count = 1;
         }
@@ -434,6 +480,48 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         snapshot(targetRel, 'replace');
         atomicWrite(abs, Buffer.from(updated, 'utf8'));
         return { size: Buffer.byteLength(updated, 'utf8'), replacements: count };
+    }
+
+    // ============================================
+    // Public: find
+    // ============================================
+
+    // Probe whether a byte-exact string exists in a file — without mutating
+    // anything and without pulling the file through the caller's context.
+    // The pre-flight check for replace: call find first, replace only when
+    // found:true. Returns position/line plus a small snippet on hit so the
+    // caller can confirm it's the RIGHT occurrence.
+    async function find(userPath, marker, { occurrence = 'first' } = {}) {
+        if (typeof marker !== 'string' || marker.length === 0) {
+            throw new Error('find: marker must be a non-empty string');
+        }
+        if (occurrence !== 'first' && occurrence !== 'last' && occurrence !== 'all') {
+            throw new Error('find: occurrence must be first, last, or all');
+        }
+        const abs = resolve(userPath);
+        if (!fs.existsSync(abs)) throw new Error('find: path does not exist: ' + userPath);
+        if (fs.statSync(abs).isDirectory()) throw new Error('find: cannot search a directory: ' + userPath);
+
+        const original = fs.readFileSync(abs, 'utf8');
+        const idx = occurrence === 'last' ? original.lastIndexOf(marker) : original.indexOf(marker);
+        if (occurrence === 'all') {
+            const parts = original.split(marker);
+            const count = parts.length - 1;
+            if (count === 0) return { found: false, count: 0 };
+            const firstIdx = original.indexOf(marker);
+            const line = original.slice(0, firstIdx).split('\n').length;
+            return { found: true, count, line, offset: firstIdx };
+        }
+        if (idx === -1) return { found: false, count: 0 };
+        const line = original.slice(0, idx).split('\n').length;
+        const fileLine = original.split('\n')[line - 1] ?? '';
+        return {
+            found: true,
+            count: original.split(marker).length - 1,
+            line,
+            offset: idx,
+            snippet: fileLine.slice(0, 200)
+        };
     }
 
     // ============================================
@@ -648,7 +736,11 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             remove:       (a) => remove(a.path, pickOpts(a, ['recursive'])),
             copy:         (a) => copy(a.from, a.to, pickOpts(a, ['overwrite'])),
             append:       (a) => append(a.path, reqContent(a), pickOpts(a, ['encoding'])),
-            replace:      (a) => replace(a.path, a.marker, a.replacement, pickOpts(a, ['occurrence'])),
+            // Alias support: LLMs trained on other editors reach for
+            // oldString/newString — accept them so a reasonable guess works
+            // instead of erroring into a retry loop.
+            replace:      (a) => replace(a.path, a.marker ?? a.oldString, a.replacement ?? a.newString, pickOpts(a, ['occurrence'])),
+            find:         (a) => find(a.path, a.marker ?? a.oldString ?? a.pattern, pickOpts(a, ['occurrence'])),
             readWindow:   (a) => readWindow(a.path, pickOpts(a, ['offset', 'length', 'head', 'tail'])),
             grep:         (a) => grep(a.path, a.pattern, pickOpts(a, ['maxMatches', 'context', 'ignoreCase'])),
             hash:         (a) => hash(a.path, pickOpts(a, ['algo'])),
@@ -811,6 +903,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         copy,
         append,
         replace,
+        find,
         readWindow,
         grep,
         batch,

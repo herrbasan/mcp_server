@@ -637,9 +637,17 @@ content that should survive beyond the current session.
 
   storage.read — { path*, encoding?: "utf8"|"base64" }
       Read a file. Defaults to utf8. Use base64 for binary files.
+      NEVER truncates inline content — inline:true means you have the complete
+      file (check size against storage.stat if in doubt). Some chat clients
+      page large tool results into a temp file for display; that is the
+      client's rendering, NOT truncation by this tool.
 
   storage.write — { path*, content*, encoding?: "utf8"|"base64" }
       Write a file. Creates parent directories automatically.
+      SELF-VERIFYING: after writing, the server re-stats the file on disk and
+      returns verified:true with size+mtime. If the check fails the call THROWS
+      — ok:true means the bytes are provably on disk. Same for storage.replace,
+      storage.append, storage.copy, storage.move, storage.delete.
       ⚠️  FULL-FILE REPLACEMENT — content must be the ENTIRE file.
           This is NOT a section/append/partial update. Writing only a section
           DESTROYS all other content. Use storage.read first to get the current
@@ -670,9 +678,17 @@ content that should survive beyond the current session.
 
   storage.replace — { path*, marker*, replacement*, occurrence? }
       Targeted edit: replace a byte-exact string "marker" with "replacement"
-      inside the file. occurrence: "first" (default), "last", or "all".
-      Throws if marker not found — fail loud, no silent no-op.
+      inside the file. Aliases: oldString/newString also accepted.
+      occurrence: "first" (default), "last", or "all".
+      Marker not found? The error is a DIAGNOSTIC, not a dead end: file size,
+      closest anchor position, line number, and the actual file snippet near
+      the anchor — repair the marker from the error alone.
       PREFER THIS over storage.write for single-section edits.
+
+  storage.find — { path*, marker*, occurrence? }
+      Probe: does this exact string exist in the file? Returns
+      { found, count, line, offset, snippet } — file content does NOT enter
+      your context. Pre-flight check before storage.replace.
 
   storage.grep — { path*, pattern*, maxMatches?, context?, ignoreCase? }
       Search for a pattern in files. Streams line-by-line, skips >50MB files.
@@ -820,7 +836,7 @@ IMPORTANT RULES
         "storage.move": "storage_move", "storage.delete": "storage_delete",
         "storage.search": "storage_search",
         "storage.copy": "storage_copy", "storage.append": "storage_append",
-        "storage.replace": "storage_replace",
+        "storage.replace": "storage_replace", "storage.find": "storage_find",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
         "storage.history": "storage_history", "storage.restore": "storage_restore",
         "storage.resources_list": "storage_resources_list",

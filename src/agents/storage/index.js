@@ -112,6 +112,30 @@ function result(ok, op, userPath, data) {
     return toMcp(ok, { op, path: userPath, ...data });
 }
 
+// Self-verification: after a mutating op, re-stat the file straight from disk
+// and check it matches what the engine claims. Returns { verified:true, size,
+// mtime } as evidence the caller can trust without a second read. A mismatch
+// means the response would be a lie — throw instead (fail loud, no ok:true
+// for a write that didn't land).
+function verifyFile(userPath, expectedSize) {
+    const abs = safeResolve(userPath);
+    const st = fs.statSync(abs); // throws ENOENT if the file is missing
+    if (!st.isFile()) throw new Error(`storage verify failed: not a file after write: "${userPath}"`);
+    if (expectedSize !== undefined && st.size !== expectedSize) {
+        throw new Error(`storage verify failed: size mismatch for "${userPath}" (expected ${expectedSize}B, disk has ${st.size}B)`);
+    }
+    return { verified: true, size: st.size, mtime: st.mtime.toISOString() };
+}
+
+// Counterpart for delete/move-source: assert the path is GONE from disk.
+function verifyGone(userPath) {
+    const abs = safeResolve(userPath);
+    if (fs.existsSync(abs)) {
+        throw new Error(`storage verify failed: path still exists after delete/move: "${userPath}"`);
+    }
+    return { verified: true };
+}
+
 export async function init(context) {
     const agentConfig = context.config?.agents?.storage;
     if (!agentConfig) throw new Error('storage.init: context.config.agents.storage is required — missing from config.json');
@@ -369,8 +393,9 @@ export async function storage_write(args) {
     // (temp+rename). overwrite:true here preserves the historical silent-overwrite
     // contract of storage_write while gaining snapshot + crash-safe write.
     const engineResult = await OPS.write(userPath, content, { encoding, overwrite: true });
-    logger.info(`[Storage] storage_write OK: "${userPath}" (${engineResult.size}B, total=${Date.now() - t0}ms)`, null, 'Storage');
-    return result(true, 'storage_write', userPath, { size: engineResult.size });
+    const proof = verifyFile(userPath, engineResult.size);
+    logger.info(`[Storage] storage_write OK: "${userPath}" (${engineResult.size}B, verified, total=${Date.now() - t0}ms)`, null, 'Storage');
+    return result(true, 'storage_write', userPath, { size: engineResult.size, ...proof });
 }
 
 export async function storage_list(args) {
@@ -396,8 +421,10 @@ export async function storage_move(args) {
     if (!toPath) throw new Error('storage_move: args.to is required');
     // Engine refuses overwrite and snapshots the source before moving.
     const engineResult = await OPS.move(fromPath, toPath);
-    logger.info(`[Storage] storage_move OK: "${fromPath}" → "${toPath}" (${engineResult.type})`, null, 'Storage');
-    return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: engineResult.from, to: engineResult.to, type: engineResult.type });
+    const gone = verifyGone(fromPath);
+    const proof = engineResult.type === 'file' ? verifyFile(toPath) : { verified: fs.existsSync(safeResolve(toPath)) };
+    logger.info(`[Storage] storage_move OK: "${fromPath}" → "${toPath}" (${engineResult.type}, verified)`, null, 'Storage');
+    return result(true, 'storage_move', `${fromPath} -> ${toPath}`, { from: engineResult.from, to: engineResult.to, type: engineResult.type, ...gone, ...proof });
 }
 
 export async function storage_delete(args) {
@@ -409,8 +436,9 @@ export async function storage_delete(args) {
     const st = await OPS.stat(userPath);
     if (!st.exists) throw new Error(`storage_delete: path does not exist: "${userPath}"`);
     await OPS.remove(userPath, { recursive });
-    logger.info(`[Storage] storage_delete OK: "${userPath}" (${st.type})`, null, 'Storage');
-    return result(true, 'storage_delete', userPath, { deleted: true });
+    const proof = verifyGone(userPath);
+    logger.info(`[Storage] storage_delete OK: "${userPath}" (${st.type}, verified gone)`, null, 'Storage');
+    return result(true, 'storage_delete', userPath, { deleted: true, ...proof });
 }
 
 export async function storage_search(args) {
@@ -488,8 +516,10 @@ export async function storage_copy(args) {
     if (!from) throw new Error('storage_copy: args.from is required');
     if (!to) throw new Error('storage_copy: args.to is required');
     const engineResult = await OPS.copy(from, to, { overwrite: !!overwrite });
-    logger.info(`[Storage] storage_copy OK: "${from}" → "${to}" (${engineResult.size}B)`, null, 'Storage');
-    return result(true, 'storage_copy', `${from} -> ${to}`, engineResult);
+    // engineResult.size is only set for file copies; directory copies verify existence only.
+    const proof = engineResult.size !== undefined ? verifyFile(to, engineResult.size) : { verified: fs.existsSync(safeResolve(to)) };
+    logger.info(`[Storage] storage_copy OK: "${from}" → "${to}" (${engineResult.size ?? 'dir'}B, verified)`, null, 'Storage');
+    return result(true, 'storage_copy', `${from} -> ${to}`, { ...engineResult, ...proof });
 }
 
 export async function storage_append(args) {
@@ -498,19 +528,44 @@ export async function storage_append(args) {
     if (!userPath) throw new Error('storage_append: args.path is required');
     if (content === undefined || content === null) throw new Error('storage_append: args.content is required');
     const engineResult = await OPS.append(userPath, content, { encoding });
-    logger.info(`[Storage] storage_append OK: "${userPath}" (total=${engineResult.size}B)`, null, 'Storage');
-    return result(true, 'storage_append', userPath, { size: engineResult.size });
+    const proof = verifyFile(userPath, engineResult.size);
+    logger.info(`[Storage] storage_append OK: "${userPath}" (total=${engineResult.size}B, verified)`, null, 'Storage');
+    return result(true, 'storage_append', userPath, { size: engineResult.size, ...proof });
 }
 
 export async function storage_replace(args) {
-    const { path: userPath, marker, replacement, occurrence } = args;
+    // Alias support: LLMs coming from other editors (oldString/newString) get
+    // their reasonable guess honored instead of a bare "marker is required".
+    const userPath = args.path;
+    const marker = args.marker ?? args.oldString;
+    const replacement = args.replacement ?? args.newString;
+    const { occurrence } = args;
     logger.info(`[Storage] storage_replace: "${userPath}" occurrence=${occurrence ?? 'first'}`, null, 'Storage');
     if (!userPath) throw new Error('storage_replace: args.path is required');
-    if (marker === undefined || marker === null) throw new Error('storage_replace: args.marker is required');
-    if (replacement === undefined || replacement === null) throw new Error('storage_replace: args.replacement is required');
+    if (marker === undefined || marker === null) {
+        throw new Error('storage_replace: args.marker is required (the exact string to find; alias: oldString). Replacement arg is "replacement" (alias: newString).');
+    }
+    if (replacement === undefined || replacement === null) {
+        throw new Error('storage_replace: args.replacement is required (the string to swap in; alias: newString). Find arg is "marker" (alias: oldString).');
+    }
     const engineResult = await OPS.replace(userPath, marker, replacement, { occurrence });
-    logger.info(`[Storage] storage_replace OK: "${userPath}" (${engineResult.replacements} replacement(s), ${engineResult.size}B)`, null, 'Storage');
-    return result(true, 'storage_replace', userPath, engineResult);
+    const proof = verifyFile(userPath, engineResult.size);
+    logger.info(`[Storage] storage_replace OK: "${userPath}" (${engineResult.replacements} replacement(s), ${engineResult.size}B, verified)`, null, 'Storage');
+    return result(true, 'storage_replace', userPath, { ...engineResult, ...proof });
+}
+
+export async function storage_find(args) {
+    const userPath = args.path;
+    const marker = args.marker ?? args.oldString ?? args.pattern;
+    const { occurrence } = args;
+    logger.info(`[Storage] storage_find: "${userPath}"`, null, 'Storage');
+    if (!userPath) throw new Error('storage_find: args.path is required');
+    if (marker === undefined || marker === null) {
+        throw new Error('storage_find: args.marker is required (the exact string to locate; aliases: oldString, pattern)');
+    }
+    const engineResult = await OPS.find(userPath, marker, { occurrence });
+    logger.info(`[Storage] storage_find OK: "${userPath}" found=${engineResult.found}`, null, 'Storage');
+    return result(true, 'storage_find', userPath, engineResult);
 }
 
 export async function storage_grep(args) {
