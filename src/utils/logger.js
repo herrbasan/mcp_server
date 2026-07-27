@@ -1,7 +1,5 @@
 import { createLogger, getLogger, resetLogger } from '../nLogger/src/logger.js';
 
-process.env.DEBUG = 'true'; // TEMPORARY DEBUG FLAG
-
 export function interceptConsole(logger) {
     const origLog = console.log;
     const origInfo = console.info;
