@@ -152,18 +152,9 @@ export async function memory_store(args, context) {
         return { content: [{ type: 'text', text: 'Error: description is required' }], isError: true };
     }
 
-    progress('Generating embedding...', 50);
-
-    // Memory must survive embed provider failures. Store unconditionally;
-    // a null embedding is healed later by memoryEmbedHeal().
-    let embedding = null;
-    let embedError = null;
-    try {
-        embedding = await embedText(gateway, description, data, maxChars);
-    } catch (err) {
-        embedError = err.message || 'embed failed';
-    }
-
+    // Store immediately — embedding runs detached so provider hangs never
+    // block the tool response. Marked pending; self-heal in memory_overview
+    // re-embeds stragglers automatically.
     const memId = incrementNextId();
     const doc = {
         id: memId,
@@ -171,31 +162,33 @@ export async function memory_store(args, context) {
         category,
         confidence: Math.max(0, Math.min(1, confidence)),
         timestamp: now,
-        embedStatus: embedding ? 'embedded' : 'pending'
+        embedStatus: 'pending'
     };
-    if (embedError) doc.embedError = embedError;
     if (data) doc.data = data;
 
     const ndbId = DB.insertWithPrefix('mem', doc);
     DB.flush();
 
-    // Insert vector into nVDB if we have one
-    if (embedding && MEM_COLL) {
-        MEM_COLL.insert(ndbId, embedding, JSON.stringify({ id: memId }));
-        MEM_COLL.flush();
-    }
+    // Detached: embed in background. On success the vector is inserted and
+    // embedStatus → 'embedded'. On failure embedError is set; the periodic
+    // self-heal in memory_overview retries it later.
+    embedText(gateway, description, data, maxChars).then(embedding => {
+        if (MEM_COLL) {
+            MEM_COLL.insert(ndbId, embedding, JSON.stringify({ id: memId }));
+            MEM_COLL.flush();
+        }
+        DB.set(ndbId, 'embedStatus', 'embedded');
+        DB.set(ndbId, 'embedError', null);
+        DB.flush();
+    }).catch(err => {
+        DB.set(ndbId, 'embedError', err.message || 'embed failed');
+        DB.flush();
+    });
 
     const totalCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
 
-    if (embedError) {
-        return {
-            content: [{ type: 'text', text: `✓ #${memId} [${category}] stored WITHOUT embedding (provider error: ${embedError.slice(0, 120)}). The memory is durable and visible via memory_get/list, but invisible to memory_recall until the self-heal re-embeds it (runs automatically on memory_overview).` }]
-        };
-    }
-
-    progress('Embedding complete', 100);
     return {
-        content: [{ type: 'text', text: `✓ #${memId} [${category}] stored. ${totalCount} memories total — keep storing freely, dreaming organizes them.` }]
+        content: [{ type: 'text', text: `✓ #${memId} [${category}] stored (${totalCount} memories total). Embedding runs in background — visible to memory_recall within seconds.` }]
     };
 }
 
@@ -389,24 +382,25 @@ export async function memory_update(args, context) {
     const memory = DB.get(ndbId);
     const textChanged = (description && description !== memory.description) || (data !== undefined && data !== memory.data);
 
-    let updateEmbedFailed = false;
     if (textChanged) {
         const newDesc = description || memory.description;
         const newData = data !== undefined ? data : memory.data;
         const maxChars = CONFIG.maxMemoryChars || 6000;
-        try {
-            const newEmbedding = await embedText(gateway, newDesc, newData, maxChars);
+        // Detached: embed in background so provider hangs never block the
+        // response. Self-heal picks up failures on the next memory_overview.
+        embedText(gateway, newDesc, newData, maxChars).then(newEmbedding => {
             if (MEM_COLL) {
                 MEM_COLL.insert(ndbId, newEmbedding, JSON.stringify({ id }));
                 MEM_COLL.flush();
             }
             DB.set(ndbId, 'embedStatus', 'embedded');
             DB.set(ndbId, 'embedError', null);
-        } catch (err) {
+            DB.flush();
+        }).catch(err => {
             DB.set(ndbId, 'embedStatus', 'pending');
             DB.set(ndbId, 'embedError', err.message || 'embed failed');
-            updateEmbedFailed = true;
-        }
+            DB.flush();
+        });
     }
 
     if (description) DB.set(ndbId, 'description', description);
@@ -422,12 +416,6 @@ export async function memory_update(args, context) {
 
     DB.set(ndbId, 'timestamp', new Date().toISOString());
     DB.flush();
-
-    if (updateEmbedFailed) {
-        return {
-            content: [{ type: 'text', text: `Updated #${id} WITHOUT re-embedding (provider error: ${(DB.get(ndbId).embedError || '').slice(0, 120)}). Content is durable; recall visibility returns after self-heal.` }]
-        };
-    }
 
     return {
         content: [{ type: 'text', text: `Updated #${id}. Use memory_recall to verify.` }]
