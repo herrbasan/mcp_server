@@ -1,6 +1,8 @@
 const API = 'https://api.github.com';
 let token;
 
+import { requireFields, requireId } from '../../utils/require-fields.js';
+
 function headers() {
     return {
         Authorization: `token ${token}`,
@@ -39,6 +41,7 @@ export async function init(context) {
 }
 
 export async function git_read_file(args) {
+    requireFields(args, ['owner', 'repo'], 'git.read');
     const { owner, repo, path: filePath = '', branch } = args;
     const ref = branch ? `?ref=${branch}` : '';
     const p = filePath ? `/${filePath.replace(/^\/+/, '')}` : '';
@@ -63,6 +66,7 @@ export async function git_read_file(args) {
 }
 
 export async function git_list_tree(args) {
+    requireFields(args, ['owner', 'repo'], 'git.tree');
     const { owner, repo, path: scopePath, branch } = args;
     const ref = branch || await getDefaultBranch(owner, repo);
     const tree = await api(`/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`);
@@ -92,6 +96,7 @@ async function getDefaultBranch(owner, repo) {
 }
 
 export async function git_log(args) {
+    requireFields(args, ['owner', 'repo'], 'git.log');
     const { owner, repo, path: filePath, branch, limit = 20 } = args;
     let url = paginate(`/repos/${owner}/${repo}/commits`, Math.min(limit, 100));
     if (branch) url += `&sha=${branch}`;
@@ -131,6 +136,7 @@ export async function git_search_code(args) {
 }
 
 export async function git_diff(args) {
+    requireFields(args, ['owner', 'repo', 'base', 'head'], 'git.diff');
     const { owner, repo, base, head } = args;
     const data = await api(`/repos/${owner}/${repo}/compare/${base}...${head}`);
 
@@ -160,6 +166,7 @@ export async function git_diff(args) {
 }
 
 export async function git_pr_list(args) {
+    requireFields(args, ['owner', 'repo'], 'git.pr_list');
     const { owner, repo, state = 'open', limit = 10 } = args;
     const url = paginate(`/repos/${owner}/${repo}/pulls?state=${state}&sort=updated`, Math.min(limit, 50));
     const prs = await api(url);
@@ -181,6 +188,7 @@ export async function git_pr_list(args) {
 }
 
 export async function git_issue_list(args) {
+    requireFields(args, ['owner', 'repo'], 'git.issue_list');
     const { owner, repo, state = 'open', labels, limit = 10 } = args;
     let url = paginate(`/repos/${owner}/${repo}/issues?state=${state}&sort=updated`, Math.min(limit, 50));
     if (labels) url += `&labels=${encodeURIComponent(labels)}`;
@@ -243,6 +251,7 @@ export async function git_search_issues(args) {
 }
 
 export async function git_get_commit(args) {
+    requireFields(args, ['owner', 'repo', 'sha'], 'git.commit');
     const { owner, repo, sha } = args;
     const data = await api(`/repos/${owner}/${repo}/commits/${sha}`);
 
@@ -272,6 +281,7 @@ export async function git_get_commit(args) {
 }
 
 export async function git_list_branches(args) {
+    requireFields(args, ['owner', 'repo'], 'git.branches');
     const { owner, repo, type = 'branches', limit = 30 } = args;
 
     if (type === 'tags') {
@@ -286,6 +296,7 @@ export async function git_list_branches(args) {
 }
 
 export async function git_get_pr(args) {
+    requireFields(args, ['owner', 'repo', 'number'], 'git.pr_get');
     const { owner, repo, number } = args;
     const [pr, files] = await Promise.all([
         api(`/repos/${owner}/${repo}/pulls/${number}`),
@@ -320,6 +331,7 @@ export async function git_get_pr(args) {
 }
 
 export async function git_get_issue(args) {
+    requireFields(args, ['owner', 'repo', 'number'], 'git.issue_get');
     const { owner, repo, number, comments: includeComments } = args;
     const issue = await api(`/repos/${owner}/${repo}/issues/${number}`);
 
@@ -350,6 +362,7 @@ export async function git_get_issue(args) {
 }
 
 export async function git_create_issue(args) {
+    requireFields(args, ['owner', 'repo', 'title'], 'git.issue_create');
     const { owner, repo, title, body, labels, assignees } = args;
     const payload = { title };
     if (body) payload.body = body;
@@ -368,6 +381,7 @@ export async function git_create_issue(args) {
 }
 
 export async function git_repo_info(args) {
+    requireFields(args, ['owner', 'repo'], 'git.repo_info');
     const { owner, repo } = args;
     const data = await api(`/repos/${owner}/${repo}`);
 

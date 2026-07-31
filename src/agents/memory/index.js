@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { loadNdb } from './ndb-loader.js';
+import { requireFields, requireId } from '../../utils/require-fields.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -36,6 +37,9 @@ function embedText(gateway, description, data, maxChars) {
 function normId(id) {
     return typeof id === 'number' ? id : parseInt(String(id || '').replace(/^#/, ''), 10);
 }
+
+// Tool name prefix for validation errors — keeps messages consistent.
+const TOOL = 'memory';
 
 // Find the nDB _id for a memory by its integer id field.
 // Uses the 'id' index (created at init).
@@ -141,16 +145,13 @@ export async function shutdown() {
 
 export async function memory_store(args, context) {
     const { gateway, progress } = context;
+    requireFields(args, ['description'], `${TOOL}.store`);
     const description = args.description || args.text;
     const category = args.category || 'notes';
     const confidence = args.confidence ?? 0.5;
     const { data } = args;
     const now = new Date().toISOString();
     const maxChars = CONFIG.maxMemoryChars || 6000;
-
-    if (!description) {
-        return { content: [{ type: 'text', text: 'Error: description is required' }], isError: true };
-    }
 
     // Store immediately — embedding runs detached so provider hangs never
     // block the tool response. Marked pending; self-heal in memory_overview
@@ -307,11 +308,11 @@ export async function memory_recall(args, context) {
 // ── Tool: memory_get ─────────────────────────────────────────────────
 
 export async function memory_get(args, context) {
-    const id = normId(args.id);
+    const id = requireId(args.id, 'id', `${TOOL}.get`);
     const ndbId = findNdbIdByMemId(id);
 
     if (!ndbId) {
-        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
     const memory = DB.get(ndbId);
@@ -327,11 +328,11 @@ export async function memory_get(args, context) {
 // ── Tool: memory_forget ──────────────────────────────────────────────
 
 export async function memory_forget(args, context) {
-    const id = normId(args.id);
+    const id = requireId(args.id, 'id', `${TOOL}.forget`);
     const ndbId = findNdbIdByMemId(id);
 
     if (!ndbId) {
-        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
     DB.delete(ndbId);
@@ -371,12 +372,12 @@ export async function memory_list(args, context) {
 
 export async function memory_update(args, context) {
     const { gateway } = context;
-    const id = normId(args.id);
+    const id = requireId(args.id, 'id', `${TOOL}.update`);
     const { description, category, confidence, data } = args;
 
     const ndbId = findNdbIdByMemId(id);
     if (!ndbId) {
-        return { content: [{ type: 'text', text: `Memory #${args.id} not found` }], isError: true };
+        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
     const memory = DB.get(ndbId);
