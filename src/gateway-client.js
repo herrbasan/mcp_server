@@ -18,6 +18,12 @@ const logger = getLogger();
  */
 export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
     const baseUrl = httpUrl.replace(/\/+$/, '');
+    // Hard cap on embedding requests. The Gateway routes embed calls to a
+    // remote wrapper (192.168.0.145:4080); if that machine is unreachable,
+    // the fetch hangs indefinitely. This timeout ensures the calling tool
+    // (memory.recall, VDB search) fails fast and degrades to recency
+    // instead of blocking until the client's 2-minute tool timeout fires.
+    const EMBED_TIMEOUT_MS = 15000;
 
     function authHeaders() {
         const headers = { 'Content-Type': 'application/json' };
@@ -238,14 +244,30 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
             const body = model
                 ? { input: text, model }
                 : { input: text, task: 'embed' };
-            const res = await fetch(`${baseUrl}/v1/embeddings`, {
-                method: 'POST',
-                headers: authHeaders(),
-                body: JSON.stringify(body)
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-            const data = await res.json();
-            return data.data[0].embedding;
+            // AbortController enforces a hard timeout. Without it, a hung
+            // Gateway embed response blocks the calling tool indefinitely —
+            // the memory agent's try/catch degrades to recency, but only
+            // after the fetch eventually fails (which may be never).
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), EMBED_TIMEOUT_MS);
+            try {
+                const res = await fetch(`${baseUrl}/v1/embeddings`, {
+                    method: 'POST',
+                    headers: authHeaders(),
+                    body: JSON.stringify(body),
+                    signal: ctrl.signal
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+                const data = await res.json();
+                return data.data[0].embedding;
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    throw new Error(`Embedding timed out after ${EMBED_TIMEOUT_MS / 1000}s — Gateway did not respond`);
+                }
+                throw err;
+            } finally {
+                clearTimeout(timer);
+            }
         },
 
         async embedText(text, model) {
