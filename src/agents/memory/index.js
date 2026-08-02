@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { loadNdb } from './ndb-loader.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -200,8 +201,9 @@ export { memory_store as memory_remember };
 export async function memory_recall(args, context) {
     const { gateway, progress } = context;
     const { query, limit = 5, category } = args;
+    const pr = createProgressReporter(progress);
 
-    progress('Embedding query...', 50);
+    pr.set('Embedding query...', 20, true);
     const maxChars = CONFIG.maxMemoryChars || 6000;
     const safeQuery = query.length > maxChars ? query.slice(0, maxChars) : query;
 
@@ -212,6 +214,7 @@ export async function memory_recall(args, context) {
         // Provider down — degrade to recency so the model still gets context.
         queryEmbed = null;
     }
+    pr.set('Searching memory index...', 60);
 
     // Get candidates (optionally filtered by category)
     let candidates = DB.iter().filter(d => d._id.startsWith('mem_'));
@@ -221,6 +224,7 @@ export async function memory_recall(args, context) {
         // Degrade to recency
         const recent = candidates.slice(-limit).reverse();
         if (!recent.length) {
+            pr.done('Search complete');
             return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
         }
         const results = recent.map(m => {
@@ -229,6 +233,7 @@ export async function memory_recall(args, context) {
             return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
         }).join('\n\n');
         const reason = !MEM_COLL ? 'nVDB unavailable' : 'embed provider error';
+        pr.done('Search complete');
         return {
             content: [{ type: 'text', text: `⚠ Semantic search unavailable (${reason}) — returning ${recent.length} most recent memories instead:\n\n${results}` }]
         };
@@ -241,8 +246,11 @@ export async function memory_recall(args, context) {
     });
 
     if (searchResults.length === 0) {
+        pr.done('Search complete');
         return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
     }
+
+    pr.set('Ranking results...', 80);
 
     // Join nVDB hits with nDB documents, apply confidence weighting
     const scored = [];
@@ -299,7 +307,7 @@ export async function memory_recall(args, context) {
         ? `Found ${totalFound} memories (showing top ${top.length} with details):`
         : `Found ${top.length} memories:`;
 
-    progress('Search complete', 100);
+    pr.done('Search complete');
     return {
         content: [{ type: 'text', text: `${header}\n\n${results}${summary}` }]
     };
@@ -427,7 +435,7 @@ export async function memory_update(args, context) {
 
 let lastHealAt = 0;
 
-async function memoryEmbedHeal(context, batchLimit = 10) {
+async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
     const { gateway } = context;
     if (!gateway) return { healed: 0, remaining: 0, skipped: 'no gateway' };
     if (!MEM_COLL) return { healed: 0, remaining: 0, skipped: 'no nVDB collection' };
@@ -436,8 +444,10 @@ async function memoryEmbedHeal(context, batchLimit = 10) {
     if (pending.length === 0) return { healed: 0, remaining: 0 };
 
     const maxChars = CONFIG.maxMemoryChars || 6000;
+    const batch = pending.slice(0, batchLimit);
     let healed = 0;
-    for (const m of pending.slice(0, batchLimit)) {
+    for (let i = 0; i < batch.length; i++) {
+        const m = batch[i];
         try {
             const embedding = await embedText(gateway, m.description, m.data, maxChars);
             MEM_COLL.insert(m._id, embedding, JSON.stringify({ id: m.id }));
@@ -448,6 +458,7 @@ async function memoryEmbedHeal(context, batchLimit = 10) {
             DB.set(m._id, 'embedError', err.message || 'embed failed');
             break;
         }
+        if (onProgress) onProgress(i + 1, batch.length, `Re-embedding memory #${m.id} (${i + 1}/${batch.length})`);
     }
     if (healed > 0) {
         MEM_COLL.flush();
@@ -457,7 +468,9 @@ async function memoryEmbedHeal(context, batchLimit = 10) {
 }
 
 export async function memory_embed_heal(args, context) {
-    const result = await memoryEmbedHeal(context, args?.batchLimit || 50);
+    const pr = createProgressReporter(context?.progress);
+    const result = await memoryEmbedHeal(context, args?.batchLimit || 50, (done, total, msg) => pr.step(done, total, msg));
+    pr.done(`Embed heal finished: ${result.healed} re-embedded, ${result.remaining} still pending`);
     return {
         content: [{ type: 'text', text: `Embed heal: ${result.healed} re-embedded, ${result.remaining} still pending${result.skipped ? ` (${result.skipped})` : ''}.` }]
     };

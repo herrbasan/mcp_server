@@ -68,6 +68,17 @@ export function createContextEnhancer(config, gateway, logger, cache = null) {
     const truncator = TRUNCATORS[truncation] || truncateHeadMidTail;
     const includeFolders = config.includeFolders || null;
     const maxFileSizeForEnhancement = config.maxFileSizeForEnhancement ?? null;
+    // Hard cap on a single enhancement call. The local model is fast, but if
+    // it hangs (provider down, queue backlog) a best-effort catch never fires
+    // for a hang — this timeout keeps the scan moving. Fail loud in the log.
+    const timeoutMs = config.timeoutMs ?? 30000;
+
+    function withTimeout(promise, ms, label) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
+        ]);
+    }
 
     function shouldEnhance(preparedFile) {
         const size = preparedFile.size ?? 0;
@@ -159,14 +170,18 @@ export function createContextEnhancer(config, gateway, logger, cache = null) {
         const prompt = renderPrompt(relPath, sampleContent);
 
         try {
-            const raw = await gateway.predict({
-                task,
-                prompt,
-                systemPrompt: 'You are a concise indexing assistant. Reply only with the requested JSON.',
-                maxTokens: maxOutputTokens,
-                temperature,
-                responseFormat: { type: 'json_object' }
-            });
+            const raw = await withTimeout(
+                gateway.predict({
+                    task,
+                    prompt,
+                    systemPrompt: 'You are a concise indexing assistant. Reply only with the requested JSON.',
+                    maxTokens: maxOutputTokens,
+                    temperature,
+                    responseFormat: { type: 'json_object' }
+                }),
+                timeoutMs,
+                `Context enhancement for ${relPath}`
+            );
 
             let meta = raw;
             if (typeof raw === 'string') {

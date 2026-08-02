@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -623,7 +624,7 @@ function applySerendipity(map, allMemories, previousMap, config) {
 
 // ─── Full Pipeline ───
 
-async function runPipeline(force = false) {
+async function runPipeline(force = false, onProgress = null) {
     if (isRunning) {
         logger.info('[Dreaming] Pipeline already running, skipping', null, 'Dream');
         return { skipped: true, reason: 'already_running' };
@@ -638,6 +639,8 @@ async function runPipeline(force = false) {
             return { skipped: true, reason: 'fresh', age_minutes: Math.round(age / 60000) };
         }
     }
+
+    onProgress?.(5, 'Starting dream pipeline...');
 
     isRunning = true;
     const startTime = Date.now();
@@ -660,6 +663,7 @@ async function runPipeline(force = false) {
             : allMemories.slice(-50); // First run: last 50 as "recent"
 
         logger.info(`[Dreaming] Starting pipeline: ${allMemories.length} total, ${recentMemories.length} recent`, null, 'Dream');
+        onProgress?.(10, `Loaded ${allMemories.length} memories (${recentMemories.length} recent)`);
 
         // Phase 1: Distillation
         const previousDistillate = loadJson(DISTILLATE_PATH, null);
@@ -679,6 +683,7 @@ async function runPipeline(force = false) {
         }
 
         const { content: distillate, stats: distillateStats } = await distill(allMemories, previousDistillate, contextBudget);
+        onProgress?.(40, `Phase 1 complete: distilled ${distillateStats.distilled_chunks} chunks from ${distillateStats.total_memories} memories`);
 
         // Save distillate cache with snapshot of memory timestamps
         saveJson(DISTILLATE_PATH, {
@@ -692,9 +697,12 @@ async function runPipeline(force = false) {
         });
 
         // Phase 2: Dreaming
+        onProgress?.(45, 'Phase 2: Dreaming (building knowledge map)...');
         const map = await dream(distillate, recentMemories, existingMap, contextBudget);
+        onProgress?.(75, 'Phase 2 complete: map built');
 
         // Phase 2b: Serendipity Injection (stochastic wildcard boost + score jitter)
+        onProgress?.(80, 'Phase 2b: Injecting serendipity...');
         const serendipityStats = applySerendipity(map, allMemories, existingMap, agentConfig.serendipity);
         if (serendipityStats.injected > 0 || serendipityStats.jittered > 0 || serendipityStats.floored > 0) {
             logger.info(`[Dreaming] Serendipity: ${serendipityStats.floored} floored, +${serendipityStats.injected} wildcards (${serendipityStats.resurfaced} resurfaced), ${serendipityStats.jittered} jittered`, null, 'Dream');
@@ -716,11 +724,13 @@ async function runPipeline(force = false) {
         }
 
         // Phase 3: Save
+        onProgress?.(92, 'Phase 3: Saving map...');
         rotateBackup();
         saveJson(MAP_PATH, map);
 
         lastRunAt = new Date().toISOString();
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+        onProgress?.(100, `Dream complete in ${duration}s: ${map.clusters?.length || 0} clusters, ${map.nodes?.length || 0} nodes`);
 
         const summary = {
             generated: true,
@@ -794,12 +804,15 @@ export async function shutdown() {
 
 export async function dream_generate(args, context) {
     const { force = false } = args;
-    const result = await runPipeline(force);
+    const pr = createProgressReporter(context?.progress);
+    const result = await runPipeline(force, (msg, pct) => pr.set(msg, pct));
 
     if (result.skipped) {
+        pr.done(`Dream skipped: ${result.reason}`);
         return { content: [{ type: 'text', text: `Dream skipped: ${result.reason}` }] };
     }
     if (result.error) {
+        pr.done('Dream failed');
         return { content: [{ type: 'text', text: `Dream failed: ${result.error}` }], isError: true };
     }
 

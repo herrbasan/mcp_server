@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps } from '../../lib/fileops.js';
 import { searchDocuments } from '../vdb/index.js';
@@ -441,19 +442,22 @@ export async function storage_delete(args) {
     return result(true, 'storage_delete', userPath, { deleted: true, ...proof });
 }
 
-export async function storage_search(args) {
+export async function storage_search(args, context) {
     const { query, folder, extension, top_k = 10, include_content = false } = args || {};
     if (!query) throw new Error('storage_search: query is required');
     logger.info(`[Storage] storage_search: "${query}"`, { folder, extension, top_k }, 'Storage');
 
+    const pr = createProgressReporter(context?.progress);
     const results = await searchDocuments({
         query,
         collections: ['storage'],
         folder,
         extension,
         top_k,
-        include_content
+        include_content,
+        onProgress: (msg, pct) => pr.set(msg, pct)
     });
+    pr.done('Search complete');
 
     const formatted = results.map(r => {
         const line = `[${r.path}] score: ${r.score.toFixed(4)}${r.folder ? ` folder:${r.folder}` : ''}`;
@@ -568,25 +572,147 @@ export async function storage_find(args) {
     return result(true, 'storage_find', userPath, engineResult);
 }
 
-export async function storage_grep(args) {
-    const { path: userPath, pattern, maxMatches, context, ignoreCase } = args;
+export async function storage_grep(args, context) {
+    const { path: userPath, pattern, maxMatches, context: ctxLines, ignoreCase } = args;
     logger.info(`[Storage] storage_grep: "${userPath}" pattern="${pattern}"`, null, 'Storage');
     if (!userPath) throw new Error('storage_grep: args.path is required');
     if (!pattern) throw new Error('storage_grep: args.pattern is required');
-    const engineResult = await OPS.grep(userPath, pattern, { maxMatches, context, ignoreCase });
+    const pr = createProgressReporter(context?.progress);
+    const engineResult = await OPS.grep(userPath, pattern, {
+        maxMatches,
+        context: ctxLines,
+        ignoreCase,
+        onProgress: (done, total, msg) => pr.step(done, total, msg, 10, 90)
+    });
+    pr.done('Search complete');
     logger.info(`[Storage] storage_grep OK: "${userPath}" (${engineResult.matches.length} match(es))`, null, 'Storage');
     return result(true, 'storage_grep', userPath, { matches: engineResult.matches, truncated: engineResult.truncated });
 }
 
-export async function storage_batch(args) {
+export async function storage_batch(args, context) {
     const { ops, onError } = args;
     logger.info(`[Storage] storage_batch: ${ops?.length || 0} op(s)`, null, 'Storage');
     if (!ops || !Array.isArray(ops) || ops.length === 0) {
         throw new Error('storage_batch: args.ops must be a non-empty array');
     }
-    const engineResult = await OPS.batch(ops, { onError });
+    const pr = createProgressReporter(context?.progress);
+    const engineResult = await OPS.batch(ops, {
+        onError,
+        onProgress: (done, total, msg) => pr.step(done, total, msg, 10, 90)
+    });
+    pr.done('Batch complete');
     logger.info(`[Storage] storage_batch OK: ${engineResult.results.length} result(s)`, null, 'Storage');
     return result(true, 'storage_batch', '', { results: engineResult.results });
+}
+
+// ── Bulk archive tools ───────────────────────────────────────────────
+// The arena-archive-style workflows write MANY files. One call per file
+// costs the LLM a round trip + generation per file (~15s each). These tools
+// collapse N calls into 1 so the server does the whole archive in ms.
+
+export async function storage_import(args, context) {
+    const { files } = args;
+    logger.info(`[Storage] storage_import: ${files?.length || 0} file(s)`, null, 'Storage');
+    if (!files || !Array.isArray(files) || files.length === 0) {
+        throw new Error('storage_import: args.files must be a non-empty array of {path, content}');
+    }
+    // Validate all entries up front — fail loud before touching the disk.
+    for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (!f || typeof f !== 'object') throw new Error(`storage_import: files[${i}] must be an object`);
+        if (!f.path) throw new Error(`storage_import: files[${i}].path is required`);
+        if (f.content === undefined || f.content === null) throw new Error(`storage_import: files[${i}].content is required`);
+        const encoding = f.encoding || 'utf8';
+        if (encoding !== 'utf8' && encoding !== 'base64') {
+            throw new Error(`storage_import: files[${i}].encoding must be "utf8" or "base64"`);
+        }
+    }
+
+    const pr = createProgressReporter(context?.progress);
+    // Reuse the engine's batch with write ops — same atomic/versioned path
+    // as storage_write, one snapshot per file.
+    const ops = files.map(f => ({
+        op: 'write',
+        path: f.path,
+        content: f.content,
+        encoding: f.encoding || 'utf8',
+        overwrite: true
+    }));
+
+    const engineResult = await OPS.batch(ops, {
+        onError: 'collect',
+        onProgress: (done, total, msg) => pr.step(done, total, msg, 5, 80)
+    });
+
+    // Self-verify each written file.
+    const results = [];
+    let okCount = 0;
+    for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const opResult = engineResult.results[i];
+        const entry = { path: f.path };
+        if (opResult && opResult.ok) {
+            try {
+                const proof = verifyFile(f.path, opResult.size);
+                entry.verified = true;
+                entry.size = proof.size;
+                okCount++;
+            } catch (err) {
+                entry.verified = false;
+                entry.error = err.message;
+            }
+        } else {
+            entry.verified = false;
+            entry.error = opResult?.error || 'write failed';
+        }
+        results.push(entry);
+        pr.step(i + 1, files.length, `Verified ${f.path}`, 80, 95);
+    }
+
+    pr.done(`Import complete: ${okCount}/${files.length} files`);
+    logger.info(`[Storage] storage_import OK: ${okCount}/${files.length} verified`, null, 'Storage');
+    return result(true, 'storage_import', '', { imported: okCount, total: files.length, files: results });
+}
+
+export async function storage_readMany(args, context) {
+    const { paths } = args;
+    logger.info(`[Storage] storage_readMany: ${paths?.length || 0} file(s)`, null, 'Storage');
+    if (!paths || !Array.isArray(paths) || paths.length === 0) {
+        throw new Error('storage_readMany: args.paths must be a non-empty array of paths');
+    }
+
+    const pr = createProgressReporter(context?.progress);
+    const results = [];
+    let okCount = 0;
+    for (let i = 0; i < paths.length; i++) {
+        const userPath = paths[i];
+        pr.step(i + 1, paths.length, `Reading ${userPath} (${i + 1}/${paths.length})`, 5, 90);
+        try {
+            if (!userPath || typeof userPath !== 'string') throw new Error('path must be a string');
+            const target = safeResolve(userPath);
+            const stat = fs.statSync(target);
+            if (stat.isDirectory()) throw new Error('cannot read a directory');
+            if (stat.size > CONFIG.maxReadSize) {
+                results.push({
+                    path: userPath,
+                    truncated: true,
+                    size: stat.size,
+                    pointer: safeRel(userPath),
+                    note: `File exceeds maxReadSize — use the REST endpoint or chunk via offset/length.`
+                });
+                okCount++;
+                continue;
+            }
+            const content = fs.readFileSync(target, 'utf8');
+            results.push({ path: userPath, size: stat.size, inline: true, content });
+            okCount++;
+        } catch (err) {
+            results.push({ path: userPath, error: err.message });
+        }
+    }
+    pr.done(`Read ${okCount}/${paths.length} files`);
+    logger.info(`[Storage] storage_readMany OK: ${okCount}/${paths.length}`, null, 'Storage');
+    return result(true, 'storage_readMany', '', { read: okCount, total: paths.length, files: results });
 }
 
 export async function storage_history(args) {

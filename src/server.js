@@ -726,6 +726,19 @@ content that should survive beyond the current session.
       Run multiple storage ops atomically. ops is an array of {op, ...args}.
       onError: "collect" (default) or "abort".
 
+  storage.import — { files*: [{path, content, encoding?}] }
+      BULK WRITE — write MANY files in ONE call. Purpose-built for archive
+      workflows (writing a session's artifacts, a batch of notes, generated
+      files). Each file uses the same atomic + versioned + self-verifying path
+      as storage.write. ⚡ USE THIS when writing 2+ files — one import call
+      replaces N storage.write calls (each separate call costs a round trip +
+      model generation; a batch is milliseconds).
+
+  storage.readMany — { paths*: [string] }
+      BULK READ — read MANY files in ONE call. Returns per-file content
+      (respects the same size threshold as storage.read — large files come
+      back as a pointer). ⚡ USE THIS when reading 2+ files.
+
   storage.history — { path* }
       List all saved versions of a file. Each version has: version (timestamp),
       op (what triggered it), size, modified. Newest first.
@@ -881,6 +894,7 @@ IMPORTANT RULES
         "storage.copy": "storage_copy", "storage.append": "storage_append",
         "storage.replace": "storage_replace", "storage.find": "storage_find",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
+        "storage.import": "storage_import", "storage.readMany": "storage_readMany",
         "storage.history": "storage_history", "storage.restore": "storage_restore",
         "storage.resources_list": "storage_resources_list",
         "storage.resources_read": "storage_resources_read",

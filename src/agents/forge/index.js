@@ -982,6 +982,16 @@ ctx.progress API
   ctx.progress({ message: string, progress: number, total: number })
   ctx.progress("Working...", 50, 100)  — also accepts positional args
 
+  Best practice for long operations (loops, multi-phase work):
+    - Report phase boundaries: ctx.progress("Phase 1: distilling...", 10, 100)
+    - Report loop iterations: ctx.progress("Item " + i + "/" + total, 10 + 80 * i / total, 100)
+    - Always finish at 100: ctx.progress("Done", 100, 100) before returning
+    - The MCP client throttles + deduplicates; emit freely, percentages are
+      monotonic and the final 100% always arrives.
+    - Server-side tools use the shared createProgressReporter() helper
+      (src/utils/progress-reporter.js) for throttle + monotonic clamping —
+      forged tools can call ctx.progress directly since they own their pacing.
+
 ctx.payload
   Array of Node.js Buffers. Each item corresponds to a payload[] entry passed to forge_call.
   payload: ["C:\\\\path\\\\to\\\\file.pdf", "https://example.com/data.csv"]

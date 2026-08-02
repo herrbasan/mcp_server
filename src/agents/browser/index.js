@@ -625,6 +625,7 @@ export async function browser_session_content(args, context) {
 
 export async function browser_session_click(args, context) {
     const { sessionId, selector, waitAfter, mode = 'text', retries = 2 } = args;
+    const { progress } = context;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -639,12 +640,21 @@ export async function browser_session_click(args, context) {
     resetSessionIdleTimer(sessionId);
 
     try {
-        return await withRetry(async (_attempt) => {
+        return await withRetry(async (attempt) => {
+            if (progress) progress(`Waiting for ${selector}...${attempt > 0 ? ` (retry ${attempt})` : ''}`, 30, 100);
             await session.page.waitForSelector(selector);
+            if (progress) progress(`Clicking ${selector}...`, 60, 100);
             await session.page.click(selector);
             if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
+            if (progress) progress('Click complete', 100, 100);
             return await formatResult(session.page, mode, session.page.url());
-        }, { maxRetries: retries, baseDelay: 300 });
+        }, {
+            maxRetries: retries,
+            baseDelay: 300,
+            onRetry: (attempt, total, err, delay) => {
+                if (progress) progress(`Retry ${attempt}/${total} after ${delay}ms: ${err.message}`, 30, 100);
+            }
+        });
     } catch (err) {
         return { content: [{ type: "text", text: `Click failed: ${err.message}` }], isError: true };
     }
@@ -652,6 +662,7 @@ export async function browser_session_click(args, context) {
 
 export async function browser_session_fill(args, context) {
     const { sessionId, fields, submit, waitAfter, mode = 'text', retries = 2 } = args;
+    const { progress } = context;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -675,7 +686,9 @@ export async function browser_session_fill(args, context) {
             }
         }
         return await withRetry(async (attempt) => {
-            for (const f of fields) {
+            for (let i = 0; i < fields.length; i++) {
+                const f = fields[i];
+                if (progress) progress(`Filling field ${i + 1}/${fields.length} (${f.selector})...${attempt > 0 ? ` (retry ${attempt})` : ''}`, 20 + Math.round((40 * i) / fields.length), 100);
                 await session.page.waitForSelector(f.selector);
                 await session.page.evaluate((sel) => {
                     const el = document.querySelector(sel);
@@ -687,12 +700,20 @@ export async function browser_session_fill(args, context) {
                 await session.page.type(f.selector, f.value || '');
             }
             if (submit) {
+                if (progress) progress('Submitting form...', 70, 100);
                 await session.page.click(submit);
                 await session.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {});
             }
             if (waitAfter) await new Promise(r => setTimeout(r, waitAfter));
+            if (progress) progress('Fill complete', 100, 100);
             return await formatResult(session.page, mode, session.page.url());
-        }, { maxRetries: retries, baseDelay: 500 });
+        }, {
+            maxRetries: retries,
+            baseDelay: 500,
+            onRetry: (attempt, total, err, delay) => {
+                if (progress) progress(`Retry ${attempt}/${total} after ${delay}ms: ${err.message}`, 20, 100);
+            }
+        });
     } catch (err) {
         return { content: [{ type: "text", text: `Fill failed: ${err.message}` }], isError: true };
     }
@@ -700,6 +721,7 @@ export async function browser_session_fill(args, context) {
 
 export async function browser_session_evaluate(args, context) {
     const { sessionId, script, waitFor } = args;
+    const { progress } = context;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -714,9 +736,14 @@ export async function browser_session_evaluate(args, context) {
     resetSessionIdleTimer(sessionId);
 
     try {
-        if (waitFor) await session.page.waitForSelector(waitFor).catch(() => {});
+        if (waitFor) {
+            if (progress) progress(`Waiting for ${waitFor}...`, 30, 100);
+            await session.page.waitForSelector(waitFor).catch(() => {});
+        }
 
+        if (progress) progress('Evaluating script...', 60, 100);
         const result = await session.page.evaluate(new Function(script));
+        if (progress) progress('Evaluation complete', 100, 100);
         return {
             content: [{ type: "text", text: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) }]
         };
@@ -921,6 +948,7 @@ export async function browser_session_wait(args, context) {
             if (!result) {
                 return { content: [{ type: "text", text: `Timeout waiting for selectors: ${selectors.join(', ')}` }], isError: true };
             }
+            if (context.progress) context.progress('Selector matched', 100, 100);
             return { content: [{ type: "text", text: `Selector matched: ${result} after ${Date.now() - startTime}ms` }] };
         }
 
@@ -931,6 +959,7 @@ export async function browser_session_wait(args, context) {
                 (searchText) => document.body.innerText.includes(searchText),
                 { timeout, arguments: [text] }
             );
+            if (context.progress) context.progress('Text found', 100, 100);
             return { content: [{ type: "text", text: `Text found after ${Date.now() - startTime}ms` }] };
         }
 
@@ -942,6 +971,7 @@ export async function browser_session_wait(args, context) {
                 (_pat) => regex.test(window.location.href),
                 { timeout, arguments: [urlPattern] }
             );
+            if (context.progress) context.progress('URL matched', 100, 100);
             return { content: [{ type: "text", text: `URL matched after ${Date.now() - startTime}ms` }] };
         }
 
@@ -949,6 +979,7 @@ export async function browser_session_wait(args, context) {
         if (condition) {
             if (context.progress) context.progress(`Waiting for condition`, 30, 100);
             await session.page.waitForFunction(new Function('return ' + condition), { timeout });
+            if (context.progress) context.progress('Condition met', 100, 100);
             return { content: [{ type: "text", text: `Condition met after ${Date.now() - startTime}ms` }] };
         }
 

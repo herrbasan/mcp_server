@@ -1,24 +1,29 @@
 import fs from 'fs';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 
 export async function inspect_code(args, context) {
     const { gateway, prompts, progress } = context;
     const { files, prompt } = args;
 
-    if (progress) progress('Reading files for inspection...', 10, 100);
-    
+    const pr = createProgressReporter(progress);
+    pr.set('Reading files for inspection...', 10, true);
+
     let fileContext = '';
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         if (!fs.existsSync(file)) {
+            pr.done('File not found');
             return { content: [{ type: "text", text: `Error: File not found: ${file}` }], isError: true };
         }
         const content = fs.readFileSync(file, 'utf8');
         fileContext += `\n\n--- File: ${file} ---\n${content}\n--- End File ---\n`;
+        pr.step(i + 1, files.length, `Read ${file} (${i + 1}/${files.length})`, 10, 40);
     }
 
     const finalPrompt = `Files to analyze:\n${fileContext}\n\nTask:\n${prompt}`;
     const systemPrompt = prompts.system || 'You are an expert code inspector and architect. Analyze the provided code objectively, find issues, and answer questions concisely and clearly.';
 
-    if (progress) progress('Analyzing code with LLM...', 50, 100);
+    pr.set('Analyzing code with LLM...', 50, true);
 
     const response = await gateway.chat({
         task: 'inspect',
@@ -26,7 +31,7 @@ export async function inspect_code(args, context) {
         systemPrompt: systemPrompt
     });
 
-    if (progress) progress('Analysis complete', 100, 100);
+    pr.done('Analysis complete');
 
     return {
         content: [{ type: "text", text: response.content }]

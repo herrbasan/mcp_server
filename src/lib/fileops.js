@@ -611,7 +611,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
     // Public: grep
     // ============================================
 
-    async function grep(userPath, pattern, { maxMatches = 100, context = 0, ignoreCase = false } = {}) {
+    async function grep(userPath, pattern, { maxMatches = 100, context = 0, ignoreCase = false, onProgress = null } = {}) {
         if (typeof pattern !== 'string') throw new Error('grep: pattern must be a string');
         const testRegex = new RegExp(pattern, ignoreCase ? 'i' : '');
         const abs = resolve(userPath);
@@ -629,7 +629,9 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         let truncated = false;
 
         fileLoop:
-        for (const file of files) {
+        for (let fi = 0; fi < files.length; fi++) {
+            const file = files[fi];
+            if (onProgress) onProgress(fi + 1, files.length, `Searching ${rel(file)}`);
             let fst;
             try { fst = fs.statSync(file); } catch (e) { continue; }
             if (fst.size > GREP_MAX_FILE_BYTES) {
@@ -717,7 +719,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         return item.content;
     }
 
-    async function batch(opsList, { onError = 'collect' } = {}) {
+    async function batch(opsList, { onError = 'collect', onProgress = null } = {}) {
         if (!Array.isArray(opsList)) throw new Error('batch: opsList must be an array');
         if (onError !== 'collect' && onError !== 'abort') {
             throw new Error('batch: onError must be collect or abort');
@@ -748,8 +750,10 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             writeFromUrl: (a) => writeFromUrl(a.path, a.url, pickOpts(a, ['allowedPrefixes', 'overwrite']))
         };
 
-        for (const item of opsList) {
+        for (let i = 0; i < opsList.length; i++) {
+            const item = opsList[i];
             const { op } = item;
+            if (onProgress) onProgress(i + 1, opsList.length, `Batch ${op || '(missing)'} (${i + 1}/${opsList.length})`);
             if (!op || typeof knownOps[op] !== 'function') {
                 results.push({ op: op || '(missing)', ok: false, error: `batch: unknown op "${op}"` });
                 if (onError === 'abort') break;

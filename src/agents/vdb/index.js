@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { loadNvdb, isNvdbAvailable } from './nvdb-loader.js';
 import { makeChunker } from './chunker.js';
 import { createContextEnhancer } from './context-enhancer.js';
@@ -198,6 +199,8 @@ function withTimeout(promise, ms, label) {
 
 async function embedViaGateway(texts, retries) {
     if (!GATEWAY_HTTP_URL) throw new Error('VDB: gateway HTTP URL not configured');
+    // Circuit open (provider outage): fail fast instead of burning timeouts.
+    if (GATEWAY?.isEmbedProviderDown?.()) throw new Error('Embed provider down (circuit open) — retry later');
     const url = `${GATEWAY_HTTP_URL}/v1/embeddings`;
     const body = CONFIG.embeddingModel
         ? JSON.stringify({ input: texts, model: CONFIG.embeddingModel })
@@ -207,14 +210,17 @@ async function embedViaGateway(texts, retries) {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            // Long timeout: the endpoint is local but large batches can take 10-20s.
+            // Short timeout: the endpoint is local and healthy batches take
+            // 10-20s. A longer window (the old 5 min) turned a down provider
+            // into a multi-minute stall per batch. Network failures trip the
+            // circuit breaker so remaining batches fail in milliseconds.
             const headers = { 'Content-Type': 'application/json' };
             if (GATEWAY_ACCESS_KEY) headers['Authorization'] = `Bearer ${GATEWAY_ACCESS_KEY}`;
             const res = await fetch(url, {
                 method: 'POST',
                 headers,
                 body,
-                signal: AbortSignal.timeout(5 * 60 * 1000)
+                signal: AbortSignal.timeout(30000)
             });
             if (!res.ok) {
                 const errText = await res.text().catch(() => 'unknown');
@@ -233,17 +239,24 @@ async function embedViaGateway(texts, retries) {
                     throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(emb) ? emb.length : typeof emb}`);
                 }
             }
+            GATEWAY?.markEmbedProviderUp?.();
             return embeddings;
         } catch (err) {
             lastErr = err;
-            const isNetwork = err.message && (err.message.includes('timeout') || err.message.includes('ECONNRESET') || err.message.includes('fetch failed'));
-            if (attempt < retries && isNetwork) {
-                const wait = Math.min(1000 * Math.pow(2, attempt), 10000);
-                logger.warn(`[VDB] Embedding request network error (attempt ${attempt + 1}/${retries + 1}): ${err.message}. Retrying in ${wait}ms...`, null, 'VDB');
-                await sleep(wait);
-            } else {
-                throw err;
+            const isNetwork = err.name === 'AbortError'
+                || err.name === 'TimeoutError'
+                || err.name === 'TypeError'
+                || (err.message && (err.message.includes('timeout') || err.message.includes('ECONNRESET') || err.message.includes('fetch failed')));
+            if (isNetwork) {
+                // Provider outage: open the circuit, do NOT retry or split —
+                // remaining batches fail fast and the next scan retries when
+                // the provider recovers.
+                GATEWAY?.markEmbedProviderDown?.();
+                logger.warn(`[VDB] Embedding provider unreachable (${err.message}) — circuit opened, ${texts.length} text(s) pending`, null, 'VDB');
+                break;
             }
+            // Non-network error (e.g. dim mismatch): retry as configured.
+            if (attempt < retries) continue;
         }
     }
     throw lastErr;
@@ -256,7 +269,11 @@ async function embedBatchSplittable(batch) {
     try {
         return await embedViaGateway(batch);
     } catch (err) {
-        // Defensive fallback: if a batch somehow still fails, split it. This should not happen if batching is correct.
+        // Provider outage: propagate — the circuit is open, splitting would
+        // just recurse through each half and re-trip the same error.
+        if (GATEWAY?.isEmbedProviderDown?.()) throw err;
+        // Defensive fallback: if a batch somehow still fails (e.g. per-request
+        // size limit), split it in half. This should not happen if batching is correct.
         logger.warn(`[VDB] Batch of ${batch.length} failed (${err.message}), splitting in half as fallback...`, null, 'VDB');
         const mid = Math.ceil(batch.length / 2);
         const left = await embedBatchSplittable(batch.slice(0, mid));
@@ -516,8 +533,8 @@ function walk(dir, root, out, baseMeta, collectionDefaults) {
     }
 }
 
-async function scanCollection(collectionName) {
-    const stats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0 };
+async function scanCollection(collectionName, onPhase = null) {
+    const stats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0, pending: 0 };
     const index = loadIndex();
     const currentFiles = new Set();
     const toIndex = [];
@@ -526,6 +543,8 @@ async function scanCollection(collectionName) {
     // entries from previous scans (registerHash runs in insertPreparedFile,
     // which fires after embedding).
     const scanHashes = new Map(); // contentHash -> docBaseId (first seen this scan)
+
+    onPhase?.(5, `Scanning ${collectionName}: listing files...`);
 
     const watched = listWatchedFiles(collectionName);
     for (const { absolutePath, root, metadata } of watched) {
@@ -588,9 +607,13 @@ async function scanCollection(collectionName) {
 
     // Process files in groups so memory stays bounded and progress is saved incrementally.
     const groupSize = CONFIG.filesPerGroup || 100;
+    const groupCount = Math.ceil(toIndex.length / groupSize);
+    onPhase?.(25, `Scanning ${collectionName}: prepared ${toIndex.length} files, embedding in ${groupCount} group${groupCount === 1 ? '' : 's'}...`);
     for (let g = 0; g < toIndex.length; g += groupSize) {
         const group = toIndex.slice(g, g + groupSize);
-        logger.info(`[VDB] ${collectionName}: indexing group ${Math.floor(g / groupSize) + 1}/${Math.ceil(toIndex.length / groupSize)} (${group.length} files)`, null, 'VDB');
+        const groupNum = Math.floor(g / groupSize) + 1;
+        logger.info(`[VDB] ${collectionName}: indexing group ${groupNum}/${groupCount} (${group.length} files)`, null, 'VDB');
+        onPhase?.(25 + Math.round((60 * groupNum) / Math.max(groupCount, 1)), `Scanning ${collectionName}: embedding group ${groupNum}/${groupCount}...`);
 
         const allChunkTexts = [];
         const chunkOffsets = [];
@@ -609,6 +632,15 @@ async function scanCollection(collectionName) {
                 insertPreparedFile(prepared, embeddings);
             }
         } catch (e) {
+            // Provider outage: abort the scan instead of churning through every
+            // remaining group burning timeouts. Pending files re-embed on the
+            // next scan once the provider recovers.
+            if (GATEWAY?.isEmbedProviderDown?.()) {
+                logger.error(`[VDB] ${collectionName}: embedding provider down — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
+                stats.errors += group.length;
+                stats.pending += (toIndex.length - g);
+                break;
+            }
             logger.error(`[VDB] Group embedding failed: ${e.message}`, null, 'VDB');
             stats.errors += group.length;
             stats.added = Math.max(0, stats.added - group.length);
@@ -635,6 +667,7 @@ async function scanCollection(collectionName) {
     // one. compact() then collects deleted IDs from the (now empty) memtable
     // and finds nothing to remove. The tombstones must be in the memtable
     // when compact() runs.
+    onPhase?.(95, `Scanning ${collectionName}: compacting...`);
     try {
         const before = coll.stats || {};
         const compactResult = await coll.compact();
@@ -648,10 +681,11 @@ async function scanCollection(collectionName) {
         logger.warn(`[VDB] ${collectionName}: compaction failed: ${e.message}`, null, 'VDB');
     }
 
+    onPhase?.(100, `Scanning ${collectionName}: +${stats.added} new, ~${stats.updated} updated, -${stats.removed} removed, ${stats.errors} errors`);
     return stats;
 }
 
-async function runScan() {
+async function runScan(onProgress = null) {
     if (IS_SCANNING) {
         const elapsed = SCAN_STARTED_AT ? Date.now() - SCAN_STARTED_AT : 0;
         const timeoutMs = (CONFIG.scanTimeoutMinutes ?? DEFAULTS.scanTimeoutMinutes) * 60 * 1000;
@@ -666,21 +700,25 @@ async function runScan() {
 
     IS_SCANNING = true;
     SCAN_STARTED_AT = Date.now();
-    const totalStats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0 };
+    const totalStats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0, pending: 0 };
 
     const scanTimeoutMs = (CONFIG.scanTimeoutMinutes ?? DEFAULTS.scanTimeoutMinutes) * 60 * 1000;
 
     try {
         const scanPromise = (async () => {
-            for (const name of Object.keys(CONFIG.watch || {})) {
-                if (!COLLECTIONS[name]) continue;
-                const collConfig = CONFIG.watch[name];
-                if (collConfig && collConfig.enabled === false) {
-                    logger.debug(`[VDB] Skipping disabled collection: ${name}`, null, 'VDB');
-                    continue;
-                }
+            // Pre-compute the enabled collection list so progress windows are accurate.
+            const names = Object.keys(CONFIG.watch || {}).filter(name =>
+                COLLECTIONS[name] && CONFIG.watch[name]?.enabled !== false
+            );
+            if (onProgress) onProgress('Scanning storage...', 2);
+            for (let i = 0; i < names.length; i++) {
+                const name = names[i];
+                const collStart = Math.round((i / names.length) * 100);
+                const collEnd = Math.round(((i + 1) / names.length) * 100);
                 logger.info(`[VDB] Scanning collection: ${name}`, null, 'VDB');
-                const stats = await scanCollection(name);
+                const stats = await scanCollection(name, (phasePct, msg) => {
+                    if (onProgress) onProgress(msg, collStart + Math.round((phasePct / 100) * (collEnd - collStart)));
+                });
                 for (const k of Object.keys(totalStats)) totalStats[k] += stats[k];
             }
             return totalStats;
@@ -725,7 +763,7 @@ function buildFilter(collectionName, folder, extension) {
 // Stops one long/broad document from filling all result slots.
 const MAX_CHUNKS_PER_FILE = 3;
 
-export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false } = {}) {
+export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, onProgress = null } = {}) {
     if (!DATABASE) throw new Error('VDB agent is not initialized or nVDB is unavailable. Check logs.');
     if (!query) throw new Error('searchDocuments: query is required');
 
@@ -735,7 +773,9 @@ export async function searchDocuments({ query, collections, folder, extension, t
 
     if (targetCollections.length === 0) throw new Error('searchDocuments: no enabled collections to search');
 
+    onProgress?.('Embedding query...', 20);
     const queryEmbedding = await embedText(query);
+    onProgress?.('Searching collections...', 40);
 
     // Per-collection search with min-max score normalization.
     // Raw cosine scores are NOT comparable across collections (different content
@@ -748,7 +788,8 @@ export async function searchDocuments({ query, collections, folder, extension, t
     // dedup have headroom to work with.
     const perCollection = [];
 
-    for (const collectionName of targetCollections) {
+    for (let ci = 0; ci < targetCollections.length; ci++) {
+        const collectionName = targetCollections[ci];
         const coll = getCollection(collectionName);
         const filter = buildFilter(collectionName, folder, extension);
         const fetchK = Math.max(top_k * 3, 30);
@@ -789,7 +830,10 @@ export async function searchDocuments({ query, collections, folder, extension, t
             }
             perCollection.push(result);
         }
+        onProgress?.(`Searched ${collectionName} (${ci + 1}/${targetCollections.length})`, 40 + Math.round((60 * (ci + 1)) / targetCollections.length));
     }
+
+    onProgress?.('Ranking results...', 95);
 
     // Sort by normalized score so cross-collection results are comparable.
     perCollection.sort((a, b) => b.normalizedScore - a.normalizedScore);
@@ -859,7 +903,9 @@ function readChunkContent(payload, chunker) {
 // ── Tool handlers ─────────────────────────────────────────────────────
 
 export async function vdb_search(args, context) {
-    const top = await searchDocuments(args || {});
+    const pr = createProgressReporter(context?.progress);
+    const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
+    pr.done('Search complete');
 
     const summary = top.map(r =>
         `[${r.collection}] ${r.path} (score: ${r.score.toFixed(4)}, norm: ${r.normalizedScore?.toFixed(3) ?? 'n/a'})${r.folder ? ` [folder:${r.folder}]` : ''}${r.domain ? ` [domain:${r.domain}]` : ''}${r.splitIdx > 0 ? ` chunk:${r.splitIdx}` : ''}`
@@ -891,7 +937,8 @@ export async function vdb_status(args, context) {
         collections: {},
         lastScanAt: LAST_SCAN_AT,
         isScanning: IS_SCANNING,
-        lastScanStats: SCAN_STATS
+        lastScanStats: SCAN_STATS,
+        embedProviderDown: GATEWAY?.isEmbedProviderDown?.() ?? false
     };
 
     if (DATABASE) {
@@ -918,24 +965,30 @@ export async function vdb_status(args, context) {
 
 export async function vdb_trigger_scan(args, context) {
     if (!DATABASE) throw new Error('VDB agent is not initialized');
-    const result = await runScan();
+    const pr = createProgressReporter(context?.progress);
+    const result = await runScan((msg, pct) => pr.set(msg, pct));
     if (result.alreadyRunning) {
+        pr.done('Scan already in progress');
         return { content: [{ type: 'text', text: 'Scan already in progress; request ignored.' }] };
     }
+    pr.done('Scan complete');
     return {
         content: [{
             type: 'text',
-            text: `Scan complete. added=${result.added} updated=${result.updated} removed=${result.removed} skipped=${result.skipped} errors=${result.errors}`
+            text: `Scan complete. added=${result.added} updated=${result.updated} removed=${result.removed} skipped=${result.skipped} errors=${result.errors}${result.pending ? ` pending=${result.pending} (embed provider down?)` : ''}`
         }]
     };
 }
 
 export async function vdb_build_index(args, context) {
     if (!DATABASE) throw new Error('VDB agent is not initialized');
+    const pr = createProgressReporter(context?.progress);
     const targets = (args?.collections || []).filter(c => Object.keys(COLLECTIONS).includes(c) && CONFIG.watch?.[c]);
     const names = targets.length > 0 ? targets : Object.keys(CONFIG.watch || {});
     const results = [];
-    for (const name of names) {
+    for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        pr.step(i + 1, names.length, `Building index for ${name} (${i + 1}/${names.length})...`);
         try {
             const coll = getCollection(name);
             coll.flush();
@@ -945,6 +998,7 @@ export async function vdb_build_index(args, context) {
             results.push({ collection: name, ok: false, error: e.message });
         }
     }
+    pr.done('Index build complete');
     return { content: [{ type: 'text', text: JSON.stringify(results, null, 2) }] };
 }
 
