@@ -741,7 +741,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
     // Raw cosine scores are NOT comparable across collections (different content
     // types cluster in different regions of the embedding space with different
     // score ranges). We normalize each collection's scores to [0,1] before
-    // merging, so a documentation match at 0.55 (near that collection's max)
+    // merging, so a memory match at 0.55 (near that collection's max)
     // can compete with a storage match at 0.95.
     //
     // We over-fetch per collection (top_k * 3) so the diversity cap and

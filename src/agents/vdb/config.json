@@ -1,16 +1,16 @@
 {
     "agent": "vdb",
-    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and documentation. Indexes text files on a timer and exposes ranked search across collections. Directories and files can be excluded from indexing via .nvdb_ignore files or the agents.vdb.ignore config list.",
+    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and memories. Indexes text files on a timer and exposes ranked search across collections. Directories and files can be excluded from indexing via .nvdb_ignore files or the agents.vdb.ignore config list.",
     "tools": [
         {
             "name": "vdb_search",
-            "description": "Semantic search over the vector database. Searches one or more collections (storage, documentation) and returns ranked matches with path, score, and snippet. Use filters to narrow by folder, domain, or file extension.",
+            "description": "Semantic search over the vector database. Searches one or more collections (storage, memory) and returns ranked matches with path, score, and snippet. Use filters to narrow by folder or file extension.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query or natural language question." },
-                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "documentation", "memory"] }, "description": "Collections to search. Default: all enabled collections." },
-                    "folder": { "type": "string", "description": "Filter to a specific folder (storage) or domain (documentation)." },
+                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "memory"] }, "description": "Collections to search. Default: all enabled collections." },
+                    "folder": { "type": "string", "description": "Filter to a specific folder (storage)." },
                     "extension": { "type": "string", "description": "Filter to files with this extension, e.g. '.md'." },
                     "top_k": { "type": "number", "default": 10, "description": "Number of top matches to return." },
                     "approximate": { "type": "boolean", "default": false, "description": "Use HNSW approximate search. Requires index to be built." },
@@ -35,7 +35,7 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "documentation", "memory"] }, "description": "Collections to index. Default: all." }
+                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "memory"] }, "description": "Collections to index. Default: all." }
                 }
             }
         }

@@ -316,8 +316,8 @@ Tools are NOT interchangeable across contexts. Each tool executes in ONE place:
 
   CONTEXT A: MCP Server (this server, port 3100)
     Your top-level MCP calls land here. Tools: storage.*, memory.*,
-    forge.*, vdb.*, vision.*, research.*, llm.*,
-    github.*, inspector.*, dreaming.*.
+    forge.*, vdb.*, vision.*, llm.*, git.*, browser.*,
+    research.*, inspector.*.
     Runs in the MCP server Node.js process.
     CAN reach: filesystem, LLM Gateway, browser sessions, GitHub API.
 
@@ -426,6 +426,11 @@ Memory scopes:
       Get the current Memory Map formatted for system prompt injection.
       Use "json" for raw data, "prompt" for human-readable.
 
+  memory.embed_heal — { batchLimit?: number }
+      Force re-embedding of memories stored without embeddings during an
+      embed provider outage. Runs automatically in the background; call to
+      trigger a larger pass manually after a provider recovery.
+
 
 ═══════════════════════════════════════════════════════════════
 BROWSER — Headless Web Automation
@@ -497,6 +502,18 @@ CONTENT MODES (used by browser.content, browser.click, browser.fill):
 
 
 ═══════════════════════════════════════════════════════════════
+RESEARCH — Deep Web Research
+═══════════════════════════════════════════════════════════════
+
+Multi-source web research with a persistent browser pool. Deeper than
+browser.research: multi-phase search, scrape, and synthesis with citations.
+
+  research.topic — { query*, max_pages? }
+      Research a topic via web search. Multi-phase: search, scrape, synthesize
+      with citations. Use when browser.research is too shallow.
+
+
+═══════════════════════════════════════════════════════════════
 GIT — GitHub API Relay
 ═══════════════════════════════════════════════════════════════
 
@@ -550,6 +567,18 @@ except issue_create and PR operations.
 
   git.issue_create — { owner*, repo*, title*, body?, labels?, assignees? }
       Create a new issue. Use for bug reports and feature requests.
+
+
+═══════════════════════════════════════════════════════════════
+INSPECTOR — Code Analysis
+═══════════════════════════════════════════════════════════════
+
+Iterative code analysis and review. Analyze existing code files, find bugs,
+explain architecture, or suggest improvements.
+
+  inspector.inspect_code — { files*, task? }
+      Analyze existing code files iteratively. Finds bugs, explains
+      architecture, or suggests improvements. File paths must be absolute.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -707,6 +736,16 @@ content that should survive beyond the current session.
       Current state is snapshotted first so restore is undoable.
       USE THIS after storage.history shows the version you need.
 
+  storage.resources_list — {}
+      List available MCP resources. Exposes storage://{path} URI templates
+      for arbitrary files under the storage root.
+
+  storage.resources_read — { uri*, encoding? }
+      Read an MCP resource by URI (e.g. storage://docs/Workshop/Agents_Prime.md).
+
+  storage.resources_templates — {}
+      List resource URI templates (the storage://{path} pattern).
+
 
 ═══════════════════════════════════════════════════════════════
 FORGE — Create & Execute Custom Tools
@@ -804,6 +843,7 @@ IMPORTANT RULES
         "memory.store": "memory_store", "memory.recall": "memory_recall", "memory.get": "memory_get",
         "memory.update": "memory_update", "memory.list": "memory_list", "memory.forget": "memory_forget",
         "memory.overview": "memory_overview",
+        "memory.embed_heal": "memory_embed_heal",
         "memory.dream_generate": "dream_generate", "memory.dream_status": "dream_status", "memory.dream_inject": "dream_inject",
 
         "browser.session_create": "browser_session_create", "browser.session_list": "browser_session_list",
@@ -814,6 +854,9 @@ IMPORTANT RULES
         "browser.evaluate": "browser_session_evaluate", "browser.inspect": "browser_session_inspect",
         "browser.console": "browser_session_console", "browser.wait": "browser_session_wait",
         "browser.research": "research_topic",
+        "research.topic": "research_topic",
+
+        "inspector.inspect_code": "inspect_code",
 
         "git.read": "git_read_file", "git.tree": "git_list_tree", "git.log": "git_log",
         "git.commit": "git_get_commit", "git.diff": "git_diff", "git.branches": "git_list_branches",
