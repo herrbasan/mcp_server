@@ -41,7 +41,7 @@ Model routing is handled by the LLM Gateway. See the Gateway's configuration for
 npm start
 ```
 
-The MCP SSE endpoint is available at `http://<HOST>:<PORT>/sse`.
+The MCP endpoint is available at `http://<HOST>:<PORT>/sse/compact` (SSE) or `http://<HOST>:<PORT>/mcp/compact` (streamable HTTP). Both serve the single unified `tools` tool — all agent methods are invoked through it via `agent.action` routing.
 
 ### 5. Connect a client
 
@@ -52,7 +52,7 @@ In VS Code `mcp.json`:
     "servers": {
         "workshop": {
             "type": "sse",
-            "url": "http://localhost:3100/sse"
+            "url": "http://localhost:3100/sse/compact"
         }
     }
 }

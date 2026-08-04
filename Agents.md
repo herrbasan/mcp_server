@@ -26,8 +26,12 @@
 
 ## MCP Endpoints
 
-- **`/mcp/compact`** — primary. Single `tools` tool routes all agent methods via `agent.action` (e.g. `storage.write`, `memory.recall`).
-- **`/mcp`** — legacy. Exposes every tool separately; kept for backward compatibility.
+The server exposes the single unified `tools` tool on two transports (the legacy per-tool endpoints were removed 2026-08-04):
+
+- **`/mcp/compact`** — streamable HTTP. For modern MCP clients.
+- **`/sse/compact`** + **`/message/compact`** — legacy SSE transport. For VS Code Copilot and older SSE-only clients.
+
+Both route all agent methods via `agent.action` (e.g. `storage.write`, `memory.recall`).
 
 ## Adding a New Tool
 
