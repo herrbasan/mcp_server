@@ -3,11 +3,10 @@ import { getLogger } from './utils/logger.js';
 const logger = getLogger();
 
 /**
- * LLM Gateway client — SSE transport.
+ * LLM Gateway client — SSE transport (chat only).
  *
  * Talks to the gateway exclusively over HTTP REST:
  *   chat()        → POST /v1/chat/completions (stream: true, SSE)
- *   embed()       → POST /v1/embeddings
  *   listModels()  → GET /v1/models
  *
  * Cancellation uses AbortController; the gateway aborts the upstream
@@ -15,48 +14,19 @@ const logger = getLogger();
  *
  * The first argument (legacy wsUrl) is accepted for call-site compatibility
  * and ignored — the WS transport was removed from the gateway (2026-07-26).
+ *
+ * Embeds do NOT go through the gateway. Since 2026-08-04 they are delegated
+ * to the embed client (src/embed-client.js), which talks directly to the
+ * llama-cpp-wrapper. Background: the gateway's embed route leaked immortal
+ * promises (no abort propagation, no body-read deadline); the wrapper +
+ * llama-server already provide queueing and disconnect semantics, so the
+ * gateway hop added only failure modes. No circuit breaker here — a breaker
+ * papers over hangs, and hangs are now impossible by construction.
  */
 
-// ── Embed provider circuit breaker (module-level, shared across instances) ──
-// The Gateway routes embed calls to a remote wrapper; when that machine is
-// unreachable every embed call would otherwise burn its full timeout. The
-// circuit opens on the first failure so ALL consumers (memory recall, VDB
-// scan/search, storage search) fail fast in milliseconds instead of each
-// stalling. The window grows with consecutive failures (15s → 30s → … → 5 min)
-// and resets on the first success.
-let embedDownUntil = 0;
-let embedBackoffMs = 15000;
-
-function isEmbedProviderDown() {
-    return Date.now() < embedDownUntil;
-}
-
-function markEmbedProviderDown() {
-    embedDownUntil = Date.now() + embedBackoffMs;
-    embedBackoffMs = Math.min(embedBackoffMs * 2, 5 * 60 * 1000);
-}
-
-function markEmbedProviderUp() {
-    embedDownUntil = 0;
-    embedBackoffMs = 15000;
-}
-
-function isEmbedNetworkError(err) {
-    return err?.name === 'AbortError'
-        || err?.name === 'TimeoutError'
-        || err?.name === 'TypeError'                                  // fetch failed
-        || (typeof err?.message === 'string' && /^HTTP 5\d\d/.test(err.message));
-}
-
-export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
+export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
+    if (!embedClient) throw new Error('createGatewayClient: embedClient is required');
     const baseUrl = httpUrl.replace(/\/+$/, '');
-    // Hard cap on embedding requests. The Gateway routes embed calls to a
-    // remote wrapper (192.168.0.145:4080); if that machine is unreachable,
-    // the fetch hangs indefinitely. This timeout ensures the calling tool
-    // (memory.recall, VDB search) fails fast and degrades to recency
-    // instead of blocking until the client's 2-minute tool timeout fires.
-    const EMBED_TIMEOUT_MS = 15000;
-    const EMBED_BATCH_TIMEOUT_MS = 30000;
 
     function authHeaders() {
         const headers = { 'Content-Type': 'application/json' };
@@ -273,80 +243,18 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
             return response.content;
         },
 
+        // Embeds: delegated to the direct wrapper client (see header).
         async embed(text) {
-            if (isEmbedProviderDown()) {
-                throw new Error('Embed provider down (circuit open) — retry later');
-            }
-            // The Gateway owns the embed model — clients never send model or
-            // task. routeEmbedding pins the default embedding task's model
-            // unconditionally (a wrong-dimension embed model would silently
-            // corrupt the consuming VDB).
-            const body = { input: text };
-            // AbortController enforces a hard timeout. Without it, a hung
-            // Gateway embed response blocks the calling tool indefinitely —
-            // the memory agent's try/catch degrades to recency, but only
-            // after the fetch eventually fails (which may be never).
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), EMBED_TIMEOUT_MS);
-            try {
-                const res = await fetch(`${baseUrl}/v1/embeddings`, {
-                    method: 'POST',
-                    headers: authHeaders(),
-                    body: JSON.stringify(body),
-                    signal: ctrl.signal
-                });
-                if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-                const data = await res.json();
-                markEmbedProviderUp();
-                return data.data[0].embedding;
-            } catch (err) {
-                if (isEmbedNetworkError(err)) markEmbedProviderDown();
-                if (err.name === 'AbortError') {
-                    throw new Error(`Embedding timed out after ${EMBED_TIMEOUT_MS / 1000}s — Gateway did not respond`);
-                }
-                throw err;
-            } finally {
-                clearTimeout(timer);
-            }
+            return embedClient.embed(text);
         },
 
         async embedText(text) {
-            return this.embed(text);
+            return embedClient.embed(text);
         },
 
         async embedBatch(texts) {
-            if (isEmbedProviderDown()) {
-                throw new Error('Embed provider down (circuit open) — retry later');
-            }
-            const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), EMBED_BATCH_TIMEOUT_MS);
-            try {
-                const res = await fetch(`${baseUrl}/v1/embeddings`, {
-                    method: 'POST',
-                    headers: authHeaders(),
-                    body: JSON.stringify({ input: texts }),
-                    signal: ctrl.signal
-                });
-                if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-                const data = await res.json();
-                markEmbedProviderUp();
-                return data.data.map(d => d.embedding);
-            } catch (err) {
-                if (isEmbedNetworkError(err)) markEmbedProviderDown();
-                if (err.name === 'AbortError') {
-                    throw new Error(`Embedding batch timed out after ${EMBED_BATCH_TIMEOUT_MS / 1000}s — Gateway did not respond`);
-                }
-                throw err;
-            } finally {
-                clearTimeout(timer);
-            }
+            return embedClient.embedBatch(texts);
         },
-
-        // Circuit breaker introspection — lets consumers (e.g. VDB's own
-        // batch path) fail fast and share one outage signal.
-        isEmbedProviderDown,
-        markEmbedProviderDown,
-        markEmbedProviderUp,
 
         async listModels(type) {
             const url = type ? `${baseUrl}/v1/models?type=${encodeURIComponent(type)}` : `${baseUrl}/v1/models`;

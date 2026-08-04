@@ -46,8 +46,6 @@ let SCAN_STARTED_AT = null;
 let LAST_SCAN_AT = null;
 let SCAN_STATS = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0 };
 let GATEWAY = null;
-let GATEWAY_HTTP_URL = null;
-let GATEWAY_ACCESS_KEY = null;
 let STORAGE_ROOT = null;
 let CHUNKER = null;
 let CONTEXT_ENHANCER = null;
@@ -196,39 +194,17 @@ function withTimeout(promise, ms, label) {
 }
 
 async function embedViaGateway(texts, retries) {
-    if (!GATEWAY_HTTP_URL) throw new Error('VDB: gateway HTTP URL not configured');
-    // Circuit open (provider outage): fail fast instead of burning timeouts.
-    if (GATEWAY?.isEmbedProviderDown?.()) throw new Error('Embed provider down (circuit open) — retry later');
-    const url = `${GATEWAY_HTTP_URL}/v1/embeddings`;
-    // The Gateway owns the embed model — never send model/task. routeEmbedding
-    // pins the default embedding task's model (dimension invariant).
-    const body = JSON.stringify({ input: texts });
+    // Despite the name (kept to minimize churn), this now talks DIRECTLY to
+    // the llama-cpp-wrapper via the gateway object's embed delegation — the
+    // gateway is out of the embed path since 2026-08-04. The wrapper +
+    // llama-server own the queue; a failure here is loud and retry-safe.
+    if (!GATEWAY) throw new Error('VDB: gateway not available');
     retries = retries ?? CONFIG.maxRetries ?? 1;
     let lastErr;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            // Short timeout: the endpoint is local and healthy batches take
-            // 10-20s. A longer window (the old 5 min) turned a down provider
-            // into a multi-minute stall per batch. Network failures trip the
-            // circuit breaker so remaining batches fail in milliseconds.
-            const headers = { 'Content-Type': 'application/json' };
-            if (GATEWAY_ACCESS_KEY) headers['Authorization'] = `Bearer ${GATEWAY_ACCESS_KEY}`;
-            const res = await fetch(url, {
-                method: 'POST',
-                headers,
-                body,
-                signal: AbortSignal.timeout(30000)
-            });
-            if (!res.ok) {
-                const errText = await res.text().catch(() => 'unknown');
-                throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
-            }
-            const data = await res.json();
-            if (data.error) {
-                throw new Error(data.error.message || JSON.stringify(data.error).slice(0, 200));
-            }
-            const embeddings = data.data?.map(d => d.embedding);
+            const embeddings = await GATEWAY.embedBatch(texts);
             if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
                 throw new Error(`VDB: expected ${texts.length} embeddings, got ${Array.isArray(embeddings) ? embeddings.length : typeof embeddings}`);
             }
@@ -237,20 +213,19 @@ async function embedViaGateway(texts, retries) {
                     throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(emb) ? emb.length : typeof emb}`);
                 }
             }
-            GATEWAY?.markEmbedProviderUp?.();
             return embeddings;
         } catch (err) {
             lastErr = err;
+            // Network/timeout: the wrapper is down or its queue outlasted the
+            // timeout. Don't retry within this scan — pending files re-embed
+            // on the next scan. No circuit breaker: the queue drains, so the
+            // next scan simply tries again.
             const isNetwork = err.name === 'AbortError'
                 || err.name === 'TimeoutError'
                 || err.name === 'TypeError'
-                || (err.message && (err.message.includes('timeout') || err.message.includes('ECONNRESET') || err.message.includes('fetch failed')));
+                || (err.message && (err.message.includes('timed out') || err.message.includes('ECONNRESET') || err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')));
             if (isNetwork) {
-                // Provider outage: open the circuit, do NOT retry or split —
-                // remaining batches fail fast and the next scan retries when
-                // the provider recovers.
-                GATEWAY?.markEmbedProviderDown?.();
-                logger.warn(`[VDB] Embedding provider unreachable (${err.message}) — circuit opened, ${texts.length} text(s) pending`, null, 'VDB');
+                logger.warn(`[VDB] Embedding provider unreachable (${err.message}) — ${texts.length} text(s) pending until next scan`, null, 'VDB');
                 break;
             }
             // Non-network error (e.g. dim mismatch): retry as configured.
@@ -267,9 +242,12 @@ async function embedBatchSplittable(batch) {
     try {
         return await embedViaGateway(batch);
     } catch (err) {
-        // Provider outage: propagate — the circuit is open, splitting would
-        // just recurse through each half and re-trip the same error.
-        if (GATEWAY?.isEmbedProviderDown?.()) throw err;
+        // Network/timeout: propagate — abort the scan (handled by caller).
+        const isNetwork = err.name === 'AbortError'
+            || err.name === 'TimeoutError'
+            || err.name === 'TypeError'
+            || (err.message && (err.message.includes('timed out') || err.message.includes('ECONNRESET') || err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')));
+        if (isNetwork) throw err;
         // Defensive fallback: if a batch somehow still fails (e.g. per-request
         // size limit), split it in half. This should not happen if batching is correct.
         logger.warn(`[VDB] Batch of ${batch.length} failed (${err.message}), splitting in half as fallback...`, null, 'VDB');
@@ -630,11 +608,15 @@ async function scanCollection(collectionName, onPhase = null) {
                 insertPreparedFile(prepared, embeddings);
             }
         } catch (e) {
-            // Provider outage: abort the scan instead of churning through every
-            // remaining group burning timeouts. Pending files re-embed on the
-            // next scan once the provider recovers.
-            if (GATEWAY?.isEmbedProviderDown?.()) {
-                logger.error(`[VDB] ${collectionName}: embedding provider down — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
+            // Embedding provider unreachable: abort the scan instead of churning
+            // through every remaining group burning timeouts. Pending files
+            // re-embed on the next scan once the provider recovers.
+            const isNetwork = e.name === 'AbortError'
+                || e.name === 'TimeoutError'
+                || e.name === 'TypeError'
+                || (e.message && (e.message.includes('timed out') || e.message.includes('ECONNRESET') || e.message.includes('ECONNREFUSED') || e.message.includes('fetch failed')));
+            if (isNetwork) {
+                logger.error(`[VDB] ${collectionName}: embedding provider unreachable — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
                 stats.errors += group.length;
                 stats.pending += (toIndex.length - g);
                 break;
@@ -935,8 +917,7 @@ export async function vdb_status(args, context) {
         collections: {},
         lastScanAt: LAST_SCAN_AT,
         isScanning: IS_SCANNING,
-        lastScanStats: SCAN_STATS,
-        embedProviderDown: GATEWAY?.isEmbedProviderDown?.() ?? false
+        lastScanStats: SCAN_STATS
     };
 
     if (DATABASE) {
@@ -1034,10 +1015,7 @@ export async function init(context) {
     };
 
     GATEWAY = context.gateway;
-    GATEWAY_HTTP_URL = context.config?.gateway?.httpUrl;
-    GATEWAY_ACCESS_KEY = process.env.GATEWAY_ACCESS_KEY || context.config?.gateway?.accessKey || null;
     if (!GATEWAY) throw new Error('vdb.init: gateway is required');
-    if (!GATEWAY_HTTP_URL) throw new Error('vdb.init: context.config.gateway.httpUrl is required');
 
     // Pull storage root from storage agent config
     const storageConfig = context.config?.agents?.storage;
