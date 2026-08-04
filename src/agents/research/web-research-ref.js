@@ -40,11 +40,13 @@ export class WebResearchServer {
       maxIterations: config.maxIterations || 2,          // refinement loops
       maxPages: config.maxPages || 10,                   // pages to scrape
       // Per-page extraction cap. This is a STARTING-POINT tool — the report
-      // maps sources, the calling model fetches full pages for depth. 32KB
-      // per page keeps 10 pages well inside a 128k context (~320KB ≈ 80k
-      // tokens) while giving excerpts real substance. (Was 12MB/2 = 4KB
-      // effective, sized for small-context local models.)
-      maxMemoryPerPage: config.maxMemoryPerPage || 65536,
+      // maps sources, the calling model fetches full pages for depth. 256KB
+      // per page: 10 pages ≈ 2.5MB ≈ 600k tokens — fits deepseek-flash's 1M
+      // window (research tasks route there since 2026-08-04) with room for
+      // prompt + response. Most web articles are <100KB extracted, so in
+      // practice this reads pages WHOLE. (Was 64KB for the local 128k model,
+      // 4KB effective in the small-context era.)
+      maxMemoryPerPage: config.maxMemoryPerPage || 262144,
       concurrentScrapes: config.concurrentScrapes || 10  // parallel scrape limit (10 for high-end systems)
     };
     
@@ -888,7 +890,9 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     }).join('\n');
 
     const prompt = `${PROMPTS.synthesis}\n\nResearch query: "${query}"\n\nI've gathered content from ${scrapedContent.length} sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate. The Coverage line per source states how much of the page you are seeing.\n\n${sources}`;
-    const synthesis = await this.queryLLM(prompt, signal, 1024, null, null, 'synthesis', SYSTEM_PROMPTS.synthesis);
+    // 4096 output tokens: with pages now near-whole (256KB cap), the report
+    // needs room for depth + the Unexplored Sources work order.
+    const synthesis = await this.queryLLM(prompt, signal, 4096, null, null, 'synthesis', SYSTEM_PROMPTS.synthesis);
     return synthesis;
   }
 
