@@ -58,7 +58,6 @@
       "dbPath": "data/nvdb",
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
-      "embeddingModel": null,
       "embeddingDim": 2560,
       "chunkMaxTokens": 1024,
       "chunkOverlapTokens": 128,

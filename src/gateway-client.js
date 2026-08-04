@@ -273,13 +273,15 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
             return response.content;
         },
 
-        async embed(text, model) {
+        async embed(text) {
             if (isEmbedProviderDown()) {
                 throw new Error('Embed provider down (circuit open) — retry later');
             }
-            const body = model
-                ? { input: text, model }
-                : { input: text, task: 'embed' };
+            // The Gateway owns the embed model — clients never send model or
+            // task. routeEmbedding pins the default embedding task's model
+            // unconditionally (a wrong-dimension embed model would silently
+            // corrupt the consuming VDB).
+            const body = { input: text };
             // AbortController enforces a hard timeout. Without it, a hung
             // Gateway embed response blocks the calling tool indefinitely —
             // the memory agent's try/catch degrades to recency, but only
@@ -308,8 +310,8 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
             }
         },
 
-        async embedText(text, model) {
-            return this.embed(text, model);
+        async embedText(text) {
+            return this.embed(text);
         },
 
         async embedBatch(texts) {
@@ -322,7 +324,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey) {
                 const res = await fetch(`${baseUrl}/v1/embeddings`, {
                     method: 'POST',
                     headers: authHeaders(),
-                    body: JSON.stringify({ input: texts, task: 'embed' }),
+                    body: JSON.stringify({ input: texts }),
                     signal: ctrl.signal
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);

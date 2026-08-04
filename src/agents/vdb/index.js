@@ -175,9 +175,7 @@ function createEnhancementCache() {
 
 async function embedText(text) {
     if (!GATEWAY) throw new Error('VDB: gateway not available');
-    const embedding = CONFIG.embeddingModel
-        ? await GATEWAY.embed(text, CONFIG.embeddingModel)
-        : await GATEWAY.embed(text);
+    const embedding = await GATEWAY.embed(text);
     if (!Array.isArray(embedding) || embedding.length !== CONFIG.embeddingDim) {
         throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(embedding) ? embedding.length : typeof embedding}`);
     }
@@ -202,9 +200,9 @@ async function embedViaGateway(texts, retries) {
     // Circuit open (provider outage): fail fast instead of burning timeouts.
     if (GATEWAY?.isEmbedProviderDown?.()) throw new Error('Embed provider down (circuit open) — retry later');
     const url = `${GATEWAY_HTTP_URL}/v1/embeddings`;
-    const body = CONFIG.embeddingModel
-        ? JSON.stringify({ input: texts, model: CONFIG.embeddingModel })
-        : JSON.stringify({ input: texts, task: 'embed' });
+    // The Gateway owns the embed model — never send model/task. routeEmbedding
+    // pins the default embedding task's model (dimension invariant).
+    const body = JSON.stringify({ input: texts });
     retries = retries ?? CONFIG.maxRetries ?? 1;
     let lastErr;
 
@@ -1018,7 +1016,6 @@ export async function init(context) {
         indexPath: agentConfig.indexPath || null,
         scanIntervalMinutes: agentConfig.scanIntervalMinutes ?? DEFAULTS.scanIntervalMinutes,
         scanTimeoutMinutes: agentConfig.scanTimeoutMinutes ?? DEFAULTS.scanTimeoutMinutes,
-        embeddingModel: agentConfig.embeddingModel || null,
         embeddingDim: agentConfig.embeddingDim ?? DEFAULTS.embeddingDim,
         chunkMaxTokens: agentConfig.chunkMaxTokens ?? DEFAULTS.chunkMaxTokens,
         chunkOverlapTokens: agentConfig.chunkOverlapTokens ?? DEFAULTS.chunkOverlapTokens,
