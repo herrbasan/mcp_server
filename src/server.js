@@ -912,7 +912,7 @@ IMPORTANT RULES
         const { method, payload = {} } = args;
         if (!method) throw new Error("method is required (agent.action format, e.g. 'memory.recall')");
 
-        const legacyName = COMPACT_TO_LEGACY[method.toLowerCase()];
+        const legacyName = COMPACT_TO_LEGACY[method] ?? COMPACT_TO_LEGACY[method.toLowerCase()];
         if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);
         logger.info(`[Compact] Routing ${method} → ${legacyName}`, null, 'MCP');
         return routeToolCall(legacyName, payload, context);

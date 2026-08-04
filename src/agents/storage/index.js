@@ -230,6 +230,11 @@ export async function init(context) {
                 return res.status(403).json({ error: err.message });
             }
 
+            // Ensure the parent directory exists — the writeStream below fails
+            // with ENOENT when the path has a subdirectory (e.g. sessions/foo.json
+            // when sessions/ doesn't exist yet). Creates the tree on demand.
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+
             // Stream the request body to a temp file, then rename atomically.
             const tmp = target + '.upload-' + Date.now() + '-' + process.pid;
             const writeStream = fs.createWriteStream(tmp);
