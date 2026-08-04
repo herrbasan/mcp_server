@@ -39,7 +39,12 @@ export class WebResearchServer {
       llmTimeout: config.llmTimeout || 10000,            // 10s per LLM call
       maxIterations: config.maxIterations || 2,          // refinement loops
       maxPages: config.maxPages || 10,                   // pages to scrape
-      maxMemoryPerPage: config.maxMemoryPerPage || 12582912, // 12MB per page
+      // Per-page extraction cap. This is a STARTING-POINT tool — the report
+      // maps sources, the calling model fetches full pages for depth. 32KB
+      // per page keeps 10 pages well inside a 128k context (~320KB ≈ 80k
+      // tokens) while giving excerpts real substance. (Was 12MB/2 = 4KB
+      // effective, sized for small-context local models.)
+      maxMemoryPerPage: config.maxMemoryPerPage || 65536,
       concurrentScrapes: config.concurrentScrapes || 10  // parallel scrape limit (10 for high-end systems)
     };
     
@@ -132,7 +137,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   getTools() {
     return [{
       name: 'research_topic',
-      description: 'Research a topic via web search. Multi-phase: search, select sources, scrape, synthesize with citations. Runs asynchronously by default - returns job_id for polling.',
+      description: 'Research a topic via web search. Multi-phase: search, select sources, scrape, synthesize with citations. This is a STARTING MAP, not the final answer: sources are read at excerpt depth (up to 32KB/page). Every report ends with an "Unexplored Sources" section listing pages seen only partially — when the topic matters, fetch those URLs in full (browser_fetch) before relying on specifics. Runs asynchronously by default - returns job_id for polling.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -825,7 +830,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       
       const extracted = extractContent(html, url, {
         minLength: 200,
-        maxLength: Math.floor(this.limits.maxMemoryPerPage / 2),
+        maxLength: this.limits.maxMemoryPerPage,
         charThreshold: 200
       });
       
@@ -845,6 +850,10 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       return { 
         url, 
         content: extracted.content,
+        // Pre-truncation size of the extracted article. The extractor cuts at
+        // maxLength; without this the report can't tell "full page" from
+        // "excerpt of a much larger page" — see synthesizeContent's Coverage line.
+        fullContentLength: extracted.stats?.untruncatedSize || extracted.content.length,
         title: extracted.title,
         excerpt: extracted.excerpt,
         sections: extracted.sections,
@@ -858,7 +867,10 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
   }
   
   async synthesizeContent(query, scrapedContent, signal) {
-    // Build structured source list with sections
+    // Build structured source list with sections + coverage metadata.
+    // coveragePct tells the synthesizer (and ultimately the caller) how much
+    // of each page it is actually seeing — the basis for the report's
+    // "Unexplored Sources" section.
     const sources = scrapedContent.map((s, i) => {
       let text = `--- SOURCE ${i+1}: ${s.url} ---\n`;
       if (s.title) text += `Title: ${s.title}\n`;
@@ -866,12 +878,16 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       if (s.sections && s.sections.length > 0) {
         text += `Sections: ${s.sections.map(sec => sec.heading).join(', ')}\n`;
       }
+      const excerptKB = (s.content.length / 1024).toFixed(1);
+      const coveragePct = s.fullContentLength
+        ? Math.min(100, Math.round(s.content.length / s.fullContentLength * 100))
+        : 100;
+      text += `Coverage: ${excerptKB}KB excerpt (~${coveragePct}% of extracted page content)\n`;
       text += `\n${s.content}\n`;
       return text;
     }).join('\n');
-    
-    const prompt = `${PROMPTS.synthesis}\n\nResearch query: "${query}"\n\nI've gathered content from ${scrapedContent.length} sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate.\n\n${sources}`;
 
+    const prompt = `${PROMPTS.synthesis}\n\nResearch query: "${query}"\n\nI've gathered content from ${scrapedContent.length} sources. Each has been cleaned using Readability to remove ads/navigation/boilerplate. The Coverage line per source states how much of the page you are seeing.\n\n${sources}`;
     const synthesis = await this.queryLLM(prompt, signal, 1024, null, null, 'synthesis', SYSTEM_PROMPTS.synthesis);
     return synthesis;
   }

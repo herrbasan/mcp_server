@@ -52,6 +52,7 @@ export function extractContent(html, url, options = {}) {
         stats: {
           htmlSize,
           extractedSize: structured.text.length,
+          untruncatedSize: readabilityResult.rawLength || structured.text.length,
           reduction: ((1 - structured.text.length / htmlSize) * 100).toFixed(1)
         }
       };
@@ -71,6 +72,7 @@ export function extractContent(html, url, options = {}) {
         stats: {
           htmlSize,
           extractedSize: structured.text.length,
+          untruncatedSize: semanticResult.rawLength || structured.text.length,
           reduction: ((1 - structured.text.length / htmlSize) * 100).toFixed(1)
         }
       };
@@ -90,25 +92,27 @@ export function extractContent(html, url, options = {}) {
         stats: {
           htmlSize,
           extractedSize: structured.text.length,
+          untruncatedSize: densityResult.rawLength || structured.text.length,
           reduction: ((1 - structured.text.length / htmlSize) * 100).toFixed(1)
         }
       };
     }
     
     fallbackResult = tryFallbackExtraction(doc, maxLength);
-    if (fallbackResult && fallbackResult.length >= minLength / 2) {
+    if (fallbackResult && fallbackResult.text && fallbackResult.text.length >= minLength / 2) {
       return {
         success: true,
         strategy: 'fallback',
         title: metadata.title,
-        content: fallbackResult,
-        excerpt: generateExcerpt(fallbackResult),
+        content: fallbackResult.text,
+        excerpt: generateExcerpt(fallbackResult.text),
         sections: [],
         metadata,
         stats: {
           htmlSize,
-          extractedSize: fallbackResult.length,
-          reduction: ((1 - fallbackResult.length / htmlSize) * 100).toFixed(1)
+          extractedSize: fallbackResult.text.length,
+          untruncatedSize: fallbackResult.rawLength || fallbackResult.text.length,
+          reduction: ((1 - fallbackResult.text.length / htmlSize) * 100).toFixed(1)
         }
       };
     }
@@ -217,13 +221,15 @@ function tryReadability(doc, charThreshold, maxLength) {
     const article = reader.parse();
     if (!article || !article.textContent) return null;
     
+    const rawLength = article.textContent.trim().length;
     const text = cleanExtractedText(article.textContent, maxLength);
     
     return {
       text,
       title: article.title,
       excerpt: article.excerpt,
-      length: text.length
+      length: text.length,
+      rawLength
     };
   } catch (err) {
     return null;
@@ -263,7 +269,7 @@ function trySemanticExtraction(doc, maxLength) {
     if (bestContent.length < 200) return null;
     
     const text = cleanExtractedText(bestContent, maxLength);
-    return { text, length: text.length };
+    return { text, length: text.length, rawLength: bestContent.length };
   } catch (err) {
     return null;
   }
@@ -294,6 +300,10 @@ function tryDensityExtraction(doc, maxLength) {
     
     const topParagraphs = scored.slice(0, 20);
     
+    // Total size of the top-20 pool before the maxLength budget cut — the
+    // "full page" reference for coverage reporting.
+    const rawLength = topParagraphs.reduce((sum, p) => sum + p.length, 0);
+    
     let content = '';
     let totalLength = 0;
     for (const p of topParagraphs) {
@@ -303,7 +313,7 @@ function tryDensityExtraction(doc, maxLength) {
     }
     
     const text = content.trim();
-    return text.length >= 200 ? { text, length: text.length } : null;
+    return text.length >= 200 ? { text, length: text.length, rawLength } : null;
   } catch (err) {
     return null;
   }
@@ -343,8 +353,9 @@ function tryFallbackExtraction(doc, maxLength) {
       });
     });
     
-    const text = cleanExtractedText(clone.textContent || '', maxLength);
-    return text.length > 0 ? text : null;
+    const rawText = clone.textContent || '';
+    const text = cleanExtractedText(rawText, maxLength);
+    return text.length > 0 ? { text, length: text.length, rawLength: rawText.trim().length } : null;
   } catch (err) {
     return null;
   }

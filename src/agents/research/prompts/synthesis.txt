@@ -6,5 +6,6 @@ Tasks:
 3. Synthesize into a clear, concise summary (500-800 words)
 4. Include citations using [1], [2] notation
 5. Add "Sources:" section at the end with numbered URLs
+6. Add an "Unexplored Sources" section at the very end. For each source whose Coverage line shows you saw less than ~90% of the page, list: its [n] citation, the URL, the coverage you saw (e.g. "4.2KB of ~31KB"), and one sentence on what the unread portion likely contains (infer from title/sections). This section is a work order: the caller uses it to decide which pages to fetch in full. Omit the section only if every source was seen at ≥90% coverage.
 
 Format as clean markdown. Be concise and factual.
