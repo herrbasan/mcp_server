@@ -38,7 +38,7 @@ export class WebResearchServer {
       scrapeTimeout: config.scrapeTimeout || 8000,       // 8s per page scrape
       llmTimeout: config.llmTimeout || 10000,            // 10s per LLM call
       maxIterations: config.maxIterations || 2,          // refinement loops
-      maxPages: config.maxPages || 10,                   // pages to scrape
+      maxPages: config.maxPages || 12,                   // pages to scrape
       // Per-page extraction cap. This is a STARTING-POINT tool — the report
       // maps sources, the calling model fetches full pages for depth. 256KB
       // per page: 10 pages ≈ 2.5MB ≈ 600k tokens — fits deepseek-flash's 1M
@@ -447,9 +447,19 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       return '[ERROR] No search results found.';
     }
     
-    console.error(`   Prioritizing ${searchResults.length} results...`);
-    const urls = prioritizeUrls(searchResults.map(r => r.url), query);
-    const topUrls = urls.slice(0, maxPages);
+    // LLM source selection (was thorough-path-only). One cheap analysis call
+    // replaces the domain-heuristic prioritizeUrls — with deepseek-flash the
+    // latency argument against LLM ranking in fast mode is dead. Falls back
+    // to prioritizeUrls if selection fails.
+    console.error(`   Selecting best sources from ${searchResults.length} results...`);
+    let topUrls;
+    try {
+      topUrls = await this.selectBestSources(query, searchResults, maxPages, signal);
+    } catch (err) {
+      console.error(`   [WARN] LLM source selection failed (${err.message}), falling back to heuristic`);
+      const urls = prioritizeUrls(searchResults.map(r => r.url), query);
+      topUrls = urls.slice(0, maxPages);
+    }
     console.error(`   Top ${topUrls.length} URLs selected for scraping`);
     
     console.error('\n📄 Phase 2: Streaming scrape & synthesis...');
@@ -646,7 +656,7 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
         return r;
       });
 
-      return cleanedResults.slice(0, 15); // Top 15 from each engine
+      return cleanedResults.slice(0, 30); // Top 30 per engine — the LLM ranker is the recall filter, not the search engine's top-N
     } catch (err) {
       console.error(`   ${engine} error: ${err.message}`);
       return [];
@@ -708,7 +718,14 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
       });
     }
     
-    const prompt = `${PROMPTS.sourceRanking}\n\nQuery: "${query}"`;
+    // The LLM needs the actual candidates to rank — the old prompt was
+    // PROMPTS.sourceRanking + query ONLY, so the model received no URLs and
+    // could only hallucinate indices (which then failed validation or ranked
+    // blind). Inject the numbered list.
+    const candidateList = filtered.map((r, i) =>
+      `${i + 1}. ${r.url}\n   ${r.title} — ${r.snippet?.substring(0, 150) || '(no snippet)'}`
+    ).join('\n');
+    const prompt = `${PROMPTS.sourceRanking}\n\nQuery: "${query}"\n\nSearch results to rank (output their numbers, best first):\n${candidateList}`;
 
     const schema = {
       type: 'object',
