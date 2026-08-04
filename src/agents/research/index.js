@@ -78,7 +78,8 @@ export async function research_topic(args, context) {
     const synthesisResult = await gateway.chat({
         task: 'synthesis',
         messages: [{ role: 'user', content: `You are a research assistant compiling a report on: "${query}"\n\nUse the following sources to synthesize a comprehensive answer. Cite your sources using [1], [2], etc.\n\nSOURCES:\n${sourcesContext}` }],
-        systemPrompt: prompts.synthesis || "You are an expert researcher. Synthesize fact-based, objective reports that directly answer the prompt. Always cite your sources."
+        systemPrompt: prompts.synthesis || "You are an expert researcher. Synthesize fact-based, objective reports that directly answer the prompt. Always cite your sources.",
+        enableThinking: false
     });
 
     log(`Phase 5: Evaluating...`, 95);
@@ -86,7 +87,8 @@ export async function research_topic(args, context) {
     const evalResult = await gateway.chat({
         task: 'analysis',
         messages: [{ role: 'user', content: `Original Query: "${query}"\n\nSynthesized Answer:\n${synthesisResult.content}\n\nRate confidence from 0.0 to 1.0 based on how well this answers the query and the quality of sources. Describe weaknesses.` }],
-        systemPrompt: prompts.evaluation || "You are an evaluator."
+        systemPrompt: prompts.evaluation || "You are an evaluator.",
+        enableThinking: false
     });
 
     const finalOutput = `${synthesisResult.content}\n\n---\n*Evaluation:\n${evalResult.content}*`;

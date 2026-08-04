@@ -209,7 +209,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
 
         chat,
 
-        async predict({ prompt, systemPrompt, task, temperature, maxTokens, responseFormat }) {
+        async predict({ prompt, systemPrompt, task, temperature, maxTokens, responseFormat, enableThinking }) {
             let gatewayFormat = responseFormat;
             if (responseFormat && !responseFormat.type) {
                 gatewayFormat = {
@@ -223,7 +223,8 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
                 systemPrompt,
                 maxTokens,
                 temperature,
-                responseFormat: gatewayFormat
+                responseFormat: gatewayFormat,
+                enableThinking
             });
             if (gatewayFormat?.type === 'json_schema' || gatewayFormat?.type === 'json_object') {
                 // response may be an already-parsed object (upstream honored

@@ -934,11 +934,14 @@ ${parsed.queries.map((q, i) => `${i + 1}. \`${q.query}\`
     console.error(`[WebResearch.queryLLM] prompt length: ${prompt.length}, responseFormat: ${!!responseFormat}`);
     
     console.error(`[WebResearch.queryLLM] About to call router.predict`);
+    // NOTE: predict() destructures `task` — the old `taskType` field was
+    // silently dropped (calls fell back to the gateway default task).
     const response = await this.router.predict({
       prompt,
       systemPrompt: systemPrompt || undefined,
       responseFormat,
-      taskType
+      task: taskType,
+      enableThinking: false
     });
     
     console.error(`[WebResearch.queryLLM] router.predict succeeded`);
