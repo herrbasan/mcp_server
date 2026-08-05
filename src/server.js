@@ -50,11 +50,11 @@ if (fs.existsSync(configPath)) serverConfig = JSON.parse(fs.readFileSync(configP
 const gatewayUrl = process.env.GATEWAY_URL || serverConfig.gateway?.wsUrl || 'ws://localhost:3400/v1/realtime';
 const gatewayHttp = process.env.GATEWAY_HTTP_URL || serverConfig.gateway?.httpUrl || 'http://localhost:3400';
 const gatewayAccessKey = process.env.GATEWAY_ACCESS_KEY || serverConfig.gateway?.accessKey || null;
-// Embeds bypass the gateway entirely — direct to the llama-cpp-wrapper.
-// (Gateway embed route removed from the path 2026-08-04; see embed-client.js header.)
-const embedUrl = process.env.EMBED_URL || serverConfig.gateway?.embedUrl;
-const embedModel = process.env.EMBED_MODEL || serverConfig.gateway?.embedModel;
-const embedClient = createEmbedClient(embedUrl, embedModel);
+// Embeds go through the gateway (gateway owns the model).
+// The gateway proxies to the Fatten wrapper with abort propagation + timeout.
+const embedUrl = process.env.EMBED_URL || gatewayHttp;
+const embedModel = process.env.EMBED_MODEL || serverConfig.gateway?.embedModel || 'gateway-owned';
+const embedClient = createEmbedClient(embedUrl, embedModel, gatewayAccessKey);
 const gatewayClient = createGatewayClient(gatewayUrl, gatewayHttp, gatewayAccessKey, embedClient);
 
 const globalContext = {

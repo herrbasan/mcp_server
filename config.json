@@ -8,9 +8,7 @@
   "gateway": {
     "wsUrl": "ws://localhost:3400/v1/realtime",
     "httpUrl": "http://localhost:3400",
-    "accessKey": null,
-    "embedUrl": "http://192.168.0.145:4080",
-    "embedModel": "Qwen/Qwen3-Embedding-4B-GGUF"
+    "accessKey": "someKey33!!"
   },
   "nMediaUrl": "http://localhost:3500",
   "agents": {

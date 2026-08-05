@@ -27,10 +27,12 @@ const logger = getLogger();
 const EMBED_TIMEOUT_MS = 15000;
 const EMBED_BATCH_TIMEOUT_MS = 30000;
 
-export function createEmbedClient(embedUrl, embedModel) {
+export function createEmbedClient(embedUrl, embedModel, accessKey = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
     if (!embedModel) throw new Error('createEmbedClient: embedModel is required (env EMBED_MODEL or config gateway.embedModel)');
     const baseUrl = embedUrl.replace(/\/+$/, '');
+    const headers = { 'Content-Type': 'application/json' };
+    if (accessKey) headers['Authorization'] = `Bearer ${accessKey}`;
 
     async function post(body, timeoutMs) {
         const ctrl = new AbortController();
@@ -38,7 +40,7 @@ export function createEmbedClient(embedUrl, embedModel) {
         try {
             const res = await fetch(`${baseUrl}/v1/embeddings`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify(body),
                 signal: ctrl.signal
             });
