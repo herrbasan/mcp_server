@@ -5,6 +5,7 @@ import { getLogger } from '../../utils/logger.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps } from '../../lib/fileops.js';
+import { requireFields } from '../../utils/require-fields.js';
 import { searchDocuments } from '../vdb/index.js';
 import * as resources from './resource-provider.js';
 
@@ -292,9 +293,9 @@ export async function init(context) {
 }
 
 export async function storage_stat(args) {
+    requireFields(args, ['path'], 'storage_stat');
     const userPath = normPath(args.path);
     logger.info(`[Storage] storage_stat: "${userPath}"`, null, 'Storage');
-    if (args.path === undefined || args.path === null) throw new Error('storage_stat: args.path is required');
     const st = await OPS.stat(userPath);
     if (!st.exists) {
         logger.info(`[Storage] storage_stat OK: "${userPath}" (not found)`, null, 'Storage');
@@ -310,16 +311,23 @@ export async function storage_stat(args) {
 }
 
 export async function storage_read(args) {
+    requireFields(args, ['path'], 'storage_read');
     const userPath = args.path;
     logger.info(`[Storage] storage_read: "${userPath}"`, { encoding: args.encoding }, 'Storage');
-    if (!userPath) throw new Error('storage_read: args.path is required');
 
     // Windowed read: delegate to OPS.readWindow when any window arg is present.
+    // Window params are mutually exclusive: offset+length, head, or tail.
     const hasWindow = args.offset !== undefined || args.length !== undefined ||
                       args.head !== undefined || args.tail !== undefined;
     if (hasWindow) {
+        const windowArgs = ['offset', 'length', 'head', 'tail'].filter(k => args[k] !== undefined);
+        const hasOffsetLength = args.offset !== undefined || args.length !== undefined;
+        const hasHeadTail = args.head !== undefined || args.tail !== undefined;
+        if (hasOffsetLength && hasHeadTail) {
+            throw new Error(`storage_read: window params are mutually exclusive — pass EITHER offset+length OR head OR tail, not both. (received: ${windowArgs.join(', ')})`);
+        }
         if (args.offset !== undefined && args.length === undefined) {
-            throw new Error('storage_read: length is required when offset is given');
+            throw new Error('storage_read: offset requires length — pass both together for a byte window. (If you want lines, use head or tail instead.)');
         }
         const wResult = await OPS.readWindow(userPath, {
             offset: args.offset,
@@ -380,11 +388,10 @@ export async function storage_read(args) {
 
 export async function storage_write(args) {
     const t0 = Date.now();
+    requireFields(args, ['path', 'content'], 'storage_write');
     const userPath = args.path;
     const content = args.content;
     logger.info(`[Storage] storage_write: "${userPath}" (${content?.length || 0} chars)`, null, 'Storage');
-    if (!userPath) throw new Error('storage_write: args.path is required');
-    if (content === undefined || content === null) throw new Error('storage_write: args.content is required');
     const encoding = args.encoding || 'utf8';
     if (encoding !== 'utf8' && encoding !== 'base64') {
         throw new Error(`storage_write: invalid encoding "${encoding}" — must be "utf8" or "base64"`);
@@ -420,11 +427,10 @@ export async function storage_list(args) {
 }
 
 export async function storage_move(args) {
+    requireFields(args, ['from', 'to'], 'storage_move');
     const fromPath = args.from;
     const toPath = args.to;
     logger.info(`[Storage] storage_move: "${fromPath}" → "${toPath}"`, null, 'Storage');
-    if (!fromPath) throw new Error('storage_move: args.from is required');
-    if (!toPath) throw new Error('storage_move: args.to is required');
     // Engine refuses overwrite and snapshots the source before moving.
     const engineResult = await OPS.move(fromPath, toPath);
     const gone = verifyGone(fromPath);
@@ -434,9 +440,9 @@ export async function storage_move(args) {
 }
 
 export async function storage_delete(args) {
+    requireFields(args, ['path'], 'storage_delete');
     const userPath = args.path;
     logger.info(`[Storage] storage_delete: "${userPath}"`, { recursive: args.recursive }, 'Storage');
-    if (!userPath) throw new Error('storage_delete: args.path is required');
     const recursive = args.recursive || false;
     // Engine snapshots before deleting; non-empty dir requires recursive:true.
     const st = await OPS.stat(userPath);
@@ -448,8 +454,8 @@ export async function storage_delete(args) {
 }
 
 export async function storage_search(args, context) {
-    const { query, folder, extension, top_k = 10, include_content = false } = args || {};
-    if (!query) throw new Error('storage_search: query is required');
+    requireFields(args, ['query'], 'storage_search');
+    const { query, folder, extension, top_k = 10, include_content = false } = args;
     logger.info(`[Storage] storage_search: "${query}"`, { folder, extension, top_k }, 'Storage');
 
     const pr = createProgressReporter(context?.progress);
@@ -500,8 +506,8 @@ export async function storage_resources_list(args) {
 
 export async function storage_resources_read(args) {
     const provider = getResourceProvider();
-    const { uri, encoding } = args || {};
-    if (!uri) throw new Error('storage_resources_read: uri is required');
+    requireFields(args, ['uri'], 'storage_resources_read');
+    const { uri, encoding } = args;
     const contents = provider.readResource({ uri, encoding });
     logger.info(`[Storage] storage_resources_read: "${uri}" (${contents.length} content item(s))`, null, 'Storage');
     return result(true, 'storage_resources_read', uri, { contents });
@@ -520,10 +526,9 @@ export async function storage_resources_templates(args) {
 // wrap via result(). Engine errors propagate — no try/catch wrapping.
 
 export async function storage_copy(args) {
+    requireFields(args, ['from', 'to'], 'storage_copy');
     const { from, to, overwrite } = args;
     logger.info(`[Storage] storage_copy: "${from}" → "${to}"`, null, 'Storage');
-    if (!from) throw new Error('storage_copy: args.from is required');
-    if (!to) throw new Error('storage_copy: args.to is required');
     const engineResult = await OPS.copy(from, to, { overwrite: !!overwrite });
     // engineResult.size is only set for file copies; directory copies verify existence only.
     const proof = engineResult.size !== undefined ? verifyFile(to, engineResult.size) : { verified: fs.existsSync(safeResolve(to)) };
@@ -532,10 +537,9 @@ export async function storage_copy(args) {
 }
 
 export async function storage_append(args) {
+    requireFields(args, ['path', 'content'], 'storage_append');
     const { path: userPath, content, encoding } = args;
     logger.info(`[Storage] storage_append: "${userPath}" (${content?.length || 0} chars)`, null, 'Storage');
-    if (!userPath) throw new Error('storage_append: args.path is required');
-    if (content === undefined || content === null) throw new Error('storage_append: args.content is required');
     const engineResult = await OPS.append(userPath, content, { encoding });
     const proof = verifyFile(userPath, engineResult.size);
     logger.info(`[Storage] storage_append OK: "${userPath}" (total=${engineResult.size}B, verified)`, null, 'Storage');
@@ -545,12 +549,12 @@ export async function storage_append(args) {
 export async function storage_replace(args) {
     // Alias support: LLMs coming from other editors (oldString/newString) get
     // their reasonable guess honored instead of a bare "marker is required".
+    requireFields(args, ['path'], 'storage_replace');
     const userPath = args.path;
     const marker = args.marker ?? args.oldString;
     const replacement = args.replacement ?? args.newString;
     const { occurrence } = args;
     logger.info(`[Storage] storage_replace: "${userPath}" occurrence=${occurrence ?? 'first'}`, null, 'Storage');
-    if (!userPath) throw new Error('storage_replace: args.path is required');
     if (marker === undefined || marker === null) {
         throw new Error('storage_replace: args.marker is required (the exact string to find; alias: oldString). Replacement arg is "replacement" (alias: newString).');
     }
@@ -564,11 +568,11 @@ export async function storage_replace(args) {
 }
 
 export async function storage_find(args) {
+    requireFields(args, ['path'], 'storage_find');
     const userPath = args.path;
     const marker = args.marker ?? args.oldString ?? args.pattern;
     const { occurrence } = args;
     logger.info(`[Storage] storage_find: "${userPath}"`, null, 'Storage');
-    if (!userPath) throw new Error('storage_find: args.path is required');
     if (marker === undefined || marker === null) {
         throw new Error('storage_find: args.marker is required (the exact string to locate; aliases: oldString, pattern)');
     }
@@ -578,10 +582,9 @@ export async function storage_find(args) {
 }
 
 export async function storage_grep(args, context) {
+    requireFields(args, ['path', 'pattern'], 'storage_grep');
     const { path: userPath, pattern, maxMatches, context: ctxLines, ignoreCase } = args;
     logger.info(`[Storage] storage_grep: "${userPath}" pattern="${pattern}"`, null, 'Storage');
-    if (!userPath) throw new Error('storage_grep: args.path is required');
-    if (!pattern) throw new Error('storage_grep: args.pattern is required');
     const pr = createProgressReporter(context?.progress);
     const engineResult = await OPS.grep(userPath, pattern, {
         maxMatches,
@@ -721,18 +724,18 @@ export async function storage_readMany(args, context) {
 }
 
 export async function storage_history(args) {
+    requireFields(args, ['path'], 'storage_history');
     const { path: userPath } = args;
     logger.info(`[Storage] storage_history: "${userPath}"`, null, 'Storage');
-    if (!userPath) throw new Error('storage_history: args.path is required');
     const engineResult = await OPS.history(userPath);
     logger.info(`[Storage] storage_history OK: "${userPath}" (${engineResult.versions.length} version(s))`, null, 'Storage');
     return result(true, 'storage_history', userPath, { versions: engineResult.versions });
 }
 
 export async function storage_restore(args) {
+    requireFields(args, ['path'], 'storage_restore');
     const { path: userPath, steps } = args;
     logger.info(`[Storage] storage_restore: "${userPath}" steps=${steps ?? 1}`, null, 'Storage');
-    if (!userPath) throw new Error('storage_restore: args.path is required');
     const engineResult = await OPS.restore(userPath, { steps: steps ?? 1 });
     logger.info(`[Storage] storage_restore OK: "${userPath}" from=${engineResult.from}`, null, 'Storage');
     return result(true, 'storage_restore', userPath, { restored: engineResult.restored, from: engineResult.from });

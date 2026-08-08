@@ -1,6 +1,7 @@
 {
     "agent": "forge",
     "description": "Git-versioned tool forge — LLMs create, version, and execute custom tools in isolated worker_threads with Gateway access",
+    "dependsOn": "browser",
     "tools": [
         {
             "name": "forge_write",

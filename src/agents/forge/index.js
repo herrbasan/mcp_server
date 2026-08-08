@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createTranslatorFromConfig } from '../storage/path-translator.js';
+import * as browserAgent from '../browser/index.js';
 
 const logger = getLogger();
 const execFileAsync = promisify(execFile);
@@ -22,6 +23,7 @@ let STORAGE_ROOT;     // e.g. D:\MCP_Storage\forge\
 let STORAGE_TRANSLATOR;  // null when no uncShare is configured
 let CONFIG;
 let GATEWAY_CLIENT;
+let BROWSER_AGENT;
 let GIT_WRITE_QUEUE;
 let SEMAPHORE;
 
@@ -383,8 +385,9 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     const source = fs.readFileSync(sourcePath, 'utf8');
     logger.info(`[Forge:worker] Source loaded for "${name}": ${source.length} chars, spawning worker`, null, 'Forge');
 
-    // Create MessageChannels for gateway and progress relay
+    // Create MessageChannels for gateway, browser, and progress relay
     const { port1: gatewayPort1, port2: gatewayPort2 } = new MessageChannel();
+    const { port1: browserPort1, port2: browserPort2 } = new MessageChannel();
     const { port1: progressPort1, port2: progressPort2 } = new MessageChannel();
 
     // ── Progress relay: worker → main thread → MCP notification ──
@@ -448,6 +451,51 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     });
     gatewayPort1.start();
 
+    // ── Browser relay: worker → main thread → browser agent ──
+    // The worker posts { id, method, args } and we forward to the browser
+    // agent's exported handler function (same process, direct call), then
+    // post the response back. Only active when BROWSER_AGENT is linked.
+    if (BROWSER_AGENT) {
+        browserPort1.on('message', async (msg) => {
+            if (msg.type === 'browser-call') {
+                const { id, method, args } = msg;
+                const handler = BROWSER_AGENT[method];
+                if (typeof handler !== 'function') {
+                    browserPort1.postMessage({ type: 'browser-result', id, error: `Unknown browser method: ${method}` });
+                    return;
+                }
+                const browserTimeout = 120000;
+                try {
+                    const callResult = await Promise.race([
+                        handler(args || {}, { progress: (m, p, t) => progress?.(m, p, t) }),
+                        new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error(`Browser relay timed out after ${browserTimeout}ms (${method})`)), browserTimeout)
+                        )
+                    ]);
+                    // Browser handlers return { content: [{ type: 'text', text: ... }], isError }
+                    // or { content: [{ type: 'image', data: 'base64...', mimeType: 'image/png' }] }
+                    // Unwrap both so the worker gets clean data, not MCP envelopes.
+                    const contentBlock = callResult?.content?.[0];
+                    if (contentBlock?.text !== undefined) {
+                        let parsed = contentBlock.text;
+                        // Try to parse JSON responses (most browser ops return JSON)
+                        try { parsed = JSON.parse(parsed); } catch {}
+                        browserPort1.postMessage({ type: 'browser-result', id, result: { data: parsed, isError: callResult.isError || false } });
+                    } else if (contentBlock?.data !== undefined) {
+                        // Image/screenshot: pass base64 data + mimeType directly
+                        browserPort1.postMessage({ type: 'browser-result', id, result: { data: contentBlock.data, mimeType: contentBlock.mimeType, isError: callResult.isError || false } });
+                    } else {
+                        browserPort1.postMessage({ type: 'browser-result', id, result: callResult });
+                    }
+                } catch (err) {
+                    logger.warn(`[Forge:worker] Browser relay FAILED (${method}): ${err.message}`, null, 'Forge');
+                    browserPort1.postMessage({ type: 'browser-result', id, error: err.message });
+                }
+            }
+        });
+        browserPort1.start();
+    }
+
     // ── Spawn worker ──
     // Ports and payload Buffers are transferred via postMessage (not Worker
     // constructor) for zero-copy transfer. The worker waits for 'init' before running.
@@ -472,7 +520,9 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // Transfer ports to the worker. Payload Buffers are structured-cloned (copied)
     // — transferring them requires them to be the exact objects in the transferList
     // and causes issues with some Node versions. The copy overhead is acceptable.
-    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, [gatewayPort2, progressPort2]);
+    const transferList = [gatewayPort2, progressPort2];
+    if (BROWSER_AGENT) transferList.push(browserPort2);
+    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, browserPort: BROWSER_AGENT ? browserPort2 : null, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, transferList);
     logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (timeout: ${timeout}ms)`, null, 'Forge');
 
     return new Promise((resolve, reject) => {
@@ -485,6 +535,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             // Close ports to prevent leaks — removeAllListeners isn't available
             // on MessagePort, so we just stop them from accepting new messages.
             try { gatewayPort1.close(); } catch {}
+            try { browserPort1.close(); } catch {}
             try { progressPort1.close(); } catch {}
         };
 
@@ -925,6 +976,7 @@ THE ctx OBJECT
 Every forged tool receives (args, ctx). The ctx object provides:
 
   ctx.gateway    — LLM Gateway proxy (relayed via MessagePort to main thread)
+  ctx.browser    — Persistent browser proxy (shared Chrome instance with login state)
   ctx.progress   — Progress reporter (relayed to MCP client as notifications)
   ctx.payload    — Array of Buffers (resolved from payload[] file paths/URLs)
   ctx.workspacePath    — Absolute path to ephemeral per-call directory (deleted after call)
@@ -977,6 +1029,49 @@ ctx.gateway API
   await ctx.gateway.embedText(text)  → number[] (alias)
   await ctx.gateway.predict({ task, prompt, systemPrompt?, maxTokens? })  → { content, ... }
   await ctx.gateway.call(task, params)  → raw gateway response (flexible)
+
+ctx.browser API (persistent browser — shared with the MCP browser agent)
+  Gives forge tools access to the main-thread browser: a persistent Chrome
+  instance with real cookies, login state, and browsing history. This means
+  authenticated sites (Google, GitHub, etc.) work without re-login, and the
+  browser profile avoids bot detection that hits clean instances.
+
+  All calls are relayed via MessagePort to the main thread (same process).
+  Returns parsed data (text or JSON object), not MCP envelopes.
+
+  const session = await ctx.browser.session_create({ viewport?: {width,height}, visible?: bool })
+    → { sessionId }  (pass to all subsequent calls)
+
+  await ctx.browser.goto({ sessionId, url, waitFor?, timeout? })
+    → navigates to a URL. waitFor: CSS selector to wait for.
+
+  await ctx.browser.content({ sessionId, mode? })
+    → mode: "text" (default) | "html" | "markdown" | "screenshot"
+    → screenshot returns base64 PNG string
+
+  await ctx.browser.evaluate({ sessionId, script, waitFor? })
+    → runs JS in the page. script is a string expression (e.g. "document.title").
+    → returns the expression's value. Statement-style scripts need explicit 'return'.
+
+  await ctx.browser.click({ sessionId, selector?, waitAfter? })
+  await ctx.browser.fill({ sessionId, fields: [{selector,value}], submit?, waitAfter? })
+  await ctx.browser.type({ sessionId, selector?, text?, keystrokes? })
+  await ctx.browser.scroll({ sessionId, direction?, amount? })
+  await ctx.browser.inspect({ sessionId, selector, screenshot? })
+  await ctx.browser.console({ sessionId })  → captured console messages
+  await ctx.browser.wait({ sessionId, selectors?, text?, urlPattern?, timeout? })
+  await ctx.browser.metadata({ sessionId })  → viewport, userAgent, age
+  await ctx.browser.session_list()  → active sessions
+  await ctx.browser.session_close({ sessionId })  → close when done (or let idle timer handle it)
+
+  Example: scrape a JS-rendered page
+    const { sessionId } = await ctx.browser.session_create();
+    await ctx.browser.goto({ sessionId, url: 'https://example.com', waitFor: '.results' });
+    const html = await ctx.browser.content({ sessionId, mode: 'html' });
+    const data = await ctx.browser.evaluate({ sessionId, script: '[...document.querySelectorAll(".item")].map(e => e.textContent)' });
+    await ctx.browser.session_close({ sessionId });
+
+ctx.browser is null when the browser agent is not loaded (e.g. disabled in config).
 
 ctx.progress API
   ctx.progress({ message: string, progress: number, total: number })
@@ -1035,7 +1130,62 @@ BEST PRACTICES
   - Use ctx.workspacePath for intermediate files that should not persist
   - Return structured objects, not formatted strings — the caller can format
   - Throw on errors — the forge catches and reports them clearly
-  - Test with small payloads first, then scale up`;
+  - Test with small payloads first, then scale up
+
+LOCAL SERVICES (BADKID execution context)
+  IMPORTANT: Forge tools execute on the workshop host (BADKID, 192.168.0.100).
+  Inside a forge tool, "localhost" means BADKID — NOT the machine you (the LLM)
+  are running on. If you are working from Coolkid or any other LAN client, the
+  services below are on BADKID. From outside a forge tool, reach them at
+  http://192.168.0.100:<port>.
+
+  Services may not always be running — handle connection errors gracefully.
+  Check /health first if unsure.
+
+  ┌───────────────┬──────┬────────────────────────────────────────────────────┐
+  │ Service       │ Port │ What it does                                        │
+  ├───────────────┼──────┼────────────────────────────────────────────────────┤
+  │ MCP Server    │ 3100 │ This server. Storage, memory, browser, git, vision. │
+  │               │      │ Use ctx.browser / ctx.fileops instead of HTTP.      │
+  │ LLM Gateway   │ 3400 │ LLM routing. Use ctx.gateway instead of HTTP.       │
+  │               │      │ Models: call ctx.gateway.listModels() with cost     │
+  │               │      │ metadata (tier, cost, speed, notes) to pick wisely. │
+  │ nMedia        │ 3500 │ ffmpeg-based media conversion (audio/image/video).  │
+  │ nVoice        │ 2244 │ Speech-to-text, alignment, archival transcription.  │
+  │ nSpeech       │ 8000 │ Text-to-speech synthesis (Kokoro, Chatterbox, etc). │
+  └───────────────┴──────┴────────────────────────────────────────────────────┘
+
+  nMedia (localhost:3500) — media conversion via ffmpeg
+    POST /audio           — convert/transcode audio (multipart: file field)
+    POST /image           — convert/optimize image (multipart: file field)
+    POST /image/crop      — crop image (multipart: file field + crop params)
+    POST /video           — convert/transcode video (multipart: file field)
+    GET  /health          — liveness check
+    GET  /v1/optimize/progress/:jobId — progress for async jobs
+    Cost: free (local ffmpeg). Fast for small files.
+
+  nVoice (localhost:2244) — speech-to-text (Python, may not always be running)
+    POST /v1/audio/transcriptions    — batch STT (audio file → text)
+    POST /v1/audio/align             — word-level timestamps for known text
+    POST /v1/audio/transcribe-archive — archival STT + diarization (SSE stream)
+    GET  /v1/models                  — models supported by current engine
+    GET  /health                     — warming/ready status
+    Cost: free (local GPU). Latency depends on audio length + model.
+
+  nSpeech (localhost:8000) — text-to-speech (Python, may not always be running)
+    POST /v1/audio/speech     — synthesize speech (streams audio back)
+    GET  /v1/voices           — list available voices for current engine
+    POST /v1/voices/clone     — persist a cloned voice from sample
+    POST /v1/voices/preview   — temporary clone + preview audio
+    POST /v1/voices/mix       — blend two voices
+    GET  /health              — warming/ready status
+    Cost: free (local GPU). Engines: Kokoro, Chatterbox, dots.tts, F5-TTS, VibeVoice.
+
+  Example: convert audio with nMedia from a forge tool
+    const formData = new FormData();
+    formData.append('file', new Blob([ctx.payload[0]]), 'input.wav');
+    const res = await fetch('http://localhost:3500/audio', { method: 'POST', body: formData });
+    const converted = await res.arrayBuffer();`;
 
 export async function forge_help(args, context) {
     return mcpOk({ guide: HELP_TEXT });
@@ -1084,6 +1234,17 @@ export async function init(context) {
     // (/storage/...); the client prepends its own MCP origin.
 
     GATEWAY_CLIENT = context.gateway;
+
+    // Browser agent handlers — module-level exports (browser_session_*),
+    // NOT the init() instance (which only returns { getPage, fetch }).
+    // The init instance is for internal cross-agent use (research); the
+    // tool handlers are what forge workers need.
+    BROWSER_AGENT = browserAgent;
+    if (BROWSER_AGENT?.browser_session_create) {
+        logger.info('[Forge] Browser agent linked — ctx.browser available for forge tools', null, 'Forge');
+    } else {
+        logger.warn('[Forge] Browser agent not found — ctx.browser will not be available for forge tools', null, 'Forge');
+    }
 
     fs.mkdirSync(TOOLS_DIR, { recursive: true });
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });

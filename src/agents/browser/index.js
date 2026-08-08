@@ -524,7 +524,7 @@ export async function browser_session_create(args, context) {
     log(`Session created: ${sessionId}, total sessions: ${sessions.size}, visible: ${visible}`);
 
     return {
-        content: [{ type: "text", text: `Session created: ${sessionId}\nVisible: ${visible}\nPage ready at: ${page.url() || 'about:blank'}` }]
+        content: [{ type: "text", text: JSON.stringify({ sessionId, visible, pageUrl: page.url() || 'about:blank' }) }]
     };
 }
 
@@ -742,7 +742,20 @@ export async function browser_session_evaluate(args, context) {
         }
 
         if (progress) progress('Evaluating script...', 60, 100);
-        const result = await session.page.evaluate(new Function(script));
+        // Pass script as a raw string so Puppeteer treats it as an expression
+        // (it wraps strings with `return` automatically). If the script is a
+        // statement rather than an expression, fall back to new Function for
+        // statement-style evaluation (caller can use explicit `return`).
+        let result;
+        try {
+            result = await session.page.evaluate(script);
+        } catch (evalErr) {
+            if (evalErr.message?.includes('SyntaxError')) {
+                result = await session.page.evaluate(new Function(script));
+            } else {
+                throw evalErr;
+            }
+        }
         if (progress) progress('Evaluation complete', 100, 100);
         return {
             content: [{ type: "text", text: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) }]

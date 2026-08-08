@@ -16,6 +16,7 @@ import { createPathTranslator } from '../storage/path-translator.js';
 // Gateway and progress are proxied via MessagePort to the main thread.
 
 let gatewayPort = null;
+let browserPort = null;
 let progressPort = null;
 let initialized = false;
 let initData = {};
@@ -137,6 +138,73 @@ function createGatewayProxy(port) {
     };
 }
 
+// ── Browser Proxy ────────────────────────────────────────────────────────────
+// Mirrors the gateway proxy pattern. The worker gets a proxy object with one
+// method per browser agent operation. Calls serialize through the MessagePort
+// to the main thread, which dispatches to the browser agent's handler directly.
+//
+// The proxy exposes the full browser API surface:
+//   session_create, session_list, session_close, goto, content, click, fill,
+//   evaluate, scroll, type, inspect, console, wait, metadata
+//
+// Each method takes the same args object as the corresponding browser_session_*
+// MCP tool and returns the parsed result (text or JSON object).
+function createBrowserProxy(port) {
+    let reqId = 0;
+    const pending = new Map();
+
+    port.on('message', (msg) => {
+        if (msg.type === 'browser-result') {
+            const resolver = pending.get(msg.id);
+            if (!resolver) return;
+            pending.delete(msg.id);
+            clearTimeout(resolver.timer);
+            if (msg.error) resolver.reject(new Error(msg.error));
+            else if (msg.result?.isError) resolver.reject(new Error(typeof msg.result.data === 'string' ? msg.result.data : JSON.stringify(msg.result.data)));
+            else resolver.resolve(msg.result?.data ?? msg.result);
+        }
+    });
+    port.start();
+
+    function call(method, args, timeoutMs = 120000) {
+        const id = ++reqId;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error(`Browser proxy call timed out after ${timeoutMs}ms (method: ${method})`));
+            }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
+            port.postMessage({ type: 'browser-call', id, method, args: args || {} });
+        });
+    }
+
+    // Build a proxy object with one method per browser operation.
+    // Maps the DOCUMENTED short API name → the browser agent's exported handler.
+    // session_create/session_list/session_close keep their prefix; the rest are
+    // short (goto, content, ...). Explicit map = no prefix ambiguity.
+    const methods = {
+        session_create: 'browser_session_create',
+        session_list: 'browser_session_list',
+        session_close: 'browser_session_close',
+        goto: 'browser_session_goto',
+        content: 'browser_session_content',
+        click: 'browser_session_click',
+        fill: 'browser_session_fill',
+        evaluate: 'browser_session_evaluate',
+        scroll: 'browser_session_scroll',
+        type: 'browser_session_type',
+        inspect: 'browser_session_inspect',
+        console: 'browser_session_console',
+        wait: 'browser_session_wait',
+        metadata: 'browser_session_metadata'
+    };
+    const proxy = {};
+    for (const [shortName, fullName] of Object.entries(methods)) {
+        proxy[shortName] = (args) => call(fullName, args);
+    }
+    return proxy;
+}
+
 // ── Progress Proxy ───────────────────────────────────────────────────────────
 function createProgressProxy(port) {
     return function progress(message, progressVal, total) {
@@ -201,6 +269,7 @@ async function run() {
     // Build context
     const ctx = {
         gateway: createGatewayProxy(gatewayPort),
+        browser: browserPort ? createBrowserProxy(browserPort) : null,
         progress: createProgressProxy(progressPort),
         payload: resolvedPayload,
         workspacePath,
@@ -222,6 +291,7 @@ parentPort.on('message', async (msg) => {
         initialized = true;
 
         gatewayPort = msg.gatewayPort;
+        browserPort = msg.browserPort || null;
         progressPort = msg.progressPort;
         defaultModel = msg.defaultModel || null;
         initData = { payload: msg.payload || [] };
