@@ -27,12 +27,12 @@ function serializeData(data) {
     return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 }
 
-function embedText(gateway, description, data, maxChars) {
+function embedText(gateway, description, data, maxChars, opts) {
     const parts = [description];
     if (data) parts.push(serializeData(data));
     const combined = parts.join(' ');
     const safe = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
-    return gateway.embed(safe);
+    return gateway.embed(safe, opts);
 }
 
 function normId(id) {
@@ -174,7 +174,9 @@ export async function memory_store(args, context) {
     // Detached: embed in background. On success the vector is inserted and
     // embedStatus → 'embedded'. On failure embedError is set; the periodic
     // self-heal in memory_overview retries it later.
-    embedText(gateway, description, data, maxChars).then(embedding => {
+    // Background timeout: let the wrapper queue work it off, don't abort at
+    // the foreground cap (would churn pending->heal->retry).
+    embedText(gateway, description, data, maxChars, { background: true }).then(embedding => {
         if (MEM_COLL) {
             MEM_COLL.insert(ndbId, embedding, JSON.stringify({ id: memId }));
             MEM_COLL.flush();
@@ -397,7 +399,8 @@ export async function memory_update(args, context) {
         const maxChars = CONFIG.maxMemoryChars || 6000;
         // Detached: embed in background so provider hangs never block the
         // response. Self-heal picks up failures on the next memory_overview.
-        embedText(gateway, newDesc, newData, maxChars).then(newEmbedding => {
+        // Background timeout: let the wrapper queue work it off.
+        embedText(gateway, newDesc, newData, maxChars, { background: true }).then(newEmbedding => {
             if (MEM_COLL) {
                 MEM_COLL.insert(ndbId, newEmbedding, JSON.stringify({ id }));
                 MEM_COLL.flush();
@@ -435,12 +438,20 @@ export async function memory_update(args, context) {
 
 let lastHealAt = 0;
 
+// The embedStatus secondary index goes stale: nDB's set() (delta patch) does
+// NOT update indexes, so docs flipped pending→embedded via set() stay indexed
+// as 'pending' in the running process. Always count pending via a linear scan
+// of live docs — small dataset (~1k), and correct regardless of index state.
+function findPendingMemories() {
+    return DB.iter().filter(d => d._id.startsWith('mem_') && d.embedStatus === 'pending');
+}
+
 async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
     const { gateway } = context;
     if (!gateway) return { healed: 0, remaining: 0, skipped: 'no gateway' };
     if (!MEM_COLL) return { healed: 0, remaining: 0, skipped: 'no nVDB collection' };
 
-    const pending = DB.find('embedStatus', 'pending').filter(d => d._id.startsWith('mem_'));
+    const pending = findPendingMemories();
     if (pending.length === 0) return { healed: 0, remaining: 0 };
 
     const maxChars = CONFIG.maxMemoryChars || 6000;
@@ -449,7 +460,8 @@ async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
     for (let i = 0; i < batch.length; i++) {
         const m = batch[i];
         try {
-            const embedding = await embedText(gateway, m.description, m.data, maxChars);
+            // Background timeout: let the wrapper queue work it off.
+            const embedding = await embedText(gateway, m.description, m.data, maxChars, { background: true });
             MEM_COLL.insert(m._id, embedding, JSON.stringify({ id: m.id }));
             DB.set(m._id, 'embedStatus', 'embedded');
             DB.set(m._id, 'embedError', null);
@@ -497,7 +509,7 @@ export async function memory_overview(args, context) {
 
     // Self-heal trigger: session start is the natural cadence. Fire in the
     // background (rate-limited to 1 pass/min, 10 embeddings per pass).
-    const pendingEmbedCount = DB.find('embedStatus', 'pending').filter(d => d._id.startsWith('mem_')).length;
+    const pendingEmbedCount = findPendingMemories().length;
     if (pendingEmbedCount > 0 && Date.now() - lastHealAt > 60000) {
         lastHealAt = Date.now();
         memoryEmbedHeal(context, 10).catch(() => {});

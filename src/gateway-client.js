@@ -245,16 +245,26 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         },
 
         // Embeds: delegated to the direct wrapper client (see header).
-        async embed(text) {
-            return embedClient.embed(text);
+        async embed(text, opts) {
+            return embedClient.embed(text, opts);
         },
 
-        async embedText(text) {
-            return embedClient.embed(text);
+        async embedText(text, opts) {
+            return embedClient.embed(text, opts);
         },
 
-        async embedBatch(texts) {
-            return embedClient.embedBatch(texts);
+        async embedBatch(texts, opts) {
+            return embedClient.embedBatch(texts, opts);
+        },
+
+        // Background embeds (store/heal): generous deadlock-guard timeout — let
+        // the wrapper queue work them off instead of aborting at the foreground cap.
+        async embedBackground(text) {
+            return embedClient.embed(text, { background: true });
+        },
+
+        async embedBatchBackground(texts) {
+            return embedClient.embedBatch(texts, { background: true });
         },
 
         async listModels(type) {

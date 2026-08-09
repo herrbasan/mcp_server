@@ -12,7 +12,9 @@ const logger = getLogger();
  *   - llama-server's slot queue serializes execution (slow, never broken)
  *   - the wrapper propagates client disconnects upstream, freeing slots
  * So the only failure modes left are: wrapper machine down (fetch fails
- * fast) or queue wait longer than the timeout (loud, caller retries).
+ * fast) or queue wait longer than the timeout. Foreground embeds (search)
+ * abort at a short cap and degrade; background embeds (store/heal) use a
+ * generous deadlock guard and let the queue work them off eventually.
  *
  * There is deliberately NO circuit breaker here. A breaker exists to paper
  * over hangs; with abort propagation the queue drains, so a breaker would
@@ -24,8 +26,15 @@ const logger = getLogger();
  *                  e.g. Qwen/Qwen3-Embedding-4B-GGUF
  */
 
+// Foreground (search queries): keep snappy — degrade to recency rather than
+// making the caller wait on a saturated queue.
 const EMBED_TIMEOUT_MS = 15000;
 const EMBED_BATCH_TIMEOUT_MS = 30000;
+// Background (store/heal): generous deadlock guard, NOT a performance target.
+// Lean into llama-server's slot queue — the wrapper serializes execution and
+// propagates aborts upstream, so a long wait means "eventually served", not
+// "lost". Prevents the pending->heal->retry churn from premature aborts.
+const EMBED_BACKGROUND_TIMEOUT_MS = 300000; // 5 min
 
 export function createEmbedClient(embedUrl, embedModel, accessKey = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
@@ -57,13 +66,15 @@ export function createEmbedClient(embedUrl, embedModel, accessKey = null) {
     }
 
     return {
-        async embed(text) {
-            const data = await post({ model: embedModel, input: text }, EMBED_TIMEOUT_MS);
+        async embed(text, opts) {
+            const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_TIMEOUT_MS;
+            const data = await post({ model: embedModel, input: text }, timeout);
             return data.data[0].embedding;
         },
 
-        async embedBatch(texts) {
-            const data = await post({ model: embedModel, input: texts }, EMBED_BATCH_TIMEOUT_MS);
+        async embedBatch(texts, opts) {
+            const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_BATCH_TIMEOUT_MS;
+            const data = await post({ model: embedModel, input: texts }, timeout);
             return data.data.map(d => d.embedding);
         }
     };
