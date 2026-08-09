@@ -194,17 +194,19 @@ function withTimeout(promise, ms, label) {
 }
 
 async function embedViaGateway(texts, retries) {
-    // Despite the name (kept to minimize churn), this now talks DIRECTLY to
-    // the llama-cpp-wrapper via the gateway object's embed delegation — the
-    // gateway is out of the embed path since 2026-08-04. The wrapper +
-    // llama-server own the queue; a failure here is loud and retry-safe.
+    // Embeds go through the gateway, which proxies to the llama-cpp-wrapper
+    // (the gateway owns the embed model). Uses the BACKGROUND tier (5-min
+    // deadlock guard): VDB indexing is a background task and must never abort
+    // at the 30s foreground cap — premature aborts leave dirty llama-server
+    // slots behind (known upstream wedge class), which then head-of-line block
+    // every later request. "Eventually served" beats "abort and re-churn".
     if (!GATEWAY) throw new Error('VDB: gateway not available');
     retries = retries ?? CONFIG.maxRetries ?? 1;
     let lastErr;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const embeddings = await GATEWAY.embedBatch(texts);
+            const embeddings = await GATEWAY.embedBatchBackground(texts);
             if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
                 throw new Error(`VDB: expected ${texts.length} embeddings, got ${Array.isArray(embeddings) ? embeddings.length : typeof embeddings}`);
             }

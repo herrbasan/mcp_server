@@ -50,11 +50,11 @@ if (fs.existsSync(configPath)) serverConfig = JSON.parse(fs.readFileSync(configP
 const gatewayUrl = process.env.GATEWAY_URL || serverConfig.gateway?.wsUrl || 'ws://localhost:3400/v1/realtime';
 const gatewayHttp = process.env.GATEWAY_HTTP_URL || serverConfig.gateway?.httpUrl || 'http://localhost:3400';
 const gatewayAccessKey = process.env.GATEWAY_ACCESS_KEY || serverConfig.gateway?.accessKey || null;
-// Embeds go through the gateway (gateway owns the model).
+// Embeds go through the gateway (gateway owns the model — no model is sent,
+// the gateway resolves its default embed model).
 // The gateway proxies to the Fatten wrapper with abort propagation + timeout.
 const embedUrl = process.env.EMBED_URL || gatewayHttp;
-const embedModel = process.env.EMBED_MODEL || serverConfig.gateway?.embedModel || 'gateway-owned';
-const embedClient = createEmbedClient(embedUrl, embedModel, gatewayAccessKey);
+const embedClient = createEmbedClient(embedUrl, gatewayAccessKey);
 const gatewayClient = createGatewayClient(gatewayUrl, gatewayHttp, gatewayAccessKey, embedClient);
 
 const globalContext = {

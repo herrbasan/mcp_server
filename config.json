@@ -64,7 +64,7 @@
       "chunkTokCharsRatio": 2.5,
       "maxFileSizeBytes": 10485760,
       "batchTokenLimit": 29000,
-      "maxBatchTexts": 32,
+      "maxBatchTexts": 4,
       "filesPerGroup": 100,
       "maxRetries": 1,
       "batchDelayMs": 100,

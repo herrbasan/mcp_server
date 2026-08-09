@@ -21,9 +21,9 @@ const logger = getLogger();
  * only add a stateful failure mode on top of a stateless service.
  *
  * Config (env or config.json gateway section):
- *   EMBED_URL    — wrapper base URL, e.g. http://192.168.0.145:4080
- *   EMBED_MODEL  — model field sent to the wrapper (it resolves the gguf),
- *                  e.g. Qwen/Qwen3-Embedding-4B-GGUF
+ *   EMBED_URL  — gateway base URL, e.g. http://localhost:3400. Embeds always
+ *                go through the gateway, which owns the embed model — this
+ *                client sends NO model so the gateway uses its default.
  */
 
 // Foreground (search queries): keep snappy — degrade to recency rather than
@@ -36,9 +36,8 @@ const EMBED_BATCH_TIMEOUT_MS = 30000;
 // "lost". Prevents the pending->heal->retry churn from premature aborts.
 const EMBED_BACKGROUND_TIMEOUT_MS = 300000; // 5 min
 
-export function createEmbedClient(embedUrl, embedModel, accessKey = null) {
+export function createEmbedClient(embedUrl, accessKey = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
-    if (!embedModel) throw new Error('createEmbedClient: embedModel is required (env EMBED_MODEL or config gateway.embedModel)');
     const baseUrl = embedUrl.replace(/\/+$/, '');
     const headers = { 'Content-Type': 'application/json' };
     if (accessKey) headers['Authorization'] = `Bearer ${accessKey}`;
@@ -68,13 +67,15 @@ export function createEmbedClient(embedUrl, embedModel, accessKey = null) {
     return {
         async embed(text, opts) {
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_TIMEOUT_MS;
-            const data = await post({ model: embedModel, input: text }, timeout);
+            // No model sent — the gateway resolves its default embed model.
+            const data = await post({ input: text }, timeout);
             return data.data[0].embedding;
         },
 
         async embedBatch(texts, opts) {
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_BATCH_TIMEOUT_MS;
-            const data = await post({ model: embedModel, input: texts }, timeout);
+            // No model sent — the gateway resolves its default embed model.
+            const data = await post({ input: texts }, timeout);
             return data.data.map(d => d.embedding);
         }
     };
