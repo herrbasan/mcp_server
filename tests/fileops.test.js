@@ -172,24 +172,15 @@ test('append: appends to existing', async () => {
     cleanup(root);
 });
 
-test('append: after snapshot exists (nlink>1) version bytes unchanged', async () => {
+test('append: after overwrite, appends to current content', async () => {
     const root = freshRoot();
     const ops = createFileOps({ root });
     await ops.write('shared.txt', 'ORIGINAL');
-    // overwrite creates a version (snapshot of ORIGINAL)
     await ops.write('shared.txt', 'V2', { overwrite: true });
-    // now append — nlink > 1 because V2 is hardlinked in .versions
     await ops.append('shared.txt', '_APPENDED');
 
     const live = await ops.read('shared.txt');
     assert.equal(live.content, 'V2_APPENDED');
-
-    // the version (ORIGINAL) must be unchanged
-    const hist = await ops.history('shared.txt');
-    const versionsDir = path.join(root, '.versions', 'shared.txt');
-    const versionFiles = fs.readdirSync(versionsDir).sort();
-    const oldestBytes = fs.readFileSync(path.join(versionsDir, versionFiles[0]), 'utf8');
-    assert.equal(oldestBytes, 'ORIGINAL', 'version bytes must be unchanged after append');
     cleanup(root);
 });
 
@@ -248,20 +239,6 @@ test('replace: multiline marker across chunk boundaries', async () => {
     const readBack = await ops.read('big.md');
     assert.ok(readBack.content.includes('## SECTION\nnew content\n'));
     assert.ok(!readBack.content.includes('old content'));
-    cleanup(root);
-});
-
-test('replace: prior state is versioned', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('doc.md', 'before MARKER after');
-    await ops.replace('doc.md', 'MARKER', 'CHANGED');
-    const hist = await ops.history('doc.md');
-    assert.ok(hist.versions.length >= 1);
-    // restore steps back to the pre-replace state
-    await ops.restore('doc.md');
-    const readBack = await ops.read('doc.md');
-    assert.equal(readBack.content, 'before MARKER after');
     cleanup(root);
 });
 
@@ -381,17 +358,6 @@ test('grep: no-match returns empty', async () => {
     const r = await ops.grep('nm.txt', 'xyzzy');
     assert.equal(r.matches.length, 0);
     assert.equal(r.truncated, false);
-    cleanup(root);
-});
-
-test('grep: .versions/ content is not searched', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('live.txt', 'FINDME');
-    await ops.write('live.txt', 'changed', { overwrite: true }); // creates version
-    // .versions/live.txt/<stamp>_write contains "FINDME"
-    const r = await ops.grep('', 'FINDME');
-    assert.equal(r.matches.length, 0, 'should not search .versions/');
     cleanup(root);
 });
 
@@ -548,88 +514,6 @@ test('list glob: **/*.md recursive', async () => {
     // **.md (no slash after **) matches everything including top-level
     const r2 = await ops.list('', { recursive: true, pattern: '**.md' });
     assert.equal(r2.entries.length, 3);
-    cleanup(root);
-});
-
-test('list: .versions excluded', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('live.txt', 'v1');
-    await ops.write('live.txt', 'v2', { overwrite: true }); // creates .versions/
-    const r = await ops.list('', { recursive: true });
-    assert.ok(!r.entries.some(e => e.path.startsWith('.versions')));
-    cleanup(root);
-});
-
-// ============================================
-// versioning
-// ============================================
-
-test('versioning: snapshot → modify → version bytes intact', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('v.txt', 'ORIGINAL');
-    await ops.write('v.txt', 'MODIFIED', { overwrite: true });
-    const versionsDir = path.join(root, '.versions', 'v.txt');
-    const files = fs.readdirSync(versionsDir).sort();
-    const bytes = fs.readFileSync(path.join(versionsDir, files[0]), 'utf8');
-    assert.equal(bytes, 'ORIGINAL');
-    cleanup(root);
-});
-
-test('versioning: retention prunes to keepVersions', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root, keepVersions: 3 });
-    for (let i = 0; i < 8; i++) {
-        await ops.write('r.txt', `v${i}`, { overwrite: true });
-    }
-    const h = await ops.history('r.txt');
-    assert.ok(h.versions.length <= 3);
-    cleanup(root);
-});
-
-test('versioning: restore round-trip', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('rt.txt', 'FIRST');
-    await ops.write('rt.txt', 'SECOND', { overwrite: true });
-    await ops.restore('rt.txt', { steps: 1 });
-    const c = await ops.read('rt.txt');
-    assert.equal(c.content, 'FIRST');
-    cleanup(root);
-});
-
-test('versioning: restore-of-restore (undo is undoable)', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('rr.txt', 'A');
-    await ops.write('rr.txt', 'B', { overwrite: true });
-    // restore to A
-    await ops.restore('rr.txt', { steps: 1 });
-    let c = await ops.read('rr.txt');
-    assert.equal(c.content, 'A');
-    // now restore back to B (the pre-restore state was snapshotted)
-    await ops.restore('rr.txt', { steps: 1 });
-    c = await ops.read('rr.txt');
-    assert.equal(c.content, 'B');
-    cleanup(root);
-});
-
-test('versioning: history empty when no versions', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('fresh.txt', 'x');
-    const h = await ops.history('fresh.txt');
-    assert.equal(h.versions.length, 0);
-    cleanup(root);
-});
-
-test('versioning: restore steps > available throws', async () => {
-    const root = freshRoot();
-    const ops = createFileOps({ root });
-    await ops.write('x.txt', 'v1');
-    await ops.write('x.txt', 'v2', { overwrite: true });
-    await assert.rejects(() => ops.restore('x.txt', { steps: 99 }), /only 1 versions/);
     cleanup(root);
 });
 

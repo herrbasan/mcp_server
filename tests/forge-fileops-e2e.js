@@ -1,6 +1,6 @@
 // Quick E2E harness: spawn forge worker-bootstrap with a tool that uses ctx.fileops.
 // Verifies the whole chain: workerData → bootstrap → createFileOps → confined write
-// with versioning inside the tool storage dir.
+// inside the tool storage dir.
 import { Worker } from 'worker_threads';
 import { MessageChannel } from 'worker_threads';
 import fs from 'fs';
@@ -14,20 +14,17 @@ const toolStorage = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-fileops-e2e-'))
 const source = `
 export default async function(args, ctx) {
     if (!ctx.fileops) throw new Error('ctx.fileops is MISSING');
-    // write → overwrite (version) → replace (version) → history → restore
+    // write → overwrite → replace → read
     await ctx.fileops.write('out.txt', 'hello MARKER world');
     await ctx.fileops.write('out.txt', 'hello MARKER world v2', { overwrite: true });
     const r = await ctx.fileops.replace('out.txt', 'MARKER', 'REPLACED');
-    const hist = await ctx.fileops.history('out.txt');
-    await ctx.fileops.restore('out.txt');
     const back = await ctx.fileops.read('out.txt');
     // confinement check
     let escapeThrew = false;
     try { await ctx.fileops.write('../escape.txt', 'x'); } catch (e) { escapeThrew = /escapes root/.test(e.message); }
     return {
         replacements: r.replacements,
-        versions: hist.versions.length,
-        restored: back.content,
+        content: back.content,
         escapeThrew
     };
 }
@@ -67,8 +64,7 @@ console.log('RESULT:', JSON.stringify(result, null, 2));
 
 const assert = (cond, msg) => { if (!cond) { console.error('FAIL:', msg); process.exit(1); } };
 assert(result.replacements === 1, 'replacements should be 1');
-assert(result.versions >= 2, 'should have >=2 versions, got ' + result.versions);
-assert(result.restored === 'hello MARKER world v2', 'restore should step back one version, got: ' + result.restored);
+assert(result.content === 'hello REPLACED world v2', 'replace should have swapped MARKER, got: ' + result.content);
 assert(result.escapeThrew === true, 'confinement escape should throw');
 
 console.log('ALL ASSERTIONS PASS — ctx.fileops is live in forge workers');

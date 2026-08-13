@@ -21,9 +21,9 @@ const SERVER_INFO = {
     name: 'mcp-server-workshop',
     version: '2.0.0',
     description:
-        '⚠️ START HERE: storage.read({ path: "docs/Workshop/Agents_Prime.md" }) — prime directive.\n' +
-        'Then: storage.read({ path: "docs/Workshop/workshop.md" }) for the full tools reference.\n' +
-        'Docs live in storage under docs/ — use vdb.search to find content, storage.read/write for files.'
+        '⚠️ START HERE: storage.read({ path: "documentation/Workshop/Agents_Prime.md" }) — prime directive.\n' +
+        'Then: storage.read({ path: "documentation/Workshop/workshop.md" }) for the full tools reference.\n' +
+        'Docs live in storage under documentation/ — use vdb.search to find content, storage.read/write for files.'
 };
 const SERVER_CAPABILITIES = {
     tools: { listChanged: true },
@@ -518,8 +518,8 @@ content that should survive beyond the current session.
     For append-only use storage.append.
     For multi-step edits use storage.batch.
     BEFORE writing: call storage.read to get the full current content.
-    AFTER a mistake: call storage.history to list versions, storage.restore to
-    recover. Every write auto-snapshots the previous version.
+    For a checkpoint before a risky edit, storage.copy the file into the temp/
+    scratch area and copy it back to roll back. There is no automatic versioning.
 
   storage.stat — { path* }
       Get file or directory metadata (size, modified time, type).
@@ -589,7 +589,7 @@ content that should survive beyond the current session.
   storage.import — { files*: [{path, content, encoding?}] }
       BULK WRITE — write MANY files in ONE call. Purpose-built for archive
       workflows (writing a session's artifacts, a batch of notes, generated
-      files). Each file uses the same atomic + versioned + self-verifying path
+      files). Each file uses the same atomic + self-verifying path
       as storage.write. ⚡ USE THIS when writing 2+ files — one import call
       replaces N storage.write calls (each separate call costs a round trip +
       model generation; a batch is milliseconds).
@@ -599,22 +599,12 @@ content that should survive beyond the current session.
       (respects the same size threshold as storage.read — large files come
       back as a pointer). ⚡ USE THIS when reading 2+ files.
 
-  storage.history — { path* }
-      List all saved versions of a file. Each version has: version (timestamp),
-      op (what triggered it), size, modified. Newest first.
-      USE THIS to recover from a bad write — every write auto-snapshots.
-
-  storage.restore — { path*, steps? }
-      Restore a previous version. steps: how many versions back (default 1).
-      Current state is snapshotted first so restore is undoable.
-      USE THIS after storage.history shows the version you need.
-
   storage.resources_list — {}
       List available MCP resources. Exposes storage://{path} URI templates
       for arbitrary files under the storage root.
 
   storage.resources_read — { uri*, encoding? }
-      Read an MCP resource by URI (e.g. storage://docs/Workshop/Agents_Prime.md).
+      Read an MCP resource by URI (e.g. storage://documentation/Workshop/Agents_Prime.md).
 
   storage.resources_templates — {}
       List resource URI templates (the storage://{path} pattern).
@@ -698,8 +688,8 @@ IMPORTANT RULES
 8. ⚠️  storage.write DESTROYS DATA if misused. It replaces the ENTIRE file.
    If you intend to edit one section: use storage.replace (marker-based swap).
    Before writing: ALWAYS storage.read the current file first.
-   After a bad write: storage.history → storage.restore to recover.
-   Every write auto-snapshots; the safety net exists — USE IT.`,
+   Before a risky edit, storage.copy the file into temp/ to checkpoint, and
+   copy it back to roll back. There is no automatic versioning.`,
         inputSchema: {
             type: "object",
             properties: {
@@ -755,7 +745,6 @@ IMPORTANT RULES
         "storage.replace": "storage_replace", "storage.find": "storage_find",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
         "storage.import": "storage_import", "storage.readMany": "storage_readMany",
-        "storage.history": "storage_history", "storage.restore": "storage_restore",
         "storage.resources_list": "storage_resources_list",
         "storage.resources_read": "storage_resources_read",
         "storage.resources_templates": "storage_resources_templates",

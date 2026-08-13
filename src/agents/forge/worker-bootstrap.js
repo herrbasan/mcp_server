@@ -258,11 +258,11 @@ async function run() {
         );
     }
 
-    // Build ctx.fileops — confined + versioned file ops rooted at THIS tool's
+    // Build ctx.fileops — confined file ops rooted at THIS tool's
     // storage dir. Forged tools should prefer this over raw fs: every mutation
-    // is atomic and auto-snapshotted, and confinement prevents path escapes.
+    // is atomic, and confinement prevents path escapes.
     // workspacePath/toolStatePath intentionally stay raw — ephemeral per-call
-    // scratch and git-internal state don't need versioning.
+    // scratch and git-internal state don't need the fileops engine.
     const translator = (uncShare && localRoot) ? createPathTranslator({ uncShare, localRoot }) : null;
     const fileops = createFileOps({ root: storagePath, translator });
 

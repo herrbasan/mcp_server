@@ -6,13 +6,14 @@ import { getLogger } from '../../utils/logger.js';
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Agents_Prime.md lives in storage under docs/Workshop/ (the documentation
-// agent was removed and docs became storage citizens). The storage root is
-// required — no fallback to the deleted mcp_documentation/ directory.
+// Agents_Prime.md lives in storage under documentation/Workshop/ (the
+// documentation agent was removed and docs became storage citizens). The
+// storage root is required — no fallback to the deleted mcp_documentation/
+// directory.
 function resolvePrimePath(context) {
     const storageRoot = context?.config?.agents?.storage?.root;
     if (!storageRoot) throw new Error('llm.resolvePrimePath: agents.storage.root required — missing from config.json');
-    return path.resolve(storageRoot, 'docs', 'Workshop', 'Agents_Prime.md');
+    return path.resolve(storageRoot, 'documentation', 'Workshop', 'Agents_Prime.md');
 }
 
 function loadPrinciples(context) {

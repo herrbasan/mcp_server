@@ -982,13 +982,12 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.workspacePath    — Absolute path to ephemeral per-call directory (deleted after call)
   ctx.toolStatePath    — Absolute path to persistent per-tool state directory (survives across calls)
   ctx.storagePath      — Absolute path to persistent per-tool output directory (survives across calls, user-visible)
-  ctx.fileops          — Confined + versioned file ops rooted at ctx.storagePath (PREFER THIS over raw fs)
+  ctx.fileops          — Confined file ops rooted at ctx.storagePath (PREFER THIS over raw fs)
   ctx.args       — The args object passed to forge_call (same as first parameter)
 
 ctx.fileops API (the fileops engine — same as the storage agent uses)
-  Every mutation is atomic (temp+rename) and auto-snapshots the prior state —
-  mistakes are recoverable. Paths are confined to the tool's storage dir;
-  escapes throw. Prefer this over raw fs for anything user-visible.
+  Every mutation is atomic (temp+rename). Paths are confined to the tool's
+  storage dir; escapes throw. Prefer this over raw fs for anything user-visible.
 
   await ctx.fileops.read(path, { encoding? })              → { content, size }
   await ctx.fileops.write(path, content, { overwrite? })   → { size }  (throws if exists without overwrite:true)
@@ -1004,8 +1003,6 @@ ctx.fileops API (the fileops engine — same as the storage agent uses)
   await ctx.fileops.stat(path)                             → { exists, type, size, modified }
   await ctx.fileops.grep(path, pattern, { context?, ignoreCase? })  → { matches, truncated }
   await ctx.fileops.hash(path, { algo? })                  → { hash, size }
-  await ctx.fileops.history(path)                          → { versions }
-  await ctx.fileops.restore(path, { steps? })              → { restored, from }
   await ctx.fileops.batch(ops, { onError? })               → { results }
 
 ctx.gateway API
@@ -1108,9 +1105,9 @@ STATE PATTERNS
     await writeFile(cacheFile, JSON.stringify(data));
 
   Persistent output (survives across calls, user-visible via storage):
-    // PREFERRED: use ctx.fileops — atomic, versioned, confined
+    // PREFERRED: use ctx.fileops — atomic, confined
     await ctx.fileops.write('report.md', markdown);
-    // (raw fs still works, but bypasses versioning + confinement)
+    // (raw fs still works, but bypasses confinement)
 
   Ephemeral temp files (deleted after call):
     const tmpFile = join(ctx.workspacePath, 'intermediate.bin');

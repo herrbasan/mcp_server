@@ -22,7 +22,7 @@ const DEFAULTS = {
 let STORAGE_ROOT;
 let CONFIG;
 let TRANSLATOR;  // null when no uncShare is configured — pass-through mode
-let OPS;          // createFileOps engine — copy, append, readWindow, grep, batch, history, restore
+let OPS;          // createFileOps engine — copy, append, readWindow, grep, batch
 
 // Threshold above which storage_read returns a URL pointer instead of inline
 // content. The MCP transport chokes on large inline responses (chat-app side
@@ -46,8 +46,7 @@ function initConfig(agentConfig) {
     fs.mkdirSync(STORAGE_ROOT, { recursive: true });
     OPS = createFileOps({
         root: STORAGE_ROOT,
-        translator: TRANSLATOR,
-        keepVersions: agentConfig.keepVersions ?? 10
+        translator: TRANSLATOR
     });
 }
 
@@ -721,22 +720,4 @@ export async function storage_readMany(args, context) {
     pr.done(`Read ${okCount}/${paths.length} files`);
     logger.info(`[Storage] storage_readMany OK: ${okCount}/${paths.length}`, null, 'Storage');
     return result(true, 'storage_readMany', '', { read: okCount, total: paths.length, files: results });
-}
-
-export async function storage_history(args) {
-    requireFields(args, ['path'], 'storage_history');
-    const { path: userPath } = args;
-    logger.info(`[Storage] storage_history: "${userPath}"`, null, 'Storage');
-    const engineResult = await OPS.history(userPath);
-    logger.info(`[Storage] storage_history OK: "${userPath}" (${engineResult.versions.length} version(s))`, null, 'Storage');
-    return result(true, 'storage_history', userPath, { versions: engineResult.versions });
-}
-
-export async function storage_restore(args) {
-    requireFields(args, ['path'], 'storage_restore');
-    const { path: userPath, steps } = args;
-    logger.info(`[Storage] storage_restore: "${userPath}" steps=${steps ?? 1}`, null, 'Storage');
-    const engineResult = await OPS.restore(userPath, { steps: steps ?? 1 });
-    logger.info(`[Storage] storage_restore OK: "${userPath}" from=${engineResult.from}`, null, 'Storage');
-    return result(true, 'storage_restore', userPath, { restored: engineResult.restored, from: engineResult.from });
 }

@@ -1,5 +1,5 @@
 // ============================================
-// fileops — confined, versioned file operations
+// fileops — confined file operations
 // ============================================
 
 import fs from 'fs';
@@ -8,8 +8,7 @@ import crypto from 'crypto';
 import readline from 'readline';
 import { createPathTranslator } from '../agents/storage/path-translator.js';
 
-const SKIP_DIRS = new Set(['.versions', 'node_modules', '.git']);
-const VERSIONS_DIR = '.versions';
+const SKIP_DIRS = new Set(['node_modules', '.git']);
 const GREP_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const TAIL_CHUNK = 64 * 1024;
 
@@ -45,12 +44,9 @@ function globToRegExp(pattern) {
 // Factory
 // ============================================
 
-export function createFileOps({ root, translator = null, keepVersions = 10 }) {
+export function createFileOps({ root, translator = null }) {
     if (!root) throw new Error('createFileOps: root required');
     if (typeof root !== 'string') throw new Error('createFileOps: root must be a string');
-    if (typeof keepVersions !== 'number' || keepVersions < 1) {
-        throw new Error('createFileOps: keepVersions must be a positive number');
-    }
 
     fs.mkdirSync(root, { recursive: true });
     const REAL_ROOT = fs.realpathSync(root);
@@ -113,60 +109,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         const tmp = path.join(dir, `.fileops-tmp-${process.pid}-${tmpCounter}`);
         fs.writeFileSync(tmp, buffer);
         fs.renameSync(tmp, targetAbs);
-    }
-
-    // ============================================
-    // Internal: versioning
-    // ============================================
-
-    function versionStamp() {
-        return new Date().toISOString().replace(/[:.]/g, '-');
-    }
-
-    function versionDirFor(targetRel) {
-        const vdir = path.join(REAL_ROOT, VERSIONS_DIR, targetRel);
-        if (vdir !== REAL_ROOT && !vdir.startsWith(REAL_ROOT + SEP)) {
-            throw new Error('versionDirFor: escapes root: ' + targetRel);
-        }
-        return vdir;
-    }
-
-    function snapshot(targetRel, op) {
-        const liveAbs = path.join(REAL_ROOT, ...targetRel.split('/'));
-        if (!fs.existsSync(liveAbs)) return;
-        const stat = fs.statSync(liveAbs);
-        if (!stat.isFile()) return;
-
-        const vdir = versionDirFor(targetRel);
-        fs.mkdirSync(vdir, { recursive: true });
-        const stamp = versionStamp();
-        const versionPath = path.join(vdir, `${stamp}_${op}`);
-        try {
-            fs.linkSync(liveAbs, versionPath);
-        } catch (e) {
-            if (e.code === 'EXDEV') {
-                console.warn(`[fileops] snapshot: cross-device link, falling back to copy for ${targetRel}`);
-                fs.copyFileSync(liveAbs, versionPath);
-            } else if (e.code === 'EEXIST') {
-                // stamp collision (same ms) — append a suffix
-                fs.linkSync(liveAbs, versionPath + '_' + process.hrtime.bigint());
-            } else {
-                throw e;
-            }
-        }
-
-        // Prune
-        const entries = fs.readdirSync(vdir).sort();
-        while (entries.length > keepVersions) {
-            const oldest = entries.shift();
-            fs.unlinkSync(path.join(vdir, oldest));
-            entries.splice(entries.indexOf(oldest), 1);
-        }
-    }
-
-    function snapshotByAbs(targetAbs, op) {
-        const targetRel = rel(targetAbs);
-        snapshot(targetRel, op);
     }
 
     // ============================================
@@ -238,8 +180,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         if (fs.existsSync(abs) && !overwrite) {
             throw new Error('write: target exists, pass overwrite:true');
         }
-        const targetRel = rel(abs);
-        snapshot(targetRel, 'write');
         const buf = Buffer.from(content, encoding);
         atomicWrite(abs, buf);
         return { size: buf.length };
@@ -298,7 +238,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         if (!fs.existsSync(fromAbs)) throw new Error('move: source does not exist: ' + fromPath);
         if (fs.existsSync(toAbs)) throw new Error('move: destination exists: ' + toPath);
         const fromRel = rel(fromAbs);
-        snapshot(fromRel, 'move');
         fs.mkdirSync(path.dirname(toAbs), { recursive: true });
         fs.renameSync(fromAbs, toAbs);
         const type = fs.statSync(toAbs).isDirectory() ? 'dir' : 'file';
@@ -318,10 +257,8 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             if (contents.length > 0 && !recursive) {
                 throw new Error('remove: directory not empty, pass recursive:true');
             }
-            snapshotByAbs(abs, 'remove');
             fs.rmSync(abs, { recursive: true });
         } else {
-            snapshotByAbs(abs, 'remove');
             fs.unlinkSync(abs);
         }
         return { deleted: true };
@@ -339,9 +276,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             throw new Error('copy: target exists, pass overwrite:true');
         }
         const st = fs.statSync(fromAbs);
-        if (fs.existsSync(toAbs) && overwrite) {
-            snapshotByAbs(toAbs, 'copy');
-        }
         fs.mkdirSync(path.dirname(toAbs), { recursive: true });
         if (st.isDirectory()) {
             fs.cpSync(fromAbs, toAbs, { recursive: true });
@@ -361,17 +295,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             throw new Error('append: encoding must be utf8 or base64');
         }
         const abs = resolve(userPath);
-        const targetRel = rel(abs);
-        snapshot(targetRel, 'append');
-
-        if (fs.existsSync(abs)) {
-            const st = fs.statSync(abs);
-            if (st.nlink > 1) {
-                // Break sharing: copy live → temp → rename, then append
-                const existing = fs.readFileSync(abs);
-                atomicWrite(abs, existing);
-            }
-        }
         const buf = Buffer.from(content, encoding);
         const fd = fs.openSync(abs, 'a');
         fs.writeSync(fd, buf);
@@ -430,7 +353,7 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
     }
 
     // Server-side marker swap: read file, replace occurrence(s) of marker
-    // with replacement, write back via snapshot + atomicWrite. This is the
+    // with replacement, write back via atomicWrite. This is the
     // large-file edit path — content never leaves the server.
     // occurrence: 'first' (default) | 'last' | 'all'.
     // Throws when marker is absent (fail loud — the caller's mental model
@@ -476,8 +399,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
             throw new Error('replace: replacement is identical to marker — no change');
         }
 
-        const targetRel = rel(abs);
-        snapshot(targetRel, 'replace');
         atomicWrite(abs, Buffer.from(updated, 'utf8'));
         return { size: Buffer.byteLength(updated, 'utf8'), replacements: count };
     }
@@ -786,8 +707,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         if (fs.existsSync(abs) && !overwrite) {
             throw new Error('writeFromUrl: target exists, pass overwrite:true');
         }
-        const targetRel = rel(abs);
-        snapshot(targetRel, 'writeFromUrl');
 
         const res = await fetch(url);
         if (!res.ok) throw new Error(`writeFromUrl: fetch failed ${res.status} ${res.statusText}`);
@@ -854,46 +773,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
     }
 
     // ============================================
-    // Public: history / restore
-    // ============================================
-
-    async function history(userPath) {
-        const abs = resolve(userPath);
-        const targetRel = rel(abs);
-        const vdir = versionDirFor(targetRel);
-        if (!fs.existsSync(vdir)) return { versions: [] };
-        const entries = fs.readdirSync(vdir).sort().reverse();
-        const versions = entries.map((name, i) => {
-            const st = fs.statSync(path.join(vdir, name));
-            const op = name.indexOf('_') >= 0 ? name.slice(name.indexOf('_') + 1) : name;
-            return { version: i + 1, op, size: st.size, modified: st.mtime };
-        });
-        return { versions };
-    }
-
-    async function restore(userPath, { steps = 1 } = {}) {
-        if (typeof steps !== 'number' || steps < 1) {
-            throw new Error('restore: steps must be a positive number');
-        }
-        const abs = resolve(userPath);
-        const targetRel = rel(abs);
-        const vdir = versionDirFor(targetRel);
-        if (!fs.existsSync(vdir)) throw new Error('restore: no versions for ' + userPath);
-        const entries = fs.readdirSync(vdir).sort().reverse();
-        if (steps > entries.length) {
-            throw new Error(`restore: only ${entries.length} versions, requested ${steps}`);
-        }
-        // Snapshot current state first
-        snapshot(targetRel, 'restore');
-
-        const chosen = entries[steps - 1];
-        const chosenAbs = path.join(vdir, chosen);
-        const buf = fs.readFileSync(chosenAbs);
-        atomicWrite(abs, buf);
-        return { restored: true, from: chosen };
-    }
-
-    // ============================================
     // Assemble frozen API
     // ============================================
 
@@ -914,8 +793,6 @@ export function createFileOps({ root, translator = null, keepVersions = 10 }) {
         writeFromUrl,
         hash,
         snapshotDir,
-        diffSnapshots,
-        history,
-        restore
+        diffSnapshots
     });
 }

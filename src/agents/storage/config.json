@@ -1,6 +1,6 @@
 {
     "agent": "storage",
-    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. CALL SHAPE: every storage op is invoked as {\"method\":\"storage_<op>\",\"payload\":{...args}} — ALL parameters go inside payload, NOT as top-level arguments. If you get 'args.X is required', you almost certainly put args at the wrong nesting level — wrap them in payload. FULL TOOL CATALOG (18 ops): storage_stat, storage_read, storage_readMany, storage_write, storage_import, storage_list, storage_move, storage_delete, storage_search, storage_copy, storage_append, storage_replace, storage_find, storage_grep, storage_batch, storage_history, storage_restore, storage_resources_list/read/templates. ⚡ BATCHING RULE: multi-file workflows MUST use storage.import (bulk write) / storage.readMany (bulk read) / storage.batch (mixed ops) — ONE call, never one per file. EDITING CHEATSHEET: targeted text edit = storage_replace (marker+replacement, aliases oldString/newString) — pre-flight with storage_find; add to end = storage_append; full rewrite = storage_write; locate text = storage_grep (regex, line numbers) or storage_find (exact string); undo = storage_history + storage_restore. Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). For files that are fleeting or temporary and should NOT be included in the VDB semantic index, write them to <root>\\temp\\*. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. CALL SHAPE: every storage op is invoked as {\"method\":\"storage_<op>\",\"payload\":{...args}} — ALL parameters go inside payload, NOT as top-level arguments. If you get 'args.X is required', you almost certainly put args at the wrong nesting level — wrap them in payload. FULL TOOL CATALOG (16 ops): storage_stat, storage_read, storage_readMany, storage_write, storage_import, storage_list, storage_move, storage_delete, storage_search, storage_copy, storage_append, storage_replace, storage_find, storage_grep, storage_batch, storage_resources_list/read/templates. ⚡ BATCHING RULE: multi-file workflows MUST use storage.import (bulk write) / storage.readMany (bulk read) / storage.batch (mixed ops) — ONE call, never one per file. EDITING CHEATSHEET: targeted text edit = storage_replace (marker+replacement, aliases oldString/newString) — pre-flight with storage_find; add to end = storage_append; full rewrite = storage_write; locate text = storage_grep (regex, line numbers) or storage_find (exact string); undo = copy the file to <root>\\temp\\* first, then copy it back to roll back (see TEMP below). Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). TEMP / ROLLBACK AREA: <root>\\temp\\* is a scratch folder excluded from the VDB semantic index. Use it as a checkpoint area — before a risky edit, storage.copy the file to <root>\\temp\\<name>; to roll back, storage.copy it back over the live file. There is NO automatic versioning: the model owns its own snapshots via this folder. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
     "tools": [
         {
             "name": "storage_stat",
@@ -150,7 +150,7 @@
         },
         {
             "name": "storage_replace",
-            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. Args: marker (alias: oldString), replacement (alias: newString), occurrence: 'first' (default), 'last', or 'all'. Throws with a DETAILED diagnostic if the marker is not found (file size, closest anchor position, line number, actual file snippet near the anchor) so you can repair the marker from the error alone — no blind retries. Pre-flight with storage_find if unsure whether the marker exists. The prior state is snapshotted automatically (see storage_history/storage_restore). Self-verifying: the response re-stats the file on disk and includes verified:true with the post-edit size — ok:true means the edit provably landed. Example: {\"method\":\"storage_replace\",\"payload\":{\"path\":\"a/b.md\",\"marker\":\"old text\",\"replacement\":\"new text\"}}.",
+            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. Args: marker (alias: oldString), replacement (alias: newString), occurrence: 'first' (default), 'last', or 'all'. Throws with a DETAILED diagnostic if the marker is not found (file size, closest anchor position, line number, actual file snippet near the anchor) so you can repair the marker from the error alone — no blind retries. Pre-flight with storage_find if unsure whether the marker exists. Self-verifying: the response re-stats the file on disk and includes verified:true with the post-edit size — ok:true means the edit provably landed. Example: {\"method\":\"storage_replace\",\"payload\":{\"path\":\"a/b.md\",\"marker\":\"old text\",\"replacement\":\"new text\"}}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -204,7 +204,7 @@
         },
         {
             "name": "storage_import",
-            "description": "BULK WRITE — write MANY files in ONE call. files is an array of {path, content, encoding?}. PURPOSE-BUILT for archive workflows (e.g. writing an entire session's artifacts, a batch of notes, a set of generated files). Each file is written with the same atomic + versioned + self-verifying path as storage_write. Returns per-file verification, NOT content echo. ⚡ USE THIS when writing 2+ files — one import call replaces N storage_write calls and costs milliseconds instead of ~15s per file.",
+            "description": "BULK WRITE — write MANY files in ONE call. files is an array of {path, content, encoding?}. PURPOSE-BUILT for archive workflows (e.g. writing an entire session's artifacts, a batch of notes, a set of generated files). Each file is written with the same atomic + self-verifying path as storage_write. Returns per-file verification, NOT content echo. ⚡ USE THIS when writing 2+ files — one import call replaces N storage_write calls and costs milliseconds instead of ~15s per file.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -222,29 +222,6 @@
                     "paths": { "type": "array", "description": "Array of relative paths within storage root" }
                 },
                 "required": ["paths"]
-            }
-        },
-        {
-            "name": "storage_history",
-            "description": "List prior versions of a file (newest first). Every mutating storage op auto-snapshots the prior state, so recent history is recoverable. Returns versions with version number, op, size, modified.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "File path within storage root" }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "storage_restore",
-            "description": "Restore a file to a previous version (steps back through history, default 1). The current state is snapshotted first, so a restore is itself undoable.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "File path within storage root" },
-                    "steps": { "type": "number", "description": "Number of versions to step back (default: 1)" }
-                },
-                "required": ["path"]
             }
         }
     ]
