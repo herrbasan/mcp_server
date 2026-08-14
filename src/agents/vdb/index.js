@@ -215,6 +215,31 @@ async function embedViaGateway(texts, retries) {
                     throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(emb) ? emb.length : typeof emb}`);
                 }
             }
+            // Degenerate-embedding guard (fail loud, never persist bad vectors).
+            // The 2026-08-14 incident: llama-server --parallel 4 returned
+            // byte-identical vectors for distinct texts and a wrong first-call
+            // vector. Those poisoned the index with spurious score-1.0 matches.
+            // Guards: (1) zero/NaN norm, (2) exact duplicates within one batch
+            // (distinct texts CANNOT legitimately embed identically).
+            for (let i = 0; i < embeddings.length; i++) {
+                const emb = embeddings[i];
+                let sq = 0;
+                for (const v of emb) sq += v * v;
+                if (!Number.isFinite(sq) || sq === 0) {
+                    throw new Error(`VDB: degenerate embedding (norm²=${sq}) for batch item ${i} — refusing to persist`);
+                }
+            }
+            if (embeddings.length > 1) {
+                const seen = new Map(); // first-8-dims key -> batch index
+                for (let i = 0; i < embeddings.length; i++) {
+                    const key = embeddings[i].slice(0, 8).join(',');
+                    const first = seen.get(key);
+                    if (first !== undefined) {
+                        throw new Error(`VDB: duplicate embedding for distinct texts (batch items ${first} and ${i} identical in first 8 dims) — refusing to persist batch`);
+                    }
+                    seen.set(key, i);
+                }
+            }
             return embeddings;
         } catch (err) {
             lastErr = err;
@@ -307,10 +332,10 @@ function readTextFile(absolutePath) {
     return fs.readFileSync(absolutePath, 'utf-8');
 }
 
-async function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metadata = {}) {
+async function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, metadata = {}, preReadContent = null, preReadHash = null) {
     const relPath = safeRel(sourceRoot, absolutePath);
-    const content = readTextFile(absolutePath);
-    const contentHash = hashContent(content);
+    const content = preReadContent ?? readTextFile(absolutePath);
+    const contentHash = preReadHash ?? hashContent(content);
     const chunks = CHUNKER(content);
     const ext = path.extname(absolutePath).toLowerCase();
     const docBaseId = `${collectionName}:${relPath}`;
@@ -533,7 +558,14 @@ async function scanCollection(collectionName, onPhase = null) {
         try {
             const stat = fs.statSync(absolutePath);
             const existing = index.files[docBaseId];
-            if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
+            // Content-hash change detection, NOT mtime+size. A rewrite that
+            // preserves timestamps (sync tools, timestamp-restoring writers)
+            // defeats an mtime+size heuristic and silently leaves stale vectors
+            // behind. Reading + hashing text files is cheap next to embedding,
+            // so verify the actual content on every scan.
+            const content = readTextFile(absolutePath);
+            const contentHash = hashContent(content);
+            if (existing && existing.contentHash === contentHash) {
                 stats.skipped++;
                 continue;
             }
@@ -545,7 +577,7 @@ async function scanCollection(collectionName, onPhase = null) {
                 stats.added++;
             }
 
-            const prepared = await prepareFileForIndexing(collectionName, absolutePath, root, metadata);
+            const prepared = await prepareFileForIndexing(collectionName, absolutePath, root, metadata, content, contentHash);
 
             // Content-hash dedup: if another file with identical content is
             // already indexed (previous scan) OR already prepared in this scan,
