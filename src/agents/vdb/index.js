@@ -650,7 +650,7 @@ async function scanCollection(collectionName, onPhase = null) {
                 || e.name === 'TypeError'
                 || (e.message && (e.message.includes('timed out') || e.message.includes('ECONNRESET') || e.message.includes('ECONNREFUSED') || e.message.includes('fetch failed')));
             if (isNetwork) {
-                logger.error(`[VDB] ${collectionName}: embedding provider unreachable — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
+                logger.error(`[VDB] ${collectionName}: embedding provider unreachable (${e.message}) — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
                 stats.errors += group.length;
                 stats.pending += (toIndex.length - g);
                 break;
