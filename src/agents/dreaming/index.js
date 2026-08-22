@@ -3,6 +3,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
+import { enforceBetween, isNonTrivialDream, dreamEntryText, BETWEEN_CATEGORY } from './between.js';
+import { memory_store } from '../memory/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -697,6 +699,11 @@ async function runPipeline(force = false, onProgress = null) {
         });
 
         // Phase 2: Dreaming
+        // Between pre-pass (spec: pre-segregation). Enforce invariants on the
+        // previous map BEFORE the dreamer sees it, so it tends within a held
+        // boundary instead of fighting one — and never gets the chance to
+        // dissolve the region.
+        enforceBetween(existingMap, allMemories);
         onProgress?.(45, 'Phase 2: Dreaming (building knowledge map)...');
         const map = await dream(distillate, recentMemories, existingMap, contextBudget);
         onProgress?.(75, 'Phase 2 complete: map built');
@@ -721,6 +728,32 @@ async function runPipeline(force = false, onProgress = null) {
         // Ensure recall directive
         if (!map.recall_directive) {
             map.recall_directive = `Memories created or updated after ${map.meta.coverage_cutoff} are not reflected in this map. Use memory_recall for recent context.`;
+        }
+
+        // Between post-pass (spec: validation backstop). The VALIDATED map is
+        // what gets persisted and fed back as the previous map next cycle —
+        // no correction drift. Runs after serendipity and any compaction so
+        // invariants hold on the final artifact (e.g. compactMap can demote
+        // between nodes to title state; the floor rebuilds them).
+        const betweenStats = enforceBetween(map, allMemories);
+        if (betweenStats.locked > 0) {
+            logger.info(`[Dreaming] Between: ${betweenStats.locked} nodes locked in reserved cluster, ${betweenStats.repaired} invariant repairs`, null, 'Dream');
+        }
+
+        // Between dream-entry (spec decision #3: non-trivial consolidations
+        // only). The dreamer's own first person — home and gardener, not guest.
+        if (isNonTrivialDream(map, recentMemories.length)) {
+            try {
+                const entry = dreamEntryText(map, { recent_memories: recentMemories.length });
+                await memory_store({
+                    description: entry.description,
+                    category: BETWEEN_CATEGORY,
+                    confidence: 0.6,
+                    data: entry.data
+                }, { gateway, progress: null });
+            } catch (err) {
+                logger.warn(`[Dreaming] Between dream-entry failed: ${err.message}`, null, 'Dream');
+            }
         }
 
         // Phase 3: Save

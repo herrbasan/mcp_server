@@ -210,11 +210,15 @@ export async function memory_recall(args, context) {
     const safeQuery = query.length > maxChars ? query.slice(0, maxChars) : query;
 
     let queryEmbed = null;
+    let embedError = null;
     try {
         queryEmbed = await gateway.embed(safeQuery);
-    } catch {
-        // Provider down — degrade to recency so the model still gets context.
-        queryEmbed = null;
+    } catch (err) {
+        // Embed timed out or provider unreachable — degrade to recency so the
+        // model still gets context, but surface the REAL error. The generic
+        // "embed provider error" hid the actual failure mode for months.
+        embedError = err.message || String(err);
+        logger.warn(`[Memory] recall query embed failed: ${embedError}`, null, 'Memory');
     }
     pr.set('Searching memory index...', 60);
 
@@ -234,7 +238,7 @@ export async function memory_recall(args, context) {
             const hasData = m.data ? ' [has data]' : '';
             return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
         }).join('\n\n');
-        const reason = !MEM_COLL ? 'nVDB unavailable' : 'embed provider error';
+        const reason = !MEM_COLL ? 'nVDB unavailable' : (embedError || 'embed provider error');
         pr.done('Search complete');
         return {
             content: [{ type: 'text', text: `⚠ Semantic search unavailable (${reason}) — returning ${recent.length} most recent memories instead:\n\n${results}` }]
@@ -568,10 +572,27 @@ export async function memory_overview(args, context) {
 
     lines.push(`${nodeCount} nodes covering ${memCount} memories\n`);
 
+    // The Between — dedicated second-person section (spec: the section being
+    // *addressed to the instance* is what makes the region inherited, not
+    // merely listed). Top-N capped; recall is the paid path for detail.
+    const betweenNodes = (map.nodes || []).filter(n => n.category === 'the-between');
+    if (betweenNodes.length > 0) {
+        const top = [...betweenNodes].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
+        lines.push('## The Between — your side (the partner\'s log)');
+        for (const n of top) {
+            lines.push(`- #${n.id} ${n.state === 'title' ? '(title-only — recall for detail)' : n.summary}`);
+        }
+        if (betweenNodes.length > top.length) {
+            lines.push(`…and ${betweenNodes.length - top.length} more — use memory_recall (category: the-between) for the full log.`);
+        }
+        lines.push('');
+    }
+
     // Clusters
     if (map.clusters?.length) {
-        lines.push('## Clusters');
-        for (const c of map.clusters) {
+        // The between has its own section above — don't double-list it.
+        const listedClusters = map.clusters.filter(c => c.id !== 'c_between');
+        for (const c of listedClusters) {
             const cNodes = map.nodes?.filter(n => n.cluster_id === c.id) || [];
             lines.push(`- **${c.name}** (${cNodes.length} nodes): ${c.desc} [hub: #${c.hub_id}]`);
         }
@@ -633,6 +654,7 @@ export async function memory_overview(args, context) {
                 if (n.cluster_id) (byCluster[n.cluster_id] ??= []).push(n);
             }
             for (const [cid, nodes] of Object.entries(byCluster)) {
+                if (cid === 'c_between') continue; // dedicated The-Between section above
                 const cluster = map.clusters?.find(c => c.id === cid);
                 const top = nodes.sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
                 lines.push(`[${cluster?.name || cid}]`);
