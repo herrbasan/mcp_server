@@ -84,7 +84,7 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "format": { "type": "string", "description": "Output format: 'summary' (clusters, bridges, top nodes) or 'full' (all nodes with details). Default: 'summary'.", "enum": ["summary", "full"] }
+                    "format": { "type": "string", "description": "Output format: 'clusters' (names + hubs + counts only — lightest, enough to pick a recall query), 'summary' (clusters, top bridges, top nodes; default) or 'full' (all nodes with details). Default: 'summary'.", "enum": ["clusters", "summary", "full"] }
                 }
             }
         },

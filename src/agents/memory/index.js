@@ -507,6 +507,20 @@ function nodeLabel(n) {
     return n.summary || n.title || `#${n.id}`;
 }
 
+// Summary-tier bounds. The summary is the cheap orientation pass — it must stay
+// small enough to avoid client pagination. Deep detail is behind recall/full.
+// (Issue #14: 242KB summary at 1177 nodes / 2036 bridges was defeating the purpose.)
+const SUMMARY = {
+    clusterDescChars: 160, // cluster teaser length — descs otherwise read like node summaries
+    maxClusters: 20,       // max cluster lines in summary (by hub score desc)
+    maxBridges: 20,        // max bridge lines, then a …and N more pointer
+};
+
+function truncate(s, max) {
+    if (!s) return s;
+    return s.length <= max ? s : s.slice(0, max).trimEnd() + '…';
+}
+
 export async function memory_overview(args, context) {
     const { format = 'summary' } = args;
     const mapPath = join(__dirname, '..', '..', '..', 'data', 'dream_map.json');
@@ -572,6 +586,22 @@ export async function memory_overview(args, context) {
 
     lines.push(`${nodeCount} nodes covering ${memCount} memories\n`);
 
+    // Lighter tier: clusters only (names + hub + counts). All a session start
+    // needs to pick a recall query. No bridges, no top-nodes, no node detail.
+    if (format === 'clusters') {
+        if (map.clusters?.length) {
+            lines.push('## Clusters');
+            for (const c of map.clusters) {
+                if (c.id === 'c_between') continue; // covered by The Between via recall
+                const cNodes = map.nodes?.filter(n => n.cluster_id === c.id) || [];
+                lines.push(`- **${c.name}** (${cNodes.length} nodes) [hub: #${c.hub_id}]`);
+            }
+            lines.push('');
+        }
+        lines.push(`Use format: 'summary' for bridges and top nodes, 'full' for all ${nodeCount} nodes with details.`);
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+
     // The Between — dedicated second-person section (spec: the section being
     // *addressed to the instance* is what makes the region inherited, not
     // merely listed). Top-N capped; recall is the paid path for detail.
@@ -588,22 +618,37 @@ export async function memory_overview(args, context) {
         lines.push('');
     }
 
-    // Clusters
+    // Clusters — descs truncated to teaser length, capped by hub score.
     if (map.clusters?.length) {
         // The between has its own section above — don't double-list it.
         const listedClusters = map.clusters.filter(c => c.id !== 'c_between');
-        for (const c of listedClusters) {
+        const scored = listedClusters.map(c => ({
+            c,
+            score: map.nodes?.find(n => n.id === c.hub_id)?.score || 0,
+        })).sort((a, b) => b.score - a.score);
+        for (const { c } of scored.slice(0, SUMMARY.maxClusters)) {
             const cNodes = map.nodes?.filter(n => n.cluster_id === c.id) || [];
-            lines.push(`- **${c.name}** (${cNodes.length} nodes): ${c.desc} [hub: #${c.hub_id}]`);
+            lines.push(`- **${c.name}** (${cNodes.length} nodes): ${truncate(c.desc, SUMMARY.clusterDescChars)} [hub: #${c.hub_id}]`);
+        }
+        if (scored.length > SUMMARY.maxClusters) {
+            lines.push(`…and ${scored.length - SUMMARY.maxClusters} more clusters — use format: 'clusters' or 'full' to list them.`);
         }
         lines.push('');
     }
 
-    // Bridges
+    // Bridges — capped; recall is the paid path for detail. Same elision pattern
+    // as The Between. Sorted by the endpoint nodes' score (bridges carry no weight).
     if (map.bridges?.length) {
         lines.push('## Cross-Cluster Bridges');
-        for (const b of map.bridges) {
+        const scoreOf = (id) => map.nodes?.find(n => n.id === id)?.score || 0;
+        const scored = [...map.bridges]
+            .map(b => ({ b, s: Math.max(scoreOf(b.from_id), scoreOf(b.to_id)) }))
+            .sort((a, b) => b.s - a.s);
+        for (const { b } of scored.slice(0, SUMMARY.maxBridges)) {
             lines.push(`- #${b.from_id} ↔ #${b.to_id}: ${b.reason}`);
+        }
+        if (scored.length > SUMMARY.maxBridges) {
+            lines.push(`…and ${scored.length - SUMMARY.maxBridges} more — use memory_recall to explore specific topics.`);
         }
         lines.push('');
     }
@@ -660,7 +705,10 @@ export async function memory_overview(args, context) {
                 lines.push(`[${cluster?.name || cid}]`);
                 for (const n of top) {
                     const arrow = momentumArrow(n.momentum);
-                    lines.push(`  #${n.id} [${n.category}] ${nodeLabel(n)} (score:${n.score?.toFixed(2)})${arrow}`);
+                    // Summary tier: truncate the node's prose — full text lives in
+                    // the 'full' tier and memory_recall. Prevents the 5×N nodes
+                    // section from re-bloating the summary past pagination.
+                    lines.push(`  #${n.id} [${n.category}] ${truncate(nodeLabel(n), SUMMARY.clusterDescChars)} (score:${n.score?.toFixed(2)})${arrow}`);
                 }
             }
             lines.push('');

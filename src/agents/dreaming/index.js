@@ -272,6 +272,10 @@ function mergeDelta(delta, previousMap) {
         wildcards = previousMap.wildcards || [];
     }
 
+    // Bridge hygiene — after node changes are applied so cluster membership is
+    // final. Dedupes and prunes the accumulation the dreamer produces.
+    bridges = sanitizeBridges(bridges, nodeMap);
+
     // Update meta
     if (delta.meta) {
         meta = { ...meta, ...delta.meta };
@@ -282,7 +286,7 @@ function mergeDelta(delta, previousMap) {
         recallDirective = delta.recall_directive;
     }
 
-    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes`, null, 'Dream');
+    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes, ${bridges.length} bridges`, null, 'Dream');
 
     return {
         meta,
@@ -292,6 +296,43 @@ function mergeDelta(delta, previousMap) {
         nodes: [...nodeMap.values()],
         recall_directive: recallDirective
     };
+}
+
+// Deterministic bridge hygiene. The dreamer is a small model that re-adds
+// semantically-equivalent bridges each cycle and never removes the old ones,
+// so bridges accumulate monotonically — the map reached 2036 bridges that
+// collapsed to only 118 distinct cluster-pairs (1918 lines re-describing
+// already-covered pairs, plus between↔between self-noise). These guards run
+// at apply time (pure computation, no LLM) and keep the bridge set a faithful
+// topology:
+//   1. self-loops (from === to) dropped
+//   2. exact duplicate node-pairs dropped (first wins)
+//   3. intra-cluster bridges dropped — a "cross-cluster" bridge that doesn't
+//      cross a cluster is noise
+//   4. one bridge per distinct cluster-pair (first wins) when both endpoints
+//      are clustered; bridges to unclustered nodes dedupe by node-pair only
+// Sanitized on every merge, so existing bloat self-heals on the next dream.
+function sanitizeBridges(bridges, nodeMap) {
+    const clusterOf = (id) => nodeMap.get(id)?.cluster_id ?? null;
+    const nodeSeen = new Set();
+    const pairSeen = new Set();
+    const out = [];
+    for (const b of bridges) {
+        if (b.from_id === b.to_id) continue; // self-loop
+        const np = b.from_id < b.to_id ? `${b.from_id}|${b.to_id}` : `${b.to_id}|${b.from_id}`;
+        if (nodeSeen.has(np)) continue;      // exact duplicate node-pair
+        nodeSeen.add(np);
+        const cf = clusterOf(b.from_id);
+        const ct = clusterOf(b.to_id);
+        if (cf && ct) {
+            if (cf === ct) continue;         // intra-cluster
+            const cp = cf < ct ? `${cf}|${ct}` : `${ct}|${cf}`;
+            if (pairSeen.has(cp)) continue;  // cluster-pair already covered
+            pairSeen.add(cp);
+        }
+        out.push(b);
+    }
+    return out;
 }
 
 // Compact a map that exceeds the token budget by dropping low-value nodes.

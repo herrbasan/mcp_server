@@ -71,6 +71,22 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         const startedAt = Date.now();
         const response = { content: '', cancelled: false };
 
+        // A stream that produces no bytes for STALL_TIMEOUT_MS is hung, not
+        // generating. Without this guard a stalled gateway call never resolves
+        // and wedges callers that hold a lock across the call — the dreaming
+        // pipeline sets isRunning=true and only clears it in `finally`, so a
+        // hang there blocks every future dream with no trace. Abort loudly; the
+        // caller observes an AbortError. (Hard-char-limit is a separate guard;
+        // this is the time-based one that was missing.)
+        const STALL_TIMEOUT_MS = 120 * 1000;
+        const armStallTimer = () => setTimeout(() => {
+            logger.warn(`[Gateway] Stream stalled — no data for ${STALL_TIMEOUT_MS / 1000}s; aborting`, null, 'Gateway');
+            response.cancelled = true;
+            response.stalled = true;
+            controller.abort(new Error('Gateway stream stalled (no data for 120s)'));
+        }, STALL_TIMEOUT_MS);
+        let stallTimer = armStallTimer();
+
         const hardLimit = maxTokens ? Math.floor(maxTokens * 4.5) : null;
         let deltaCount = 0;
         let totalChars = 0;
@@ -109,6 +125,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                stallTimer.refresh(); // any bytes mean the stream is alive, not hung
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
@@ -186,10 +203,13 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             }
         } catch (err) {
             if (err.name === 'AbortError' && response.cancelled) {
-                // Self-inflicted hard-limit abort — fall through to resolve below.
+                // Self-inflicted abort (hard-char-limit or stall timeout) —
+                // fall through to resolve below with whatever accumulated.
             } else {
                 throw err;
             }
+        } finally {
+            clearTimeout(stallTimer);
         }
 
         logger.info('[Gateway] chat complete', {
