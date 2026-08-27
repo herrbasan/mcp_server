@@ -2,9 +2,11 @@
 	path = src/nLogger
 	url = https://github.com/herrbasan/nLogger.git
 
+	branch = main
 [submodule "src/nVDB"]
 	path = src/nVDB
 	url = https://github.com/herrbasan/nVDB.git
+	branch = master
 [submodule "nDB"]
 	path = nDB
 	url = https://github.com/herrbasan/nDB.git
