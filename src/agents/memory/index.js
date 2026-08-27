@@ -82,6 +82,25 @@ export async function init(context) {
     if (!DB.hasIndex('category')) DB.createIndex('category');
     if (!DB.hasIndex('embedStatus')) DB.createIndex('embedStatus');
 
+    // Full-text indexes for lexical recall (nDB v1.3). Idempotent — the boot
+    // path loads the disk cache when the journal is unchanged.
+    DB.createTextIndex('description');
+    DB.createTextIndex('data');
+
+    // Fail fast: the embedStatus index is only trustworthy on nDB builds with
+    // the delta-op index fix (v1.3). Probe the behavior on a throwaway
+    // in-memory DB — a stale binary would silently poison findPendingMemories().
+    {
+        const { Database: DbClass } = loadNdb();
+        const probe = DbClass.openInMemory();
+        probe.createIndex('probeField');
+        const pid = probe.insert({ probeField: 'a' });
+        probe.set(pid, 'probeField', 'b');
+        if (!probe.find('probeField', 'b').some(d => d._id === pid)) {
+            throw new Error('nDB binary predates the delta-op index fix (v1.3, commit 0ea6afd) — rebuild the nDB submodule (cargo build --release, stage ndb_node.dll into napi/) before running the memory agent');
+        }
+    }
+
     // Get the VDB agent and access the memory collection
     VDB_AGENT = context.agents?.get('vdb');
     if (VDB_AGENT?.getCollection) {
@@ -200,6 +219,78 @@ export { memory_store as memory_remember };
 
 // ── Tool: memory_recall ──────────────────────────────────────────────
 
+// Hybrid recall weighting (nVDB semantic + nDB lexical):
+// - LEXICAL_BOOST: added to the semantic score of docs that ALSO match the
+//   lexical leg — appearing in both is the strongest relevance signal.
+// - LEXICAL_BASE: synthetic score for lexical-only docs (semantic missed).
+//   Below typical strong semantic hits, above the "also found" floor.
+// - SCORE_FLOOR: minimum score for the compact second-tier listing.
+const LEXICAL_BOOST = 0.10;
+const LEXICAL_BASE = 0.45;
+const SCORE_FLOOR = 0.35;
+
+// Shared two-tier recall output: top `limit` with descriptions, the rest
+// above scoreFloor as a compact one-line-per-hit listing. Lexical-sourced
+// hits carry a ·lex tag.
+function formatRecall(ranked, limit) {
+    const top = ranked.slice(0, limit);
+    const also = ranked.slice(limit).filter(m => m.score >= SCORE_FLOOR);
+    if (!top.length) {
+        return 'No memories found. This topic is new — consider storing insights with memory_store as you learn.';
+    }
+    const results = top.map(m => {
+        const conf = m.confidence ?? 0.5;
+        const hasData = m.data ? ' [has data]' : '';
+        const lex = m.lexical ? ' ·lex' : '';
+        return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}%${lex} conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
+    }).join('\n\n');
+    let summary = '';
+    if (also.length > 0) {
+        const lines = also.map(m =>
+            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%${m.lexical ? '·lex' : ''}`
+        ).join('  ');
+        summary = `\n\n--- also found ---\n${lines}`;
+    }
+    const header = also.length > 0
+        ? `Found ${ranked.length} memories (showing top ${top.length} with details):`
+        : `Found ${top.length} memories:`;
+    return `${header}\n\n${results}${summary}`;
+}
+
+// Lexical leg of hybrid recall: whole-token AND over the query's content
+// words (≥3 chars, deduped, max 8). Strict AND first, then progressive
+// narrowing on leading-token subsets — NEVER single-token OR: a common word
+// like "index" or "set" matches hundreds of docs and drowns the ranking
+// (seen live: 409 "results" for a 7-token query). Deterministic,
+// microseconds, immune to embed-provider outages — exact ids, model names,
+// and error strings are where semantic search is weakest.
+const LEXICAL_MAX_DOCS = 50;
+
+function lexicalRecall(query, category) {
+    const tokens = [...new Set(String(query).toLowerCase().match(/[a-z0-9]{3,}/g) || [])].slice(0, 8);
+    if (tokens.length === 0) return [];
+    const run = (toks) => {
+        const q = { mode: 'and', queries: toks.map(t => ({ type: 'term', value: t })) };
+        const ids = new Set(DB.textSearch('description', q));
+        for (const id of DB.textSearch('data', q)) ids.add(id);
+        return [...ids];
+    };
+    let ids = run(tokens);
+    for (let n = 6; ids.length === 0 && n >= 3 && n < tokens.length; n -= 2) {
+        ids = run(tokens.slice(0, n));
+    }
+    const docs = [];
+    for (const id of ids.slice(0, LEXICAL_MAX_DOCS)) {
+        // A tombstoned doc in a text index would be an nDB index bug — let
+        // the DB.get throw surface it (fail loud, verified index behavior).
+        const doc = DB.get(id);
+        if (!doc._id?.startsWith('mem_')) continue;
+        if (category && doc.category !== category) continue;
+        docs.push(doc);
+    }
+    return docs;
+}
+
 export async function memory_recall(args, context) {
     const { gateway, progress } = context;
     const { query, limit = 5, category } = args;
@@ -222,11 +313,35 @@ export async function memory_recall(args, context) {
     }
     pr.set('Searching memory index...', 60);
 
-    // Get candidates (optionally filtered by category)
+    // Get candidates (optionally filtered by category) — recency fallback pool
     let candidates = DB.iter().filter(d => d._id.startsWith('mem_'));
     if (category) candidates = candidates.filter(m => m.category === category);
 
+    // Lexical leg — runs regardless of embed health.
+    pr.set('Text search...', 40);
+    const lexicalDocs = lexicalRecall(safeQuery, category);
+    const lexicalIdSet = new Set(lexicalDocs.map(d => d.id));
+
     if (!queryEmbed || !MEM_COLL) {
+        // Semantic unavailable — lexical matches are the good degradation.
+        const reason = !MEM_COLL ? 'nVDB unavailable' : (embedError || 'embed provider error');
+        if (lexicalDocs.length > 0) {
+            const ranked = lexicalDocs
+                .map(doc => {
+                    const conf = doc.confidence ?? 0.5;
+                    return { ...doc, score: LEXICAL_BASE, weightedScore: LEXICAL_BASE * (0.7 + conf * 0.3), lexical: true };
+                })
+                .sort((a, b) => b.weightedScore - a.weightedScore);
+            const results = ranked.slice(0, limit).map(m => {
+                const conf = m.confidence ?? 0.5;
+                const hasData = m.data ? ' [has data]' : '';
+                return `[#${m.id}] [${m.category}] lex conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
+            }).join('\n\n');
+            pr.done('Search complete');
+            return {
+                content: [{ type: 'text', text: `⚠ Semantic search unavailable (${reason}) — ${ranked.length} lexical match(es):\n\n${results}` }]
+            };
+        }
         // Degrade to recency
         const recent = candidates.slice(-limit).reverse();
         if (!recent.length) {
@@ -238,7 +353,6 @@ export async function memory_recall(args, context) {
             const hasData = m.data ? ' [has data]' : '';
             return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
         }).join('\n\n');
-        const reason = !MEM_COLL ? 'nVDB unavailable' : (embedError || 'embed provider error');
         pr.done('Search complete');
         return {
             content: [{ type: 'text', text: `⚠ Semantic search unavailable (${reason}) — returning ${recent.length} most recent memories instead:\n\n${results}` }]
@@ -252,8 +366,19 @@ export async function memory_recall(args, context) {
     });
 
     if (searchResults.length === 0) {
+        // Semantic empty — lexical-only hits are still worth returning.
+        if (lexicalDocs.length === 0) {
+            pr.done('Search complete');
+            return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
+        }
+        const ranked = lexicalDocs
+            .map(doc => {
+                const conf = doc.confidence ?? 0.5;
+                return { ...doc, score: LEXICAL_BASE, weightedScore: LEXICAL_BASE * (0.7 + conf * 0.3), lexical: true };
+            })
+            .sort((a, b) => b.weightedScore - a.weightedScore);
         pr.done('Search complete');
-        return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
+        return { content: [{ type: 'text', text: formatRecall(ranked, limit) }] };
     }
 
     pr.set('Ranking results...', 80);
@@ -277,45 +402,25 @@ export async function memory_recall(args, context) {
         seenIds.add(doc.id);
 
         const conf = doc.confidence ?? 0.5;
-        const sim = hit.score;
-        scored.push({ ...doc, score: sim, weightedScore: sim * (0.7 + conf * 0.3) });
+        // In both legs (semantic + lexical) — strongest relevance signal.
+        const lexical = lexicalIdSet.has(doc.id);
+        const sim = lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score;
+        scored.push({ ...doc, score: sim, weightedScore: sim * (0.7 + conf * 0.3), lexical });
+    }
+
+    // Lexical-only docs (semantic missed them) join the ranking.
+    for (const doc of lexicalDocs) {
+        if (seenIds.has(doc.id)) continue;
+        const conf = doc.confidence ?? 0.5;
+        scored.push({ ...doc, score: LEXICAL_BASE, weightedScore: LEXICAL_BASE * (0.7 + conf * 0.3), lexical: true });
+        seenIds.add(doc.id);
     }
 
     scored.sort((a, b) => b.weightedScore - a.weightedScore);
 
-    // Split into full-text tier (top `limit`) and summary tier (the rest
-    // above a score floor, so the LLM knows what else was found).
-    const SCORE_FLOOR = 0.35;
-    const top = scored.slice(0, limit);
-    const also = scored.slice(limit).filter(m => m.score >= SCORE_FLOOR);
-
-    if (!top.length) {
-        return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
-    }
-
-    const results = top.map(m => {
-        const conf = m.confidence ?? 0.5;
-        const hasData = m.data ? ' [has data]' : '';
-        return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}% conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
-    }).join('\n\n');
-
-    // Compact summary of second-tier results: one line each, no description.
-    let summary = '';
-    if (also.length > 0) {
-        const lines = also.map(m =>
-            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%`
-        ).join('  ');
-        summary = `\n\n--- also found ---\n${lines}`;
-    }
-
-    const totalFound = scored.length;
-    const header = also.length > 0
-        ? `Found ${totalFound} memories (showing top ${top.length} with details):`
-        : `Found ${top.length} memories:`;
-
     pr.done('Search complete');
     return {
-        content: [{ type: 'text', text: `${header}\n\n${results}${summary}` }]
+        content: [{ type: 'text', text: formatRecall(scored, limit) }]
     };
 }
 
@@ -442,12 +547,13 @@ export async function memory_update(args, context) {
 
 let lastHealAt = 0;
 
-// The embedStatus secondary index goes stale: nDB's set() (delta patch) does
-// NOT update indexes, so docs flipped pending→embedded via set() stay indexed
-// as 'pending' in the running process. Always count pending via a linear scan
-// of live docs — small dataset (~1k), and correct regardless of index state.
+// nDB v1.3 (commit 0ea6afd) maintains secondary indexes on delta ops
+// (set/remove/array_push), so the indexed lookup is correct again. Init
+// verifies this with an in-memory probe and refuses to start on a stale
+// binary — if that probe throws, rebuild nDB; do not reintroduce the
+// linear scan here.
 function findPendingMemories() {
-    return DB.iter().filter(d => d._id.startsWith('mem_') && d.embedStatus === 'pending');
+    return DB.find('embedStatus', 'pending');
 }
 
 async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {

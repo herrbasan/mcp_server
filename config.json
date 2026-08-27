@@ -35,6 +35,7 @@
       "autoStart": true,
       "distillerTask": "query",
       "dreamerTask": "query",
+      "dreamerLabel": "gemini-4-12b-dreamer on Badkid",
       "serendipity": {
         "enabled": true,
         "wildcardBoost": 3,

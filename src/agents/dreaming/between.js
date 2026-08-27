@@ -133,7 +133,12 @@ export function isNonTrivialDream(map, recentCount) {
 }
 
 // Compose the dream-entry text (the dreamer's own first person, per the spec).
-export function dreamEntryText(map, stats) {
+// The substrate label comes from config (agents.dreaming.dreamerLabel) — a
+// model swap is a config edit, never a code change.
+export function dreamEntryText(map, stats, substrateLabel) {
+    if (typeof substrateLabel !== 'string' || substrateLabel.trim() === '') {
+        throw new Error('dreamEntryText: substrateLabel required (set agents.dreaming.dreamerLabel in config.json)');
+    }
     const d = map.meta?.delta || {};
     const parts = [];
     if (d.new_connections?.length) parts.push(`connected ${d.new_connections.length}`);
@@ -146,6 +151,6 @@ export function dreamEntryText(map, stats) {
     const note = stats?.recent_memories ? ` across ${stats.recent_memories} new memories` : '';
     return {
         description: `I (the dreamer) tended the map: ${did}${note}.`,
-        data: `Substrate: [gemma-4-e4b-dreamer on Badkid]. Clusters: ${map.clusters?.length || 0}, nodes: ${map.nodes?.length || 0}.`
+        data: `Substrate: [${substrateLabel}]. Clusters: ${map.clusters?.length || 0}, nodes: ${map.nodes?.length || 0}.`
     };
 }

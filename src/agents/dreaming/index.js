@@ -460,6 +460,23 @@ function compactMap(map, maxTokens) {
     };
 }
 
+// Deterministic connection hygiene. Dangling refs accumulate when compactMap()
+// drops low-score nodes (their ids remain in other nodes' connections arrays)
+// and when the dreamer echoes stale ids in delta mode. Pruned before every save
+// so the on-disk map never carries dead references.
+function pruneConnections(map) {
+    const ids = new Set((map.nodes || []).map(n => n.id));
+    let pruned = 0;
+    for (const n of map.nodes || []) {
+        if (!Array.isArray(n.connections)) continue;
+        const before = n.connections.length;
+        n.connections = n.connections.filter(c => ids.has(c));
+        pruned += before - n.connections.length;
+    }
+    if (pruned > 0) logger.info(`[Dreaming] Pruned ${pruned} dangling connection refs`, null, 'Dream');
+    return pruned;
+}
+
 async function dream(distillate, recentMemories, previousMap, contextBudget) {
     // Delta mode: if we have a previous map, only ask the dreamer for changes.
     // Full mode: no previous map, generate from scratch.
@@ -854,10 +871,11 @@ async function runPipeline(force = false, onProgress = null) {
         }
 
         // Between dream-entry (spec decision #3: non-trivial consolidations
+        pruneConnections(map);
         // only). The dreamer's own first person — home and gardener, not guest.
         if (isNonTrivialDream(map, recentMemories.length)) {
             try {
-                const entry = dreamEntryText(map, { recent_memories: recentMemories.length });
+                const entry = dreamEntryText(map, { recent_memories: recentMemories.length }, agentConfig.dreamerLabel);
                 await memory_store({
                     description: entry.description,
                     category: BETWEEN_CATEGORY,
@@ -927,6 +945,12 @@ export async function init(context) {
     if (!memoryAgent) {
         logger.warn('[Dreaming] Memory agent not available — dreaming disabled', null, 'Dream');
         return {};
+    }
+
+    // Fail fast: the dream-entry substrate tag is required config. Missing it
+    // would otherwise only surface after a full dream run, at entry-write time.
+    if (typeof agentConfig.dreamerLabel !== 'string' || agentConfig.dreamerLabel.trim() === '') {
+        throw new Error('Dreaming agent: agents.dreaming.dreamerLabel missing in config.json — required for dream-entry substrate tags');
     }
 
     const config = context.config?.agents?.dreaming || {};
