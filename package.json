@@ -4,6 +4,7 @@
     "type": "module",
     "main": "src/server.js",
     "scripts": {
+        "prestart": "node scripts/check-submodules.mjs",
         "start": "node src/server.js",
         "dev": "node --watch src/server.js",
         "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build; nVDB: cd src/nVDB && npm run build)"
