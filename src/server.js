@@ -533,10 +533,11 @@ content that should survive beyond the current session.
 
   storage.read — { path*, encoding?: "utf8"|"base64" }
       Read a file. Defaults to utf8. Use base64 for binary files.
-      NEVER truncates inline content — inline:true means you have the complete
-      file (check size against storage.stat if in doubt). Some chat clients
-      page large tool results into a temp file for display; that is the
-      client's rendering, NOT truncation by this tool.
+      utf8 result: the file content IS the response, verbatim plain text —
+      complete, never truncated. JSON object responses are pointers:
+      inline:false means fetch "path" over HTTP; truncated:true means the file
+      exceeds maxReadSize — page through it with offset+length windows.
+      base64 results stay wrapped in a JSON envelope with size.
 
   storage.write — { path*, content*, encoding?: "utf8"|"base64" }
       Write a file. Creates parent directories automatically.

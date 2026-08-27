@@ -334,6 +334,14 @@ export async function storage_read(args) {
             head: args.head,
             tail: args.tail
         });
+        // Raw-text window: return the content verbatim, NOT wrapped in a JSON
+        // envelope. Enveloped content reaches LLM clients as one JSON-escaped
+        // line, which line-based file readers truncate (issue #12). Plain text
+        // pages as readable content.txt. Pointer/metadata responses stay JSON —
+        // a plain-text result IS the requested window.
+        if (typeof wResult.content === 'string') {
+            return { content: [{ type: 'text', text: wResult.content }] };
+        }
         logger.info(`[Storage] storage_read OK: "${userPath}" (windowed, ${wResult.size}B)`, null, 'Storage');
         return result(true, 'storage_read', userPath, wResult);
     }
@@ -381,6 +389,17 @@ export async function storage_read(args) {
             note: 'File is above the inline size threshold. Chunked alternative: call storage_read again with offset+length to page through the file in MCP-sized windows.'
         };
         return result(true, 'storage_read', userPath, response);
+    }
+    // Raw-text return (utf8): the file content IS the tool result, verbatim,
+    // with no JSON envelope. Enveloped content reaches LLM clients as a single
+    // JSON-escaped line that line-based readers truncate at ~2000 chars
+    // (issue #12). Plain text pages as readable content.txt and survives.
+    // Discrimination rule: plain text = the complete file; a JSON object with
+    // inline:false / truncated:true = pointer to fetch or window args to retry.
+    // base64 keeps the envelope — it has no newlines to preserve and is
+    // consumed programmatically, not read by line-based tools.
+    if (encoding === 'utf8') {
+        return { content: [{ type: 'text', text: out }] };
     }
     return result(true, 'storage_read', userPath, { content: out, encoding, size: stat.size, inline: true });
 }
@@ -719,5 +738,15 @@ export async function storage_readMany(args, context) {
     }
     pr.done(`Read ${okCount}/${paths.length} files`);
     logger.info(`[Storage] storage_readMany OK: ${okCount}/${paths.length}`, null, 'Storage');
-    return result(true, 'storage_readMany', '', { read: okCount, total: paths.length, files: results });
+    // Delimited plain-text stream instead of a JSON envelope (issue #12):
+    // enveloped multi-file content arrives as one JSON-escaped line that
+    // line-based readers truncate. Delimiters keep per-file boundaries and
+    // error/pointer notes readable while paging as content.txt.
+    const SEP = '════════════════════════════════════════════';
+    const parts = results.map(f => {
+        if (f.error) return `${SEP}\n✗ ${f.path} — ERROR: ${f.error}\n${SEP}`;
+        if (f.truncated) return `${SEP}\n△ ${f.path} — TOO LARGE (${f.size}B), pointer: ${f.pointer}\n${SEP}`;
+        return `${SEP}\n ${f.path} (${f.size}B)\n${SEP}\n${f.content}`;
+    });
+    return { content: [{ type: 'text', text: `readMany: ${okCount}/${paths.length} files\n\n${parts.join('\n\n')}` }] };
 }
