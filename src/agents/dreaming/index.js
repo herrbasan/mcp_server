@@ -231,10 +231,20 @@ function mergeDelta(delta, previousMap) {
     }
     bridges = (previousMap.bridges || []).map(b => ({ ...b }));
 
-    // Apply cluster changes
+    // Apply cluster changes. MERGE on update — never replace: the dreamer is a
+    // small model that sometimes emits partial cluster records (missing name or
+    // hub_id); a blind replace destroys the existing fields permanently and the
+    // husk is carried forward by every later delta (observed: 10 of 33 clusters
+    // in the 2026-08-27 map had no name). Adds go in as-is; sanitizeClusters
+    // heals any residual gaps after node membership is final.
     for (const change of delta.cluster_changes || []) {
-        if (change.op === 'add' || change.op === 'update') {
+        if (change.op === 'add') {
             clusterMap.set(change.cluster.id, { ...change.cluster });
+        } else if (change.op === 'update') {
+            const existing = clusterMap.get(change.cluster.id);
+            clusterMap.set(change.cluster.id, existing
+                ? { ...existing, ...change.cluster }
+                : { ...change.cluster });
         }
     }
 
@@ -276,6 +286,11 @@ function mergeDelta(delta, previousMap) {
     // final. Dedupes and prunes the accumulation the dreamer produces.
     bridges = sanitizeBridges(bridges, nodeMap);
 
+    // Cluster hygiene — same principle. Heals clusters the dreamer left
+    // incomplete (missing name or hub_id) by deriving from member nodes,
+    // deterministically, and drops clusters with neither name nor members.
+    const healedClusters = sanitizeClusters(clusterMap, nodeMap);
+
     // Update meta
     if (delta.meta) {
         meta = { ...meta, ...delta.meta };
@@ -286,7 +301,7 @@ function mergeDelta(delta, previousMap) {
         recallDirective = delta.recall_directive;
     }
 
-    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes, ${bridges.length} bridges`, null, 'Dream');
+    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes, ${bridges.length} bridges${healedClusters ? `, ${healedClusters} clusters healed` : ''}`, null, 'Dream');
 
     return {
         meta,
@@ -296,6 +311,63 @@ function mergeDelta(delta, previousMap) {
         nodes: [...nodeMap.values()],
         recall_directive: recallDirective
     };
+}
+
+// Deterministic cluster hygiene. The dreamer sometimes emits cluster records
+// missing `name` or `hub_id` (and the old merge destroyed fields on update —
+// fixed above). This runs at apply time on every merge:
+//   1. missing hub_id → highest-score member (tie: lowest id)
+//   2. missing name → dominant member category (tie: alphabetical)
+//   3. clusters with NO name and NO members → dropped (husks)
+// Existing damage self-heals on the next merge, like sanitizeBridges.
+// Mutates the cluster records in place; returns the number healed.
+function sanitizeClusters(clusterMap, nodeMap) {
+    const members = new Map(); // cluster_id -> [nodes]
+    for (const n of nodeMap.values()) {
+        if (!n.cluster_id) continue;
+        if (!members.has(n.cluster_id)) members.set(n.cluster_id, []);
+        members.get(n.cluster_id).push(n);
+    }
+
+    let healed = 0;
+    const dropped = [];
+    for (const [id, cluster] of clusterMap) {
+        const mem = members.get(id) || [];
+        let touched = false;
+
+        if (cluster.hub_id == null) {
+            const hub = mem.slice().sort((a, b) =>
+                (b.score || 0) - (a.score || 0) || a.id - b.id)[0];
+            if (hub) { cluster.hub_id = hub.id; touched = true; }
+        }
+
+        if (!cluster.name) {
+            const counts = new Map();
+            for (const m of mem) {
+                if (!m.category) continue;
+                counts.set(m.category, (counts.get(m.category) || 0) + 1);
+            }
+            const top = [...counts.entries()].sort((a, b) =>
+                b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+            if (top) { cluster.name = top[0]; touched = true; }
+        }
+
+        if (!cluster.name && mem.length === 0) {
+            dropped.push(id);
+            clusterMap.delete(id);
+            continue; // unnamed husk with no members — nothing to show
+        }
+        if (!cluster.name) { cluster.name = `Cluster ${id}`; touched = true; } // members exist but no categories
+
+        if (touched) {
+            healed++;
+            logger.info(`[Dreaming] Cluster healed: ${id} → "${cluster.name}" (hub #${cluster.hub_id})`, null, 'Dream');
+        }
+    }
+    if (dropped.length) {
+        logger.info(`[Dreaming] Dropped ${dropped.length} empty unnamed cluster(s): ${dropped.join(', ')}`, null, 'Dream');
+    }
+    return healed;
 }
 
 // Deterministic bridge hygiene. The dreamer is a small model that re-adds
