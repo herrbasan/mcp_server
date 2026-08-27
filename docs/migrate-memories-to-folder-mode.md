@@ -1,8 +1,12 @@
 # Migrate the nDB memory store to database-as-a-folder
 
-> **Status**: IN PROGRESS (2026-08-27) — Steps 0–2 complete (sweep ✓, backup ✓,
-> dry-run parity PASS). Phase 1 cutover (Steps 4–7) pending server restart coordination.
-> Phase 2 cleanup plan added below — see "Phase 2 — Database cleanup".
+> **Status**: DONE (2026-08-27). Phase 1 (folder cutover) complete — commit 68f6537,
+> e2e verified live. Phase 2 (category normalization) complete — 468 docs,
+> 175 → 58 categories, integrity verified, dream map regenerated.
+> Trash compaction intentionally deferred (policy: never hard-delete; compact
+> manually during a server stop if ever needed). Cleanup artifacts
+> (`scripts/_verify.mjs`, `%TEMP%\ndb-folder-test`, `data/_backup/`) can be
+> removed after a settle period.
 >
 > This completes the structure already specified (but not implemented) in
 > [`memory-ndb-migration-plan.md`](./memory-ndb-migration-plan.md) §2 — that plan
