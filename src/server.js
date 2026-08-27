@@ -381,7 +381,7 @@ Browse remote GitHub repositories without cloning. Read files, search code,
 manage issues, review PRs — all via the GitHub REST API.
 
 Requires a GIT_TOKEN in the server's .env file. All repos are read-only
-except issue_create and PR operations.
+except issue operations (create, update, comment) and PR operations.
 
   git.read — { owner*, repo*, path?, branch? }
       Read a file from a repository. Default branch: the repo's default.
@@ -427,6 +427,13 @@ except issue_create and PR operations.
 
   git.issue_create — { owner*, repo*, title*, body?, labels?, assignees? }
       Create a new issue. Use for bug reports and feature requests.
+
+  git.issue_update — { owner*, repo*, number*, state?, title?, body?, labels? }
+      Update an issue. state:'closed' closes it (use after verifying a fix),
+      state:'open' reopens. At least one of state/title/body/labels required.
+
+  git.issue_comment — { owner*, repo*, number*, body* }
+      Add a comment to an issue or PR. Good for leaving a fix-verification note.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -727,6 +734,7 @@ IMPORTANT RULES
         "git.search_code": "git_search_code", "git.search_issues": "git_search_issues",
         "git.pr_list": "git_pr_list", "git.pr_get": "git_get_pr",
         "git.issue_list": "git_issue_list", "git.issue_get": "git_get_issue", "git.issue_create": "git_create_issue",
+        "git.issue_update": "git_update_issue", "git.issue_comment": "git_add_issue_comment",
 
         "vision.session_create": "vision_create_session", "vision.session_list": "vision_list_sessions",
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",

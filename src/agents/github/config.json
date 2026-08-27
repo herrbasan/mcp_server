@@ -123,6 +123,37 @@
             }
         },
         {
+            "name": "git_update_issue",
+            "description": "Update an existing issue: change state (open/closed), title, body, or labels. Use state:'closed' to close a verified-fixed issue.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "number": { "type": "number", "description": "Issue number" },
+                    "state": { "type": "string", "description": "New state: 'open' or 'closed'" },
+                    "title": { "type": "string", "description": "New title" },
+                    "body": { "type": "string", "description": "New body (replaces existing)" },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "New labels (replaces existing)" }
+                },
+                "required": ["owner", "repo", "number"]
+            }
+        },
+        {
+            "name": "git_add_issue_comment",
+            "description": "Add a comment to an existing issue or pull request.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "Repo owner" },
+                    "repo": { "type": "string", "description": "Repository name" },
+                    "number": { "type": "number", "description": "Issue or PR number" },
+                    "body": { "type": "string", "description": "Comment text (markdown)" }
+                },
+                "required": ["owner", "repo", "number", "body"]
+            }
+        },
+        {
             "name": "git_repo_info",
             "description": "Get repo metadata: description, default branch, language, size, topics, last activity.",
             "inputSchema": {

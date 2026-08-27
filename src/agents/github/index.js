@@ -380,6 +380,48 @@ export async function git_create_issue(args) {
     };
 }
 
+export async function git_update_issue(args) {
+    requireFields(args, ['owner', 'repo', 'number'], 'git.issue_update');
+    const { owner, repo, number, state, title, body, labels } = args;
+    if (!state && !title && !body && !labels) {
+        throw new Error('git.issue_update: nothing to update — provide at least one of state, title, body, labels');
+    }
+    if (state && !['open', 'closed'].includes(state)) {
+        throw new Error(`git.issue_update: state must be "open" or "closed" (received: ${JSON.stringify(state)})`);
+    }
+
+    const payload = {};
+    if (state) payload.state = state;
+    if (title) payload.title = title;
+    if (body) payload.body = body;
+    if (labels) payload.labels = labels;
+
+    const issue = await api(`/repos/${owner}/${repo}/issues/${number}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    return {
+        content: [{ type: 'text', text: `Issue #${issue.number} is now ${issue.state}: ${issue.title}\n${issue.html_url}` }]
+    };
+}
+
+export async function git_add_issue_comment(args) {
+    requireFields(args, ['owner', 'repo', 'number', 'body'], 'git.issue_comment');
+    const { owner, repo, number, body } = args;
+
+    const comment = await api(`/repos/${owner}/${repo}/issues/${number}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body })
+    });
+
+    return {
+        content: [{ type: 'text', text: `Commented on issue #${number}: ${comment.html_url}` }]
+    };
+}
+
 export async function git_repo_info(args) {
     requireFields(args, ['owner', 'repo'], 'git.repo_info');
     const { owner, repo } = args;
