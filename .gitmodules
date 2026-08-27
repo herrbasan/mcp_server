@@ -8,3 +8,4 @@
 [submodule "nDB"]
 	path = nDB
 	url = https://github.com/herrbasan/nDB.git
+	branch = main

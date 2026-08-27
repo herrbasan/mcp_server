@@ -5,7 +5,8 @@
     "main": "src/server.js",
     "scripts": {
         "start": "node src/server.js",
-        "dev": "node --watch src/server.js"
+        "dev": "node --watch src/server.js",
+        "update:submodules": "git submodule update --remote --merge nDB && echo nDB updated — rebuild native binary if Rust code changed (cd nDB && npm run build)"
     },
     "dependencies": {
         "@mozilla/readability": "^0.6.0",
