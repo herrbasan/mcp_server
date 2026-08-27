@@ -80,7 +80,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 
 The `memory` agent uses a two-database architecture (mirrors the LLM Gateway Chat app):
 
-- **nDB** (`data/memories.jsonl`) — document store for memory metadata. O(1) lookups, indexed queries (`category`, `id`, `embedStatus`), append-only JSONL persistence, soft-delete via tombstones. Loaded via `src/agents/memory/ndb-loader.js` (native binary from `nDB/` submodule).
+- **nDB** (`data/memories/data.jsonl`, database-as-a-folder) — document store for memory metadata. O(1) lookups, indexed queries (`category`, `id`, `embedStatus`), append-only JSONL persistence, soft-delete via tombstones. Loaded via `src/agents/memory/ndb-loader.js` (native binary from `nDB/` submodule).
 - **nVDB** (`data/nvdb/`, `memory` collection) — vector index for embedding search. The memory agent accesses the VDB agent's nVDB instance via `dependsOn: "vdb"` and `vdbAgent.getCollection('memory')`.
 
 The legacy `data/memories.json` (37MB, inline embeddings) is kept as a cold backup and vector source for backfill. It is no longer read or written by the memory agent at runtime.

@@ -73,7 +73,7 @@ export async function init(context) {
     CONFIG = context.config?.agents?.memory || {};
 
     // Open nDB
-    const dbPath = resolve(PROJECT_ROOT, CONFIG.dbPath || 'data/memories.jsonl');
+    const dbPath = resolve(PROJECT_ROOT, CONFIG.dbPath || 'data/memories/data.jsonl');
     const { Database } = loadNdb();
     DB = Database.open(dbPath, { persistence: 'immediate' });
 

@@ -27,7 +27,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 const SOURCE_PATH = path.join(PROJECT_ROOT, 'data', 'memories.json');
-const NDB_PATH = path.join(PROJECT_ROOT, 'data', 'memories.jsonl');
+const NDB_PATH = path.join(PROJECT_ROOT, 'data', 'memories', 'data.jsonl');
 const NVDB_PATH = path.join(PROJECT_ROOT, 'data', 'nvdb');
 const EMBEDDING_DIM = 2560;
 const NVDB_COLLECTION = 'memory';
