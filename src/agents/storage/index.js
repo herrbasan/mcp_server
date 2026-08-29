@@ -98,10 +98,13 @@ function guessMime(p) {
 }
 
 // Normalize root-path probes: LLMs often try "/" or "\\" which on Windows
-// resolve as absolute drive root and fail confinement. Map them to "" (storage root).
+// resolve as absolute drive root and fail confinement. Map them to "" (storage
+// root). Also strip LEADING slashes from subpaths ("/docs" → "docs") — without
+// this, path.resolve treats the input as absolute, the ancestor-walk in
+// safeResolve fails with "cannot find existing ancestor" on Windows drive roots.
 function normPath(userPath) {
-    if (!userPath || userPath === '/' || userPath === '\\') return '';
-    return userPath;
+    if (!userPath) return '';
+    return userPath.replace(/^[/\\]+/, '');
 }
 
 function toMcp(ok, data) {
