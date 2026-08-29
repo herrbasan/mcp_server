@@ -748,12 +748,12 @@ IMPORTANT RULES
 
         "storage.stat": "storage_stat", "storage.read": "storage_read",
         "storage.write": "storage_write", "storage.list": "storage_list",
-        "storage.move": "storage_move", "storage.delete": "storage_delete",
+        "storage.move": "storage_move", "storage.delete": "storage_delete", "storage.restore": "storage_restore",
         "storage.search": "storage_search",
         "storage.copy": "storage_copy", "storage.append": "storage_append",
         "storage.replace": "storage_replace", "storage.find": "storage_find",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
-        "storage.import": "storage_import", "storage.readMany": "storage_readMany",
+        "storage.import": "storage_import", "storage.readMany": "storage_readMany", "storage.recent": "storage_recent",
         "storage.resources_list": "storage_resources_list",
         "storage.resources_read": "storage_resources_read",
         "storage.resources_templates": "storage_resources_templates",
@@ -767,8 +767,18 @@ IMPORTANT RULES
 
     const routeCompactCall = async (name, args, context) => {
         if (name !== "tools") throw new Error(`Tool ${name} not found`);
-        const { method, payload = {} } = args;
+        let { method, payload = {} } = args;
         if (!method) throw new Error("method is required (agent.action format, e.g. 'memory.recall')");
+        // The tool description advertises the agent.action envelope:
+        //   {method:"agent.action", payload:{method:"memory.recall", payload:{...}}}
+        // Unwrap it so clients that follow the docs verbatim work (issue #17).
+        if (method === "agent.action") {
+            const inner = payload?.method;
+            if (typeof inner !== "string" || !inner.trim()) {
+                throw new Error('agent.action: payload must contain the inner method, e.g. {"method":"agent.action","payload":{"method":"memory.recall","payload":{...}}}');
+            }
+            ({ method, payload = {} } = payload);
+        }
 
         const legacyName = COMPACT_TO_LEGACY[method] ?? COMPACT_TO_LEGACY[method.toLowerCase()];
         if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);

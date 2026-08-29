@@ -70,7 +70,7 @@
       "maxRetries": 1,
       "batchDelayMs": 100,
       "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
-      "ignore": ["forge", "temp"],
+      "ignore": ["forge", "temp", "_trash"],
       "contextEnhancement": {
         "enabled": true,
         "task": "local",

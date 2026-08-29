@@ -1,6 +1,6 @@
 {
     "agent": "storage",
-    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. CALL SHAPE: every storage op is invoked as {\"method\":\"storage_<op>\",\"payload\":{...args}} — ALL parameters go inside payload, NOT as top-level arguments. If you get 'args.X is required', you almost certainly put args at the wrong nesting level — wrap them in payload. FULL TOOL CATALOG (16 ops): storage_stat, storage_read, storage_readMany, storage_write, storage_import, storage_list, storage_move, storage_delete, storage_search, storage_copy, storage_append, storage_replace, storage_find, storage_grep, storage_batch, storage_resources_list/read/templates. ⚡ BATCHING RULE: multi-file workflows MUST use storage.import (bulk write) / storage.readMany (bulk read) / storage.batch (mixed ops) — ONE call, never one per file. EDITING CHEATSHEET: targeted text edit = storage_replace (marker+replacement, aliases oldString/newString) — pre-flight with storage_find; add to end = storage_append; full rewrite = storage_write; locate text = storage_grep (regex, line numbers) or storage_find (exact string); undo = copy the file to <root>\\temp\\* first, then copy it back to roll back (see TEMP below). Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). TEMP / ROLLBACK AREA: <root>\\temp\\* is a scratch folder excluded from the VDB semantic index. Use it as a checkpoint area — before a risky edit, storage.copy the file to <root>\\temp\\<name>; to roll back, storage.copy it back over the live file. There is NO automatic versioning: the model owns its own snapshots via this folder. The VDB agent ignores both the forge/ and temp/ directories (config-level) and respects .nvdb_ignore files in any watched directory.",
+    "description": "Scoped filesystem storage — a smart notebook for durable LLM artifacts. CALL SHAPE: every storage op is invoked as {\"method\":\"storage_<op>\",\"payload\":{...args}} — ALL parameters go inside payload, NOT as top-level arguments. If you get 'args.X is required', you almost certainly put args at the wrong nesting level — wrap them in payload. FULL TOOL CATALOG (18 ops): storage_stat, storage_read, storage_readMany, storage_write, storage_import, storage_list, storage_recent, storage_move, storage_restore, storage_delete, storage_search, storage_copy, storage_append, storage_replace, storage_find, storage_grep, storage_batch, storage_resources_list/read/templates. ⚡ BATCHING RULE: multi-file workflows MUST use storage.import (bulk write) / storage.readMany (bulk read) / storage.batch (mixed ops) — ONE call, never one per file. EDITING CHEATSHEET: targeted text edit = storage_replace (marker+replacement, aliases oldString/newString) — pre-flight with storage_find; add to end = storage_append; full rewrite = storage_write; locate text = storage_grep (regex, line numbers) or storage_find (exact string); undo = copy the file to <root>\\temp\\* first, then copy it back to roll back (see TEMP below). Backed by the path in config.json agents.storage.root (default: D:\\MCP_Storage). When agents.storage.uncShare is also configured, callers may pass EITHER the local path or the UNC share form — the server translates UNC to local before resolving, so both work transparently. Useful for staging forge inputs and retrieving forge outputs across machines. Forge outputs land at <root>\\forge\\<tool-name>\\* and are also listed in the forge_call response as _outputs (each with an `uncPath` field for direct SMB access when uncShare is configured). TEMP / ROLLBACK AREA: <root>\\temp\\* is a scratch folder excluded from the VDB semantic index. Use it as a checkpoint area — before a risky edit, storage.copy the file to <root>\\temp\\<name>; to roll back, storage.copy it back over the live file. There is NO automatic versioning: the model owns its own snapshots via this folder. The VDB agent ignores the forge/, temp/, and _trash/ directories (config-level) and respects .nvdb_ignore files in any watched directory. TRASH: <root>\\_trash\\* holds soft-deleted items (layout _trash\\<timestamp>\\<original-path>). Prefer storage_delete with trash:true over permanent delete — it is reversible via storage_restore, and _trash stays out of the VDB index and storage_recent but remains fully listable/readable, so trashed content can be checked or recovered at any time. DISCOVERY: two complementary tools. (1) STRUCTURE — storage_list (compact by default: one line per entry, human sizes, summary header; detail:'full' for JSON with timestamps). Directories containing an Agents.md briefing are flagged (✓ in compact, hasAgents:true in full) — when you see the flag, READ that Agents.md FIRST: it holds directory-specific instructions for working inside that folder. Start shallow (recursive only when needed — compact render truncates at 2000 entries with a flag). (2) RECENT ACTIVITY — storage_recent answers 'what was recently worked on': the N most recently modified files under a path (default 20, newest first, with timestamps). It skips transient noise (nvdb/, forge/, temp/) by default. Use storage_recent to orient in a session ('what's live right now'), storage_list to map structure, storage_search (semantic) or storage_grep (regex) to find content.",
     "tools": [
         {
             "name": "storage_stat",
@@ -44,12 +44,25 @@
         },
         {
             "name": "storage_list",
-            "description": "List a directory in storage. Returns entries with name, type, size, modified time, and relative path. Use recursive=true for a flat list of all descendants.",
+            "description": "List a directory in storage (shallow by default — one level, cheap). COMPACT by default: one line per entry (d/f type, human-readable size, name; ✓ marks directories containing an Agents.md briefing — read that file first for directory-specific instructions before working inside it) plus a summary header — a fraction of the tokens of full JSON. detail:'full' returns the legacy JSON entries with timestamps. Use recursive=true only when you genuinely need all descendants as a flat list (can be huge; compact render is grouped by subdirectory, truncated with a flag at 2000 entries).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Directory to list (default: storage root)" },
-                    "recursive": { "type": "boolean", "description": "List all descendants as a flat list (default: false)" }
+                    "recursive": { "type": "boolean", "description": "List all descendants as a flat list (default: false)" },
+                    "detail": { "type": "string", "enum": ["compact", "full"], "description": "compact (default): tree-style text, token-efficient; full: legacy JSON with modified timestamps" }
+                }
+            }
+        },
+        {
+            "name": "storage_recent",
+            "description": "Answer 'what was recently worked on': the N most recently modified files under a path (default 20, newest first), rendered as compact text lines (timestamp, size, path). Skips transient noise directories (nvdb, forge, temp) by default — override with ignoreDirs:[]. Cheaper than recursive storage_list when you want current activity, not structure.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to scan (default: storage root)" },
+                    "limit": { "type": "number", "description": "Max files to return (default: 20, max: 200)" },
+                    "ignoreDirs": { "type": "array", "items": { "type": "string" }, "description": "Directory names to skip anywhere in the tree (default: ['nvdb','forge','temp']); pass [] to include everything" }
                 }
             }
         },
@@ -67,12 +80,24 @@
         },
         {
             "name": "storage_delete",
-            "description": "Delete a file or directory. Requires recursive=true to delete non-empty directories. Self-verifying: the response includes verified:true, confirming the path is gone from disk.",
+            "description": "Delete a file or directory. DEFAULT IS PERMANENT. Prefer trash:true — SOFT DELETE: moves the item to _trash/<timestamp>/<original-path> (excluded from the VDB index and storage_recent; still listable/readable via normal storage tools) and returns a trashPath plus restorableVia pointer. Undo a trash with storage_restore; permanent delete of trashed items uses this tool without trash:true. Self-verifying: the response includes verified:true, confirming the path is gone from its original location.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Path to delete within storage root" },
-                    "recursive": { "type": "boolean", "description": "Required to delete non-empty directories (default: false)" }
+                    "recursive": { "type": "boolean", "description": "Required to delete non-empty directories (default: false)" },
+                    "trash": { "type": "boolean", "description": "Soft delete: move to _trash/<timestamp>/<original-path> instead of destroying. Reversible via storage_restore. (default: false)" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "storage_restore",
+            "description": "Restore a trashed item to its original location. Accepts the trashPath returned by storage_delete trash:true (layout: _trash/<timestamp>/<original-path> — the segment after the timestamp IS the original path). If the original location is now occupied, restores under a .restored-<ts> suffix instead of overwriting. Inspect _trash contents first with storage_list {path:'_trash', recursive:true}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path inside _trash (from storage_delete trash response or _trash listing)" }
                 },
                 "required": ["path"]
             }
@@ -177,17 +202,17 @@
         },
         {
             "name": "storage_grep",
-            "description": "Search file contents with a regex, server-side. Returns only matching lines (path, line number, text, optional context lines) — file bodies never enter your context. The primary way to find text in storage. Skips binary and >50MB files. Set context:N for surrounding lines. Example: {\"method\":\"storage_grep\",\"payload\":{\"path\":\"docs/\",\"pattern\":\"TODO|FIXME\"}}.",
+            "description": "Search file contents with a regex, server-side. Returns only matching lines (path, line number, text, optional context lines) — file bodies never enter your context. The primary way to find text in storage. Skips binary and >50MB files. Set context:N for surrounding lines. path defaults to the storage root when omitted. Example: {\"method\":\"storage_grep\",\"payload\":{\"path\":\"docs/\",\"pattern\":\"TODO|FIXME\"}}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File or directory path within storage root" },
+                    "path": { "type": "string", "description": "File or directory path within storage root (default: storage root)" },
                     "pattern": { "type": "string", "description": "JavaScript regex pattern to match against each line" },
                     "maxMatches": { "type": "number", "description": "Maximum matches to return (default: 100)" },
                     "context": { "type": "number", "description": "Number of surrounding lines to include before and after each match" },
                     "ignoreCase": { "type": "boolean", "description": "Case-insensitive matching (default: false)" }
                 },
-                "required": ["path", "pattern"]
+                "required": ["pattern"]
             }
         },
         {

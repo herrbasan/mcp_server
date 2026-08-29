@@ -432,16 +432,72 @@ export async function storage_write(args) {
 export async function storage_list(args) {
     const userPath = normPath(args.path ?? '');
     const recursive = args.recursive || false;
-    logger.info(`[Storage] storage_list: "${userPath}"`, { recursive }, 'Storage');
+    const detail = args.detail ?? 'compact';
+    if (detail !== 'compact' && detail !== 'full') {
+        throw new Error(`storage_list: invalid detail "${detail}" — must be "compact" or "full"`);
+    }
+    logger.info(`[Storage] storage_list: "${userPath}"`, { recursive, detail }, 'Storage');
     const st = await OPS.stat(userPath);
     if (!st.exists || st.type !== 'dir') {
         throw new Error('storage_list: path is not a directory');
     }
     const { entries } = await OPS.list(userPath, { recursive });
     // Normalize modified to ISO string to preserve the legacy response shape.
-    const normalized = entries.map(e => ({ ...e, modified: new Date(e.modified).toISOString() }));
-    logger.info(`[Storage] storage_list OK: "${userPath}" (${normalized.length} entries)`, null, 'Storage');
-    return result(true, 'storage_list', userPath, { entries: normalized });
+    // Flag directories that carry an Agents.md briefing so callers know where
+    // directory-specific instructions live (Windows fs is case-insensitive, so
+    // one probe covers Agents.md / agents.md).
+    const normalized = entries.map(e => {
+        const out = { ...e, modified: new Date(e.modified).toISOString() };
+        if (e.type === 'dir' && fs.existsSync(safeResolve(userPath ? `${userPath}/${e.name}/Agents.md` : `${e.name}/Agents.md`))) {
+            out.hasAgents = true;
+        }
+        return out;
+    });
+    logger.info(`[Storage] storage_list OK: "${userPath}" (${normalized.length} entries, ${detail})`, null, 'Storage');
+
+    if (detail === 'full') {
+        return result(true, 'storage_list', userPath, { entries: normalized });
+    }
+
+    // ---- compact render: one line per entry, human sizes, ✓ = has Agents.md ----
+    const MAX_ENTRIES = 2000;
+    const truncated = normalized.length > MAX_ENTRIES;
+    const shown = truncated ? normalized.slice(0, MAX_ENTRIES) : normalized;
+    const nDirs = shown.filter(e => e.type === 'dir').length;
+    const nFiles = shown.length - nDirs;
+    const totalBytes = shown.reduce((s, e) => s + (e.size || 0), 0);
+    const human = (n) => {
+        if (n < 1024) return `${n}B`;
+        const units = ['K', 'M', 'G'];
+        let v = n, i = -1;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return `${v >= 10 ? Math.round(v) : v.toFixed(1)}${units[i]}`;
+    };
+    const lines = [
+        `${userPath || '.'}/ — ${nFiles} file(s), ${nDirs} dir(s), ${human(totalBytes)} total${truncated ? ` — TRUNCATED at ${MAX_ENTRIES} of ${normalized.length} entries` : ''} (detail:'full' for JSON with timestamps)`
+    ];
+    if (!recursive) {
+        // shallow: dirs first, then files — name alone suffices (parent known)
+        const sorted = [...shown].sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+        for (const e of sorted) {
+            lines.push(e.type === 'dir'
+                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/`
+                : `f   ${human(e.size).padStart(6)} ${e.name}`);
+        }
+    } else {
+        // recursive flat: group by parent directory, header per group —
+        // keeps full paths visible without repeating them per entry
+        const sorted = [...shown].sort((a, b) => a.path.localeCompare(b.path));
+        let curParent = null;
+        for (const e of sorted) {
+            const parent = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
+            if (parent !== curParent) { curParent = parent; lines.push(`== ${parent || userPath || '.'} ==`); }
+            lines.push(e.type === 'dir'
+                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/`
+                : `f   ${human(e.size).padStart(6)} ${e.name}`);
+        }
+    }
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
 
 export async function storage_move(args) {
@@ -460,15 +516,85 @@ export async function storage_move(args) {
 export async function storage_delete(args) {
     requireFields(args, ['path'], 'storage_delete');
     const userPath = args.path;
-    logger.info(`[Storage] storage_delete: "${userPath}"`, { recursive: args.recursive }, 'Storage');
-    const recursive = args.recursive || false;
-    // Engine snapshots before deleting; non-empty dir requires recursive:true.
+    logger.info(`[Storage] storage_delete: "${userPath}"`, { recursive: args.recursive, trash: args.trash }, 'Storage');
     const st = await OPS.stat(userPath);
     if (!st.exists) throw new Error(`storage_delete: path does not exist: "${userPath}"`);
+
+    // SOFT DELETE: move to <root>/_trash/<timestamp>/<original-path> instead of
+    // destroying. Reversible via storage_restore. Rejected inside _trash itself.
+    if (args.trash) {
+        const norm = normPath(userPath);
+        if (norm === '_trash' || norm.startsWith('_trash/')) {
+            throw new Error('storage_delete: path is already in _trash — use storage_delete without trash:true to destroy permanently, or storage_restore to bring it back');
+        }
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const trashPath = `_trash/${stamp}/${norm}`;
+        fs.mkdirSync(path.dirname(safeResolve(trashPath)), { recursive: true });
+        await OPS.move(norm, trashPath);
+        const proof = verifyGone(norm);
+        logger.info(`[Storage] storage_delete(trash) OK: "${userPath}" → "${trashPath}"`, null, 'Storage');
+        return result(true, 'storage_delete', userPath, { trashed: true, trashPath, originalPath: norm, ...proof, restorableVia: `storage_restore {path:"${trashPath}"}` });
+    }
+
+    const recursive = args.recursive || false;
+    // Engine snapshots before deleting; non-empty dir requires recursive:true.
     await OPS.remove(userPath, { recursive });
     const proof = verifyGone(userPath);
     logger.info(`[Storage] storage_delete OK: "${userPath}" (${st.type}, verified gone)`, null, 'Storage');
     return result(true, 'storage_delete', userPath, { deleted: true, ...proof });
+}
+
+// Restore a trashed item to its original location. Works off the
+// _trash/<timestamp>/<original-path> layout: the path segment AFTER the
+// timestamp folder IS the original path. Collision at destination → suffixed.
+export async function storage_restore(args) {
+    requireFields(args, ['path'], 'storage_restore');
+    const trashPath = normPath(args.path);
+    logger.info(`[Storage] storage_restore: "${trashPath}"`, null, 'Storage');
+    const parts = trashPath.split('/');
+    if (parts.length < 3 || parts[0] !== '_trash') {
+        throw new Error('storage_restore: path must be inside _trash with the layout _trash/<timestamp>/<original-path> (get such paths from storage_delete trash:true or storage_list _trash/ recursive)');
+    }
+    const originalPath = parts.slice(2).join('/');
+    const st = await OPS.stat(trashPath);
+    if (!st.exists) throw new Error(`storage_restore: path does not exist: "${trashPath}"`);
+    let dest = originalPath;
+    if (fs.existsSync(safeResolve(dest))) {
+        dest = `${dest}.restored-${Date.now()}`;
+        logger.warn(`[Storage] storage_restore: destination exists, restoring as "${dest}"`, null, 'Storage');
+    }
+    fs.mkdirSync(path.dirname(safeResolve(dest)), { recursive: true });
+    await OPS.move(trashPath, dest);
+    const proof = st.type === 'file' ? verifyFile(dest) : { verified: fs.existsSync(safeResolve(dest)) };
+    logger.info(`[Storage] storage_restore OK: "${trashPath}" → "${dest}"`, null, 'Storage');
+    return result(true, 'storage_restore', trashPath, { restored: true, originalPath: dest, ...proof });
+}
+
+// "What was recently worked on?" — N most recently modified files under a path.
+// Walks the tree (engine SKIP_DIRS already excludes noise like node_modules),
+// sorts by mtime desc. Ignores the VDB index and forge outputs by default via
+// ignoreDirs (caller can override with []).
+const RECENT_DEFAULT_IGNORES = ['nvdb', 'forge', 'temp', '_trash'];
+export async function storage_recent(args) {
+    const userPath = normPath(args.path ?? '');
+    const limit = Math.max(1, Math.min(args.limit ?? 20, 200));
+    const ignoreDirs = args.ignoreDirs ?? RECENT_DEFAULT_IGNORES;
+    logger.info(`[Storage] storage_recent: "${userPath}" limit=${limit}`, { ignoreDirs }, 'Storage');
+    const { entries } = await OPS.list(userPath, { recursive: true });
+    const ignore = new Set(ignoreDirs);
+    const recent = entries
+        .filter(e => e.type === 'file')
+        .filter(e => !e.path.split('/').some(seg => ignore.has(seg)))
+        .sort((a, b) => b.modified - a.modified)
+        .slice(0, limit)
+        .map(e => ({ path: e.path, size: e.size, modified: new Date(e.modified).toISOString() }));
+    const lines = recent.map(e => `${e.modified.slice(0, 16).replace('T', ' ')}  ${String(e.size).padStart(8)}B  ${e.path}`);
+    logger.info(`[Storage] storage_recent OK: "${userPath}" (${recent.length} file(s))`, null, 'Storage');
+    if (recent.length === 0) return { content: [{ type: 'text', text: `No files found under "${userPath || 'storage root'}".` }] };
+    return { content: [{ type: 'text', text: [
+        `Recently modified files under ${userPath || 'storage root'} (newest first, ${recent.length} of ${entries.length} entries scanned):`,
+        ...lines
+    ].join('\n') }] };
 }
 
 export async function storage_search(args, context) {
@@ -600,8 +726,11 @@ export async function storage_find(args) {
 }
 
 export async function storage_grep(args, context) {
-    requireFields(args, ['path', 'pattern'], 'storage_grep');
-    const { path: userPath, pattern, maxMatches, context: ctxLines, ignoreCase } = args;
+    // path defaults to the storage root (issue #18)
+    const userPath = normPath(args.path ?? '');
+    const pattern = args.pattern;
+    if (!pattern) throw new Error('storage_grep: args.pattern is required (JavaScript regex)');
+    const { maxMatches, context: ctxLines, ignoreCase } = args;
     logger.info(`[Storage] storage_grep: "${userPath}" pattern="${pattern}"`, null, 'Storage');
     const pr = createProgressReporter(context?.progress);
     const engineResult = await OPS.grep(userPath, pattern, {
