@@ -104,6 +104,9 @@ function guessMime(p) {
 // safeResolve fails with "cannot find existing ancestor" on Windows drive roots.
 function normPath(userPath) {
     if (!userPath) return '';
+    // Root aliases: "/", "\\", "*", "/*" all mean the storage root itself.
+    // "*" is included because LLMs often probe with it as a wildcard.
+    if (/^[/*\\]+$/.test(userPath)) return '';
     return userPath.replace(/^[/\\]+/, '');
 }
 
@@ -295,8 +298,8 @@ export async function init(context) {
 }
 
 export async function storage_stat(args) {
-    requireFields(args, ['path'], 'storage_stat');
-    const userPath = normPath(args.path);
+    // Path optional — defaults to the storage root (issue #18 pattern).
+    const userPath = normPath(args.path ?? '');
     logger.info(`[Storage] storage_stat: "${userPath}"`, null, 'Storage');
     const st = await OPS.stat(userPath);
     if (!st.exists) {
@@ -715,8 +718,9 @@ export async function storage_replace(args) {
 }
 
 export async function storage_find(args) {
-    requireFields(args, ['path'], 'storage_find');
-    const userPath = args.path;
+    // Path optional — defaults to the storage root; directories are scanned
+    // recursively (all text files under the tree are probed).
+    const userPath = normPath(args.path ?? '');
     const marker = args.marker ?? args.oldString ?? args.pattern;
     const { occurrence } = args;
     logger.info(`[Storage] storage_find: "${userPath}"`, null, 'Storage');

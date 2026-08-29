@@ -421,7 +421,37 @@ export function createFileOps({ root, translator = null }) {
         }
         const abs = resolve(userPath);
         if (!fs.existsSync(abs)) throw new Error('find: path does not exist: ' + userPath);
-        if (fs.statSync(abs).isDirectory()) throw new Error('find: cannot search a directory: ' + userPath);
+
+        // Directory mode: probe every file under the tree (same walk/skip/
+        // size rules as grep) and report per-file hits. Root default lands here.
+        if (fs.statSync(abs).isDirectory()) {
+            const files = walkDir(abs);
+            const hits = [];
+            let scanned = 0;
+            for (const file of files) {
+                let fst;
+                try { fst = fs.statSync(file); } catch (e) { continue; }
+                if (fst.size > GREP_MAX_FILE_BYTES) continue;
+                scanned++;
+                let content;
+                try { content = fs.readFileSync(file, 'utf8'); } catch (e) { continue; }
+                const count = content.split(marker).length - 1;
+                if (count === 0) continue;
+                const firstIdx = content.indexOf(marker);
+                hits.push({
+                    path: rel(file),
+                    count,
+                    line: content.slice(0, firstIdx).split('\n').length,
+                    offset: firstIdx
+                });
+            }
+            return {
+                found: hits.length > 0,
+                count: hits.reduce((s, h) => s + h.count, 0),
+                files: hits,
+                scanned
+            };
+        }
 
         const original = fs.readFileSync(abs, 'utf8');
         const idx = occurrence === 'last' ? original.lastIndexOf(marker) : original.indexOf(marker);

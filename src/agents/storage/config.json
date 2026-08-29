@@ -4,13 +4,13 @@
     "tools": [
         {
             "name": "storage_stat",
-            "description": "Check if a path exists and what type it is (file or directory), without reading content. Returns exists, type, size, and modified time.",
+            "description": "Check if a path exists and what type it is (file or directory), without reading content. Returns exists, type, size, and modified time. path is optional — defaults to the storage root (accepts / or * as root alias).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path within storage root" }
+                    "path": { "type": "string", "description": "Relative path within storage root (optional — defaults to storage root; / and * are root aliases)" }
                 },
-                "required": ["path"]
+                "required": []
             }
         },
         {
@@ -189,15 +189,15 @@
         },
         {
             "name": "storage_find",
-            "description": "Check whether an exact string exists in a file WITHOUT reading the file into your context and without changing anything. Returns { found, count, line, offset, snippet } — snippet shows the matching line so you can confirm it is the right occurrence. The pre-flight check for storage_replace: find first, replace only on found:true. For regex or multi-file search use storage_grep instead.",
+            "description": "Check whether an exact string exists in a file or anywhere under a directory WITHOUT reading file bodies into your context and without changing anything. File mode returns { found, count, line, offset, snippet }. Directory mode (path is a directory, a root alias like / or *, or omitted → storage root) scans all text files recursively and returns { found, count, files: [{path, count, line, offset}], scanned }. The pre-flight check for storage_replace: find first, replace only on found:true. For regex search use storage_grep instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Relative path within storage root" },
+                    "path": { "type": "string", "description": "File or directory within storage root (optional — defaults to storage root; / and * are root aliases; directories scanned recursively)" },
                     "marker": { "type": "string", "description": "Exact string to locate (byte-exact, not a regex). Aliases: oldString, pattern also accepted." },
-                    "occurrence": { "type": "string", "enum": ["first", "last", "all"], "description": "Report position of first/last occurrence, or just the count for 'all' (default: first)" }
+                    "occurrence": { "type": "string", "enum": ["first", "last", "all"], "description": "Report position of first/last occurrence, or just the count for 'all' (default: first; file mode only)" }
                 },
-                "required": ["path", "marker"]
+                "required": ["marker"]
             }
         },
         {
