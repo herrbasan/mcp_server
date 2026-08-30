@@ -352,10 +352,42 @@ export function createFileOps({ root, translator = null }) {
         return new Error(lines.join('\n'));
     }
 
+    // Line-ending-agnostic matching (issue #22). A caller writing '\n'
+    // markers against a CRLF file (or vice versa) must still match: line
+    // endings are invisible byte detail that read output does not surface,
+    // and a purely textual edit must not depend on them. Both ops work in
+    // LF-land and write back in the file's dominant convention.
+    //
+    // detectEol: dominant convention of a string. Ties (mixed/empty) → LF.
+    function detectEol(content) {
+        const crlf = (content.match(/\r\n/g) || []).length;
+        const loneLf = (content.match(/\n/g) || []).length - crlf;
+        return crlf > loneLf ? '\r\n' : '\n';
+    }
+
+    // toLfLand: normalize to '\n' for matching. No-op scan when the string
+    // contains no '\r' (the 99% case — avoids a full regex pass).
+    function toLfLand(s) {
+        return s.includes('\r') ? s.replace(/\r\n/g, '\n') : s;
+    }
+
+    // Map an index from LF-land back to raw coordinates: every normalized
+    // '\n' left of the index corresponds to one inserted '\r' in the raw
+    // string, because raw = expand(normalized) with the same relative layout.
+    function lfIdxToRaw(normalized, raw, idx) {
+        let crlfBefore = 0;
+        for (let i = 0; i < idx; i++) if (normalized[i] === '\n') crlfBefore++;
+        return idx + crlfBefore;
+    }
+
     // Server-side marker swap: read file, replace occurrence(s) of marker
     // with replacement, write back via atomicWrite. This is the
     // large-file edit path — content never leaves the server.
     // occurrence: 'first' (default) | 'last' | 'all'.
+    // Matching is line-ending-agnostic (see detectEol/toLfLand); the file is
+    // written back in its own dominant convention, so untouched bytes stay
+    // stable for uniform files (mixed files get normalized to the dominant
+    // convention — that normalization IS the write-back convention).
     // Throws when marker is absent (fail loud — the caller's mental model
     // of the file is wrong, silently no-op'ing would hide that).
     async function replace(userPath, marker, replacement, { occurrence = 'first' } = {}) {
@@ -373,25 +405,29 @@ export function createFileOps({ root, translator = null }) {
         const st = fs.statSync(abs);
         if (st.isDirectory()) throw new Error('replace: cannot replace in a directory: ' + userPath);
 
-        const original = fs.readFileSync(abs, 'utf8');
+        const raw = fs.readFileSync(abs, 'utf8');
+        const eol = detectEol(raw);
+        const original = toLfLand(raw);                       // matching happens here
+        const matchMarker = toLfLand(marker);
+        const matchReplacement = toLfLand(replacement);
         let updated;
         let count = 0;
 
         if (occurrence === 'all') {
             // Count first so a zero-match fails the same way as first/last
-            const parts = original.split(marker);
+            const parts = original.split(matchMarker);
             count = parts.length - 1;
-            if (count === 0) throw markerNotFoundError('replace', userPath, original, marker);
-            updated = parts.join(replacement);
+            if (count === 0) throw markerNotFoundError('replace', userPath, original, matchMarker);
+            updated = parts.join(matchReplacement);
         } else if (occurrence === 'last') {
-            const idx = original.lastIndexOf(marker);
-            if (idx === -1) throw markerNotFoundError('replace', userPath, original, marker);
-            updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
+            const idx = original.lastIndexOf(matchMarker);
+            if (idx === -1) throw markerNotFoundError('replace', userPath, original, matchMarker);
+            updated = original.slice(0, idx) + matchReplacement + original.slice(idx + matchMarker.length);
             count = 1;
         } else {
-            const idx = original.indexOf(marker);
-            if (idx === -1) throw markerNotFoundError('replace', userPath, original, marker);
-            updated = original.slice(0, idx) + replacement + original.slice(idx + marker.length);
+            const idx = original.indexOf(matchMarker);
+            if (idx === -1) throw markerNotFoundError('replace', userPath, original, matchMarker);
+            updated = original.slice(0, idx) + matchReplacement + original.slice(idx + matchMarker.length);
             count = 1;
         }
 
@@ -399,7 +435,7 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('replace: replacement is identical to marker — no change');
         }
 
-        atomicWrite(abs, Buffer.from(updated, 'utf8'));
+        atomicWrite(abs, Buffer.from(eol === '\r\n' ? updated.replace(/\n/g, '\r\n') : updated, 'utf8'));
         return { size: Buffer.byteLength(updated, 'utf8'), replacements: count };
     }
 
@@ -435,14 +471,16 @@ export function createFileOps({ root, translator = null }) {
                 scanned++;
                 let content;
                 try { content = fs.readFileSync(file, 'utf8'); } catch (e) { continue; }
-                const count = content.split(marker).length - 1;
+                // LF-land matching, consistent with replace (issue #22)
+                const lf = toLfLand(content);
+                const count = lf.split(marker).length - 1;
                 if (count === 0) continue;
-                const firstIdx = content.indexOf(marker);
+                const firstIdx = lf.indexOf(marker);
                 hits.push({
                     path: rel(file),
                     count,
-                    line: content.slice(0, firstIdx).split('\n').length,
-                    offset: firstIdx
+                    line: lf.slice(0, firstIdx).split('\n').length,
+                    offset: lfIdxToRaw(lf, content, firstIdx)
                 });
             }
             return {
@@ -453,24 +491,28 @@ export function createFileOps({ root, translator = null }) {
             };
         }
 
-        const original = fs.readFileSync(abs, 'utf8');
-        const idx = occurrence === 'last' ? original.lastIndexOf(marker) : original.indexOf(marker);
+        const raw = fs.readFileSync(abs, 'utf8');
+        // LF-land matching, consistent with replace (issue #22). Offsets are
+        // reported in raw coordinates; line numbers are convention-invariant.
+        const original = toLfLand(raw);
+        const m = toLfLand(marker);
+        const idx = occurrence === 'last' ? original.lastIndexOf(m) : original.indexOf(m);
         if (occurrence === 'all') {
-            const parts = original.split(marker);
+            const parts = original.split(m);
             const count = parts.length - 1;
             if (count === 0) return { found: false, count: 0 };
-            const firstIdx = original.indexOf(marker);
+            const firstIdx = original.indexOf(m);
             const line = original.slice(0, firstIdx).split('\n').length;
-            return { found: true, count, line, offset: firstIdx };
+            return { found: true, count, line, offset: lfIdxToRaw(original, raw, firstIdx) };
         }
         if (idx === -1) return { found: false, count: 0 };
         const line = original.slice(0, idx).split('\n').length;
         const fileLine = original.split('\n')[line - 1] ?? '';
         return {
             found: true,
-            count: original.split(marker).length - 1,
+            count: original.split(m).length - 1,
             line,
-            offset: idx,
+            offset: lfIdxToRaw(original, raw, idx),
             snippet: fileLine.slice(0, 200)
         };
     }

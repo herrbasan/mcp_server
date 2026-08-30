@@ -269,8 +269,10 @@ Memory scopes:
   memory.update — { id*, description?, category?, confidence?, data? }
       Edit an existing memory. Only provide the fields you want to change.
 
-  memory.list — { category? }
-      Browse all memories or filter by category. Use for cleanup or review.
+  memory.list — { category?, limit?, sort? }
+      Browse memories chronologically (IDs are monotonic — ID order is time
+      order). newest-first by default; limit for the recent tail. Returns
+      ID + description + category only, never full data payloads.
 
   memory.forget — { id* }
       Delete a memory. Use for outdated, incorrect, or superseded memories.
@@ -485,6 +487,20 @@ or tasks that need a different model than the current one.
       systemPrompt: override the default system prompt.
       EXAMPLE: {"method":"llm.query","payload":{"prompt":"Explain async/await in JS"}}
 
+  llm.session_create — { model*, files?: string[], systemPrompt? }
+      Create a long-lived session with a PINNED model, optionally ingesting
+      a file set once (cheap-model codebase-analyst pattern). Returns a
+      sessionId. Sessions expire after an idle TTL; history is replayed
+      per call (the Gateway stays stateless).
+
+  llm.session_query — { sessionId*, prompt*, model? }
+      Query a pinned-model session — the model retains all prior context
+      (ingested files + earlier turns). Optional per-call model overrides
+      the pin for this call only.
+
+  llm.session_close — { sessionId* }
+      Close a session and free its state.
+
 
 ═══════════════════════════════════════════════════════════════
 VDB — Vector Database (nVDB)
@@ -574,9 +590,12 @@ content that should survive beyond the current session.
       Append content to a file. O(1). Safer than write for adding to logs.
 
   storage.replace — { path*, marker*, replacement*, occurrence? }
-      Targeted edit: replace a byte-exact string "marker" with "replacement"
-      inside the file. Aliases: oldString/newString also accepted.
+      Targeted edit: replace the string "marker" with "replacement" inside
+      the file. Aliases: oldString/newString also accepted.
       occurrence: "first" (default), "last", or "all".
+      Matching is line-ending-agnostic: write multi-line markers with '\n'
+      regardless of the file's CRLF/LF convention; the file keeps its own
+      convention after the edit.
       Marker not found? The error is a DIAGNOSTIC, not a dead end: file size,
       closest anchor position, line number, and the actual file snippet near
       the anchor — repair the marker from the error alone.
@@ -742,6 +761,8 @@ IMPORTANT RULES
         "vision.analyze": "vision_analyze",
 
         "llm.query": "query_model",
+        "llm.session_create": "llm_session_create", "llm.session_query": "llm_session_query",
+        "llm.session_close": "llm_session_close",
 
         "vdb.search": "vdb_search", "vdb.status": "vdb_status",
         "vdb.trigger_scan": "vdb_trigger_scan", "vdb.build_index": "vdb_build_index",
