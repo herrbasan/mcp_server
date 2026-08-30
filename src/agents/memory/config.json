@@ -55,11 +55,13 @@
         },
         {
             "name": "memory_list",
-            "description": "Browse all stored memories or filter by category. Use for periodic review, cleanup sessions, or curiosity about what you already know.",
+            "description": "Browse stored memories chronologically (IDs are monotonic — ID order is time order). Newest-first by default; use limit for the recent tail. Returns ID + description + category only, never full data payloads.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "category": { "type": "string", "description": "Filter to a specific domain tag" }
+                    "category": { "type": "string", "description": "Filter to a specific domain tag" },
+                    "limit": { "type": "number", "description": "Max entries to return (e.g. 10 for the session-start ritual)" },
+                    "sort": { "type": "string", "enum": ["newest", "oldest"], "description": "Order by ID. Default: newest" }
                 }
             }
         },

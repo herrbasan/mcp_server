@@ -468,22 +468,46 @@ export async function memory_forget(args, context) {
 // ── Tool: memory_list ────────────────────────────────────────────────
 
 export async function memory_list(args, context) {
-    const { category } = args;
+    const { category, limit, sort } = args;
+
+    // Fail-fast arg validation
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit <= 0)) {
+        throw new Error(`memory.list: limit must be a positive integer, got: ${limit}`);
+    }
+    if (sort !== undefined && sort !== 'newest' && sort !== 'oldest') {
+        throw new Error(`memory.list: sort must be "newest" or "oldest", got: ${sort}`);
+    }
+
     let list = DB.iter().filter(d => d._id.startsWith('mem_'));
     if (category) list = list.filter(m => m.category === category);
+    list = [...list];
 
-    if (!list.length) {
+    // Memory IDs are monotonic (getNextId) — ID order IS chronological order.
+    // Default newest-first: the dominant use is "what happened recently"
+    // (session-start ritual), and full-store dumps don't care about order.
+    const order = sort ?? 'newest';
+    list.sort((a, b) => order === 'oldest' ? a.id - b.id : b.id - a.id);
+
+    const total = list.length;
+    if (!total) {
         return { content: [{ type: 'text', text: 'No memories found. Memory is empty or no match for this category.' }] };
     }
 
-    const formatted = list.map(m => {
+    const shown = limit ? list.slice(0, limit) : list;
+    const scope = category ? `category "${category}"` : 'all categories';
+    const truncated = shown.length < total
+        ? `\n\n(${shown.length} of ${total} shown — narrow with category, or raise limit)`
+        : '';
+    const header = `${shown.length} memories (${scope}, ${order}-first):`;
+
+    const formatted = shown.map(m => {
         const conf = m.confidence ?? 0.5;
         const hasData = m.data ? ' [has data]' : '';
         return `[#${m.id}] [${m.category}] conf:${conf.toFixed(1)}${hasData} - ${m.description}`;
     }).join('\n');
 
     return {
-        content: [{ type: 'text', text: `${list.length} memories stored:\n\n${formatted}` }]
+        content: [{ type: 'text', text: `${header}\n\n${formatted}${truncated}` }]
     };
 }
 
