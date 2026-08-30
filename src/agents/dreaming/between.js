@@ -122,35 +122,38 @@ export function enforceBetween(map, memories) {
 }
 
 // True if a completed dream cycle deserves a dream-entry (non-trivial only —
-// spec decision #3: avoid per-run noise). The raw dreamer delta lives in
-// map.meta.delta; serendipity stats live in map.meta.serendipity.
-export function isNonTrivialDream(map, recentCount) {
-    if (recentCount > 0) return true;
-    const d = map.meta?.delta;
-    if (!d) return false;
-    const newConnections = d.new_connections?.length || 0;
-    return newConnections > 0;
+// spec decision #3: avoid per-run noise). Qualifying activity is recorded
+// deterministically by the pipeline in map.meta.activity: edges formed,
+// bridges added, clusters organized, compressions. Mere node adds ("N
+// memories embedded") and score drift (surge/fade) are NOT qualifying —
+// that is exactly the per-run telemetry the spec forbids.
+export function isNonTrivialDream(map) {
+    const a = map?.meta?.activity;
+    if (!a) return false;
+    return (a.edges_added > 0) || (a.bridges_added > 0) ||
+        (a.clusters_added > 0) || (a.compressed > 0);
 }
 
 // Compose the dream-entry text (the dreamer's own first person, per the spec).
-// The substrate label comes from config (agents.dreaming.dreamerLabel) — a
-// model swap is a config edit, never a code change.
-export function dreamEntryText(map, stats, substrateLabel) {
+// Content comes from map.meta.activity (deterministic pipeline counts) plus
+// surge/fade flavor from map.meta.delta. The substrate tag lives IN the
+// description so the summary passes enforceBetween validation as-written.
+// Reached only behind the isNonTrivialDream gate — no telemetry fallback.
+export function dreamEntryText(map, substrateLabel) {
     if (typeof substrateLabel !== 'string' || substrateLabel.trim() === '') {
         throw new Error('dreamEntryText: substrateLabel required (set agents.dreaming.dreamerLabel in config.json)');
     }
+    const a = map.meta?.activity || {};
     const d = map.meta?.delta || {};
     const parts = [];
-    if (d.new_connections?.length) parts.push(`connected ${d.new_connections.length}`);
+    if (a.edges_added > 0) parts.push(`connected ${a.edges_added}`);
+    if (a.bridges_added > 0) parts.push(`bridged ${a.bridges_added} pair${a.bridges_added === 1 ? '' : 's'}`);
+    if (a.clusters_added > 0) parts.push(`formed ${a.clusters_added} cluster${a.clusters_added === 1 ? '' : 's'}`);
+    if (a.compressed > 0) parts.push(`compressed ${a.compressed}`);
     if (d.surging_nodes?.length) parts.push(`watched ${d.surging_nodes.length} surge`);
     if (d.decayed_nodes?.length) parts.push(`let ${d.decayed_nodes.length} fade`);
-    if (d.compressed_to_summary?.length || d.compressed_to_title?.length) {
-        parts.push(`compressed ${(d.compressed_to_summary?.length || 0) + (d.compressed_to_title?.length || 0)}`);
-    }
     const did = parts.length > 0 ? parts.join(', ') : 'tended the map';
-    const note = stats?.recent_memories ? ` across ${stats.recent_memories} new memories` : '';
     return {
-        description: `I (the dreamer) tended the map: ${did}${note}.`,
-        data: `Substrate: [${substrateLabel}]. Clusters: ${map.clusters?.length || 0}, nodes: ${map.nodes?.length || 0}.`
+        description: `I (the dreamer, [${substrateLabel}]) tended the map: ${did}.`
     };
 }

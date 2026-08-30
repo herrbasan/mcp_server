@@ -237,25 +237,33 @@ function mergeDelta(delta, previousMap) {
     // husk is carried forward by every later delta (observed: 10 of 33 clusters
     // in the 2026-08-27 map had no name). Adds go in as-is; sanitizeClusters
     // heals any residual gaps after node membership is final.
+    let clustersAdded = 0;
+    let clustersUpdated = 0;
     for (const change of delta.cluster_changes || []) {
         if (change.op === 'add') {
             clusterMap.set(change.cluster.id, { ...change.cluster });
+            clustersAdded++;
         } else if (change.op === 'update') {
             const existing = clusterMap.get(change.cluster.id);
             clusterMap.set(change.cluster.id, existing
                 ? { ...existing, ...change.cluster }
                 : { ...change.cluster });
+            clustersUpdated++;
         }
     }
 
     // Apply bridge changes
+    let bridgesAdded = 0;
+    let bridgesRemoved = 0;
     for (const change of delta.bridge_changes || []) {
         if (change.op === 'add') {
             bridges.push({ ...change.bridge });
+            bridgesAdded++;
         } else if (change.op === 'remove') {
             bridges = bridges.filter(b =>
                 !(b.from_id === change.bridge.from_id && b.to_id === change.bridge.to_id)
             );
+            bridgesRemoved++;
         }
     }
 
@@ -291,6 +299,24 @@ function mergeDelta(delta, previousMap) {
     // deterministically, and drops clusters with neither name nor members.
     const healedClusters = sanitizeClusters(clusterMap, nodeMap);
 
+    // Edge accounting for the dream-entry gate (activity). An "edge" is a
+    // node→node connection ref present now that wasn't in the previous map —
+    // the deterministic signal of map-tending. Node adds alone (memories
+    // embedded) are not tending; new edges are.
+    const prevEdges = new Set();
+    for (const node of previousMap.nodes || []) {
+        for (const c of node.connections || []) prevEdges.add(`${node.id}->${c}`);
+    }
+    const currEdges = new Set();
+    for (const node of nodeMap.values()) {
+        if (!node.connections) continue;
+        for (const c of node.connections) {
+            if (nodeMap.has(c)) currEdges.add(`${node.id}->${c}`);
+        }
+    }
+    let edgesAdded = 0;
+    for (const e of currEdges) if (!prevEdges.has(e)) edgesAdded++;
+
     // Update meta
     if (delta.meta) {
         meta = { ...meta, ...delta.meta };
@@ -301,10 +327,24 @@ function mergeDelta(delta, previousMap) {
         recallDirective = delta.recall_directive;
     }
 
-    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${nodeMap.size} total nodes, ${bridges.length} bridges${healedClusters ? `, ${healedClusters} clusters healed` : ''}`, null, 'Dream');
+    logger.info(`[Dreaming] Merge: ${nodesAdded} added, ${nodesUpdated} updated, ${edgesAdded} edges formed, ${bridgesAdded} bridges, ${nodeMap.size} total nodes${healedClusters ? `, ${healedClusters} clusters healed` : ''}`, null, 'Dream');
 
     return {
-        meta,
+        meta: {
+            ...meta,
+            // Deterministic per-run activity — drives the dream-entry gate
+            // (isNonTrivialDream, spec decision #3). compactMap appends its
+            // compression count when it runs.
+            activity: {
+                nodes_added: nodesAdded,
+                nodes_updated: nodesUpdated,
+                bridges_added: bridgesAdded,
+                bridges_removed: bridgesRemoved,
+                clusters_added: clustersAdded,
+                clusters_updated: clustersUpdated,
+                edges_added: edgesAdded
+            }
+        },
         clusters: [...clusterMap.values()],
         bridges,
         wildcards,
@@ -335,7 +375,9 @@ function sanitizeClusters(clusterMap, nodeMap) {
         const mem = members.get(id) || [];
         let touched = false;
 
-        if (cluster.hub_id == null) {
+        if (cluster.hub_id == null || !nodeMap.has(cluster.hub_id)) {
+            // Missing hub OR hub node no longer exists (forgotten memory) —
+            // re-derive from the highest-score member.
             const hub = mem.slice().sort((a, b) =>
                 (b.score || 0) - (a.score || 0) || a.id - b.id)[0];
             if (hub) { cluster.hub_id = hub.id; touched = true; }
@@ -377,6 +419,8 @@ function sanitizeClusters(clusterMap, nodeMap) {
 // already-covered pairs, plus between↔between self-noise). These guards run
 // at apply time (pure computation, no LLM) and keep the bridge set a faithful
 // topology:
+//   0. dead endpoints dropped — endpoint node no longer exists (forgotten
+//      memory pruned by pruneDeadNodes)
 //   1. self-loops (from === to) dropped
 //   2. exact duplicate node-pairs dropped (first wins)
 //   3. intra-cluster bridges dropped — a "cross-cluster" bridge that doesn't
@@ -389,8 +433,13 @@ function sanitizeBridges(bridges, nodeMap) {
     const nodeSeen = new Set();
     const pairSeen = new Set();
     const out = [];
+    let deadEndpoints = 0;
     for (const b of bridges) {
         if (b.from_id === b.to_id) continue; // self-loop
+        if (!nodeMap.has(b.from_id) || !nodeMap.has(b.to_id)) {
+            deadEndpoints++;                 // endpoint node no longer exists
+            continue;
+        }
         const np = b.from_id < b.to_id ? `${b.from_id}|${b.to_id}` : `${b.to_id}|${b.from_id}`;
         if (nodeSeen.has(np)) continue;      // exact duplicate node-pair
         nodeSeen.add(np);
@@ -404,6 +453,7 @@ function sanitizeBridges(bridges, nodeMap) {
         }
         out.push(b);
     }
+    if (deadEndpoints > 0) logger.info(`[Dreaming] Pruned ${deadEndpoints} bridge(s) with dead endpoints`, null, 'Dream');
     return out;
 }
 
@@ -428,6 +478,7 @@ function compactMap(map, maxTokens) {
 
     const kept = [];
     const dropped = [];
+    let compressed = 0;
     const SCORE_FLOOR = 0.25;
 
     for (const node of nodes) {
@@ -440,6 +491,7 @@ function compactMap(map, maxTokens) {
             kept.push(node);
         } else if (score >= SCORE_FLOOR) {
             // Compress to minimal fields
+            compressed++;
             kept.push({
                 id: node.id,
                 state: 'title',
@@ -456,8 +508,27 @@ function compactMap(map, maxTokens) {
 
     return {
         ...map,
+        meta: { ...map.meta, activity: { ...(map.meta?.activity || {}), compressed } },
         nodes: kept
     };
+}
+
+// Deterministic stale-node pruning. Memories get forgotten (memory.forget),
+// but the map is delta-merged — nodes of deleted memories would linger forever
+// (the distillate never mentions them again and the dreamer only adds/updates).
+// Drops nodes whose id is no longer a live memory and wildcards pointing at
+// them; sanitizeBridges/sanitizeClusters heal the dependent topology.
+function pruneDeadNodes(map, liveIds) {
+    const before = (map.nodes || []).length;
+    map.nodes = (map.nodes || []).filter(n => liveIds.has(n.id));
+    const dropped = before - map.nodes.length;
+    if (dropped > 0) logger.info(`[Dreaming] Pruned ${dropped} node(s) whose memories no longer exist`, null, 'Dream');
+    const wildBefore = (map.wildcards || []).length;
+    map.wildcards = (map.wildcards || []).filter(w => liveIds.has(w.id));
+    if (map.wildcards.length < wildBefore) {
+        logger.info(`[Dreaming] Pruned ${wildBefore - map.wildcards.length} wildcard(s) pointing at dead nodes`, null, 'Dream');
+    }
+    return dropped;
 }
 
 // Deterministic connection hygiene. Dangling refs accumulate when compactMap()
@@ -611,6 +682,22 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
 
         parsed.meta.version = '3.0';
         parsed.meta.generated_at = new Date().toISOString();
+        // First build — everything is new. Activity drives the dream-entry
+        // gate; count node ids that actually resolve so the counts stay honest.
+        const ids = new Set(parsed.nodes.map(n => n.id));
+        let edges = 0;
+        for (const n of parsed.nodes) {
+            for (const c of n.connections || []) if (ids.has(c)) edges++;
+        }
+        parsed.meta.activity = {
+            nodes_added: parsed.nodes.length,
+            nodes_updated: 0,
+            bridges_added: (parsed.bridges || []).length,
+            bridges_removed: 0,
+            clusters_added: (parsed.clusters || []).length,
+            clusters_updated: 0,
+            edges_added: edges
+        };
         return parsed;
     }
 }
@@ -788,6 +875,13 @@ async function runPipeline(force = false, onProgress = null) {
 
         const contextBudget = agentConfig.contextBudget || 800000; // ~800K tokens
 
+        // Stale-node pruning — BEFORE the between pre-pass and the dreamer
+        // call, so neither ever sees nodes of forgotten memories.
+        if (existingMap) {
+            const liveIds = new Set(allMemories.map(m => m.id));
+            pruneDeadNodes(existingMap, liveIds);
+        }
+
         // Determine "recent" = memories newer than last dream
         const lastDreamTime = existingMap?.meta?.generated_at;
         const recentMemories = lastDreamTime
@@ -871,16 +965,16 @@ async function runPipeline(force = false, onProgress = null) {
         }
 
         // Between dream-entry (spec decision #3: non-trivial consolidations
-        pruneConnections(map);
         // only). The dreamer's own first person — home and gardener, not guest.
-        if (isNonTrivialDream(map, recentMemories.length)) {
+        // Runs with only new memories embedded and no tending write NOTHING.
+        pruneConnections(map);
+        if (isNonTrivialDream(map)) {
             try {
-                const entry = dreamEntryText(map, { recent_memories: recentMemories.length }, agentConfig.dreamerLabel);
+                const entry = dreamEntryText(map, agentConfig.dreamerLabel);
                 await memory_store({
                     description: entry.description,
                     category: BETWEEN_CATEGORY,
-                    confidence: 0.6,
-                    data: entry.data
+                    confidence: 0.6
                 }, { gateway, progress: null });
             } catch (err) {
                 logger.warn(`[Dreaming] Between dream-entry failed: ${err.message}`, null, 'Dream');
