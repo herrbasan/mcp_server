@@ -119,3 +119,134 @@ export async function query_model(args, context) {
 
     return { content: [{ type: "text", text: response.content }] };
 }
+
+// ─── Pinned-model sessions (issue #13) ───────────────────────────────
+// Long-lived conversations with a pinned model for repeated queries against
+// an ingested file set (the cheap-model codebase-analyst pattern): load the
+// codebase once, then query without re-reading per call. The Gateway stays
+// stateless — session state is the stored message array, replayed per call.
+// TTL is enforced lazily at access time; expired sessions vanish loudly.
+
+const SESSION_TTL_MINUTES_DEFAULT = 60;
+const SESSION_MAX_DEFAULT = 8;
+
+// sessionId -> { id, model, systemPrompt, messages, createdAt, lastAccess }
+const SESSIONS = new Map();
+
+function sessionLimits(context) {
+    const cfg = context?.config?.agents?.llm || {};
+    return {
+        ttlMs: (cfg.sessionTtlMinutes ?? SESSION_TTL_MINUTES_DEFAULT) * 60 * 1000,
+        maxSessions: cfg.sessionMaxSessions ?? SESSION_MAX_DEFAULT
+    };
+}
+
+function sweepExpiredSessions(ttlMs, now = Date.now()) {
+    for (const [id, s] of SESSIONS) {
+        if (now - s.lastAccess > ttlMs) {
+            SESSIONS.delete(id);
+            logger.info(`[LLM Tool] Session expired (TTL): ${id}`, null, 'LLM');
+        }
+    }
+}
+
+function requireSession(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        throw new Error('llm.session: sessionId required (from llm.session_create)');
+    }
+    const session = SESSIONS.get(sessionId);
+    if (!session) {
+        throw new Error(`llm.session: unknown or expired session: ${sessionId} (create a new one with llm.session_create)`);
+    }
+    return session;
+}
+
+function sessionSummary(session) {
+    return {
+        sessionId: session.id,
+        model: session.model,
+        messages: session.messages.length,
+        files_ingested: session.filesIngested,
+        age_minutes: Math.round((Date.now() - session.createdAt) / 60000),
+        idle_minutes: Math.round((Date.now() - session.lastAccess) / 60000)
+    };
+}
+
+export async function llm_session_create(args, context) {
+    const { model, files = [], systemPrompt } = args;
+    if (typeof model !== 'string' || model.trim() === '') {
+        throw new Error('llm.session_create: model required — pin a chat model (discover with gateway listModels)');
+    }
+    if (!Array.isArray(files)) {
+        throw new Error('llm.session_create: files must be an array of absolute paths');
+    }
+    const limits = sessionLimits(context);
+    sweepExpiredSessions(limits.ttlMs);
+    if (SESSIONS.size >= limits.maxSessions) {
+        throw new Error(`llm.session_create: session limit (${limits.maxSessions}) reached — close one with llm.session_close first`);
+    }
+
+    // Fail-fast model check: an unknown pin must die here, not at first query.
+    const known = await context.gateway.listModels('chat');
+    const knownIds = known.map(m => m.id ?? m);
+    if (!knownIds.includes(model)) {
+        throw new Error(`llm.session_create: unknown model "${model}" — available: ${knownIds.join(', ')}`);
+    }
+
+    const messages = [];
+    for (const file of files) {
+        if (typeof file !== 'string' || !fs.existsSync(file)) {
+            throw new Error(`llm.session_create: file not found: ${file}`);
+        }
+        messages.push({ role: 'user', content: `--- File: ${file} ---\n${fs.readFileSync(file, 'utf8')}\n--- End File ---` });
+        messages.push({ role: 'assistant', content: 'File ingested. Ready for queries.' });
+    }
+
+    const session = {
+        id: `lls_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        model,
+        systemPrompt: typeof systemPrompt === 'string' && systemPrompt.length > 0 ? systemPrompt : null,
+        filesIngested: files.length,
+        messages,
+        createdAt: Date.now(),
+        lastAccess: Date.now()
+    };
+    SESSIONS.set(session.id, session);
+    logger.info(`[LLM Tool] Session created: ${session.id} (model: ${model}, files: ${files.length})`, null, 'LLM');
+
+    return { content: [{ type: 'text', text: JSON.stringify(sessionSummary(session), null, 2) }] };
+}
+
+export async function llm_session_query(args, context) {
+    const { sessionId, prompt, model } = args;
+    if (typeof prompt !== 'string' || prompt.length === 0) {
+        throw new Error('llm.session_query: prompt required');
+    }
+    const limits = sessionLimits(context);
+    sweepExpiredSessions(limits.ttlMs);
+    const session = requireSession(sessionId);
+
+    // Per-call model overrides the pin for this call only (forge precedence
+    // convention). The pin is never sent as a task — task would win over
+    // model in gateway-client and silently break pinning.
+    const pinned = typeof model === 'string' && model.length > 0 ? model : session.model;
+
+    session.messages.push({ role: 'user', content: prompt });
+    const chatArgs = { messages: session.messages };
+    if (session.systemPrompt) chatArgs.systemPrompt = session.systemPrompt;
+    chatArgs.model = pinned;
+
+    const response = await context.gateway.chat(chatArgs);
+    session.messages.push({ role: 'assistant', content: response.content });
+    session.lastAccess = Date.now();
+
+    return { content: [{ type: 'text', text: response.content }] };
+}
+
+export async function llm_session_close(args, context) {
+    const { sessionId } = args;
+    const session = requireSession(sessionId);
+    SESSIONS.delete(session.id);
+    logger.info(`[LLM Tool] Session closed: ${session.id}`, null, 'LLM');
+    return { content: [{ type: 'text', text: `Closed session ${session.id} (model: ${session.model}, ${session.messages.length} messages in conversation).` }] };
+}

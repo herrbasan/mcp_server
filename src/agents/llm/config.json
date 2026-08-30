@@ -14,6 +14,43 @@
                 },
                 "required": ["prompt"]
             }
+        },
+        {
+            "name": "llm_session_create",
+            "description": "Create a long-lived LLM session with a PINNED model, optionally ingesting a file set once (the cheap-model codebase-analyst pattern). Returns a sessionId for llm_session_query. Sessions expire after an idle TTL; the Gateway stays stateless — the message history is replayed per call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "model": { "type": "string", "description": "Chat model to pin (e.g. a cheap long-context model). Validated against the Gateway at create time." },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Absolute paths to ingest into the session context" },
+                    "systemPrompt": { "type": "string", "description": "Optional system prompt for the session" }
+                },
+                "required": ["model"]
+            }
+        },
+        {
+            "name": "llm_session_query",
+            "description": "Query a pinned-model session — the model retains all prior context (ingested files + earlier turns). Optional per-call model overrides the pin for this call only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string", "description": "From llm_session_create" },
+                    "prompt": { "type": "string" },
+                    "model": { "type": "string", "description": "Optional per-call model override (does not change the session pin)" }
+                },
+                "required": ["sessionId", "prompt"]
+            }
+        },
+        {
+            "name": "llm_session_close",
+            "description": "Close a pinned-model session and free its state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessionId": { "type": "string", "description": "From llm_session_create" }
+                },
+                "required": ["sessionId"]
+            }
         }
     ]
 }
