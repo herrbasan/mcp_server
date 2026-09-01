@@ -41,10 +41,73 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
     }
 
-    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress }) {
+    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress, stream = true, tools, timeoutMs }) {
         const fullMessages = systemPrompt
             ? [{ role: 'system', content: systemPrompt }, ...messages]
             : messages;
+
+        // Non-streaming mode (chat sessions, summarize calls): one POST, full
+        // JSON response, returns content + tool_calls + finish_reason + usage.
+        // The SSE path below is untouched; existing callers omit `stream`.
+        if (stream === false) {
+            const body = {
+                messages: fullMessages,
+                stream: false
+            };
+            if (maxTokens != null) body.max_tokens = maxTokens;
+            if (temperature != null) body.temperature = temperature;
+            if (responseFormat != null) body.response_format = responseFormat;
+            if (enableThinking != null) body.enable_thinking = enableThinking;
+            if (tools != null) body.tools = tools;
+            if (task) body.task = task;
+            else if (model) body.model = model;
+
+            logger.info('[Gateway] POST /v1/chat/completions (non-streaming)', {
+                task,
+                model,
+                messageCount: fullMessages.length,
+                hasTools: Boolean(tools),
+                timeoutMs
+            });
+
+            const controller = new AbortController();
+            const timer = timeoutMs != null
+                ? setTimeout(() => controller.abort(new Error(`Gateway chat timed out after ${timeoutMs}ms (non-streaming)`)), timeoutMs)
+                : null;
+            try {
+                const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+                    method: 'POST',
+                    headers: authHeaders(),
+                    body: JSON.stringify(body),
+                    signal: controller.signal
+                });
+                if (!res.ok) {
+                    const errText = await res.text().catch(() => res.statusText);
+                    throw new Error(`Gateway error ${res.status}: ${errText}`);
+                }
+                const data = await res.json();
+                if (data.error) {
+                    throw new Error(`Gateway error: ${data.error.message || JSON.stringify(data.error)}`);
+                }
+                const choice = data.choices?.[0];
+                if (!choice) {
+                    throw new Error(`Gateway returned no choices: ${JSON.stringify(data).slice(0, 300)}`);
+                }
+                return {
+                    content: choice.message?.content ?? null,
+                    tool_calls: choice.message?.tool_calls ?? null,
+                    finish_reason: choice.finish_reason ?? null,
+                    usage: data.usage ?? null
+                };
+            } catch (err) {
+                if (err instanceof TypeError) {
+                    throw new Error(`Gateway connection failed: ${err.message}`);
+                }
+                throw err; // gateway error / timeout abort / parse failure — all loud
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }
 
         const body = {
             messages: fullMessages,

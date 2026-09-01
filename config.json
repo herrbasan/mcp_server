@@ -29,6 +29,13 @@
     "vision": {
       "ttlMinutes": 30
     },
+    "chat": {
+      "dir": "data/chat/sessions",
+      "maxHopsPerSend": 25,
+      "maxConcurrentRuns": 4,
+      "toolsExclude": [],
+      "requestTimeoutMs": 120000
+    },
     "dreaming": {
       "intervalMinutes": 15,
       "contextBudget": 800000,

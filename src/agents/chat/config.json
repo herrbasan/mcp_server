@@ -1,0 +1,105 @@
+{
+    "agent": "chat",
+    "description": "Persistent headless LLM chat sessions with a pinned model, stored at data/chat/sessions/<name>.json. The chat app minus the interface: create a named session pinned to a gateway model, inject context (messages or storage files), send messages (the session's model can call workshop tools via a single dispatcher, including other chat sessions — recursion bounded by a run-chain cycle guard), inspect/update/compact/delete. CALL SHAPE: {\"method\":\"chat.<action>\",\"payload\":{...}}.",
+    "tools": [
+        {
+            "name": "chat_create",
+            "description": "Create a new chat session. Throws if the name already exists (no silent reuse). Model must be a known gateway chat model ID (validated against listModels('chat') — typos fail immediately). Name charset: [a-z0-9][a-z0-9._-]*.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name — the ID, human-addressable, used as filename" },
+                    "model": { "type": "string", "description": "Gateway chat model ID to pin (e.g. deepseek-flash-chat, kimi-k3-chat)" },
+                    "systemPrompt": { "type": "string", "description": "Optional system prompt for the session" }
+                },
+                "required": ["name", "model"]
+            }
+        },
+        {
+            "name": "chat_send",
+            "description": "Send a user message to a session and run its tool loop to completion. Returns { reply, toolCalls, hops, usage, messageCount, historyBytes }. The session's model sees ONE dispatcher tool ('workshop') giving it the full workshop tool catalog. Optional per-send model override (does NOT re-pin the session — use chat.update for that). Cyclic sends (target already upstream in the call chain) fail as tool-result errors, never queue.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" },
+                    "message": { "type": "string", "description": "User message text" },
+                    "model": { "type": "string", "description": "Optional one-send model override" }
+                },
+                "required": ["name", "message"]
+            }
+        },
+        {
+            "name": "chat_inject",
+            "description": "Append context WITHOUT calling the model — the twin-ingest primitive. messages: array of {role:'user'|'assistant', content} appended verbatim. files: array of storage paths, each read via the storage agent (inherits sandbox, UNC translation, maxReadSize) and appended as one user message '=== storage:<path> ===\\n<content>'. At least one of messages/files required.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" },
+                    "messages": { "type": "array", "items": { "type": "object", "properties": { "role": { "type": "string", "enum": ["user", "assistant"] }, "content": { "type": "string" } }, "required": ["role", "content"] }, "description": "Messages to append verbatim" },
+                    "files": { "type": "array", "items": { "type": "string" }, "description": "Storage paths to read and append as user messages" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "chat_list",
+            "description": "List all chat sessions: name, model, messageCount, historyBytes, createdAt, updatedAt.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "chat_history",
+            "description": "Return a session's stored messages in chronological order, full fidelity by default. lastN trims to the last N messages for large sessions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" },
+                    "lastN": { "type": "number", "description": "Return only the last N messages" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "chat_update",
+            "description": "Mid-life re-pin of a session: change systemPrompt and/or model. At least one field required. Model change validated like create.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" },
+                    "systemPrompt": { "type": "string", "description": "New system prompt" },
+                    "model": { "type": "string", "description": "New gateway chat model ID to pin" }
+                },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "chat_compact",
+            "description": "Caller-invoked compaction (never automatic). Strategies: 'clear' — wipe messages (systemPrompt survives; keep=N preserves last N, default 0); 'truncate' — keep last keep* messages; 'summarize' — messages [0..upTo) replaced by ONE summary generated by the session's model (override via model arg) with a fixed extractive prompt; history rewritten only after the summary text exists.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" },
+                    "strategy": { "type": "string", "enum": ["clear", "truncate", "summarize"] },
+                    "keep": { "type": "number", "description": "clear: last N messages to preserve (default 0); truncate: required, last N to keep" },
+                    "upTo": { "type": "number", "description": "summarize: replace messages [0..upTo) with the summary" },
+                    "model": { "type": "string", "description": "summarize: model override for the summary call" }
+                },
+                "required": ["name", "strategy"]
+            }
+        },
+        {
+            "name": "chat_delete",
+            "description": "Delete a session file. Irreversible; no recycle bin.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name" }
+                },
+                "required": ["name"]
+            }
+        }
+    ]
+}

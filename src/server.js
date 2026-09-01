@@ -62,7 +62,14 @@ const globalContext = {
     agents: new Map(),
     prompts: new Map(),
     config: serverConfig,
-    app
+    app,
+    // Tool router for the chat agent's in-process tool execution (dispatcher
+    // form: method + payload). Holder exists at init time so the chat agent can
+    // capture it during loadAgents; `call` and `methods` are filled below once
+    // routeCompactCall and COMPACT_TO_LEGACY exist — agent init runs INSIDE
+    // loadAgents, before routeToolCall is returned, so it cannot be passed
+    // directly in the init context.
+    toolRouter: { call: null, methods: [] }
 };
 
 // Per-session SSE state: Map<sessionId, { res, send }>
@@ -686,6 +693,53 @@ WRITING TOOLS — Quick Reference
   Use forge.help for the full guide with all methods and patterns.
 
 
+
+═══════════════════════════════════════════════════════════════
+CHAT — Persistent Headless LLM Sessions
+═══════════════════════════════════════════════════════════════
+
+Headless chat sessions with a pinned model, persisted to disk, addressable
+by name — the chat app minus the interface. A session's model can call
+workshop tools via a single 'workshop' dispatcher (including other chat
+sessions — recursion is bounded by a run-chain cycle guard; a cyclic send
+fails as a tool-result error, never hangs).
+
+  chat.create — { name*, model*, systemPrompt? }
+      Create a session. Throws if the name exists. model must be a known
+      gateway chat model ID (validated at create time).
+      Name charset: [a-z0-9][a-z0-9._-]*.
+
+  chat.send — { name*, message*, model? }
+      Send a user message; runs the tool loop to completion. Returns
+      { reply, toolCalls, hops, usage, messageCount, historyBytes }.
+      Optional per-send model override (does NOT re-pin — chat.update does).
+
+  chat.inject — { name*, messages?[], files?[] }
+      Append context WITHOUT calling the model (twin-ingest primitive).
+      messages: [{role:'user'|'assistant', content}] verbatim.
+      files: storage paths, each read via storage.read and appended as one
+      user message '=== storage:<path> ===\n<content>'. At least one required.
+
+  chat.list — {}
+      All sessions: name, model, messageCount, historyBytes, timestamps.
+
+  chat.history — { name*, lastN? }
+      Stored messages, chronological, full fidelity. lastN trims to the
+      last N messages.
+
+  chat.update — { name*, systemPrompt?, model? }
+      Mid-life re-pin. At least one field required.
+
+  chat.compact — { name*, strategy*, keep?, upTo?, model? }
+      Caller-invoked compaction: 'clear' (wipe; keep preserves last N),
+      'truncate' (keep* last N), 'summarize' (messages [0..upTo) replaced by
+      ONE summary from the session's model; history rewritten only after the
+      summary exists).
+
+  chat.delete — { name* }
+      Remove the session file. Irreversible.
+
+
 ═══════════════════════════════════════════════════════════════
 IMPORTANT RULES
 ═══════════════════════════════════════════════════════════════
@@ -783,7 +837,12 @@ IMPORTANT RULES
         "forge.read": "forge_read", "forge.list": "forge_list",
         "forge.delete": "forge_delete", "forge.call": "forge_call",
         "forge.history": "forge_history", "forge.rollback": "forge_rollback",
-        "forge.help": "forge_help"
+        "forge.help": "forge_help",
+
+        "chat.create": "chat_create", "chat.send": "chat_send",
+        "chat.inject": "chat_inject", "chat.list": "chat_list",
+        "chat.history": "chat_history", "chat.update": "chat_update",
+        "chat.compact": "chat_compact", "chat.delete": "chat_delete"
     };
 
     const routeCompactCall = async (name, args, context) => {
@@ -806,6 +865,14 @@ IMPORTANT RULES
         logger.info(`[Compact] Routing ${method} → ${legacyName}`, null, 'MCP');
         return routeToolCall(legacyName, payload, context);
     };
+
+    // Chat agent tool router: dispatcher-form calls (agent.action method +
+    // payload) routed through routeCompactCall → routeToolCall, in-process.
+    // The context (including the run-chain for the cycle guard) flows through
+    // untouched. `methods` is the advertised catalog source of truth.
+    globalContext.toolRouter.call = (method, payload, context) =>
+        routeCompactCall('tools', { method, payload }, context);
+    globalContext.toolRouter.methods = Object.keys(COMPACT_TO_LEGACY);
 
     // GET /mcp/compact - opens SSE stream
     app.get('/mcp/compact', (req, res) => {
