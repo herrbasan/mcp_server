@@ -51,6 +51,17 @@
             }
         },
         {
+            "name": "chat_status",
+            "description": "Live activity of running/last chat.send runs from an in-memory registry: phase (queued|waiting-gateway|tool-call|idle|error|never-run), hops, currentTool, tokensSoFar, lastEvents (ring buffer, cap 20). No name → all sessions, summary form. With name → full detail incl. lastEvents. Unknown name → phase 'never-run' (not an error). Pure in-memory — dies with the process; never touches the session queue or files.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Session name — omit for all sessions (summary form)" }
+                },
+                "required": []
+            }
+        },
+        {
             "name": "chat_history",
             "description": "Return a session's stored messages in chronological order, full fidelity by default. lastN trims to the last N messages for large sessions.",
             "inputSchema": {

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
-import { createFileOps } from '../../lib/fileops.js';
+import { createFileOps, joinNormalizedTail } from '../../lib/fileops.js';
 import { requireFields } from '../../utils/require-fields.js';
 import { searchDocuments } from '../vdb/index.js';
 import * as resources from './resource-provider.js';
@@ -73,7 +73,8 @@ function safeResolve(userPath) {
         throw new Error(`Storage root does not exist: ${realRoot}`);
     }
     const realBase = fs.realpathSync(check);
-    const realTarget = path.join(realBase, ...suffix);
+    const realTarget = joinNormalizedTail(realBase, suffix,
+        (msg) => logger.warn(`[Storage] ${msg}`, { path: userPath }, 'Storage'));
     if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
         throw new Error(`Path escapes storage root: ${userPath}`);
     }
@@ -435,6 +436,20 @@ export async function storage_write(args) {
     return result(true, 'storage_write', userPath, { size: engineResult.size, ...proof });
 }
 
+// Invisible/problematic filename characters: Private Use Area, zero-width,
+// BOM, bidi controls, C0/C1 controls. They render as nothing (or as a font
+// glyph that isn't the character) in every display, so any path copied from
+// a listing silently drops them → stat/read ENOENT on a file that "plainly
+// exists" (the \uF025 Schwätz case, 2026-09-03). Flag them in listings so
+// the ghost is visible BEFORE someone copies the name.
+const GHOST_CHAR = /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF\uE000-\uF8FF]/u;
+
+function ghostFlag(name) {
+    if (!GHOST_CHAR.test(name)) return null;
+    const codes = [...name].filter(c => GHOST_CHAR.test(c)).map(c => `U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
+    return `invisible char(s): ${[...new Set(codes)].join(', ')} — hex-dump before copying this name`;
+}
+
 export async function storage_list(args) {
     const userPath = normPath(args.path ?? '');
     const recursive = args.recursive || false;
@@ -457,6 +472,8 @@ export async function storage_list(args) {
         if (e.type === 'dir' && fs.existsSync(safeResolve(userPath ? `${userPath}/${e.name}/Agents.md` : `${e.name}/Agents.md`))) {
             out.hasAgents = true;
         }
+        const ghost = ghostFlag(e.name);
+        if (ghost) out.nameWarning = ghost;
         return out;
     });
     logger.info(`[Storage] storage_list OK: "${userPath}" (${normalized.length} entries, ${detail})`, null, 'Storage');
@@ -486,9 +503,10 @@ export async function storage_list(args) {
         // shallow: dirs first, then files — name alone suffices (parent known)
         const sorted = [...shown].sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
         for (const e of sorted) {
+            const warn = e.nameWarning ? `  ⚠ ${e.nameWarning}` : '';
             lines.push(e.type === 'dir'
-                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/`
-                : `f   ${human(e.size).padStart(6)} ${e.name}`);
+                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/${warn}`
+                : `f   ${human(e.size).padStart(6)} ${e.name}${warn}`);
         }
     } else {
         // recursive flat: group by parent directory, header per group —
@@ -498,9 +516,10 @@ export async function storage_list(args) {
         for (const e of sorted) {
             const parent = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
             if (parent !== curParent) { curParent = parent; lines.push(`== ${parent || userPath || '.'} ==`); }
+            const warn = e.nameWarning ? `  ⚠ ${e.nameWarning}` : '';
             lines.push(e.type === 'dir'
-                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/`
-                : `f   ${human(e.size).padStart(6)} ${e.name}`);
+                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/${warn}`
+                : `f   ${human(e.size).padStart(6)} ${e.name}${warn}`);
         }
     }
     return { content: [{ type: 'text', text: lines.join('\n') }] };

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { createProgressReporter } from '../../utils/progress-reporter.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -12,7 +13,14 @@ const DEFAULTS = {
     maxHopsPerSend: 25,
     maxConcurrentRuns: 4,
     toolsExclude: [],
-    requestTimeoutMs: 120000
+    requestTimeoutMs: 120000,
+    // Hard cap per injected file. storage.read returns a POINTER envelope
+    // above its inline threshold (an MCP transport limit, irrelevant
+    // in-process) — injecting that pointer would be silent data loss (round-2
+    // feedback). inject stats the file and reads one full-size offset/length
+    // window (plain text, no envelope, no UTF-8 boundary splits). Beyond this
+    // cap the caller must pre-chunk — fail loud, never inject a fragment.
+    maxInjectFileBytes: 5 * 1024 * 1024
 };
 
 const NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
@@ -33,6 +41,36 @@ const QUEUES = new Map();
 
 // Cross-session concurrency bound (spec §2.2). Sessions executing a run right now.
 let activeRuns = 0;
+
+// ── Run-activity registry (chat_status) ──────────────────────────────────────
+// Pure in-memory record of running/last runs per session, for outside
+// observers polling chat.status. Never touches the per-session queue and
+// never reads session files. Nothing persisted — the registry dies with the
+// process (documented, acceptable: it describes live/recent activity only).
+// Entry: { phase, hops, currentTool, detail, phaseSince, startedAt, updatedAt, tokensSoFar, lastEvents }
+// phase: 'queued' | 'waiting-gateway' | 'tool-call' | 'idle' | 'error'
+// detail: latest fine-grained progress message from INSIDE the running tool
+// (workshop tools emit ctx.progress; captured here instead of discarded).
+// phaseSince: when the current phase began — observers render elapsed time.
+const ACTIVITY = new Map(); // sessionName -> entry
+const LAST_EVENTS_CAP = 20;
+
+function updateActivity(name, event, patch = {}) {
+    let entry = ACTIVITY.get(name);
+    if (!entry) {
+        entry = { phase: 'queued', hops: 0, currentTool: null, detail: null, phaseSince: now(), startedAt: now(), updatedAt: now(), tokensSoFar: 0, lastEvents: [] };
+        ACTIVITY.set(name, entry);
+    }
+    if (event) {
+        entry.lastEvents.push({ at: now(), event });
+        if (entry.lastEvents.length > LAST_EVENTS_CAP) {
+            entry.lastEvents.splice(0, entry.lastEvents.length - LAST_EVENTS_CAP);
+        }
+    }
+    Object.assign(entry, patch);
+    entry.updatedAt = now();
+    return entry;
+}
 
 const now = () => new Date().toISOString();
 
@@ -97,14 +135,33 @@ function isExcluded(method) {
     return CONFIG.toolsExclude.some(prefix => method.startsWith(prefix));
 }
 
+// Extract the per-method signature lines ("  agent.action — { payload shape }")
+// from the full server catalog prose, restricted to advertised methods. Arg
+// shapes on the wire stop spawned models from guessing field names (round-2
+// feedback: research.topic called with {topic} instead of {query}).
+function catalogSignatures(methods) {
+    const description = toolRouter().description;
+    if (typeof description !== 'string' || !description) return methods.map(m => `  ${m}`);
+    const wanted = new Set(methods);
+    const lines = [];
+    for (const line of description.split('\n')) {
+        const m = line.match(/^\s{2}([a-z_]+\.[a-z_]+)\s+—\s+(.*)$/i);
+        if (m && wanted.has(m[1])) lines.push(`  ${m[1]} — ${m[2].trim()}`);
+    }
+    // Any advertised method without a prose signature still appears (name only).
+    const covered = new Set(lines.map(l => l.trim().split(' ')[0]));
+    for (const m of methods) if (!covered.has(m)) lines.push(`  ${m}`);
+    return lines;
+}
+
 function buildDispatcherDescription() {
     const methods = advertisedMethods();
     return [
         'Call workshop MCP tools through this single dispatcher.',
         'Provide { "method": "<agent.action>", "payload": { ...args } }.',
         'The response is { content: [{ type: "text", text }], isError } — the real result is in content[0].text; isError:true means the call failed.',
-        'AVAILABLE METHODS:',
-        ...methods.map(m => `  ${m}`)
+        'AVAILABLE METHODS (name — payload shape, * = required):',
+        ...catalogSignatures(methods)
     ].join('\n');
 }
 
@@ -147,7 +204,7 @@ function mergeUsage(total, usage) {
 // One tool call from the session model → one stored tool-result message.
 // Failures become toolStatus:"error" results the model can see and adapt to
 // (spec §6) — the loop stays alive.
-async function executeToolCall(toolCall, ctx, chain, sessionName) {
+async function executeToolCall(toolCall, ctx, chain, sessionName, pr, hop) {
     const fn = toolCall.function || {};
     const fail = (msg) => ({
         stored: {
@@ -188,17 +245,46 @@ async function executeToolCall(toolCall, ctx, chain, sessionName) {
     // but our ctx.prompts was already re-scoped to a plain object by our own
     // dispatch — passing it through would crash every nested call.
     const nestedCtx = { ...ctx, runChain: [...chain, sessionName], prompts: new Map() };
+    // Capture the tool's OWN progress messages into the registry (round-3
+    // feedback: workshop tools report phases via ctx.progress — research,
+    // storage batch, memory ops — and they were discarded at the session
+    // boundary). detail is a field, not a ring event: progress chatter would
+    // flood lastEvents. The original progress fn still fires (outer caller's
+    // progressToken keeps its events).
+    const outerProgress = typeof ctx?.progress === 'function' ? ctx.progress : null;
+    nestedCtx.progress = (msg, pct, total) => {
+        updateActivity(sessionName, null, { detail: typeof msg === 'string' ? msg.slice(0, 300) : String(msg) });
+        if (outerProgress) outerProgress(msg, pct, total);
+    };
     const router = toolRouter();
+
+    // Progress + registry: executing → ok/error with duration. Nested sends
+    // inherit ctx (spread above), so their events flow to the outer caller's
+    // progressToken — desired: nested activity surfaces at top level.
+    const startedAt = Date.now();
+    const executing = `hop ${hop}: executing ${method}`;
+    pr.set(executing, Math.min(95, hop * 5), true);
+    updateActivity(sessionName, executing, { phase: 'tool-call', hops: hop, currentTool: method, detail: null, phaseSince: now() });
+
+    const toolDone = (status) => {
+        const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+        const event = `hop ${hop}: ${method} ${status} (${secs}s)`;
+        pr.set(event, Math.min(95, hop * 5 + 3), true);
+        updateActivity(sessionName, event, { currentTool: null, detail: null });
+    };
+
     let result;
     try {
         result = await router.call(method, payload ?? {}, nestedCtx);
     } catch (err) {
+        toolDone('error');
         return fail(err.message);
     }
     const text = Array.isArray(result?.content)
         ? result.content.map(c => c.text ?? '').join('\n')
         : JSON.stringify(result);
     const status = result?.isError ? 'error' : 'success';
+    toolDone(status);
     return {
         stored: {
             role: 'tool',
@@ -223,11 +309,56 @@ function enqueue(name, task) {
     return run;
 }
 
+// One retry on CONNECTION-LEVEL gateway failures only ('fetch failed',
+// ECONNREFUSED — gateway process unreachable, e.g. a restart blip). HTTP
+// errors, timeouts, and tool errors are NOT retried — they carry information
+// the caller must see. If the retry also fails, the error is re-thrown with
+// model-readable guidance: a transient failure made one calling model abandon
+// the chat tool entirely as 'broken' (2026-09-03) — the message must make
+// clear the session and its history are intact and retrying is safe.
+const TRANSIENT_RETRY_DELAY_MS = 3000;
+
+function isConnectionFailure(err) {
+    return /fetch failed|ECONNREFUSED|ECONNRESET|EPIPE|Gateway connection failed/i.test(err?.message || '');
+}
+
+async function chatWithTransientRetry({ model, wire, name, hops }) {
+    const call = () => GATEWAY.chat({
+        model,
+        messages: wire,
+        stream: false,
+        tools: [dispatcherDef()],
+        timeoutMs: CONFIG.requestTimeoutMs
+    });
+    try {
+        return await call();
+    } catch (err) {
+        if (!isConnectionFailure(err)) throw err;
+        logger.warn(`[Chat] hop ${hops} gateway connection failed for session '${name}' — retrying once in ${TRANSIENT_RETRY_DELAY_MS / 1000}s (${err.message})`, null, 'Chat');
+        updateActivity(name, `hop ${hops}: gateway unreachable — retrying once`, { detail: 'gateway retry' });
+        await new Promise(r => setTimeout(r, TRANSIENT_RETRY_DELAY_MS));
+        try {
+            return await call();
+        } catch (retryErr) {
+            if (!isConnectionFailure(retryErr)) throw retryErr;
+            throw new Error(
+                `chat_send: gateway unreachable after 2 attempts (${retryErr.message}). ` +
+                `This is a TRANSIENT infrastructure failure, not a session problem: session '${name}' and its history are intact and unchanged. ` +
+                `Wait a few seconds and retry the same chat.send — do NOT treat the chat tool as broken.`
+            );
+        }
+    }
+}
+
 async function runSend({ name, message, model: modelOverride, ctx, chain }) {
     if (activeRuns >= CONFIG.maxConcurrentRuns) {
         throw new Error(`chat_send: maxConcurrentRuns reached (${activeRuns}/${CONFIG.maxConcurrentRuns} active) — retry later`);
     }
     activeRuns++;
+    // Fresh registry entry for this run (resets any previous idle/error
+    // summary) + progress reporter bound to the caller's progressToken.
+    updateActivity(name, null, { phase: 'queued', hops: 0, currentTool: null, tokensSoFar: 0, lastEvents: [], startedAt: now() });
+    const pr = createProgressReporter(ctx?.progress);
     try {
         const session = loadSession(name);
         const model = modelOverride || session.model;
@@ -249,24 +380,38 @@ async function runSend({ name, message, model: modelOverride, ctx, chain }) {
                 ...toWire(session.messages),
                 ...toWire(newMessages)
             ];
-            const res = await GATEWAY.chat({
-                model,
-                messages: wire,
-                stream: false,
-                tools: [dispatcherDef()],
-                timeoutMs: CONFIG.requestTimeoutMs
-            });
+            const waiting = `hop ${hops}: waiting for gateway`;
+            pr.set(waiting, Math.min(95, hops * 5), true);
+            updateActivity(name, waiting, { phase: 'waiting-gateway', hops, detail: null, phaseSince: now() });
+            const res = await chatWithTransientRetry({ model, wire, name, hops });
             mergeUsage(usageTotal, res.usage);
+            updateActivity(name, null, { tokensSoFar: usageTotal.total_tokens });
 
             if (res.finish_reason === 'tool_calls') {
                 if (!Array.isArray(res.tool_calls) || res.tool_calls.length === 0) {
                     throw new Error(`chat_send: gateway returned finish_reason 'tool_calls' with an empty tool_calls list (session '${name}')`);
                 }
+                // Sanitize malformed tool-call arguments BEFORE they enter
+                // history: a truncated args string persisted verbatim poisons
+                // every follow-up request (provider validates history
+                // tool_calls → 502 on all subsequent turns). '{}' keeps the
+                // wire valid; executeToolCall's parse-error result tells the
+                // model the call failed.
+                for (const tc of res.tool_calls) {
+                    const raw = tc?.function?.arguments;
+                    if (typeof raw !== 'string') continue;
+                    try { JSON.parse(raw); } catch {
+                        logger.warn(`[Chat] sanitizing malformed tool-call arguments before persist (session '${name}', tool '${tc.function?.name}', raw: ${raw.slice(0, 120)})`, null, 'Chat');
+                        tc.function.arguments = '{}';
+                    }
+                }
                 newMessages.push({ role: 'assistant', content: res.content ?? null, createdAt: now(), tool_calls: res.tool_calls });
                 for (const tc of res.tool_calls) {
-                    const outcome = await executeToolCall(tc, ctx, chain, name);
+                    const outcome = await executeToolCall(tc, ctx, chain, name, pr, hops);
                     newMessages.push(outcome.stored);
-                    toolCallSummaries.push({ name: outcome.stored.toolName, status: outcome.status });
+                    const summary = { name: outcome.stored.toolName, status: outcome.status };
+                    if (outcome.status === 'error') summary.error = String(outcome.stored.content ?? '').slice(0, 200);
+                    toolCallSummaries.push(summary);
                 }
                 // One atomic write per completed hop (spec §3): assistant msg +
                 // all its tool results land together.
@@ -283,6 +428,8 @@ async function runSend({ name, message, model: modelOverride, ctx, chain }) {
         }
 
         const messages = [...session.messages, ...newMessages];
+        updateActivity(name, null, { phase: 'idle', currentTool: null });
+        pr.done(`complete after ${hops} hop${hops === 1 ? '' : 's'}`);
         return toMcp({
             ok: true,
             name,
@@ -293,6 +440,9 @@ async function runSend({ name, message, model: modelOverride, ctx, chain }) {
             messageCount: messages.length,
             historyBytes: historyBytes(messages)
         });
+    } catch (err) {
+        updateActivity(name, `send failed: ${String(err.message).slice(0, 200)}`, { phase: 'error', currentTool: null });
+        throw err;
     } finally {
         activeRuns--;
     }
@@ -308,7 +458,8 @@ export async function init(context) {
         maxHopsPerSend: agentConfig.maxHopsPerSend ?? DEFAULTS.maxHopsPerSend,
         maxConcurrentRuns: agentConfig.maxConcurrentRuns ?? DEFAULTS.maxConcurrentRuns,
         toolsExclude: agentConfig.toolsExclude ?? DEFAULTS.toolsExclude,
-        requestTimeoutMs: agentConfig.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs
+        requestTimeoutMs: agentConfig.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
+        maxInjectFileBytes: agentConfig.maxInjectFileBytes ?? DEFAULTS.maxInjectFileBytes
     };
     if (!Array.isArray(CONFIG.toolsExclude)) throw new Error('chat.init: agents.chat.toolsExclude must be an array of method prefixes');
     SESSIONS_DIR = path.resolve(PROJECT_ROOT, CONFIG.dir);
@@ -381,17 +532,30 @@ export async function chat_inject(args, ctx) {
     if (files !== undefined) {
         if (!Array.isArray(files)) throw new Error('chat_inject: files must be an array of storage paths');
         const router = toolRouter();
-        for (const f of files) {
-            if (typeof f !== 'string' || !f) throw new Error('chat_inject: every file path must be a non-empty string');
-            // prompts: fresh Map — our ctx.prompts is the re-scoped plain object,
-            // but routeToolCall expects the global Map (prompts.get(agentName)).
-            const result = await router.call('storage.read', { path: f }, { ...ctx, prompts: new Map() });
+        // prompts: fresh Map — our ctx.prompts is the re-scoped plain object,
+        // but routeToolCall expects the global Map (prompts.get(agentName)).
+        const toolCtx = { ...ctx, prompts: new Map() };
+        const callText = async (method, payload) => {
+            const result = await router.call(method, payload, toolCtx);
             const text = Array.isArray(result?.content)
                 ? result.content.map(c => c.text ?? '').join('\n')
                 : null;
             if (result?.isError || text == null) {
-                throw new Error(`chat_inject: storage read failed for '${f}': ${text ?? 'no content returned'}`);
+                throw new Error(`chat_inject: ${method} failed: ${text ?? 'no content returned'}`);
             }
+            return text;
+        };
+        for (const f of files) {
+            if (typeof f !== 'string' || !f) throw new Error('chat_inject: every file path must be a non-empty string');
+            const stat = JSON.parse(await callText('storage.stat', { path: f }));
+            if (!stat.exists) throw new Error(`chat_inject: file not found: '${f}'`);
+            if (stat.size > CONFIG.maxInjectFileBytes) {
+                throw new Error(`chat_inject: '${f}' is ${stat.size} bytes, above maxInjectFileBytes (${CONFIG.maxInjectFileBytes}) — pre-chunk the file and inject the parts`);
+            }
+            // Full-size window: raw text at any size, no pointer envelope.
+            const text = stat.size > 0
+                ? await callText('storage.read', { path: f, offset: 0, length: stat.size })
+                : '';
             added.push({ role: 'user', content: `=== storage:${f} ===\n${text}`, createdAt: now() });
         }
     }
@@ -420,6 +584,31 @@ export async function chat_list() {
             createdAt: s.createdAt,
             updatedAt: s.updatedAt
         }));
+    return toMcp({ ok: true, sessions });
+}
+
+// Live activity of running/last runs, from the in-memory registry only.
+// Never touches the per-session queue, never reads session files. Polling a
+// session that has not run yet is normal — phase 'never-run', not an error.
+export async function chat_status(args) {
+    if (args?.name !== undefined) {
+        const name = requireString(args, 'name');
+        const entry = ACTIVITY.get(name);
+        if (!entry) return toMcp({ ok: true, name, phase: 'never-run' });
+        return toMcp({ ok: true, name, ...entry, lastEvents: [...entry.lastEvents] });
+    }
+    const sessions = [...ACTIVITY.entries()].map(([name, e]) => ({
+        name,
+        phase: e.phase,
+        hops: e.hops,
+        currentTool: e.currentTool,
+        detail: e.detail,
+        phaseSince: e.phaseSince,
+        startedAt: e.startedAt,
+        updatedAt: e.updatedAt,
+        tokensSoFar: e.tokensSoFar,
+        lastEvents: e.lastEvents.length
+    }));
     return toMcp({ ok: true, sessions });
 }
 

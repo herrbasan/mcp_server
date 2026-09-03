@@ -7,6 +7,13 @@ export async function research_topic(args, context) {
     const { agents, gateway, prompts, progress } = context;
     const { query, engines = ['duckduckgo', 'google'], max_pages = 5 } = args;
 
+    if (typeof query !== 'string' || !query.trim()) {
+        throw new Error("research_topic: 'query' is required (non-empty string)");
+    }
+    if (!Array.isArray(engines) || engines.some(e => e !== 'google' && e !== 'duckduckgo')) {
+        throw new Error("research_topic: 'engines' must be an array containing 'google' and/or 'duckduckgo'");
+    }
+
     const browserAgent = agents.get('browser');
     if (!browserAgent) {
         return { content: [{ type: "text", text: "Error: Browser agent not found." }], isError: true };

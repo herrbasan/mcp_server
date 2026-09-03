@@ -26,7 +26,7 @@ Design stance (owner-confirmed):
 
 New agent `src/agents/chat/` following the house pattern (`storage` agent as template):
 
-- `config.json` — `agent: "chat"`, `description`, `tools[]` (8 tools, §4).
+- `config.json` — `agent: "chat"`, `description`, `tools[]` (9 tools, §4).
 - `index.js` — `init(context)` + one exported handler per tool.
 
 Wiring:
@@ -130,6 +130,9 @@ Appends context **without** calling the model. This is the twin-ingest primitive
 ### `chat.list` — `{}`
 All sessions: name, model, messageCount, historyBytes, createdAt, updatedAt.
 
+### `chat.status` — `{ name? }`
+Live activity of running/last runs from a module-level in-memory registry (`Map<sessionName, { phase, hops, currentTool, startedAt, updatedAt, tokensSoFar, lastEvents }>`), updated inside `chat.send` at the same points as the progress events. `phase`: `queued | waiting-gateway | tool-call | idle | error`. No `name` → all sessions with a registry entry, summary form. With `name` → full detail incl. `lastEvents` (ring buffer, cap 20, entries `{ at, event }`). Unknown name with no entry → `{ name, phase: 'never-run' }` — NOT an error (polling a not-yet-run session is normal). On run completion: `phase:'idle'`, entry kept (last-run summary stays visible). On failure: `phase:'error'` with the error message. Pure in-memory — dies with the process, never persisted, never touches the per-session queue or session files.
+
 ### `chat.history` — `{ name*, lastN? }`
 Stored messages (chronological). `lastN` trims from the tail for large sessions. Full-fidelity by default — callers need the exact wire form to reason about context.
 
@@ -145,6 +148,19 @@ Caller-invoked compaction, three strategies:
 Summary message stored as `role: "user"`, content prefixed `[context summary]` — rationale: `system` mid-conversation is provider-fragile; `assistant` would fabricate provenance. **Resolved R1: keep as spec'd** (correct call — most portable across adapters).
 
 `chat.delete` — `{ name* }` — removes the file. Irreversible; no recycle bin (owner: "until it is deleted").
+
+### 4.1 Run visibility
+
+`chat.send` runs the tool loop to completion and returns only the end state — callers are blind during long runs. Three visibility mechanisms (added 2026-09-03):
+
+- **Progress events** — `runSend` creates a reporter via `createProgressReporter(ctx?.progress)` and emits one event per meaningful step (forced past the throttle — hop steps are infrequent):
+  - `hop N: waiting for gateway` — before each `GATEWAY.chat` call
+  - `hop N: executing <method>` — before each tool call (dispatcher method name)
+  - `hop N: <method> ok|error (X.Xs)` — after each tool call, with duration
+
+  Nested `chat.send` calls inherit the outer `ctx` (spread in `executeToolCall`) — their progress events flow to the outer caller's progressToken. That is desired: nested activity surfaces at top level.
+- **Activity registry + `chat.status`** — the module-level in-memory registry described above, updated at the same points as the progress events, for outside observers polling `chat.status`.
+- **Error snippets** — `chat.send` response `toolCalls` entries with `status:'error'` carry an `error` field: first 200 chars of the tool result content. Success entries unchanged.
 
 ## 5. Tool loop inside `chat.send`
 
@@ -230,8 +246,8 @@ Gateway URL + access key come from the existing `gateway` section (no duplicatio
 ## 10. Implementation checklist (post-approval)
 
 1. `src/gateway-client.js` — `stream:false` mode in `chat()` (content + tool_calls + finish_reason + usage).
-2. `src/agents/chat/config.json` + `index.js` — 8 handlers, per-session queue, run-chain cycle guard (§2.2.1) threaded through `callTool` context, tool loop, dispatcher advertisement.
-3. `server.js` — pass `routeToolCall` into chat agent context; `COMPACT_TOOL` description block; `COMPACT_TO_LEGACY` × 8.
+2. `src/agents/chat/config.json` + `index.js` — 9 handlers, per-session queue, run-chain cycle guard (§2.2.1) threaded through `callTool` context, tool loop, dispatcher advertisement.
+3. `server.js` — pass `routeToolCall` into chat agent context; `COMPACT_TOOL` description block; `COMPACT_TO_LEGACY` × 9.
 4. Root `config.json` — `agents.chat` section.
 5. Smoke test: create → inject file → send (tool loop fires `storage.read`) → compact summarize → history verify → delete. Then a recursion probe: A calls B, B attempts to call A → must get the chain-guard tool error (not a hang).
 6. Update `Agents.md` (new agent, new data dir).
@@ -256,7 +272,7 @@ Everything below was read this session so implementation needs **no further expl
 
 - `:105` — `const { tools, adminTools, routeToolCall, shutdownAll } = await loadAgents(globalContext);` → **pass `routeToolCall` into the chat agent's init context** (in-process tool execution, no HTTP hop).
 - COMPACT_TOOL at `:156`: description block ~`:156-719` (per-method doc lines, e.g. storage.write at :577), inputSchema = free-form `{method, payload}` (:722-727), `compactTools` at `:730`.
-- `COMPACT_TO_LEGACY` at `:732-773` — format `"storage.write": "storage_write"` (:772). Add 8 entries `"chat.<action>": "chat_<action>"`.
+- `COMPACT_TO_LEGACY` at `:732-773` — format `"storage.write": "storage_write"` (:772). Add 9 entries `"chat.<action>": "chat_<action>"`.
 - `routeCompactCall` at `:787` → resolves method → `routeToolCall(legacyName, payload, context)` (:806-807).
 
 ### 11.4 Gateway client (`src/gateway-client.js`)

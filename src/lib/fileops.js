@@ -41,6 +41,36 @@ function globToRegExp(pattern) {
 }
 
 // ============================================
+// Normalization-aware tail join (NFC/NFD fallback)
+// ============================================
+
+// Directory listings and LLM callers may emit a filename in a different
+// Unicode normalization form than the disk stores (umlauts: 'ä' as U+00E4 vs
+// 'a' + U+0308). Byte-exact lookup then fails ENOENT on a file that plainly
+// exists. Walk the tail segments: exact match wins; otherwise match directory
+// entries by NFC comparison and substitute the on-disk form. Every
+// substitution is logged (tolerance WITH a trace); unmatched segments pass
+// through unchanged so write-to-new-file and genuine ENOENT behave as before.
+export function joinNormalizedTail(realBase, tail, log) {
+    let cur = realBase;
+    for (const seg of tail) {
+        const exact = path.join(cur, seg);
+        if (fs.existsSync(exact)) { cur = exact; continue; }
+        let entries = null;
+        try { entries = fs.readdirSync(cur); } catch { /* cur may not exist yet (write path) */ }
+        const segNfc = seg.normalize('NFC');
+        const hit = entries ? entries.find(e => e.normalize('NFC') === segNfc) : null;
+        if (hit && hit !== seg) {
+            if (log) log(`Unicode normalization fallback: '${seg}' → '${hit}'`);
+            cur = path.join(cur, hit);
+        } else {
+            cur = exact;
+        }
+    }
+    return cur;
+}
+
+// ============================================
 // Factory
 // ============================================
 
@@ -71,7 +101,7 @@ export function createFileOps({ root, translator = null }) {
         while (tail.length < 256) {
             try {
                 const real = fs.realpathSync(ancestor);
-                const rejoined = tail.length === 0 ? real : path.join(real, ...tail);
+                const rejoined = tail.length === 0 ? real : joinNormalizedTail(real, tail, null);
                 if (rejoined !== REAL_ROOT &&
                     rejoined !== REAL_ROOT + SEP &&
                     !rejoined.startsWith(REAL_ROOT + SEP)) {

@@ -723,6 +723,13 @@ fails as a tool-result error, never hangs).
   chat.list — {}
       All sessions: name, model, messageCount, historyBytes, timestamps.
 
+  chat.status — { name? }
+      Live activity of running/last chat.send runs: phase, hops, current
+      tool, token tally, recent events (ring buffer). In-memory only —
+      dies with the process, never touches session files. No name →
+      all sessions, summary form; name → full detail incl. lastEvents;
+      unknown name → phase 'never-run'.
+
   chat.history — { name*, lastN? }
       Stored messages, chronological, full fidelity. lastN trims to the
       last N messages.
@@ -841,6 +848,7 @@ IMPORTANT RULES
 
         "chat.create": "chat_create", "chat.send": "chat_send",
         "chat.inject": "chat_inject", "chat.list": "chat_list",
+        "chat.status": "chat_status",
         "chat.history": "chat_history", "chat.update": "chat_update",
         "chat.compact": "chat_compact", "chat.delete": "chat_delete"
     };
@@ -873,6 +881,9 @@ IMPORTANT RULES
     globalContext.toolRouter.call = (method, payload, context) =>
         routeCompactCall('tools', { method, payload }, context);
     globalContext.toolRouter.methods = Object.keys(COMPACT_TO_LEGACY);
+    // Full catalog prose (per-method payload shapes) for chat sessions —
+    // names alone make spawned models guess argument fields.
+    globalContext.toolRouter.description = COMPACT_TOOL.description;
 
     // GET /mcp/compact - opens SSE stream
     app.get('/mcp/compact', (req, res) => {
