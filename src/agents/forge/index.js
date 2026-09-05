@@ -25,6 +25,7 @@ let CONFIG;
 let GATEWAY_CLIENT;
 let BROWSER_AGENT;
 let TOOL_ROUTER;      // globalContext.toolRouter — workshop dispatcher (late-bound in server.js)
+let MAIN_CONTEXT;     // forge's init context — relayed to MCP handlers so context.agents etc. exist
 let GIT_WRITE_QUEUE;
 let SEMAPHORE;
 
@@ -525,7 +526,11 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
                 }
                 logger.info(`[Forge:worker] MCP relay for "${name}": ${method} (depth ${depth}${method === 'forge.call' ? ` → ${depth + 1}` : ''})`, null, 'Forge');
                 const result = await Promise.race([
-                    TOOL_ROUTER.call(method, routedPayload, { progress: (m, p, t) => progress?.(m, p, t) }),
+                    // Full agent-init context (agents Map, gateway, config, ...) —
+                    // handlers read context.agents.get(...) etc. A bare { progress }
+                    // context crashes them. progress overrides the init context's
+                    // so notifications flow to THIS worker's caller.
+                    TOOL_ROUTER.call(method, routedPayload, { ...MAIN_CONTEXT, progress: (m, p, t) => progress?.(m, p, t) }),
                     new Promise((_, reject) =>
                         setTimeout(() => reject(new Error(`MCP relay timed out after ${relayTimeout}ms (${method})`)), relayTimeout)
                     )
@@ -1331,6 +1336,7 @@ export async function init(context) {
     // Workshop dispatcher (toolRouter) — shared object created in server.js
     // before loadAgents, populated after. Lets forge workers call any MCP
     // method (git.*, storage.*, memory.*, ..., forge.*) via ctx.mcp.
+    MAIN_CONTEXT = context;
     TOOL_ROUTER = context.toolRouter || null;
     if (TOOL_ROUTER) {
         logger.info('[Forge] Tool router linked — ctx.mcp available for forge tools', null, 'Forge');
