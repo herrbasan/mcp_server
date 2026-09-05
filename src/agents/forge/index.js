@@ -24,6 +24,7 @@ let STORAGE_TRANSLATOR;  // null when no uncShare is configured
 let CONFIG;
 let GATEWAY_CLIENT;
 let BROWSER_AGENT;
+let TOOL_ROUTER;      // globalContext.toolRouter — workshop dispatcher (late-bound in server.js)
 let GIT_WRITE_QUEUE;
 let SEMAPHORE;
 
@@ -380,14 +381,20 @@ function mcpError(message) {
 // The worker bootstrap file path
 const WORKER_BOOTSTRAP = path.join(__dirname, 'worker-bootstrap.js');
 
-async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress, defaultModel }) {
+// Max forge.call nesting depth (worker → ctx.mcp forge.call → worker → ...).
+// Depth 0 = top-level call. Hard guard against runaway recursion; nested
+// calls that exceed it fail loud as tool-result errors.
+const MAX_FORGE_DEPTH = 3;
+
+async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress, defaultModel, depth = 0 }) {
     const sourcePath = toolPath(name);
     const source = fs.readFileSync(sourcePath, 'utf8');
     logger.info(`[Forge:worker] Source loaded for "${name}": ${source.length} chars, spawning worker`, null, 'Forge');
 
-    // Create MessageChannels for gateway, browser, and progress relay
+    // Create MessageChannels for gateway, browser, mcp, and progress relay
     const { port1: gatewayPort1, port2: gatewayPort2 } = new MessageChannel();
     const { port1: browserPort1, port2: browserPort2 } = new MessageChannel();
+    const { port1: mcpPort1, port2: mcpPort2 } = new MessageChannel();
     const { port1: progressPort1, port2: progressPort2 } = new MessageChannel();
 
     // ── Progress relay: worker → main thread → MCP notification ──
@@ -496,6 +503,52 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
         browserPort1.start();
     }
 
+    // ── MCP relay: worker → main thread → workshop dispatcher ──
+    // Forwards ctx.mcp.call(method, payload) to toolRouter.call — the same
+    // in-process router the chat agent uses. Credentials (GIT_TOKEN) stay on
+    // the main thread; workers never see them.
+    // forge.call through the relay gets _depth+1 injected so recursion is
+    // bounded by MAX_FORGE_DEPTH (checked in forge_call, loud failure).
+    if (TOOL_ROUTER) {
+        mcpPort1.on('message', async (msg) => {
+            if (msg.type !== 'mcp-call') return;
+            const { id, method, payload } = msg;
+            if (typeof TOOL_ROUTER.call !== 'function') {
+                mcpPort1.postMessage({ type: 'mcp-result', id, error: 'MCP relay unavailable: toolRouter not ready' });
+                return;
+            }
+            const relayTimeout = 300000;
+            try {
+                let routedPayload = payload || {};
+                if (method === 'forge.call') {
+                    routedPayload = { ...payload, _depth: depth + 1 };
+                }
+                logger.info(`[Forge:worker] MCP relay for "${name}": ${method} (depth ${depth}${method === 'forge.call' ? ` → ${depth + 1}` : ''})`, null, 'Forge');
+                const result = await Promise.race([
+                    TOOL_ROUTER.call(method, routedPayload, { progress: (m, p, t) => progress?.(m, p, t) }),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error(`MCP relay timed out after ${relayTimeout}ms (${method})`)), relayTimeout)
+                    )
+                ]);
+                // Handlers return { content: [{ type: 'text', text }], isError }.
+                // Unwrap so workers get clean data, not MCP envelopes.
+                const contentBlock = result?.content?.[0];
+                let parsed = contentBlock?.text !== undefined ? contentBlock.text : result;
+                if (typeof parsed === 'string') {
+                    try { parsed = JSON.parse(parsed); } catch {}
+                }
+                if (result?.isError) {
+                    throw new Error(typeof parsed === 'string' ? parsed : JSON.stringify(parsed));
+                }
+                mcpPort1.postMessage({ type: 'mcp-result', id, result: parsed });
+            } catch (err) {
+                logger.warn(`[Forge:worker] MCP relay FAILED (${method}): ${err.message}`, null, 'Forge');
+                mcpPort1.postMessage({ type: 'mcp-result', id, error: err.message });
+            }
+        });
+        mcpPort1.start();
+    }
+
     // ── Spawn worker ──
     // Ports and payload Buffers are transferred via postMessage (not Worker
     // constructor) for zero-copy transfer. The worker waits for 'init' before running.
@@ -522,7 +575,8 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // and causes issues with some Node versions. The copy overhead is acceptable.
     const transferList = [gatewayPort2, progressPort2];
     if (BROWSER_AGENT) transferList.push(browserPort2);
-    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, browserPort: BROWSER_AGENT ? browserPort2 : null, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, transferList);
+    if (TOOL_ROUTER) transferList.push(mcpPort2);
+    worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, browserPort: BROWSER_AGENT ? browserPort2 : null, mcpPort: TOOL_ROUTER ? mcpPort2 : null, mcpDepth: depth, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, transferList);
     logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (timeout: ${timeout}ms)`, null, 'Forge');
 
     return new Promise((resolve, reject) => {
@@ -536,6 +590,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             // on MessagePort, so we just stop them from accepting new messages.
             try { gatewayPort1.close(); } catch {}
             try { browserPort1.close(); } catch {}
+            try { mcpPort1.close(); } catch {}
             try { progressPort1.close(); } catch {}
         };
 
@@ -786,6 +841,16 @@ export async function forge_call(args, context) {
     const { name, args: toolArgs, payload, timeout: reqTimeout, model } = args;
     const startedAt = Date.now();
 
+    // Recursion depth guard. _depth is set by the MCP relay when a worker
+    // calls forge.call — never by external callers (treated as depth 0).
+    const depth = Number.isInteger(args._depth) ? args._depth : 0;
+    if (depth > MAX_FORGE_DEPTH) {
+        return mcpError(`forge.call recursion limit exceeded (depth ${depth} > max ${MAX_FORGE_DEPTH}). A forged tool is calling forge.call in a loop — fix the tool source.`);
+    }
+    if (depth > 0) {
+        logger.info(`[Forge] forge_call NESTED (depth ${depth}/${MAX_FORGE_DEPTH}): "${name}"`, null, 'Forge');
+    }
+
     logger.info(`[Forge] forge_call START: "${name}"`, { args: toolArgs, payload, timeout: reqTimeout, model: model || '(default)' }, 'Forge');
 
     if (!toolExists(name)) {
@@ -846,7 +911,8 @@ export async function forge_call(args, context) {
             timeout,
             captureLogs: true,
             progress,
-            defaultModel: model || null
+            defaultModel: model || null,
+            depth
         });
         logger.info(`[Forge] Worker DONE for "${name}": result type ${typeof workerData.result}, ${workerData.logs?.length || 0} log lines`, null, 'Forge');
     } catch (e) {
@@ -977,6 +1043,7 @@ Every forged tool receives (args, ctx). The ctx object provides:
 
   ctx.gateway    — LLM Gateway proxy (relayed via MessagePort to main thread)
   ctx.browser    — Persistent browser proxy (shared Chrome instance with login state)
+  ctx.mcp        — Workshop dispatcher proxy: call ANY MCP tool method from inside the tool
   ctx.progress   — Progress reporter (relayed to MCP client as notifications)
   ctx.payload    — Array of Buffers (resolved from payload[] file paths/URLs)
   ctx.workspacePath    — Absolute path to ephemeral per-call directory (deleted after call)
@@ -984,6 +1051,24 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.storagePath      — Absolute path to persistent per-tool output directory (survives across calls, user-visible)
   ctx.fileops          — Confined file ops rooted at ctx.storagePath (PREFER THIS over raw fs)
   ctx.args       — The args object passed to forge_call (same as first parameter)
+
+ctx.mcp API (workshop dispatcher — same router the chat agent uses)
+  Every call relays to the main thread, where credentials (GIT_TOKEN etc.)
+  live. Workers never see secrets. Method names are 'agent.action' form.
+
+  await ctx.mcp.call('git.issue_list', { owner, repo, state: 'open' })
+  await ctx.mcp.call('storage.read', { path: 'docs/foo.md' })
+  await ctx.mcp.call('memory.recall', { query: '...' })
+  await ctx.mcp.call('forge.call', { name: 'other_tool', args: {...} })  ← nested call
+
+  Returns the parsed result (JSON when parseable, string otherwise).
+  Errors REJECT (including tool isError results) — use try/catch only around
+  calls whose failure is an expected, handled outcome.
+
+  Nesting: forge.call from a worker is allowed up to depth 3. A tool calling
+  forge.call re-enters the forge — the depth guard fails loud beyond 3 levels.
+  Prefer calling OTHER tools (git.*, storage.*) over nesting forge.call; keep
+  orchestration flat when you can.
 
 ctx.fileops API (the fileops engine — same as the storage agent uses)
   Every mutation is atomic (temp+rename). Paths are confined to the tool's
@@ -1241,6 +1326,16 @@ export async function init(context) {
         logger.info('[Forge] Browser agent linked — ctx.browser available for forge tools', null, 'Forge');
     } else {
         logger.warn('[Forge] Browser agent not found — ctx.browser will not be available for forge tools', null, 'Forge');
+    }
+
+    // Workshop dispatcher (toolRouter) — shared object created in server.js
+    // before loadAgents, populated after. Lets forge workers call any MCP
+    // method (git.*, storage.*, memory.*, ..., forge.*) via ctx.mcp.
+    TOOL_ROUTER = context.toolRouter || null;
+    if (TOOL_ROUTER) {
+        logger.info('[Forge] Tool router linked — ctx.mcp available for forge tools', null, 'Forge');
+    } else {
+        logger.warn('[Forge] toolRouter not found in init context — ctx.mcp will not be available for forge tools', null, 'Forge');
     }
 
     fs.mkdirSync(TOOLS_DIR, { recursive: true });

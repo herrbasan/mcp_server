@@ -17,10 +17,12 @@ import { createPathTranslator } from '../storage/path-translator.js';
 
 let gatewayPort = null;
 let browserPort = null;
+let mcpPort = null;
 let progressPort = null;
 let initialized = false;
 let initData = {};
 let defaultModel = null;
+let mcpDepth = 0;
 
 // Console capture — ALWAYS ON. The LLM authoring the tool needs to see its
 // console.log/error output for debugging. This relays everything to the
@@ -205,6 +207,45 @@ function createBrowserProxy(port) {
     return proxy;
 }
 
+// ── MCP Proxy ───────────────────────────────────────────────────────────────
+// Relay to the workshop dispatcher on the main thread. Lets forged tools call
+// any MCP method (git.*, storage.*, memory.*, vdb.*, llm.*, chat.*, forge.*)
+// without holding credentials — GIT_TOKEN etc. stay on the main thread.
+// Recursion depth is enforced main-side (nested forge.call gets _depth+1).
+function createMcpProxy(port, depth) {
+    let reqId = 0;
+    const pending = new Map();
+
+    port.on('message', (msg) => {
+        if (msg.type === 'mcp-result') {
+            const resolver = pending.get(msg.id);
+            if (!resolver) return;
+            pending.delete(msg.id);
+            clearTimeout(resolver.timer);
+            if (msg.error) resolver.reject(new Error(msg.error));
+            else resolver.resolve(msg.result);
+        }
+    });
+    port.start();
+
+    async function call(method, payload, timeoutMs = 300000) {
+        if (typeof method !== 'string' || !method.includes('.')) {
+            throw new Error(`ctx.mcp.call: method must be 'agent.action' format, e.g. 'git.issue_list' (got: ${method})`);
+        }
+        const id = ++reqId;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                pending.delete(id);
+                reject(new Error(`MCP relay call timed out after ${timeoutMs}ms (method: ${method})`));
+            }, timeoutMs);
+            pending.set(id, { resolve, reject, timer });
+            port.postMessage({ type: 'mcp-call', id, method, payload: payload || {} });
+        });
+    }
+
+    return { call, depth };
+}
+
 // ── Progress Proxy ───────────────────────────────────────────────────────────
 function createProgressProxy(port) {
     return function progress(message, progressVal, total) {
@@ -270,6 +311,7 @@ async function run() {
     const ctx = {
         gateway: createGatewayProxy(gatewayPort),
         browser: browserPort ? createBrowserProxy(browserPort) : null,
+        mcp: mcpPort ? createMcpProxy(mcpPort, mcpDepth) : null,
         progress: createProgressProxy(progressPort),
         payload: resolvedPayload,
         workspacePath,
@@ -292,8 +334,10 @@ parentPort.on('message', async (msg) => {
 
         gatewayPort = msg.gatewayPort;
         browserPort = msg.browserPort || null;
+        mcpPort = msg.mcpPort || null;
         progressPort = msg.progressPort;
         defaultModel = msg.defaultModel || null;
+        mcpDepth = msg.mcpDepth || 0;
         initData = { payload: msg.payload || [] };
 
         try {
