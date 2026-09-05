@@ -528,9 +528,16 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
                 const result = await Promise.race([
                     // Full agent-init context (agents Map, gateway, config, ...) —
                     // handlers read context.agents.get(...) etc. A bare { progress }
-                    // context crashes them. progress overrides the init context's
+                    // context crashes them. prompts must be the GLOBAL Map: our init
+                    // context carries forge's own plain-object prompts, and
+                    // routeToolCall re-scopes via prompts.get(agentName) — a plain
+                    // object crashes with '.get is not a function'. progress overrides
                     // so notifications flow to THIS worker's caller.
-                    TOOL_ROUTER.call(method, routedPayload, { ...MAIN_CONTEXT, progress: (m, p, t) => progress?.(m, p, t) }),
+                    TOOL_ROUTER.call(method, routedPayload, {
+                        ...MAIN_CONTEXT,
+                        prompts: MAIN_CONTEXT.global?.prompts || new Map(),
+                        progress: (m, p, t) => progress?.(m, p, t)
+                    }),
                     new Promise((_, reject) =>
                         setTimeout(() => reject(new Error(`MCP relay timed out after ${relayTimeout}ms (${method})`)), relayTimeout)
                     )

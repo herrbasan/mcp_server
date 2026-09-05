@@ -113,10 +113,15 @@ export async function loadAgents(globalContext) {
             process.stderr.write(`[loader] init ${config.agent}...
 `);
             try {
-                // Pass a locally scoped context
+                // Pass a locally scoped context. `global` is the escape hatch
+                // to the real global context (with the prompts Map) — agents that
+                // relay calls into the tool router need it, because routeToolCall
+                // re-scopes prompts via prompts.get(agentName) and a plain object
+                // crashes it. Additive: nothing else reads this key.
                 const localContext = {
                     ...globalContext,
-                    prompts: agentPrompts
+                    prompts: agentPrompts,
+                    global: globalContext
                 };
                 const instance = await mod.init(localContext);
                 globalContext.agents.set(config.agent, instance);
