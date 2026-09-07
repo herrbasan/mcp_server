@@ -412,16 +412,17 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     let settled = false;
     let receivedResult = false;
     let logs = [];
-    let idleTimer;
     let hardTimer;
     let bootTimer;
     let rejectP;
     let ready = false;
+    let idleCheckScheduled = false;
+    let lastActivityAt = 0;
 
     const cleanup = () => {
-        clearTimeout(idleTimer);
         clearTimeout(hardTimer);
         clearTimeout(bootTimer);
+        // The idle check is a setImmediate loop — it stops itself via `settled`.
         // Close ports to prevent leaks — removeAllListeners isn't available
         // on MessagePort, so we just stop them from accepting new messages.
         try { gatewayPort1.close(); } catch {}
@@ -430,30 +431,47 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
         try { progressPort1.close(); } catch {}
     };
 
-    const armIdle = () => {
-        if (settled) return;
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-            if (settled) return;
+    // IDLE CHECK — setImmediate loop, deliberately NOT a setTimeout.
+    // Why: when the main thread is blocked longer than the idle window (e.g.
+    // VDB sync hashing, issue #31), an armed setTimeout lands in the TIMERS
+    // phase — which runs BEFORE queued MessagePort messages (poll phase) in
+    // the same loop iteration. The expired timer then kills the worker
+    // before its queued progress resets are ever delivered (observed
+    // 2026-09-07: healthy progress-mode tool killed at exactly spawn+3s
+    // during a boot VDB scan, twice). setImmediate runs in the CHECK phase
+    // — AFTER poll — so every queued activity is accounted for before any
+    // kill decision. Under a full block no checks run at all (safe, kills
+    // just go late); at unblock, messages process first and the check sees
+    // fresh lastActivityAt. Cost: one Date.now compare per loop iteration.
+    const idleCheck = () => {
+        if (settled || !ready) return;
+        const silentFor = Date.now() - lastActivityAt;
+        if (silentFor >= timeout) {
             settled = true;
-            logger.warn(`[Forge:worker] IDLE TIMEOUT for "${name}" after ${timeout}ms without activity — terminating`, null, 'Forge');
+            logger.warn(`[Forge:worker] IDLE TIMEOUT for "${name}" after ${silentFor}ms without activity — terminating`, null, 'Forge');
             cleanup();
             worker.terminate().then(() => {
-                rejectP(new Error(`Tool "${name}" timed out after ${timeout}ms without activity — worker terminated`));
+                rejectP(new Error(`Tool "${name}" timed out after ${silentFor}ms without activity — worker terminated`));
             });
-        }, timeout);
+            return;
+        }
+        setImmediate(idleCheck);
     };
 
-    // Any sign of life resets the idle deadline — but only once the worker
-    // has reported ready. Before that there is nothing to reset: boot time
-    // (module compile under main-thread load can far exceed the idle window)
-    // is covered by bootTimer + hardTimeout, NOT by the idle.
-    const activity = () => { if (ready && !settled) armIdle(); };
+    // Any sign of life marks activity — but only counts once the worker has
+    // reported ready. Boot (module compile under main-thread load can far
+    // exceed the idle window) is covered by bootTimer + hardTimeout.
+    const activity = () => { if (ready) lastActivityAt = Date.now(); };
 
     const armOnReady = () => {
+        if (ready) return;
         ready = true;
+        lastActivityAt = Date.now();
         clearTimeout(bootTimer);
-        armIdle();
+        if (!idleCheckScheduled) {
+            idleCheckScheduled = true;
+            setImmediate(idleCheck);
+        }
     };
 
     // ── Progress relay: worker → main thread → MCP notification ──
