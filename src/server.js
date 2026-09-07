@@ -149,6 +149,20 @@ async function start() {
         res.json(globalContext.config);
     });
 
+    // ── Memory map data API ──
+    // GET /memory/map.json — the current dream map, read fresh per request.
+    // Consumed by localweb2's Memory view (proxied server-side via
+    // /api/memory/map). Regenerates every 15 min via the dreaming agent.
+    app.get('/memory/map.json', (req, res) => {
+        const mapPath = path.join(__dirname, '..', 'data', 'dream_map.json');
+        if (!fs.existsSync(mapPath)) {
+            res.status(404).json({ error: 'No dream map generated yet — it appears after the first dreaming cycle.' });
+            return;
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.sendFile(mapPath);
+    });
+
     // PATCH /api/config - deep-merge update config (persists to config.json)
     app.patch('/api/config', adminOnly, express.json({ limit: '300mb' }), (req, res) => {
         const patch = req.body;
@@ -480,6 +494,12 @@ it. Supports multiple analysis passes on the same image.
   vision.analyze — { session_id*, query?, focus?: {text|grid|region|centerCrop}, include_context? }
       Analyze the loaded image. query: what to look for. focus: constrain
       analysis to a specific region, grid cell, or center crop.
+
+  telemetry.report — { sections?: ["status"|"alerts"|"cluster"|"services"] }
+      Combined read-only lab telemetry report from localweb2: environment
+      heartbeat (PCs, WAN, latency, weather), active alerts, cluster
+      power/thermal summary, service states with LLM health findings.
+      Log tails stripped. Optional sections param to limit scope.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -823,6 +843,8 @@ IMPORTANT RULES
         "vision.session_create": "vision_create_session", "vision.session_list": "vision_list_sessions",
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
+
+        "telemetry.report": "telemetry_report",
 
         "llm.query": "query_model",
         "llm.session_create": "llm_session_create", "llm.session_query": "llm_session_query",

@@ -1,0 +1,23 @@
+{
+    "agent": "telemetry",
+    "description": "Lab telemetry reporter — combines localweb2 (hardware, network, weather) and nPM service state (via localweb proxy) into one compact read-only report. No control actions.",
+    "tools": [
+        {
+            "name": "telemetry_report",
+            "description": "Fetch a combined lab telemetry report from localweb2: environment heartbeat (active PCs, WAN traffic, latency, router CPU, weather), per-PC hardware stats (CPU/GPU load, temps, power, RAM, disks), active alerts, cluster power/thermal summary, service states with LLM health findings. Read-only. Log tails are stripped to keep the report compact. Optional sections parameter to limit scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sections": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["status", "hardware", "alerts", "cluster", "services"]
+                        },
+                        "description": "Optional subset of sections to include. Default: all four."
+                    }
+                }
+            }
+        }
+    ]
+}
