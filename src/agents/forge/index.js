@@ -31,8 +31,9 @@ let SEMAPHORE;
 
 // ── Defaults ─────────────────────────────────────────────────────────────────
 const DEFAULTS = {
-    defaultTimeout: 300000,
-    maxTimeout: 900000,
+    defaultTimeout: 300000,      // idle: kill after 5 min of silence
+    maxTimeout: 900000,          // idle ceiling: 15 min of silence
+    hardTimeout: 1800000,        // absolute backstop: 30 min total runtime
     maxPayloadSize: 104857600,   // 100 MB per item
     maxPayloadItems: 10,
     maxConcurrentCalls: 8,
@@ -398,8 +399,53 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     const { port1: mcpPort1, port2: mcpPort2 } = new MessageChannel();
     const { port1: progressPort1, port2: progressPort2 } = new MessageChannel();
 
+    // ── Watchdog: idle timeout + hard runtime cap (issue #27) ──
+    // The timeout measures LACK OF PROGRESS, not elapsed time: any worker
+    // activity — ctx.progress events, gateway/browser/mcp relay traffic,
+    // any worker message — resets the idle deadline. A tool making steady
+    // progress never times out regardless of total duration; a silent
+    // (hung) worker is killed after `timeout` ms of silence. The hard cap
+    // is the absolute backstop: total runtime, never reset by activity.
+    // rejectP is assigned by the promise executor below (watchdog can only
+    // fire after that — timers are macrotasks, executor runs sync).
+    let settled = false;
+    let receivedResult = false;
+    let logs = [];
+    let idleTimer;
+    let hardTimer;
+    let rejectP;
+
+    const cleanup = () => {
+        clearTimeout(idleTimer);
+        clearTimeout(hardTimer);
+        // Close ports to prevent leaks — removeAllListeners isn't available
+        // on MessagePort, so we just stop them from accepting new messages.
+        try { gatewayPort1.close(); } catch {}
+        try { browserPort1.close(); } catch {}
+        try { mcpPort1.close(); } catch {}
+        try { progressPort1.close(); } catch {}
+    };
+
+    const armIdle = () => {
+        if (settled) return;
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            logger.warn(`[Forge:worker] IDLE TIMEOUT for "${name}" after ${timeout}ms without activity — terminating`, null, 'Forge');
+            cleanup();
+            worker.terminate().then(() => {
+                rejectP(new Error(`Tool "${name}" timed out after ${timeout}ms without activity — worker terminated`));
+            });
+        }, timeout);
+    };
+
+    // Any sign of life resets the idle deadline.
+    const activity = () => { if (!settled) armIdle(); };
+
     // ── Progress relay: worker → main thread → MCP notification ──
     progressPort1.on('message', (msg) => {
+        activity();
         if (msg.type === 'progress') {
             progress?.(msg.message, msg.progress, msg.total);
         }
@@ -410,6 +456,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // The worker posts { id, task, params } and we forward to GATEWAY_CLIENT,
     // then post the response back.
     gatewayPort1.on('message', async (msg) => {
+        activity();
         if (msg.type === 'gateway-call') {
             const { id, task, params } = msg;
             logger.info(`[Forge:worker] Gateway relay for "${name}": task=${task} model=${params?.model || '(default)'}`, { id }, 'Forge');
@@ -465,6 +512,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // post the response back. Only active when BROWSER_AGENT is linked.
     if (BROWSER_AGENT) {
         browserPort1.on('message', async (msg) => {
+            activity();
             if (msg.type === 'browser-call') {
                 const { id, method, args } = msg;
                 const handler = BROWSER_AGENT[method];
@@ -512,6 +560,7 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // bounded by MAX_FORGE_DEPTH (checked in forge_call, loud failure).
     if (TOOL_ROUTER) {
         mcpPort1.on('message', async (msg) => {
+            activity();
             if (msg.type !== 'mcp-call') return;
             const { id, method, payload } = msg;
             if (typeof TOOL_ROUTER.call !== 'function') {
@@ -589,40 +638,30 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     if (BROWSER_AGENT) transferList.push(browserPort2);
     if (TOOL_ROUTER) transferList.push(mcpPort2);
     worker.postMessage({ type: 'init', gatewayPort: gatewayPort2, browserPort: BROWSER_AGENT ? browserPort2 : null, mcpPort: TOOL_ROUTER ? mcpPort2 : null, mcpDepth: depth, progressPort: progressPort2, payload: payloadBuffers, defaultModel }, transferList);
-    logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (timeout: ${timeout}ms)`, null, 'Forge');
+    logger.info(`[Forge:worker] Worker spawned for "${name}", waiting (idle timeout: ${timeout}ms, hard cap: ${CONFIG.hardTimeout}ms)`, null, 'Forge');
 
     return new Promise((resolve, reject) => {
-        let settled = false;
-        let receivedResult = false;
-        let logs = [];
-
-        const cleanup = () => {
-            clearTimeout(timer);
-            // Close ports to prevent leaks — removeAllListeners isn't available
-            // on MessagePort, so we just stop them from accepting new messages.
-            try { gatewayPort1.close(); } catch {}
-            try { browserPort1.close(); } catch {}
-            try { mcpPort1.close(); } catch {}
-            try { progressPort1.close(); } catch {}
-        };
-
-        const timer = setTimeout(() => {
+        rejectP = reject;
+        // Hard cap arms here (executor scope provides reject); idle timer
+        // arms via armIdle() — both disarmed through cleanup().
+        hardTimer = setTimeout(() => {
             if (settled) return;
             settled = true;
-            logger.warn(`[Forge:worker] TIMEOUT for "${name}" after ${timeout}ms — terminating`, null, 'Forge');
+            logger.warn(`[Forge:worker] HARD RUNTIME CAP for "${name}" after ${CONFIG.hardTimeout}ms total — terminating`, null, 'Forge');
             cleanup();
             worker.terminate().then(() => {
-                reject(new Error(`Tool "${name}" timed out after ${timeout}ms — worker terminated`));
+                rejectP(new Error(`Tool "${name}" exceeded the ${CONFIG.hardTimeout}ms hard runtime cap — worker terminated`));
             });
-        }, timeout);
+        }, CONFIG.hardTimeout);
+        armIdle();
 
         worker.on('message', (msg) => {
+            activity();
             if (msg.type === 'result') {
                 if (settled) return;
                 settled = true;
                 receivedResult = true;
                 logger.info(`[Forge:worker] Result from "${name}": ${typeof msg.result === 'string' ? msg.result.length + ' chars' : typeof msg.result}`, null, 'Forge');
-                clearTimeout(timer);
                 cleanup();
                 worker.terminate();
                 resolve({ result: msg.result, logs: captureLogs ? logs : undefined });
@@ -630,7 +669,6 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
                 if (settled) return;
                 settled = true;
                 logger.warn(`[Forge:worker] Error from "${name}": ${msg.error.slice(0, 200)}`, null, 'Forge');
-                clearTimeout(timer);
                 cleanup();
                 worker.terminate();
                 reject(new Error(msg.error + (msg.stack ? '\n' + msg.stack : '')));
@@ -643,7 +681,6 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             if (settled) return;
             settled = true;
             logger.warn(`[Forge:worker] Worker error for "${name}": ${err.message}`, null, 'Forge');
-            clearTimeout(timer);
             cleanup();
             reject(err);
         });
@@ -652,7 +689,6 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
             if (settled) return;
             settled = true;
             logger.warn(`[Forge:worker] Worker for "${name}" exited with code ${code} (receivedResult=${receivedResult}, logs=${logs.length})`, null, 'Forge');
-            clearTimeout(timer);
             cleanup();
             // If the worker exited without sending a result or error message,
             // it crashed — DON'T resolve with undefined, report it as a failure.
@@ -1210,10 +1246,13 @@ STATE PATTERNS
     const tmpFile = join(ctx.workspacePath, 'intermediate.bin');
 
 CONSTRAINTS
-  - Timeout: 5 min default, 15 min max (worker.terminate() kills the process)
-  - Policy (issue #27, closed 2026-09-07): the cap is a total-runtime cap, NOT
-    an idle timeout. 15 min is enough for any reasonable tool; work beyond
-    that must checkpoint/resume (see twin_corpus_map) — the cap stays simple.
+  - Timeout: IDLE timeout — 5 min default, 15 min max. Any worker activity
+    (ctx.progress, ctx.mcp/gateway/browser relay calls, logs) resets it; a
+    tool making steady progress NEVER times out regardless of total
+    duration. A silent (hung) worker is killed after the idle window.
+    Absolute backstop: 30 min total runtime, not reset by activity
+    (issue #27). Still emit progress per work phase — that's what keeps
+    long tools alive.
   - Max payload: 100 MB per item, 10 items
   - Max return: 10KB inline (larger results saved to workspace, pointer returned)
   - Max concurrent calls: 8 (configurable)
@@ -1296,6 +1335,7 @@ export async function init(context) {
     CONFIG = {
         defaultTimeout: agentConfig.defaultTimeout ?? DEFAULTS.defaultTimeout,
         maxTimeout: agentConfig.maxTimeout ?? DEFAULTS.maxTimeout,
+        hardTimeout: agentConfig.hardTimeout ?? DEFAULTS.hardTimeout,
         maxPayloadSize: agentConfig.maxPayloadSize ?? DEFAULTS.maxPayloadSize,
         maxPayloadItems: agentConfig.maxPayloadItems ?? DEFAULTS.maxPayloadItems,
         maxConcurrentCalls: agentConfig.maxConcurrentCalls ?? DEFAULTS.maxConcurrentCalls,
