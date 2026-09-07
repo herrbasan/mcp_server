@@ -75,7 +75,7 @@
                     "name": { "type": "string", "description": "Tool name to execute" },
                     "args": { "type": "object", "description": "Arguments object passed to the tool" },
                     "payload": { "type": "array", "items": { "type": "string" }, "description": "Array of file paths or URLs to resolve to Buffers" },
-                    "timeout": { "type": "number", "description": "Idle timeout in ms — resets on any worker activity (progress events, relay calls); a silent worker is killed (default: 300000, max: 900000). Hard total-runtime backstop: 30 min." },
+                    "timeout": { "type": "number", "description": "Idle timeout in ms — arms when the worker is ready (boot excluded), resets on any worker activity (progress events, relay calls); a silent worker is killed (default: 300000, max: 900000). Backstops: 60s boot guard, 30 min total runtime." },
                     "model": { "type": "string", "description": "Optional Gateway model identifier (e.g. 'badkid-llama-chat'). Routes all ctx.gateway.chat() calls inside the tool through this model. Omit to use the Gateway's default routing (recommended for compatibility — tool authors should not assume a specific model)." }
                 },
                 "required": ["name"]

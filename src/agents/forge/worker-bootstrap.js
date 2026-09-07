@@ -340,6 +340,11 @@ parentPort.on('message', async (msg) => {
         mcpDepth = msg.mcpDepth || 0;
         initData = { payload: msg.payload || [] };
 
+        // Tell the main thread the worker is wired up. The idle watchdog only
+        // arms on this — boot time (module compile under load can exceed the
+        // idle window) is covered by the hard runtime cap instead.
+        parentPort.postMessage({ type: 'ready' });
+
         try {
             await run();
         } catch (err) {

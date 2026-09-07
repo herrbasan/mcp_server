@@ -34,6 +34,7 @@ const DEFAULTS = {
     defaultTimeout: 300000,      // idle: kill after 5 min of silence
     maxTimeout: 900000,          // idle ceiling: 15 min of silence
     hardTimeout: 1800000,        // absolute backstop: 30 min total runtime
+    bootTimeout: 60000,          // worker must report ready within 60s
     maxPayloadSize: 104857600,   // 100 MB per item
     maxPayloadItems: 10,
     maxConcurrentCalls: 8,
@@ -413,11 +414,14 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     let logs = [];
     let idleTimer;
     let hardTimer;
+    let bootTimer;
     let rejectP;
+    let ready = false;
 
     const cleanup = () => {
         clearTimeout(idleTimer);
         clearTimeout(hardTimer);
+        clearTimeout(bootTimer);
         // Close ports to prevent leaks — removeAllListeners isn't available
         // on MessagePort, so we just stop them from accepting new messages.
         try { gatewayPort1.close(); } catch {}
@@ -440,8 +444,17 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
         }, timeout);
     };
 
-    // Any sign of life resets the idle deadline.
-    const activity = () => { if (!settled) armIdle(); };
+    // Any sign of life resets the idle deadline — but only once the worker
+    // has reported ready. Before that there is nothing to reset: boot time
+    // (module compile under main-thread load can far exceed the idle window)
+    // is covered by bootTimer + hardTimeout, NOT by the idle.
+    const activity = () => { if (ready && !settled) armIdle(); };
+
+    const armOnReady = () => {
+        ready = true;
+        clearTimeout(bootTimer);
+        armIdle();
+    };
 
     // ── Progress relay: worker → main thread → MCP notification ──
     progressPort1.on('message', (msg) => {
@@ -642,8 +655,11 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
 
     return new Promise((resolve, reject) => {
         rejectP = reject;
-        // Hard cap arms here (executor scope provides reject); idle timer
-        // arms via armIdle() — both disarmed through cleanup().
+        // Hard cap arms immediately (covers boot + run). The IDLE timer does
+        // NOT arm here — it arms when the worker reports 'ready'. Under load
+        // (e.g. VDB sync hashing blocks the main thread, CPU starvation slows
+        // worker boot) boot alone can exceed the idle window; punishing
+        // startup would kill healthy tools before their first progress event.
         hardTimer = setTimeout(() => {
             if (settled) return;
             settled = true;
@@ -653,9 +669,20 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
                 rejectP(new Error(`Tool "${name}" exceeded the ${CONFIG.hardTimeout}ms hard runtime cap — worker terminated`));
             });
         }, CONFIG.hardTimeout);
-        armIdle();
+        // Boot guard: worker must wire up within bootTimeout. Without this a
+        // hung spawn would only die at the 30-min hard cap.
+        bootTimer = setTimeout(() => {
+            if (settled || ready) return;
+            settled = true;
+            logger.warn(`[Forge:worker] BOOT TIMEOUT for "${name}" after ${CONFIG.bootTimeout}ms without ready — terminating`, null, 'Forge');
+            cleanup();
+            worker.terminate().then(() => {
+                rejectP(new Error(`Tool "${name}" failed to start within ${CONFIG.bootTimeout}ms — worker terminated`));
+            });
+        }, CONFIG.bootTimeout);
 
         worker.on('message', (msg) => {
+            if (msg.type === 'ready') { armOnReady(); return; }
             activity();
             if (msg.type === 'result') {
                 if (settled) return;
@@ -1246,13 +1273,13 @@ STATE PATTERNS
     const tmpFile = join(ctx.workspacePath, 'intermediate.bin');
 
 CONSTRAINTS
-  - Timeout: IDLE timeout — 5 min default, 15 min max. Any worker activity
-    (ctx.progress, ctx.mcp/gateway/browser relay calls, logs) resets it; a
-    tool making steady progress NEVER times out regardless of total
-    duration. A silent (hung) worker is killed after the idle window.
-    Absolute backstop: 30 min total runtime, not reset by activity
-    (issue #27). Still emit progress per work phase — that's what keeps
-    long tools alive.
+  - Timeout: IDLE timeout — 5 min default, 15 min max. Arms when the worker
+    reports ready (boot excluded); resets on any worker activity
+    (ctx.progress, ctx.mcp/gateway/browser relay calls, logs). A tool making
+    steady progress NEVER times out regardless of total duration. A silent
+    (hung) worker is killed after the idle window. Absolute backstops:
+    60s boot guard + 30 min total runtime, not reset by activity (#27).
+    Still emit progress per work phase — that's what keeps long tools alive.
   - Max payload: 100 MB per item, 10 items
   - Max return: 10KB inline (larger results saved to workspace, pointer returned)
   - Max concurrent calls: 8 (configurable)
@@ -1336,6 +1363,7 @@ export async function init(context) {
         defaultTimeout: agentConfig.defaultTimeout ?? DEFAULTS.defaultTimeout,
         maxTimeout: agentConfig.maxTimeout ?? DEFAULTS.maxTimeout,
         hardTimeout: agentConfig.hardTimeout ?? DEFAULTS.hardTimeout,
+        bootTimeout: agentConfig.bootTimeout ?? DEFAULTS.bootTimeout,
         maxPayloadSize: agentConfig.maxPayloadSize ?? DEFAULTS.maxPayloadSize,
         maxPayloadItems: agentConfig.maxPayloadItems ?? DEFAULTS.maxPayloadItems,
         maxConcurrentCalls: agentConfig.maxConcurrentCalls ?? DEFAULTS.maxConcurrentCalls,
