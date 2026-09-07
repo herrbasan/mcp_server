@@ -56,6 +56,27 @@ function hashContent(text) {
     return crypto.createHash('sha256').update(text).digest('hex');
 }
 
+// Yield the main thread back to the event loop. setImmediate runs in the
+// check phase — AFTER pending I/O results, port messages, and due timers
+// have processed — so one yield lets every queued task through before the
+// scan continues. This is what keeps MCP tool handling alive during scans
+// (#31): the scan previously swept 586+ files with zero awaits, holding
+// the main thread 10-45s per pass.
+function yieldLoop() {
+    return new Promise(resolve => setImmediate(resolve));
+}
+
+// Async read for the scan path: fs.promises.readFile runs on the libuv
+// threadpool, so the main thread only pays for string decode + hash — not
+// the disk wait. Same oversize contract as readTextFile (#31).
+async function readTextFileAsync(absolutePath) {
+    const buf = await fs.promises.readFile(absolutePath);
+    if (buf.length > CONFIG.maxFileSizeBytes) {
+        throw new Error(`File exceeds maxFileSizeBytes (${CONFIG.maxFileSizeBytes}): ${absolutePath}`);
+    }
+    return buf.toString('utf-8');
+}
+
 function loadIndex() {
     const p = INDEX_PATH();
     try {
@@ -538,6 +559,12 @@ function walk(dir, root, out, baseMeta, collectionDefaults) {
 
 async function scanCollection(collectionName, onPhase = null) {
     const stats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0, pending: 0 };
+    // Max continuous main-thread work (hash + string decode) before the scan
+    // yields to the event loop. Without this the unchanged-file skip path —
+    // the vast majority of any scan — is a fully synchronous read+hash sweep
+    // with zero awaits (#31).
+    const yieldBudgetMs = CONFIG.scanYieldBudgetMs || 50;
+    let workSinceYield = 0;
     const index = loadIndex();
     const currentFiles = new Set();
     const toIndex = [];
@@ -551,6 +578,7 @@ async function scanCollection(collectionName, onPhase = null) {
 
     const watched = listWatchedFiles(collectionName);
     for (const { absolutePath, root, metadata } of watched) {
+        const workStart = Date.now();
         const relPath = safeRel(root, absolutePath);
         const docBaseId = `${collectionName}:${relPath}`;
         currentFiles.add(docBaseId);
@@ -563,7 +591,7 @@ async function scanCollection(collectionName, onPhase = null) {
             // defeats an mtime+size heuristic and silently leaves stale vectors
             // behind. Reading + hashing text files is cheap next to embedding,
             // so verify the actual content on every scan.
-            const content = readTextFile(absolutePath);
+            const content = await readTextFileAsync(absolutePath);
             const contentHash = hashContent(content);
             if (existing && existing.contentHash === contentHash) {
                 stats.skipped++;
@@ -612,6 +640,16 @@ async function scanCollection(collectionName, onPhase = null) {
         } catch (e) {
             logger.error(`[VDB] Failed to prepare ${absolutePath}: ${e.message}`, null, 'VDB');
             stats.errors++;
+        }
+
+        // Yield between files once the budget is spent (see yieldBudgetMs).
+        // prepareFileForIndexing awaits the gateway for changed files, so they
+        // yield naturally; the budget covers the skip path, which has no
+        // other await point.
+        workSinceYield += Date.now() - workStart;
+        if (workSinceYield >= yieldBudgetMs) {
+            workSinceYield = 0;
+            await yieldLoop();
         }
     }
 
