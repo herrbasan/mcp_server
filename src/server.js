@@ -548,8 +548,10 @@ content that should survive beyond the current session.
     For append-only use storage.append.
     For multi-step edits use storage.batch.
     BEFORE writing: call storage.read to get the full current content.
-    For a checkpoint before a risky edit, storage.copy the file into the temp/
-    scratch area and copy it back to roll back. There is no automatic versioning.
+    Safety net: overwritten files are auto-snapshotted to
+    .backups/<path>.<timestamp> (last 10 per path) and the backup path is
+    returned as previousVersion. Still write the FULL content — snapshots
+    are recovery, not an edit strategy.
 
   storage.stat — { path* }
       Get file or directory metadata (size, modified time, type).
@@ -776,8 +778,9 @@ IMPORTANT RULES
 8. ⚠️  storage.write DESTROYS DATA if misused. It replaces the ENTIRE file.
    If you intend to edit one section: use storage.replace (marker-based swap).
    Before writing: ALWAYS storage.read the current file first.
-   Before a risky edit, storage.copy the file into temp/ to checkpoint, and
-   copy it back to roll back. There is no automatic versioning.`,
+   Overwritten files are auto-snapshotted to .backups/ (last 10 per path,
+   returned as previousVersion) — but still write FULL content; snapshots
+   are recovery, not an edit strategy.`,
         inputSchema: {
             type: "object",
             properties: {

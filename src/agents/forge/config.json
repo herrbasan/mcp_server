@@ -75,7 +75,7 @@
                     "name": { "type": "string", "description": "Tool name to execute" },
                     "args": { "type": "object", "description": "Arguments object passed to the tool" },
                     "payload": { "type": "array", "items": { "type": "string" }, "description": "Array of file paths or URLs to resolve to Buffers" },
-                    "timeout": { "type": "number", "description": "Execution timeout in ms (default: 300000, max: 600000)" },
+                    "timeout": { "type": "number", "description": "Execution timeout in ms (default: 300000, max: 900000)" },
                     "model": { "type": "string", "description": "Optional Gateway model identifier (e.g. 'badkid-llama-chat'). Routes all ctx.gateway.chat() calls inside the tool through this model. Omit to use the Gateway's default routing (recommended for compatibility — tool authors should not assume a specific model)." }
                 },
                 "required": ["name"]

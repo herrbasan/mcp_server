@@ -8,9 +8,21 @@ import crypto from 'crypto';
 import readline from 'readline';
 import { createPathTranslator } from '../agents/storage/path-translator.js';
 
-const SKIP_DIRS = new Set(['node_modules', '.git']);
+const SKIP_DIRS = new Set(['node_modules', '.git', '.backups']);
 const GREP_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const TAIL_CHUNK = 64 * 1024;
+
+// Snapshot-before-mutate (issue #26, reversing adca6b4's "model-owned
+// rollback" — that failed with near data loss on 2026-09-03). Every
+// destructive op preserves the prior content under <root>/.backups/<relpath>
+// + '.' + timestamp, mirroring the chat app's storage-tools.js so ALL
+// platforms share one recovery location. Retention: last 10 per path.
+// Directories are never snapshotted (unbounded); _trash entries are their
+// own backup. Callers get the backup path as previousVersion — recovery is
+// discoverable, not folklore.
+const SNAPSHOTS_DIR = '.backups';
+const SNAPSHOTS_KEEP = 10;
+const SNAP_SUFFIX_RE = /\.\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(-\d{2})?$/;
 
 let tmpCounter = 0;
 
@@ -129,16 +141,74 @@ export function createFileOps({ root, translator = null }) {
     }
 
     // ============================================
+    // Internal: snapshots (issue #26)
+    // ============================================
+
+    // Copy the target's prior content into .backups. Returns the backup's
+    // root-relative path, or null when there is nothing to preserve (target
+    // missing, or a directory, or already inside .backups/_trash).
+    function snapshotFile(targetAbs) {
+        if (!fs.existsSync(targetAbs)) return null;
+        const st = fs.statSync(targetAbs);
+        if (!st.isFile()) return null;
+        const relTarget = rel(targetAbs);
+        if (relTarget === SNAPSHOTS_DIR ||
+            relTarget.startsWith(SNAPSHOTS_DIR + '/') ||
+            relTarget.startsWith('_trash/')) return null;
+        // Windows-safe stamp (no colons), fixed width → name sort is
+        // chronological. Same format the _trash path uses. Same-second
+        // writes (batch loops!) must NOT collide — a collision would let a
+        // later snapshot overwrite the earlier one and destroy the very
+        // pre-write state this feature exists to preserve — so an existing
+        // backup gets a zero-padded counter suffix, keeping sort order.
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const backupBase = path.join(REAL_ROOT, SNAPSHOTS_DIR, relTarget);
+        let backupAbs = backupBase + '.' + stamp;
+        for (let n = 1; fs.existsSync(backupAbs); n++) {
+            backupAbs = `${backupBase}.${stamp}-${String(n).padStart(2, '0')}`;
+        }
+        fs.mkdirSync(path.dirname(backupAbs), { recursive: true });
+        fs.copyFileSync(targetAbs, backupAbs);
+        pruneSnapshots(backupAbs);
+        return rel(backupAbs);
+    }
+
+    // Retention is best-effort and must never fail a write that already
+    // succeeded; a failed prune is retried on the next snapshot.
+    function pruneSnapshots(backupAbs) {
+        try {
+            const dir = path.dirname(backupAbs);
+            const base = path.basename(backupAbs);
+            const prefix = base.slice(0, base.lastIndexOf('.') + 1);
+            const snaps = fs.readdirSync(dir)
+                .filter(n => n.startsWith(prefix) && SNAP_SUFFIX_RE.test(n))
+                .sort().reverse();
+            for (const oldName of snaps.slice(SNAPSHOTS_KEEP)) {
+                fs.unlinkSync(path.join(dir, oldName));
+            }
+        } catch { /* retention only — self-heals on next snapshot */ }
+    }
+
+    // ============================================
     // Internal: atomicWrite
     // ============================================
 
     function atomicWrite(targetAbs, buffer) {
+        const previousVersion = snapshotFile(targetAbs);
         const dir = path.dirname(targetAbs);
         fs.mkdirSync(dir, { recursive: true });
         tmpCounter++;
         const tmp = path.join(dir, `.fileops-tmp-${process.pid}-${tmpCounter}`);
         fs.writeFileSync(tmp, buffer);
-        fs.renameSync(tmp, targetAbs);
+        try {
+            fs.renameSync(tmp, targetAbs);
+        } catch (err) {
+            // A failed rename must not leak the temp file (issue #28: EPERM
+            // left .fileops-tmp-* behind). Clean up, then surface the error.
+            try { fs.unlinkSync(tmp); } catch { /* temp already gone */ }
+            throw err;
+        }
+        return previousVersion;
     }
 
     // ============================================
@@ -211,8 +281,8 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('write: target exists, pass overwrite:true');
         }
         const buf = Buffer.from(content, encoding);
-        atomicWrite(abs, buf);
-        return { size: buf.length };
+        const previousVersion = atomicWrite(abs, buf);
+        return { size: buf.length, previousVersion };
     }
 
     // ============================================
@@ -287,11 +357,15 @@ export function createFileOps({ root, translator = null }) {
             if (contents.length > 0 && !recursive) {
                 throw new Error('remove: directory not empty, pass recursive:true');
             }
+            // Directories are not snapshotted (unbounded size) — the agent
+            // layer warns loudly so the unrecoverable scope stays visible.
             fs.rmSync(abs, { recursive: true });
-        } else {
-            fs.unlinkSync(abs);
+            return { deleted: true, previousVersion: null };
         }
-        return { deleted: true };
+        // File delete is destructive: snapshot before unlink (issue #26).
+        const previousVersion = snapshotFile(abs);
+        fs.unlinkSync(abs);
+        return { deleted: true, previousVersion };
     }
 
     // ============================================
@@ -306,6 +380,9 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('copy: target exists, pass overwrite:true');
         }
         const st = fs.statSync(fromAbs);
+        // Target can only exist here when overwrite:true was passed — that
+        // destroy snapshots the target's prior content first (issue #26).
+        const previousVersion = fs.existsSync(toAbs) ? snapshotFile(toAbs) : null;
         fs.mkdirSync(path.dirname(toAbs), { recursive: true });
         if (st.isDirectory()) {
             fs.cpSync(fromAbs, toAbs, { recursive: true });
@@ -313,7 +390,7 @@ export function createFileOps({ root, translator = null }) {
             fs.copyFileSync(fromAbs, toAbs);
         }
         const finalStat = fs.statSync(toAbs);
-        return { from: rel(fromAbs), to: rel(toAbs), size: finalStat.size };
+        return { from: rel(fromAbs), to: rel(toAbs), size: finalStat.size, previousVersion };
     }
 
     // ============================================
@@ -465,8 +542,8 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('replace: replacement is identical to marker — no change');
         }
 
-        atomicWrite(abs, Buffer.from(eol === '\r\n' ? updated.replace(/\n/g, '\r\n') : updated, 'utf8'));
-        return { size: Buffer.byteLength(updated, 'utf8'), replacements: count };
+        const previousVersion = atomicWrite(abs, Buffer.from(eol === '\r\n' ? updated.replace(/\n/g, '\r\n') : updated, 'utf8'));
+        return { size: Buffer.byteLength(updated, 'utf8'), replacements: count, previousVersion };
     }
 
     // ============================================
@@ -815,8 +892,8 @@ export function createFileOps({ root, translator = null }) {
 
         const mime = res.headers.get('content-type') || 'application/octet-stream';
         const buf = Buffer.from(await res.arrayBuffer());
-        atomicWrite(abs, buf);
-        return { size: buf.length, mime };
+        const previousVersion = atomicWrite(abs, buf);
+        return { size: buf.length, mime, previousVersion };
     }
 
     // ============================================

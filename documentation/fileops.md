@@ -1,7 +1,8 @@
 # fileops — Shared File-Operations Layer
 
 Reference documentation for the `fileops` module: what it is, how it's wired,
-and the contracts consumers rely on. Last verified 2026-07-22 (E2E green).
+and the contracts consumers rely on. Last verified 2026-09-07 (snapshot +
+temp-cleanup engine tests green).
 
 ## What it is
 
@@ -19,18 +20,20 @@ context involvement.
 ```
 src/lib/fileops.js          — the module (ES module)
 tests/fileops.test.js       — node:test suite (55 tests)
+tests/fileops-snapshot.test.js — snapshot + temp-cleanup tests (13 tests)
 tests/fileops.bench.js      — manual benchmark
 ```
 
 ```javascript
 import { createFileOps } from '../lib/fileops.js';
-const ops = createFileOps({ root, translator = null, keepVersions = 10 });
+const ops = createFileOps({ root, translator = null });
 ```
 
 - `root` (required): all paths are confined under this directory.
 - `translator` (optional): a `createPathTranslator` instance for UNC ↔ local
   translation (from `src/agents/storage/path-translator.js`).
-- `keepVersions` (default 10): per-path version retention.
+- Snapshot retention is a module constant (`SNAPSHOTS_KEEP = 10`), not a
+  factory option.
 
 Run tests: `node --test tests/fileops.test.js`
 Run bench: `node tests/fileops.bench.js`
@@ -47,42 +50,56 @@ Every public function resolves paths through an internal `resolve()`:
 
 Escapes **throw** — no silent clamping.
 
-## Versioning (hardlink snapshots)
+## Snapshots (copy-before-mutate, issue #26)
 
-Every mutating op auto-snapshots the target's prior state before mutating.
+Every destructive op preserves the target's prior content BEFORE mutating:
 
 ```
-<root>/.versions/<mirrored-relative-path>/<ISO-timestamp>_<op>
+<root>/.backups/<mirrored-relative-path>.<YYYY-MM-DDTHH-mm-ss>[-NN]
 ```
 
-- Snapshot = `fs.linkSync` (hardlink). One syscall, zero bytes. NTFS inode
-  refcount is the GC — deleting a version frees space only when last link.
-- Retention: last `keepVersions` per path; prune oldest on write.
-- `.versions/` is excluded from `list`, `grep`, `snapshotDir`, and vdb indexing.
-- Cross-device (`EXDEV`): falls back to real copy + logs a warning. Never silent.
+- Plain copies (`copyFileSync`), not hardlinks — the hardlink `.versions/`
+  machinery was removed in adca6b4 (2026-08-13) in favor of model-owned
+  rollback, which failed with near data loss on 2026-09-03. Issue #26
+  restored automatic snapshots in the chat app's `.backups/` shape so ALL
+  platforms (chat app, MCP tools, forge workers) share one recovery layout.
+- Same-second writes get a zero-padded counter suffix (`-01`, `-02`, …).
+  WITHOUT this, a batch loop's later snapshot overwrites the earlier one —
+  destroying the pre-write state the feature exists to preserve.
+- Retention: last 10 snapshots per path (`SNAPSHOTS_KEEP`); prune oldest on
+  write. Prune is best-effort — a failed prune never fails the write.
+- `.backups/` is excluded from `list`, `grep`, `snapshotDir`, walk-based
+  recursion (SKIP_DIRS), and VDB indexing (config `agents.vdb.ignore`).
+  Direct reads by explicit path still work.
+- Mutating functions return `previousVersion`: the backup's root-relative
+  path, or `null` when nothing was preserved (new file / directory /
+  backup-internal target). Surfaces in storage_write / storage_replace /
+  storage_delete / storage_copy responses.
+- Directories are NEVER snapshotted (unbounded size). Directory deletes log
+  a loud warn in the storage agent.
+- `_trash/` entries are not snapshotted — soft delete is itself the backup.
+
+### Snapshot matrix
+
+| op      | snapshots | what                                     |
+|---------|-----------|------------------------------------------|
+| write   | yes       | prior content of target (if exists)      |
+| append  | no        | append cannot destroy prior content      |
+| replace | yes       | prior content of target                  |
+| copy    | yes       | prior content of target (overwrite only) |
+| move    | no        | relocates content, never destroys        |
+| remove  | yes       | the file itself before unlink (files)    |
+| batch   | per-item  | each mutating item routes through above  |
 
 ### Two correctness invariants
 
-1. **Atomic writes (temp + rename, never in-place truncate).** The live file and
-   its versions share an inode; truncating would corrupt every version. `write`
-   = write to temp in same dir → `rename` over target (new inode, old stays with
-   version). Crash-safe as a bonus.
-2. **append breaks sharing first.** If `stat.nlink > 1`, the live file is copied
-   onto itself (temp+rename) to break the hardlink before appending. One copy per
-   version cycle, not per append.
-
-### Auto-snapshot matrix
-
-| op      | snapshots | what                                    |
-|---------|-----------|-----------------------------------------|
-| write   | yes       | prior content of target (if exists)     |
-| append  | yes       | prior content (after inode-break)       |
-| replace | yes       | prior content of target                 |
-| copy    | yes       | prior content of target (if overwrite)  |
-| move    | yes       | source entry (op tag `move`)            |
-| remove  | yes       | the file itself before unlink           |
-| restore | yes       | current state (tag `restore`)           |
-| batch   | per-item  | each mutating item snapshots itself     |
+1. **Atomic writes (temp + rename, never in-place truncate).** `write` =
+   write to temp in same dir → `rename` over target. Crash-safe; readers
+   never see a half-written file.
+2. **Failed rename never leaks the temp file (issue #28).** `atomicWrite`
+   unlinks the temp on any rename failure, then rethrows the ORIGINAL error
+   — cleanup must not swallow the failure, and the failure must not leave
+   `.fileops-tmp-*` litter in the target directory.
 
 ## API surface
 
@@ -95,12 +112,11 @@ root-relative with forward slashes.
 - `readWindow(path, { offset,length } | { head } | { tail })` → `{ content, size, window }`.
   Exactly one mode. `tail` seeks from EOF in 64KB chunks (never slurps).
 - `list(path = '', { recursive, pattern })` → `{ entries }`. Glob `pattern`
-  (`*`, `**`, `?`). Skips `.versions/`, `node_modules/`, `.git/`.
+  (`*`, `**`, `?`). Skips `.backups/`, `node_modules/`, `.git/`.
 - `hash(path, { algo = 'sha256' })` → `{ hash, size }` (streamed).
 - `grep(path, pattern, { maxMatches = 100, context = 0, ignoreCase })` →
   `{ matches: [{ path, line, text, before?, after? }], truncated }`. Streams
   line-by-line, skips files >50MB. Returns matches only — bodies stay server-side.
-- `history(path)` → `{ versions: [{ version, op, size, modified }] }` newest first.
 - `snapshotDir(path)` → `{ files: { rel: { size, mtimeMs } } }`;
   `diffSnapshots(before, after)` → `{ added, removed, modified }`.
 
@@ -115,9 +131,7 @@ root-relative with forward slashes.
   marker. Reads whole file into memory — fine for text docs, not for binaries.
 - `copy(from, to, { overwrite = false })` → `{ from, to, size }`. File or dir.
 - `move(from, to)` → `{ from, to, type }`. Refuses overwrite.
-- `remove(path, { recursive = false })` → `{ deleted: true }`.
-- `restore(path, { steps = 1 })` → `{ restored, from }`. Snapshots current first
-  (undo is undoable).
+- `remove(path, { recursive = false })` → `{ deleted: true, previousVersion }`.
 - `batch(opsList, { onError = 'collect' })` → `{ results }`. Sequential, per-op
   result capture. `onError: 'abort'` stops at first failure. **Args route by
   name via a per-op dispatch table — never positionally.**
@@ -137,11 +151,11 @@ paths for mutations:
 |------|-------------|-------|
 | storage_stat | `OPS.stat` | |
 | storage_list | `OPS.list` | normalizes `modified` to ISO |
-| storage_write | `OPS.write(..., { overwrite: true })` | preserves historical silent-overwrite contract, now versions + atomic |
+| storage_write | `OPS.write(..., { overwrite: true })` | preserves historical silent-overwrite contract; snapshots + atomic |
 | storage_move | `OPS.move` | |
-| storage_delete | `OPS.remove` | |
+| storage_delete | `OPS.remove` | files snapshotted; dirs warned, not snapshotted |
 | storage_read | `OPS.readWindow` (window args) / legacy inline (no window) | non-window path is agent-level MCP transport policy (INLINE_BYTE_LIMIT, PUBLIC_URL pointer) — correctly stays in agent |
-| storage_copy/append/replace/grep/batch/history/restore | corresponding `OPS.*` | new tools |
+| storage_copy/append/replace/grep/batch | corresponding `OPS.*` | mutating ops return `previousVersion` |
 
 `safeResolve`/`safeRel` remain only for `storage_read`'s non-window path and
 the `/storage` REST endpoint. That is correct separation, not debt.
@@ -156,11 +170,12 @@ registrations:** (1) agent `config.json` schema, (2) agent `index.js` handler
 export, (3) `COMPACT_TO_LEGACY` entry in `server.js`. Missing (3) →
 `Unknown method` even though the tool is correctly registered.
 
-## Verified state (2026-07-22)
+## Verified state (2026-09-07)
 
-- 64 node:test tests green (63 pass, 1 symlink env-skip on Windows without dev mode).
-- Bench: copy 100MB = 29ms; grep 50MB/610k lines = 167ms; 1000 writes ≈ 705ms
-  (fs-bound — batch vs individual identical; batch's value is orchestration, not disk).
-- E2E via workshop MCP tools: copy, grep, append, windowed read, batch
-  (collect + named-arg routing), write-overwrite versioning, restore round-trip
-  (undo-is-undoable), move, delete — all green.
+- `tests/fileops-snapshot.test.js`: 13/13 green — snapshots for
+  write/replace/remove/copy-overwrite, retention (10 per path),
+  same-second collision counter, `.backups` exclusion, failed-rename temp
+  cleanup + error surfacing.
+- `tests/fileops.test.js`: 54 pass, 1 symlink env-skip (Windows without dev mode).
+- Live-server smoke (storage_write/replace/delete via workshop tools
+  returning `previousVersion`) lands on next server restart.

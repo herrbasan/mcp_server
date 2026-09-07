@@ -32,7 +32,7 @@ let SEMAPHORE;
 // ── Defaults ─────────────────────────────────────────────────────────────────
 const DEFAULTS = {
     defaultTimeout: 300000,
-    maxTimeout: 600000,
+    maxTimeout: 900000,
     maxPayloadSize: 104857600,   // 100 MB per item
     maxPayloadItems: 10,
     maxConcurrentCalls: 8,
@@ -1210,7 +1210,10 @@ STATE PATTERNS
     const tmpFile = join(ctx.workspacePath, 'intermediate.bin');
 
 CONSTRAINTS
-  - Timeout: 5 min default, 10 min max (worker.terminate() kills the process)
+  - Timeout: 5 min default, 15 min max (worker.terminate() kills the process)
+  - Policy (issue #27, closed 2026-09-07): the cap is a total-runtime cap, NOT
+    an idle timeout. 15 min is enough for any reasonable tool; work beyond
+    that must checkpoint/resume (see twin_corpus_map) — the cap stays simple.
   - Max payload: 100 MB per item, 10 items
   - Max return: 10KB inline (larger results saved to workspace, pointer returned)
   - Max concurrent calls: 8 (configurable)

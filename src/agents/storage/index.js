@@ -433,7 +433,7 @@ export async function storage_write(args) {
     const engineResult = await OPS.write(userPath, content, { encoding, overwrite: true });
     const proof = verifyFile(userPath, engineResult.size);
     logger.info(`[Storage] storage_write OK: "${userPath}" (${engineResult.size}B, verified, total=${Date.now() - t0}ms)`, null, 'Storage');
-    return result(true, 'storage_write', userPath, { size: engineResult.size, ...proof });
+    return result(true, 'storage_write', userPath, { size: engineResult.size, previousVersion: engineResult.previousVersion ?? null, ...proof });
 }
 
 // Invisible/problematic filename characters: Private Use Area, zero-width,
@@ -530,7 +530,7 @@ export async function storage_move(args) {
     const fromPath = args.from;
     const toPath = args.to;
     logger.info(`[Storage] storage_move: "${fromPath}" → "${toPath}"`, null, 'Storage');
-    // Engine refuses overwrite and snapshots the source before moving.
+    // Engine refuses overwrite — move relocates content, never destroys it.
     const engineResult = await OPS.move(fromPath, toPath);
     const gone = verifyGone(fromPath);
     const proof = engineResult.type === 'file' ? verifyFile(toPath) : { verified: fs.existsSync(safeResolve(toPath)) };
@@ -562,11 +562,15 @@ export async function storage_delete(args) {
     }
 
     const recursive = args.recursive || false;
-    // Engine snapshots before deleting; non-empty dir requires recursive:true.
-    await OPS.remove(userPath, { recursive });
+    // Engine snapshots file content before deleting (issue #26); directories
+    // are NOT snapshotted — warn so the unrecoverable scope stays visible.
+    if (st.type === 'dir') {
+        logger.warn(`[Storage] storage_delete: directory "${userPath}" is NOT snapshotted — this delete is unrecoverable`, null, 'Storage');
+    }
+    const engineResult = await OPS.remove(userPath, { recursive });
     const proof = verifyGone(userPath);
     logger.info(`[Storage] storage_delete OK: "${userPath}" (${st.type}, verified gone)`, null, 'Storage');
-    return result(true, 'storage_delete', userPath, { deleted: true, ...proof });
+    return result(true, 'storage_delete', userPath, { deleted: true, previousVersion: engineResult.previousVersion ?? null, ...proof });
 }
 
 // Restore a trashed item to its original location. Works off the
