@@ -626,6 +626,41 @@ export async function storage_recent(args) {
     ].join('\n') }] };
 }
 
+// Find files by NAME, not content. The companion to storage.search (semantic)
+// and storage.grep (content): matches the query against file PATHS with a
+// recursive walk (same engine + skip rules as storage_recent). Exact basename
+// matches rank first, then substring matches. The right tool for "where is
+// foo_v2.md?" — no embeddings, no full-tree listing into context.
+export async function storage_search_file(args) {
+    requireFields(args, ['query'], 'storage_search_file');
+    const query = String(args.query).trim();
+    const scope = normPath(args.path ?? '');
+    const limit = Math.max(1, Math.min(args.limit ?? 20, 200));
+    logger.info(`[Storage] storage_search_file: "${query}" under "${scope}" limit=${limit}`, null, 'Storage');
+    const { entries } = await OPS.list(scope, { recursive: true });
+    const needle = query.toLowerCase();
+    const matches = [];
+    for (const e of entries) {
+        if (e.type !== 'file') continue;
+        const p = e.path.toLowerCase();
+        const basename = p.slice(p.lastIndexOf('/') + 1);
+        if (p.includes(needle)) {
+            matches.push({ ...e, matchType: basename === needle ? 'exact-name' : 'substring' });
+        }
+    }
+    matches.sort((a, b) => (a.matchType === b.matchType ? a.path.localeCompare(b.path) : (a.matchType === 'exact-name' ? -1 : 1)));
+    const shown = matches.slice(0, limit);
+    logger.info(`[Storage] storage_search_file OK: "${query}" (${matches.length} match(es), showing ${shown.length})`, null, 'Storage');
+    if (shown.length === 0) {
+        return { content: [{ type: 'text', text: `No file under "${scope || 'storage root'}" matches "${query}" (${entries.length} entries scanned).` }] };
+    }
+    const lines = shown.map(e => `${e.matchType === 'exact-name' ? '=' : '~'} ${e.path}  (${e.size}B)`);
+    return { content: [{ type: 'text', text: [
+        `Found ${matches.length} file(s) matching "${query}" under ${scope || 'storage root'}${matches.length > shown.length ? ` (showing first ${shown.length})` : ''}. = exact name, ~ substring:`,
+        ...lines
+    ].join('\n') }] };
+}
+
 export async function storage_search(args, context) {
     requireFields(args, ['query'], 'storage_search');
     const { query, folder, extension, top_k = 10, include_content = false } = args;

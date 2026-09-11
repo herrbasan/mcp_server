@@ -4,7 +4,7 @@
     "tools": [
         {
             "name": "vdb_search",
-            "description": "Semantic search over the vector database. Searches one or more collections (storage, memory) and returns ranked matches with path, score, and snippet. Use filters to narrow by folder or file extension.",
+            "description": "Semantic search over the vector database. For FINDING A FILE BY NAME/PATH: filename-like queries are matched against indexed file paths automatically. To browse the full directory tree use storage.list instead. Semantic search finds content by meaning; use filters to narrow by folder or file extension.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

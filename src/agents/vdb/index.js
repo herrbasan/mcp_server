@@ -173,10 +173,13 @@ function createEnhancementCache() {
     return {
         get(contentHash) {
             try {
+                // coll.get() returns a DocumentJs object {id, vector, payload} —
+                // the cached JSON lives in .payload (issue #34: parsing the
+                // whole object yielded "[object Object]" is not valid JSON and
+                // defeated the cache on every lookup).
                 const raw = coll.get(contentHash);
-                if (!raw) return null;
-                const parsed = JSON.parse(raw);
-                return parsed;
+                if (!raw || raw.payload === undefined || raw.payload === null) return null;
+                return JSON.parse(raw.payload);
             } catch (e) {
                 logger.warn(`[VDB] Enhancement cache get failed: ${e.message}`, null, 'VDB');
                 return null;
@@ -952,10 +955,79 @@ function readChunkContent(payload, chunker) {
     }
 }
 
+// ── Filename-query handling ───────────────────────────────────────────
+// Embedding a filename produces semantic noise (every doc scores ~0.5),
+// so queries that look like a file reference are matched against the
+// indexed file paths directly. Uses listWatchedFiles (same enumeration
+// and ignore rules as the scanner) — nVDB itself has no path iteration API.
+
+// Single token ending in a common extension, or anything with a path separator.
+function looksLikeFileQuery(query) {
+    const q = (query || '').trim();
+    if (!q || q.length > 200) return false;
+    if (/\\/.test(q)) return true;
+    if (/^\S+\.[a-z0-9]{1,8}$/i.test(q)) return true;
+    return false;
+}
+
+// Case-insensitive substring match over indexed storage file paths.
+// Basename-exact matches sort first.
+function findPathMatches(query) {
+    const needle = query.trim().toLowerCase();
+    const matches = [];
+    for (const { absolutePath, root, metadata } of listWatchedFiles('storage')) {
+        const rel = safeRel(root, absolutePath);
+        const relLower = rel.toLowerCase();
+        const isMatch = relLower === needle
+            || path.basename(relLower) === needle
+            || relLower.endsWith('/' + needle)
+            || relLower.includes(needle);
+        if (isMatch) {
+            matches.push({
+                collection: 'storage',
+                path: rel,
+                absolutePath,
+                folder: metadata.folder,
+                matchType: path.basename(relLower) === needle ? 'exact-name' : 'substring'
+            });
+        }
+    }
+    matches.sort((a, b) => (a.matchType === 'exact-name' ? -1 : 1) - (b.matchType === 'exact-name' ? -1 : 1));
+    return matches;
+}
+
+const FILE_MATCH_LIMIT = 20;
+
 // ── Tool handlers ─────────────────────────────────────────────────────
 
 export async function vdb_search(args, context) {
     const pr = createProgressReporter(context?.progress);
+
+    // Filename-like queries bypass semantic search entirely — the embedding
+    // of a filename carries no meaning, only noise.
+    if (looksLikeFileQuery(args?.query)) {
+        const matches = findPathMatches(args.query).slice(0, FILE_MATCH_LIMIT);
+        if (matches.length > 0) {
+            pr.done('Filename match');
+            const lines = matches.map(m =>
+                `[${m.collection}] ${m.path} (${m.matchType})${m.folder ? ` [folder:${m.folder}]` : ''}`
+            ).join('\n');
+            return {
+                content: [{
+                    type: 'text',
+                    text: `Query is filename-like — matched against indexed file paths instead of semantic search.\nFound ${matches.length} file(s):\n\n${lines}\n\nRaw results:\n${JSON.stringify(matches, null, 2)}`
+                }]
+            };
+        }
+        pr.done('No filename match');
+        return {
+            content: [{
+                type: 'text',
+                text: `Query is filename-like, but no indexed storage file matches "${args.query}". Note: only text files (.md .txt .json .js ...) under the storage root are indexed — use storage.list to browse the full tree.`
+            }]
+        };
+    }
+
     const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
     pr.done('Search complete');
 

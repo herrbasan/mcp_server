@@ -539,8 +539,11 @@ minutes) and exposes semantic search.
 
   vdb.search — { query*, collections?, folder?, extension?, top_k?,
                  approximate?, include_content? }
-      Semantic search over storage files. Docs are under folder 'docs';
-      use folder= to scope to a top-level storage folder.
+      Semantic search over storage files (by meaning, not name). Docs are
+      under folder 'docs'; use folder= to scope to a top-level storage folder.
+      Filename-like queries (e.g. "report_v2.md") are auto-detected and
+      matched against indexed file paths instead of embeddings. To browse
+      directories use storage.list.
 
   vdb.status — {}
       Show collection counts, last scan, and whether nVDB is loaded.
@@ -611,6 +614,11 @@ content that should survive beyond the current session.
 
   storage.search — { query*, folder?, extension?, top_k?, include_content? }
       Semantic search over files in storage via the vector database.
+
+  storage.search_file — { query*, path?, limit? }
+      Find files by NAME (substring or exact basename). The right tool for
+      "where is foo_v2.md?" — no embeddings, no full tree listing. Optional
+      path scopes the search; exact name matches rank first.
 
   storage.copy — { from*, to*, overwrite? }
       Copy a file or directory. Set overwrite:true to replace target.
@@ -861,6 +869,7 @@ IMPORTANT RULES
         "storage.replace": "storage_replace", "storage.find": "storage_find",
         "storage.grep": "storage_grep", "storage.batch": "storage_batch",
         "storage.import": "storage_import", "storage.readMany": "storage_readMany", "storage.recent": "storage_recent",
+        "storage.search_file": "storage_search_file",
         "storage.resources_list": "storage_resources_list",
         "storage.resources_read": "storage_resources_read",
         "storage.resources_templates": "storage_resources_templates",
