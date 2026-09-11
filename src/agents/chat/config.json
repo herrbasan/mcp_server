@@ -16,6 +16,15 @@
             }
         },
         {
+            "name": "chat_models",
+            "description": "List valid gateway chat model IDs (with owner/type metadata where available) — the authoritative source for the model argument of chat.create/update/send. Validation errors from those tools also inline the full valid-ID list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
             "name": "chat_send",
             "description": "Send a user message to a session and run its tool loop to completion. Returns { reply, toolCalls, hops, usage, messageCount, historyBytes }. The session's model sees ONE dispatcher tool ('workshop') giving it the full workshop tool catalog. Optional per-send model override (does NOT re-pin the session — use chat.update for that). Cyclic sends (target already upstream in the call chain) fail as tool-result errors, never queue.",
             "inputSchema": {

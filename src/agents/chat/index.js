@@ -110,8 +110,27 @@ function historyBytes(messages) {
 async function assertKnownModel(model) {
     const models = await GATEWAY.listModels('chat');
     if (!Array.isArray(models) || !models.some(m => m.id === model)) {
-        throw new Error(`Unknown gateway chat model: ${model} (validated against listModels('chat'))`);
+        // Include the valid IDs in the error so a typo is self-healing in one
+        // round trip — the caller doesn't need a separate discovery call (#35).
+        const valid = Array.isArray(models) ? models.map(m => m.id).join(', ') : 'unavailable';
+        throw new Error(`Unknown gateway chat model: ${model}. Valid chat model IDs: ${valid}. Call chat.models for details.`);
     }
+}
+
+// Discovery for chat model IDs (#35): what the gateway currently serves.
+// chat.create/update/send validate against this same list.
+export async function chat_models() {
+    const models = await GATEWAY.listModels('chat');
+    if (!Array.isArray(models)) throw new Error(`chat.models: gateway returned non-array model list (${typeof models})`);
+    return toMcp({
+        ok: true,
+        count: models.length,
+        models: models.map(m => ({
+            id: m.id,
+            ...(m.owned_by !== undefined ? { ownedBy: m.owned_by } : {}),
+            ...(m.type !== undefined ? { type: m.type } : {})
+        }))
+    });
 }
 
 // The tool router holder is captured at init but filled by server.js after

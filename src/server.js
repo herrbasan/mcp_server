@@ -739,6 +739,10 @@ fails as a tool-result error, never hangs).
       gateway chat model ID (validated at create time).
       Name charset: [a-z0-9][a-z0-9._-]*.
 
+  chat.models — {}
+      List valid gateway chat model IDs (with owner/type metadata where
+      available). The authoritative source for model args everywhere.
+
   chat.send — { name*, message*, model? }
       Send a user message; runs the tool loop to completion. Returns
       { reply, toolCalls, hops, usage, messageCount, historyBytes }.
@@ -881,6 +885,7 @@ IMPORTANT RULES
         "forge.help": "forge_help",
 
         "chat.create": "chat_create", "chat.send": "chat_send",
+        "chat.models": "chat_models",
         "chat.inject": "chat_inject", "chat.list": "chat_list",
         "chat.status": "chat_status",
         "chat.history": "chat_history", "chat.update": "chat_update",
