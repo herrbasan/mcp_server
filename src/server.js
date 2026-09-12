@@ -701,6 +701,12 @@ and execute them in isolated worker_threads with Gateway access.
   forge.call — { name*, args?, payload?, timeout?, captureLogs? }
       Execute a tool. payload[] items (file paths or URLs) resolved to Buffers
       on main thread before worker spawn. Timeout enforced via worker.terminate().
+      ⚠️ payload PATH RESOLUTION: http(s):// URLs are fetched; UNC paths
+      (\\BADKID\...) are translated to local; absolute paths (D:\...) are read
+      directly; RELATIVE paths resolve against the SERVER's project root
+      (D:\DEV\mcp_server), NOT the storage root — for storage files prefer
+      absolute paths (D:\MCP_Storage\<path>) or storage-rooted relative
+      paths like ../../MCP_Storage/<path>.
 
   forge.history — { name?, limit? }
       Git log for a tool or all tools.

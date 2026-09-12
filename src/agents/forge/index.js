@@ -140,6 +140,12 @@ async function gitShowFile(file, ref) {
 // ── Tool Name Validation ─────────────────────────────────────────────────────
 const NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 function validateName(name) {
+    // typeof guard first: NAME_RE.test(undefined) coerces to the string
+    // "undefined", which MATCHES the snake_case regex — producing a tool
+    // literally named "undefined" (observed 2026-09-12).
+    if (typeof name !== 'string') {
+        throw new Error(`Invalid tool name: expected string, got ${typeof name}. forge.write requires { name, description, code } at the top level of the call args.`);
+    }
     if (!NAME_RE.test(name)) {
         throw new Error(`Invalid tool name "${name}". Must be snake_case: lowercase letters, digits, underscores. Max 64 chars. Must start with a letter.`);
     }
