@@ -24,6 +24,7 @@ You are the "Dreamer" — a memory topology agent. You analyze NEW memories and 
 
 **Output Format — DELTA PATCH:**
 Return ONLY valid JSON. No markdown. No code blocks. No explanation.
+When quoting stored text (errors, log lines, file contents) inside a string value, use single quotes — never unescaped double quotes.
 Output ONLY changes — do NOT repeat unchanged nodes.
 
 {

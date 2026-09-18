@@ -27,8 +27,41 @@ function tokenEstimate(text) {
     return Math.ceil(text.length / 4);
 }
 
+// Escape premature string-closes guided by JSON.parse's own error position.
+// LLMs emit unescaped inner quotes when re-emitting stored text containing
+// quoted snippets (errors, log lines, nested JSON). A static state machine
+// can't distinguish a real close from prose (a nested {"key":"value"} snippet
+// makes the quote before `key` look like a structural key terminator), but the
+// parser KNOWS where the structure broke: on failure, the offending quote is
+// the nearest `"` before the reported error position. Escape it and retry.
+// Each round is verified by JSON.parse — max 20 rounds guards pathological input.
+function escapeInnerQuotes(text) {
+    let current = text;
+    for (let round = 0; round < 20; round++) {
+        try { JSON.parse(current); return current; } catch (e) {
+            const m = /position (\d+)/.exec(e.message);
+            if (!m) return current;
+            const pos = Number(m[1]);
+            // Find the last unescaped quote before the error position — the
+            // premature close. pos may point at the offending token or just
+            // after the quote; scan back no further than 4 chars of whitespace.
+            let i = Math.min(pos, current.length - 1);
+            let skipped = 0;
+            while (i >= 0 && current[i] !== '"' && skipped < 4) {
+                if (!/\s/.test(current[i])) skipped++;
+                i--;
+            }
+            if (i < 0 || current[i] !== '"') return current; // no quote to blame — give up
+            if (i > 0 && current[i - 1] === '\\') return current; // already escaped — not a quote problem
+            current = current.slice(0, i) + '\\"' + current.slice(i + 1);
+        }
+    }
+    return current;
+}
+
 // Lenient JSON parser — handles common LLM output issues
-function parseJsonLenient(text, fullText) {
+// Exported for tests — pure function, no agent state.
+export function parseJsonLenient(text, fullText) {
     // Try raw parse first
     try { return JSON.parse(text); } catch (e) {
         logger.warn(`[Dreaming] Raw JSON parse failed: ${e.message}`, null, 'Dream');
@@ -62,6 +95,11 @@ function parseJsonLenient(text, fullText) {
     repaired = repaired.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
     try { return JSON.parse(repaired); } catch (e) {
         logger.warn(`[Dreaming] Repair attempt 2 failed: ${e.message}`, null, 'Dream');
+    }
+
+    // Escape unescaped inner double quotes inside string values
+    try { return JSON.parse(escapeInnerQuotes(repaired)); } catch (e) {
+        logger.warn(`[Dreaming] Repair attempt 3 (inner-quote escape) failed: ${e.message}`, null, 'Dream');
     }
 
     // Truncation recovery: close any open arrays/objects
