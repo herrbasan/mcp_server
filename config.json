@@ -30,7 +30,8 @@
       "ttlMinutes": 30
     },
     "telemetry": {
-      "localwebUrl": "http://192.168.0.100:4445"
+      "localwebUrl": "http://192.168.0.100:4445",
+      "npmUrl": "http://192.168.0.100:9333"
     },
     "chat": {
       "dir": "data/chat/sessions",

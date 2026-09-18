@@ -3,10 +3,12 @@ import { getLogger } from '../../utils/logger.js';
 const logger = getLogger();
 
 let localwebUrl = 'http://192.168.0.100:4445';
+let npmUrl = 'http://192.168.0.100:9333';
 
 export async function init(context) {
     localwebUrl = context.config.agents?.telemetry?.localwebUrl ?? localwebUrl;
-    return { status: 'initialized', localwebUrl };
+    npmUrl = context.config.agents?.telemetry?.npmUrl ?? npmUrl;
+    return { status: 'initialized', localwebUrl, npmUrl };
 }
 
 export async function shutdown() {}
@@ -111,13 +113,28 @@ function renderServices(o) {
         lines.push(row);
     }
     const an = o.analysis;
-    if (an && an.issuesFound > 0) {
+    if (an) {
         lines.push('');
-        lines.push(`LLM findings (${an.issuesFound}):`);
-        for (const i of an.issues) lines.push(`- [${i.severity}] ${i.service}: ${i.summary} — ${i.details}`);
-    } else if (an) {
-        lines.push('');
-        lines.push(`LLM findings: none (last scan ${an.lastScanAt ?? 'never'})`);
+        lines.push(`### LLM log findings — ${an.issuesFound} open (scan ${an.lastScanAt ?? 'never'}, status ${an.status}${an.error ? `, error: ${an.error}` : ''})`);
+        if (an.recommendation) lines.push(`overall: ${an.recommendation}`);
+        if (an.issuesFound > 0) {
+            // Dedupe persisted findings that repeat identical content.
+            const seen = new Set();
+            const unique = an.issues.filter(i => {
+                const k = `${i.service}|${i.summary}|${i.details}`;
+                if (seen.has(k)) return false;
+                seen.add(k);
+                return true;
+            });
+            for (const i of unique) {
+                const day = i.ts ? i.ts.slice(0, 10) : '?';
+                lines.push(`- [${i.severity}] ${i.service} (${day}, id ${i.id}): ${i.summary}`);
+                lines.push(`  error: ${i.details}`);
+                lines.push(`  follow-up: ${npmUrl}/api/services/${encodeURIComponent(i.service)}/logs?level=ERROR | rescan: POST ${npmUrl}/api/llm/analyze {"service":"${i.service}"}`);
+            }
+        } else {
+            lines.push('none — all services clean');
+        }
     }
     return lines.join('\n');
 }
