@@ -29,6 +29,49 @@ let MAIN_CONTEXT;     // forge's init context — relayed to MCP handlers so con
 let GIT_WRITE_QUEUE;
 let SEMAPHORE;
 
+// ── Running-call registry (issue #43) ────────────────────────────────────────
+// callId → { name, startedAt, worker, spawned:Set<pid>, stopping }
+// Tracks every live forge worker plus the OS processes it spawned via ctx.spawn,
+// so timeouts and forge.stop can tear down the whole tree, not just the thread.
+const RUNNING = new Map();
+
+// Kill one PID and (on Windows) its entire process tree. Fire-and-forget;
+// a PID that already exited is normal — taskkill reports "not found", logged
+// at info, not an error.
+async function killProcessTree(pid, name) {
+    if (process.platform === 'win32') {
+        try {
+            await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F']);
+            logger.info(`[Forge] Killed process tree pid=${pid} (tool "${name}")`, null, 'Forge');
+        } catch (e) {
+            const gone = /not found|no such|cannot find|terminated/i.test(String(e.message || e.stderr || ''));
+            if (!gone) logger.warn(`[Forge] taskkill pid=${pid} (tool "${name}") failed: ${e.message || e}`, null, 'Forge');
+        }
+    } else {
+        try {
+            process.kill(pid, 'SIGKILL');
+            logger.info(`[Forge] Killed process pid=${pid} (tool "${name}")`, null, 'Forge');
+        } catch {
+            // already dead — ESRCH is the normal case
+        }
+    }
+}
+
+// Tear down a RUNNING entry's spawned process tree and unregister it.
+// Called from every settle path (result, error, exit, idle/hard/boot timeout,
+// forge.stop). Children deregister on clean exit, so only still-running
+// processes get killed — including daemons a successful tool left behind
+// (deliberate: forged tools must not leak background processes).
+function teardownEntry(entry) {
+    if (!entry || entry.tornDown) return;
+    entry.tornDown = true;
+    for (const pid of entry.spawned) {
+        killProcessTree(pid, entry.name);
+    }
+    entry.spawned.clear();
+    RUNNING.delete(entry.callId);
+}
+
 // ── Defaults ─────────────────────────────────────────────────────────────────
 const DEFAULTS = {
     defaultTimeout: 300000,      // idle: kill after 5 min of silence
@@ -67,7 +110,12 @@ function createSemaphore(max, queueTimeout) {
                     resolve(() => { active--; if (queue.length) queue.shift()(); });
                 } else {
                     const timer = setTimeout(() => {
-                        const idx = queue.indexOf(tryAcquire);
+                        // BUGFIX (issue #40): splice out WRAPPED, not tryAcquire —
+                        // the queue holds wrapped; indexOf(tryAcquire) was always
+                        // -1, so the timed-out entry stayed queued, later grabbed a
+                        // slot, incremented `active` resolving an already-rejected
+                        // promise, and leaked that slot forever.
+                        const idx = queue.indexOf(wrapped);
                         if (idx !== -1) queue.splice(idx, 1);
                         reject(new Error(`Forge queue timeout after ${queueTimeout}ms — too many concurrent calls`));
                     }, queueTimeout);
@@ -395,7 +443,7 @@ const WORKER_BOOTSTRAP = path.join(__dirname, 'worker-bootstrap.js');
 // calls that exceed it fail loud as tool-result errors.
 const MAX_FORGE_DEPTH = 3;
 
-async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress, defaultModel, depth = 0 }) {
+async function executeInWorker({ name, args, payloadBuffers, workspacePath, toolStatePath, storagePath, timeout, captureLogs, progress, defaultModel, depth = 0, callId }) {
     const sourcePath = toolPath(name);
     const source = fs.readFileSync(sourcePath, 'utf8');
     logger.info(`[Forge:worker] Source loaded for "${name}": ${source.length} chars, spawning worker`, null, 'Forge');
@@ -425,7 +473,14 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     let idleCheckScheduled = false;
     let lastActivityAt = 0;
 
+    // Registry entry (issue #43): worker assigned after spawn below; PID set
+    // filled by 'spawned' messages from ctx.spawn(). teardownEntry kills the
+    // whole tree — worker.terminate() alone leaves OS children running.
+    const entry = { callId, name, startedAt: Date.now(), worker: null, spawned: new Set(), tornDown: false };
+    RUNNING.set(callId, entry);
+
     const cleanup = () => {
+        teardownEntry(entry);
         clearTimeout(hardTimer);
         clearTimeout(bootTimer);
         // The idle check is a setImmediate loop — it stops itself via `settled`.
@@ -671,6 +726,8 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
     // Transfer ports to the worker. Payload Buffers are structured-cloned (copied)
     // — transferring them requires them to be the exact objects in the transferList
     // and causes issues with some Node versions. The copy overhead is acceptable.
+    entry.worker = worker;
+
     const transferList = [gatewayPort2, progressPort2];
     if (BROWSER_AGENT) transferList.push(browserPort2);
     if (TOOL_ROUTER) transferList.push(mcpPort2);
@@ -708,6 +765,14 @@ async function executeInWorker({ name, args, payloadBuffers, workspacePath, tool
         worker.on('message', (msg) => {
             if (msg.type === 'ready') { armOnReady(); return; }
             activity();
+            if (msg.type === 'spawned') {
+                if (!entry.tornDown) entry.spawned.add(msg.pid);
+                return;
+            }
+            if (msg.type === 'spawn-exited') {
+                entry.spawned.delete(msg.pid);
+                return;
+            }
             if (msg.type === 'result') {
                 if (settled) return;
                 settled = true;
@@ -966,6 +1031,7 @@ export async function forge_call(args, context) {
     }
 
     const timeout = Math.min(reqTimeout || CONFIG.defaultTimeout, CONFIG.maxTimeout);
+    const callId = `call-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
 
     // Resolve payload on main thread (scenario 3.x: fail before worker spawn)
     let payloadBuffers;
@@ -1011,7 +1077,8 @@ export async function forge_call(args, context) {
             captureLogs: true,
             progress,
             defaultModel: model || null,
-            depth
+            depth,
+            callId
         });
         logger.info(`[Forge] Worker DONE for "${name}": result type ${typeof workerData.result}, ${workerData.logs?.length || 0} log lines`, null, 'Forge');
     } catch (e) {
@@ -1057,6 +1124,7 @@ export async function forge_call(args, context) {
         (typeof result === 'object' && Object.keys(result).length === 0);
 
     const diagnostics = {
+        callId,
         durationMs,
         resultIsEmpty,
         logCount: logs?.length || 0,
@@ -1079,6 +1147,44 @@ export async function forge_call(args, context) {
         ...(resultIsEmpty ? { _warning: 'Tool returned an empty result (undefined, null, or empty object). This is often a bug — check your console output (_logs) for errors.' } : {}),
         ...(sizeChecked.oversized ? { _note: 'Result was oversized, saved to storagePath and listed in _outputs' } : {})
     });
+}
+
+export async function forge_stop(args, context) {
+    const { callId, name, all } = args;
+
+    // No selector → read-only listing of running calls (safety: an accidental
+    // bare invocation must not kill everything).
+    if (!callId && !name && !all) {
+        const running = [...RUNNING.values()].map(e => ({
+            callId: e.callId,
+            name: e.name,
+            startedAt: new Date(e.startedAt).toISOString(),
+            runtimeMs: Date.now() - e.startedAt,
+            spawnedProcesses: e.spawned.size
+        }));
+        return mcpOk({ op: 'stop', running, count: running.length, note: 'Pass { callId }, { name }, or { all: true } to stop calls.' });
+    }
+
+    const targets = all
+        ? [...RUNNING.values()]
+        : [...RUNNING.values()].filter(e => (callId && e.callId === callId) || (name && e.name === name));
+    if (targets.length === 0) {
+        return mcpError(`No running forge call matches ${callId ? `callId "${callId}"` : `name "${name}"`}. Call forge_stop with no args to list running calls.`);
+    }
+
+    const stopped = [];
+    for (const entry of targets) {
+        entry.stopping = true;
+        logger.warn(`[Forge] forge_stop: terminating "${entry.name}" (callId ${entry.callId}, ${entry.spawned.size} live child process(es))`, null, 'Forge');
+        // Kill the process tree FIRST (children may ignore nothing once the
+        // worker is gone), then the worker. Its exit handler rejects the
+        // pending forge_call promise and runs cleanup/teardown.
+        for (const pid of entry.spawned) killProcessTree(pid, entry.name);
+        entry.worker?.terminate().catch(err => logger.warn(`[Forge] forge_stop terminate failed for "${entry.name}": ${err.message}`, null, 'Forge'));
+        stopped.push({ callId: entry.callId, name: entry.name, spawnedProcessesKilled: entry.spawned.size });
+        entry.spawned.clear();
+    }
+    return mcpOk({ op: 'stop', stopped, count: stopped.length });
 }
 
 export async function forge_history(args, context) {
@@ -1149,6 +1255,7 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.toolStatePath    — Absolute path to persistent per-tool state directory (survives across calls)
   ctx.storagePath      — Absolute path to persistent per-tool output directory (survives across calls, user-visible)
   ctx.fileops          — Confined file ops rooted at ctx.storagePath (PREFER THIS over raw fs)
+  ctx.spawn      — Child process spawner with bookkeeping (see ctx.spawn API below)
   ctx.args       — The args object passed to forge_call (same as first parameter)
 
 ctx.mcp API (workshop dispatcher — same router the chat agent uses)
@@ -1268,6 +1375,25 @@ ctx.progress API
       (src/utils/progress-reporter.js) for throttle + monotonic clamping —
       forged tools can call ctx.progress directly since they own their pacing.
 
+ctx.spawn API (child processes with kill-on-teardown bookkeeping — issue #43)
+  const child = ctx.spawn(cmd, args, opts?)  — same signature as child_process.spawn
+
+  EVERY child process a tool starts MUST go through ctx.spawn, never a direct
+  child_process.spawn/import. The PID is registered with the orchestrator so
+  that on timeout, cancel (forge.stop), or crash the ENTIRE process tree is
+  killed (taskkill /T /F on Windows). Processes that exit cleanly deregister
+  themselves. A tool that leaves a still-running process behind at return will
+  have it killed at teardown — finish, await, or explicitly kill background
+  work before returning.
+
+  The returned object is the standard ChildProcess: use child.stdout/stderr
+  streams, await the 'exit'/'close' events, etc.
+
+  Example:
+    const yt = ctx.spawn('yt-dlp', ['-x', '--audio-format', 'wav', url]);
+    yt.stderr.on('data', d => ctx.progress('yt-dlp: ' + d.toString().slice(0, 120)));
+    await new Promise((res, rej) => { yt.on('close', res); yt.on('error', rej); });
+
 ctx.payload
   Array of Node.js Buffers. Each item corresponds to a payload[] entry passed to forge_call.
   payload: ["C:\\\\path\\\\to\\\\file.pdf", "https://example.com/data.csv"]
@@ -1308,7 +1434,9 @@ CONSTRAINTS
   - Max return: 10KB inline (larger results saved to workspace, pointer returned)
   - Max concurrent calls: 8 (configurable)
   - Packages: must be in allowlist (config.json agents.forge.allowedPackages)
-  - No child_process, no worker_threads, no process.exit() from tools
+  - Child processes ONLY via ctx.spawn (auto-kill on timeout/cancel — see above).
+    Direct child_process imports bypass tree-kill bookkeeping and are forbidden.
+  - No worker_threads, no process.exit() from tools
   - Node built-ins (fs, path, crypto, etc.) are available
 
 BEST PRACTICES

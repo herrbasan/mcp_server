@@ -82,6 +82,18 @@
             }
         },
         {
+            "name": "forge_stop",
+            "description": "Stop a running forge call — terminates its worker AND kills all child processes it spawned via ctx.spawn (issue #43). With no args, lists running calls (read-only, kills nothing). Select targets with { callId } (from a forge_call response _diagnostics), { name } (all running calls of that tool), or { all: true }. The stopped forge_call rejects with a termination error at its caller.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "callId": { "type": "string", "description": "Exact callId of the running call to stop" },
+                    "name": { "type": "string", "description": "Stop ALL running calls of this tool" },
+                    "all": { "type": "boolean", "description": "Stop every running forge call" }
+                }
+            }
+        },
+        {
             "name": "forge_history",
             "description": "Show git log for a tool (or all tools). Each entry has hash, date, message.",
             "inputSchema": {

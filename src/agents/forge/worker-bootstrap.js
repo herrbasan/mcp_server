@@ -1,5 +1,6 @@
 import { workerData, parentPort } from 'worker_threads';
 import { pathToFileURL } from 'url';
+import { spawn as cpSpawn } from 'child_process';
 import { writeFile, mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -258,6 +259,23 @@ function createProgressProxy(port) {
     };
 }
 
+// ── Spawn Proxy (issue #43) ──────────────────────────────────────────────────
+// ctx.spawn() is THE way forged tools start child processes. Every spawned PID
+// is registered with the main thread so teardown (timeout, cancel, crash) kills
+// the whole process tree — worker.terminate() alone leaves OS children running
+// (incident 2026-09-17: orphaned yt-dlp + pyannote GPU jobs degraded Badkid).
+// PIDs deregister on exit, so only still-running children get killed.
+function createSpawnProxy() {
+    return function spawn(cmd, spawnArgs = [], opts = {}) {
+        const child = cpSpawn(cmd, spawnArgs, { stdio: ['pipe', 'pipe', 'pipe'], ...opts });
+        if (child.pid) parentPort.postMessage({ type: 'spawned', pid: child.pid });
+        const deregister = () => parentPort.postMessage({ type: 'spawn-exited', pid: child.pid });
+        child.on('exit', deregister);
+        child.on('error', deregister);
+        return child;
+    };
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function run() {
     const { source, args, payload, workspacePath, toolStatePath, storagePath, uncShare, localRoot } = { ...workerData, ...initData };
@@ -313,6 +331,7 @@ async function run() {
         browser: browserPort ? createBrowserProxy(browserPort) : null,
         mcp: mcpPort ? createMcpProxy(mcpPort, mcpDepth) : null,
         progress: createProgressProxy(progressPort),
+        spawn: createSpawnProxy(),
         payload: resolvedPayload,
         workspacePath,
         toolStatePath,

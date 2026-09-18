@@ -708,6 +708,10 @@ and execute them in isolated worker_threads with Gateway access.
       absolute paths (D:\MCP_Storage\<path>) or storage-rooted relative
       paths like ../../MCP_Storage/<path>.
 
+  forge.stop — { callId?, name?, all? }
+      Stop a running forge call: kills its worker + all child processes it
+      spawned (ctx.spawn bookkeeping). No args → list running calls, kill nothing.
+
   forge.history — { name?, limit? }
       Git log for a tool or all tools.
 
@@ -888,6 +892,7 @@ IMPORTANT RULES
         "forge.read": "forge_read", "forge.list": "forge_list",
         "forge.delete": "forge_delete", "forge.call": "forge_call",
         "forge.history": "forge_history", "forge.rollback": "forge_rollback",
+        "forge.stop": "forge_stop",
         "forge.help": "forge_help",
 
         "chat.create": "chat_create", "chat.send": "chat_send",
