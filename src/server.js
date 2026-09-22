@@ -466,9 +466,10 @@ INSPECTOR — Code Analysis
 Iterative code analysis and review. Analyze existing code files, find bugs,
 explain architecture, or suggest improvements.
 
-  inspector.inspect_code — { files*, task? }
+  inspector.inspect_code — { files*, prompt* }
       Analyze existing code files iteratively. Finds bugs, explains
       architecture, or suggests improvements. File paths must be absolute.
+      prompt: the review task/question for the model.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -495,11 +496,11 @@ it. Supports multiple analysis passes on the same image.
       Analyze the loaded image. query: what to look for. focus: constrain
       analysis to a specific region, grid cell, or center crop.
 
-  telemetry.report — { sections?: ["status"|"alerts"|"cluster"|"services"] }
+  telemetry.report — { sections?: ["status"|"hardware"|"alerts"|"cluster"|"services"] }
       Combined read-only lab telemetry report from localweb2: environment
-      heartbeat (PCs, WAN, latency, weather), active alerts, cluster
-      power/thermal summary, service states with LLM health findings.
-      Log tails stripped. Optional sections param to limit scope.
+      heartbeat (PCs, WAN, latency, weather), per-PC hardware stats, active
+      alerts, cluster power/thermal summary, service states with LLM health
+      findings. Log tails stripped. Optional sections param to limit scope.
 
 
 ═══════════════════════════════════════════════════════════════
