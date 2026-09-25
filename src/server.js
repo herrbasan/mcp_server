@@ -496,6 +496,23 @@ it. Supports multiple analysis passes on the same image.
       Analyze the loaded image. query: what to look for. focus: constrain
       analysis to a specific region, grid cell, or center crop.
 
+
+═══════════════════════════════════════════════════════════════
+IMAGE — Image Generation
+═══════════════════════════════════════════════════════════════
+
+Generate images via the gateway's image models. Results are rendered into
+MCP storage under images/ as webp in five sizes (full, 1920, 1280, 720,
+180) plus a .json sidecar with prompt, model, usage/cost and lineage.
+The caller copies out whichever sizes it needs.
+
+  image.generate — { prompt*, name?, references?, model?, size?, aspect_ratio?, seed?, extra_body? }
+      Generate (or edit, when references is set) an image. Base name:
+      YYYYMMDD_HHMM_<slug>. references: storage paths or http(s) URLs for
+      image-to-image on editing-capable models. Returns the file list plus
+      an inline preview (largest derived variant, 1280px). Takes 1-2 minutes
+      — the tool waits internally.
+
   telemetry.report — { sections?: ["status"|"hardware"|"alerts"|"cluster"|"services"] }
       Combined read-only lab telemetry report from localweb2: environment
       heartbeat (PCs, WAN, latency, weather), per-PC hardware stats, active
@@ -866,6 +883,8 @@ IMPORTANT RULES
         "vision.session_create": "vision_create_session", "vision.session_list": "vision_list_sessions",
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
+
+        "image.generate": "image_generate",
 
         "telemetry.report": "telemetry_report",
 

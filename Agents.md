@@ -12,7 +12,7 @@
 - **Entry point**: `src/server.js` — HTTP server on port 3100.
 - **Transport**: Per-session SSE mapped by `sessionId`.
 - **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
-- **Agents**: `src/agents/` — browser, chat, dreaming, forge, github, inspector, llm, memory, research, storage, vision.
+- **Agents**: `src/agents/` — browser, chat, dreaming, forge, github, image, inspector, llm, memory, research, storage, telemetry, vision.
 - **Loader**: `src/agent-loader.js` — loads agents and registers tools.
 - **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 

@@ -40,6 +40,7 @@ nesting level.
 | **llm** | `llm.query`, `llm.session_create/query/close` | One-shot clean-context queries + in-memory pinned sessions. | [llm.md](llm.md) |
 | **github** | `git.read/tree/log/commit/diff/branches/repo_info`, `git.search_repos/code/issues`, `git.issue_*`, `git.pr_list/get` (17) | GitHub REST relay (read-heavy; issue writes). Needs `GIT_TOKEN`. | [github.md](github.md) |
 | **vision** | `vision.session_create/analyze/get/list/close` | Multi-pass image analysis with region/grid focus, preprocessed via nMedia. | [vision.md](vision.md) |
+| **image** | `image.generate` | Image generation via gateway, rendered to webp size variants + JSON sidecar in storage; inline thumbnail in the result. | [image.md](image.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 

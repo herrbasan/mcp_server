@@ -1,0 +1,24 @@
+{
+    "agent": "image",
+    "description": "Image generation via the LLM Gateway (POST /v1/images/generations) with automatic variant rendering into MCP storage. Generates text-to-image and image-to-image (editing) results, renders a fixed set of webp sizes (full, 1920, 1280, 720, 180) plus a JSON sidecar with prompt/metadata, and returns the file list along with a small inline thumbnail.",
+    "tools": [
+        {
+            "name": "image_generate",
+            "description": "Generate an image from a text prompt (or edit reference images when `references` is given) via the gateway's image models. The result is rendered into MCP storage under images/ as webp in five sizes — <base>_full.webp, <base>_1920.webp, <base>_1280.webp, <base>_720.webp, <base>_180.webp — plus <base>.json with the full prompt, model, usage/cost, and lineage. Base name: YYYYMMDD_HHMM_<slug>. Returns the storage paths of all files plus an inline preview (largest derived variant, 1280px). The caller copies out whichever sizes it needs (e.g. for documents, og:images, thumbnails). Downscales are shrink-only: sources smaller than a size yield that size identical to full. Optional `references` enables image-to-image editing on models with editing capability — pass storage paths (e.g. 'images/foo_720.webp') or http(s) URLs. Generation can take 1-2 minutes; the tool handles the long wait internally.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prompt": { "type": "string", "description": "Text prompt describing the desired image (required)." },
+                    "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to a slug derived from the first words of the prompt." },
+                    "references": { "type": "array", "items": { "type": "string" }, "description": "Optional image references for image-to-image editing: storage paths (relative to storage root) or http(s) URLs. Requires an editing-capable model." },
+                    "model": { "type": "string", "description": "Gateway image model ID (e.g. 'krea-2-image', 'qwen-image-3'). Omit to use the gateway's default imagegen task routing — recommended." },
+                    "size": { "type": "string", "description": "OpenAI-style 'WxH' (e.g. '1920x1080'). Snapped to the model's nearest declared aspect ratio. Default when omitted (and no aspect_ratio): 1920x1440 (4:3 at 2K)." },
+                    "aspect_ratio": { "type": "string", "description": "Direct 'W:H' (e.g. '16:9'). Wins over size." },
+                    "seed": { "type": "number", "description": "Seed passed through to the provider." },
+                    "extra_body": { "type": "object", "description": "Provider extras merged into the request (e.g. Krea: creativity, intensity, complexity, movement)." }
+                },
+                "required": ["prompt"]
+            }
+        }
+    ]
+}
