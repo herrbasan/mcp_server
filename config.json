@@ -16,6 +16,10 @@
       "viewport": { "width": 1280, "height": 1800 },
       "userDataDir": "data/chrome-profile"
     },
+    "usage-monitor": {
+      "intervalMinutes": 10,
+      "autoStart": true
+    },
     "memory": {
       "dbPath": "data/memories/data.jsonl",
       "maxMemoryChars": 6000

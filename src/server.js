@@ -163,6 +163,21 @@ async function start() {
         res.sendFile(mapPath);
     });
 
+    // ── Usage limits data API ──
+    // GET /usage-limits.json — consolidated LLM subscription usage written by
+    // the usage-monitor agent (every 10 min). Consumed by the localweb2
+    // dashboard. Read fresh per request; no-store so the dashboard always
+    // polls current data.
+    app.get('/usage-limits.json', (req, res) => {
+        const usagePath = path.join(__dirname, '..', 'data', 'usage-limits.json');
+        if (!fs.existsSync(usagePath)) {
+            res.status(404).json({ error: 'No usage data yet — appears after the first usage-monitor cycle.' });
+            return;
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        res.sendFile(usagePath);
+    });
+
     // PATCH /api/config - deep-merge update config (persists to config.json)
     app.patch('/api/config', adminOnly, express.json({ limit: '300mb' }), (req, res) => {
         const patch = req.body;

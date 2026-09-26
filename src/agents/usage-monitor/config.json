@@ -1,0 +1,23 @@
+{
+    "agent": "usage-monitor",
+    "description": "LLM subscription usage collector — scrapes/APIs provider dashboards (z.ai, Gemini, Kimi, MiniMax, OpenAI, Anthropic via browser profile; DeepSeek, OpenRouter via direct API) on a timer and writes a consolidated normalized JSON for the localweb2 dashboard.",
+    "dependsOn": ["browser"],
+    "tools": [
+        {
+            "name": "usage_scan",
+            "description": "Run a usage collection cycle NOW (all providers), bypassing the timer. Returns the consolidated normalized result: per-provider windows (kind: 5h|weekly|tpm-day|monthly|pool) with usedPct/used/limit/unit/resetAt, plus a stale[] list of providers that failed this cycle.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "usage_status",
+            "description": "Show usage-monitor health: timer state, last run timestamp and duration, per-provider last-success age and last error. Read-only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    ]
+}

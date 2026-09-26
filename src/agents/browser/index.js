@@ -167,12 +167,10 @@ export async function init() {
             activePages.add(page);
             log(`New page opened [${pageId}], total active: ${activePages.size}`);
             
-            // Stealth evasion basics & default viewport
+            // Viewport only — no UA/Accept-Language spoofing. The stale
+            // Chrome/120 claim under a newer engine was a stronger bot signal
+            // than the untouched defaults (Cloudflare, DeepSeek 2026-09-26).
             await page.setViewport(defaultViewport);
-            await page.setExtraHTTPHeaders({
-                'Accept-Language': 'en-US,en;q=0.9'
-            });
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
             
             let isClosed = false;
             
@@ -480,11 +478,12 @@ export async function browser_session_create(args, context) {
     const sessionId = randomUUID();
 
     await page.setViewport(viewport);
-    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    // No UA/Accept-Language overrides unless the caller passes one. A spoofed
+    // stale UA (Chrome/120 under a 143+ engine) contradicts the TLS/JS
+    // fingerprint and trips Cloudflare bot detection (seen on DeepSeek
+    // 2026-09-26). The real engine UA is the only self-consistent claim.
     if (userAgent) {
         await page.setUserAgent(userAgent);
-    } else {
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     }
 
     // Set up console message capture for this session
