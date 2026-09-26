@@ -1,6 +1,6 @@
-import { workerData, parentPort } from 'worker_threads';
 import { pathToFileURL } from 'url';
 import { spawn as cpSpawn } from 'child_process';
+import { register } from 'node:module';
 import { writeFile, mkdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -8,33 +8,141 @@ import { randomUUID } from 'crypto';
 import { createFileOps } from '../../lib/fileops.js';
 import { createPathTranslator } from '../storage/path-translator.js';
 
-// ── Worker Bootstrap ──────────────────────────────────────────────────────────
-// Runs inside each worker_thread. Receives { source, args, payload, workspacePath,
-// toolStatePath, captureLogs } via workerData, and { gatewayPort, progressPort }
-// via the init message.
+// ── Tool sandbox: refuse the process/thread modules (issue #38) ───────────────
+// The guide forbids a direct child_process import because a PID started that way
+// is never registered with the orchestrator, so neither the timeout nor
+// forge_stop can reap it (observed: an orphaned spawnSync grandchild survived a
+// worker termination in data/_test/forge-terminate-uninterruptible.cjs). That
+// rule was documentation only until now. Registering a resolve hook here turns it
+// into an enforced, loud failure.
 //
-// The tool source is written to a temp file and dynamically imported.
-// Gateway and progress are proxied via MessagePort to the main thread.
+// Sequencing: this file's own static imports are resolved when the module is
+// instantiated, so `spawn` above is already linked and is unaffected. The hook
+// applies to everything imported afterwards, which is the tool source (written to
+// a temp file and imported inside run()).
+//
+// Boundary, measured not assumed (data/_test/forge-sandbox-probe.cjs): the hook
+// catches static imports, dynamic import(), and string-built specifiers. It does
+// NOT catch createRequire(...)('child_process'), which goes through the CJS
+// loader. This is a guardrail against an LLM author taking the obvious shortcut,
+// not a sandbox against an adversary — and the guide says exactly that.
+register(new URL('./deny-hooks.mjs', import.meta.url).href);
 
-let gatewayPort = null;
-let browserPort = null;
-let mcpPort = null;
-let progressPort = null;
+// ── Worker Bootstrap ──────────────────────────────────────────────────────────
+// Runs inside a forked CHILD PROCESS (one per forge_call). Everything it needs —
+// source, args, payload, paths, limits — arrives in the init message, because a
+// forked child has no workerData.
+
 let initialized = false;
 let initData = {};
 let defaultModel = null;
 let mcpDepth = 0;
 
+// ── IPC transport ─────────────────────────────────────────────────────────────
+// The tool runs in a forked child process rather than a worker thread (issue
+// #37). The reason is measured, not theoretical: a V8 heap-limit failure inside a
+// worker thread aborts the ENTIRE server process even with resourceLimits set,
+// taking every client's session with it. data/_test/forge-oom-probe.cjs
+// reproduces that — object churn under a 512 MB cap exits 134 with "FATAL ERROR:
+// Reached heap limit". A forked child owns its address space, so an abort there
+// kills the tool and nothing else, and taskkill /T reaches it unconditionally
+// without asking V8 about safepoints.
+//
+// The four logical channels (gateway, browser, mcp, progress) are multiplexed over
+// the single IPC channel, tagged by `channel`. That is a deliberate simplification:
+// the only bulk transfer is the init payload, which arrives BEFORE the tool starts,
+// so there is no in-flight relay traffic for it to block. Everything after init is
+// small.
+//
+// channelPort() presents the MessagePort surface the proxies were written against
+// (on('message') / postMessage / start / close), so the proxy bodies themselves
+// needed no changes for the transport swap. Minimum diff on the most dangerous
+// code path is worth a thin adapter.
+const CHANNEL_HANDLERS = new Map();
+
+// The parent may be gone while we still have work in flight (cancel, timeout,
+// crash). Writing to a closed IPC channel throws ERR_IPC_CHANNEL_CLOSED, and it
+// would throw from inside console.log, turning a tool's log line into a crash.
+// Dropping the message is the correct answer: nobody is listening.
+function safeSend(msg) {
+    if (!process.connected) return;
+    try {
+        process.send(msg);
+    } catch {
+        // Channel closed between the check and the write — same conclusion.
+    }
+}
+
+function channelPort(name) {
+    return {
+        on(event, fn) { if (event === 'message') CHANNEL_HANDLERS.set(name, fn); },
+        start() { /* no-op: the process-wide dispatcher below is already live */ },
+        close() { CHANNEL_HANDLERS.delete(name); },
+        postMessage(msg) { safeSend({ channel: name, ...msg }); }
+    };
+}
+
+// Lifecycle messages (ready, result, error, log, spawn bookkeeping) carry no
+// request/response id and are routed by type on the parent side.
+function sendLifecycle(type, payload = {}) {
+    safeSend({ channel: 'lifecycle', type, ...payload });
+}
+
 // Console capture — ALWAYS ON. The LLM authoring the tool needs to see its
-// console.log/error output for debugging. This relays everything to the
-// orchestrator, which includes it in the forge_call response.
+// console.log/error output for debugging; this relays it to the orchestrator,
+// which includes it in the forge_call response.
+//
+// Bounded (issue #49). The cost of a captured line is the structured clone to the
+// main thread, so the per-line cap is applied HERE, before postMessage —
+// truncating on the receiving side would save nothing. Past the entry limit the
+// line is counted, not sent. Main-thread memory is then bounded by
+// entries × lineChars, and the channel by entries + one keepalive per interval.
+//
+// The keepalive is TIME-based, deliberately. A count-based ping (every N dropped
+// lines) has a hole exactly where a healthy tool lives: a tool logging slowly —
+// below N lines per idle window — goes silent once it passes the cap and gets
+// killed for looking hung, where before this change its own logs kept it alive.
+// The main thread counts ANY worker message as activity, so one ping per interval
+// suffices and the rate is bounded no matter how much the tool logs.
+const SUPPRESS_PING_MS = 30000;
+let logEntryLimit = 1000;
+let logLineChars = 4000;
+let logEntriesSent = 0;
+let logLinesDropped = 0;
+let lastSuppressPingAt = 0;
+
+function truncateLine(s) {
+    if (s.length <= logLineChars) return s;
+    return `${s.slice(0, logLineChars)}… [+${s.length - logLineChars} chars]`;
+}
+
+function emitLog(level, message) {
+    if (logEntriesSent < logEntryLimit) {
+        logEntriesSent++;
+        sendLifecycle('log', { level, message: truncateLine(message) });
+        return;
+    }
+    logLinesDropped++;
+    const now = Date.now();
+    if (now - lastSuppressPingAt >= SUPPRESS_PING_MS) {
+        lastSuppressPingAt = now;
+        sendLifecycle('log-suppressed', { count: logLinesDropped });
+    }
+}
+
+function flushLogSuppressed() {
+    if (logLinesDropped > 0) {
+        sendLifecycle('log-suppressed', { count: logLinesDropped });
+    }
+}
+
 {
     const origLog = console.log;
     const origWarn = console.warn;
     const origError = console.error;
-    console.log = (...a) => { parentPort.postMessage({ type: 'log', level: 'log', message: a.map(String).join(' ') }); origLog(...a); };
-    console.warn = (...a) => { parentPort.postMessage({ type: 'log', level: 'warn', message: a.map(String).join(' ') }); origWarn(...a); };
-    console.error = (...a) => { parentPort.postMessage({ type: 'log', level: 'error', message: a.map(String).join(' ') }); origError(...a); };
+    console.log = (...a) => { emitLog('log', a.map(String).join(' ')); origLog(...a); };
+    console.warn = (...a) => { emitLog('warn', a.map(String).join(' ')); origWarn(...a); };
+    console.error = (...a) => { emitLog('error', a.map(String).join(' ')); origError(...a); };
 }
 
 // ── Gateway Proxy ────────────────────────────────────────────────────────────
@@ -260,16 +368,17 @@ function createProgressProxy(port) {
 }
 
 // ── Spawn Proxy (issue #43) ──────────────────────────────────────────────────
-// ctx.spawn() is THE way forged tools start child processes. Every spawned PID
-// is registered with the main thread so teardown (timeout, cancel, crash) kills
-// the whole process tree — worker.terminate() alone leaves OS children running
-// (incident 2026-09-17: orphaned yt-dlp + pyannote GPU jobs degraded Badkid).
-// PIDs deregister on exit, so only still-running children get killed.
+// ctx.spawn() is THE way forged tools start child processes. Every spawned PID is
+// registered with the orchestrator so teardown (timeout, cancel, crash, forge_stop)
+// kills the whole tree. With the tool now in its own process (issue #37) the
+// orchestrator kills that process with taskkill /T, which reaches these children as
+// a subtree — the bookkeeping is what makes the tool's own PID and its children
+// addressable, and what lets a child that exited cleanly opt out of being killed.
 function createSpawnProxy() {
     return function spawn(cmd, spawnArgs = [], opts = {}) {
         const child = cpSpawn(cmd, spawnArgs, { stdio: ['pipe', 'pipe', 'pipe'], ...opts });
-        if (child.pid) parentPort.postMessage({ type: 'spawned', pid: child.pid });
-        const deregister = () => parentPort.postMessage({ type: 'spawn-exited', pid: child.pid });
+        if (child.pid) sendLifecycle('spawned', { pid: child.pid });
+        const deregister = () => sendLifecycle('spawn-exited', { pid: child.pid });
         child.on('exit', deregister);
         child.on('error', deregister);
         return child;
@@ -278,7 +387,7 @@ function createSpawnProxy() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function run() {
-    const { source, args, payload, workspacePath, toolStatePath, storagePath, uncShare, localRoot } = { ...workerData, ...initData };
+    const { source, args, payload, workspacePath, toolStatePath, storagePath, vendorPath, uncShare, localRoot } = initData;
 
     // Payload items arrive as Uint8Arrays after structured clone (postMessage strips
     // Buffer prototype). Convert them back so Buffer.isBuffer() and .toString() work.
@@ -327,60 +436,75 @@ async function run() {
 
     // Build context
     const ctx = {
-        gateway: createGatewayProxy(gatewayPort),
-        browser: browserPort ? createBrowserProxy(browserPort) : null,
-        mcp: mcpPort ? createMcpProxy(mcpPort, mcpDepth) : null,
-        progress: createProgressProxy(progressPort),
+        gateway: createGatewayProxy(channelPort('gateway')),
+        browser: initData.hasBrowser ? createBrowserProxy(channelPort('browser')) : null,
+        mcp: initData.hasMcp ? createMcpProxy(channelPort('mcp'), mcpDepth) : null,
+        progress: createProgressProxy(channelPort('progress')),
         spawn: createSpawnProxy(),
         payload: resolvedPayload,
         workspacePath,
         toolStatePath,
         storagePath,
+        // Durable, non-output artifacts (a vendored binary, a model blob). Lives
+        // outside the source checkout and outside storagePath, so ctx.spawn can
+        // reach it and it never shows up in _outputs (issue #39).
+        toolVendorPath: vendorPath,
         fileops,
         args
     };
 
     // Execute — tool return value can be anything, including undefined
     const result = await mod.default(args, ctx);
-    parentPort.postMessage({ type: 'result', result });
+    flushLogSuppressed();
+    sendLifecycle('result', { result });
 }
 
-// ── Message Handler ──────────────────────────────────────────────────────────
-parentPort.on('message', async (msg) => {
-    if (msg.type === 'init') {
+// ── Message Dispatch ────────────────────────────────────────────────────────
+// One process-wide listener routes everything: tagged channel traffic to the
+// proxy that registered for it, and the init handshake.
+process.on('message', async (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+
+    const channelHandler = CHANNEL_HANDLERS.get(msg.channel);
+    if (channelHandler) {
+        channelHandler(msg);
+        return;
+    }
+
+    if (msg.channel === 'init') {
         if (initialized) return;
         initialized = true;
 
-        gatewayPort = msg.gatewayPort;
-        browserPort = msg.browserPort || null;
-        mcpPort = msg.mcpPort || null;
-        progressPort = msg.progressPort;
         defaultModel = msg.defaultModel || null;
         mcpDepth = msg.mcpDepth || 0;
-        initData = { payload: msg.payload || [] };
+        // Everything the tool needs is in the message now; there is no workerData.
+        initData = msg;
+        if (Number.isFinite(msg.maxLogEntries)) logEntryLimit = msg.maxLogEntries;
+        if (Number.isFinite(msg.maxLogLineChars)) logLineChars = msg.maxLogLineChars;
 
-        // Tell the main thread the worker is wired up. The idle watchdog only
-        // arms on this — boot time (module compile under load can exceed the
-        // idle window) is covered by the hard runtime cap instead.
-        parentPort.postMessage({ type: 'ready' });
+        // Tell the orchestrator we are wired up. The idle watchdog only arms on
+        // this — boot time (module compile under load can exceed the idle window)
+        // is covered by the hard runtime cap instead.
+        sendLifecycle('ready');
 
         try {
             await run();
         } catch (err) {
-            parentPort.postMessage({ type: 'error', error: err.message, stack: err.stack });
+            flushLogSuppressed();
+            sendLifecycle('error', { error: err.message, stack: err.stack });
         }
     }
 });
 
-// Handle uncaught errors in the worker — crash loudly, don't hang
+// Handle uncaught errors here — crash loudly, don't hang
 process.on('unhandledRejection', (err) => {
-    parentPort.postMessage({ type: 'error', error: `Unhandled rejection: ${err?.message || err}`, stack: err?.stack });
+    sendLifecycle('error', { error: `Unhandled rejection: ${err?.message || err}`, stack: err?.stack });
     process.exitCode = 1;
     setImmediate(() => process.exit(1));
 });
 
 process.on('uncaughtException', (err) => {
-    parentPort.postMessage({ type: 'error', error: `Uncaught exception: ${err.message}`, stack: err.stack });
+    sendLifecycle('error', { error: `Uncaught exception: ${err.message}`, stack: err.stack });
     process.exitCode = 1;
     setImmediate(() => process.exit(1));
 });

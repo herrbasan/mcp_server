@@ -111,10 +111,14 @@
       "maxTimeout": 600000,
       "maxPayloadSize": 104857600,
       "maxPayloadItems": 10,
+      "maxTotalPayloadBytes": 536870912,
       "maxConcurrentCalls": 8,
       "queueTimeout": 30000,
       "maxReturnSize": 10240,
       "maxRollbackSnapshots": 10,
+      "maxSnapshotDepth": 4,
+      "maxLogEntries": 1000,
+      "maxLogLineChars": 4000,
       "allowedPackages": [],
       "requireApprovalForNewPackages": true
     }

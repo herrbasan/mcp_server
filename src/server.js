@@ -78,6 +78,60 @@ const sessions = new Map();
 // Streamable HTTP GET streams (/mcp/compact): Map<streamId, res>
 const mcpStreams = new Map();
 
+// ── In-flight tool calls, cancellable by JSON-RPC id (issue #45) ──────────
+// MCP lets a client abandon a request with `notifications/cancelled`
+// { requestId }. Both transports used to answer 202 to every id-less message
+// and never look at it, so a cancelled `forge.call` ran to completion —
+// `raum_tts_batch` rendered 10 of 14 audio posts after the user cancelled,
+// spending the shared MiniMax pool with nobody watching (2026-09-24).
+// A cancelled call has to stop, or at minimum stop spending.
+// Map<key, { method, controller, startedAt }>. The key is namespaced by
+// transport (and by SSE session where one exists) because JSON-RPC ids are only
+// unique per client — two clients on the same server both using id 1 must not
+// be able to cancel each other's calls.
+const IN_FLIGHT = new Map();
+
+const inflightKey = (scope, requestId) => `${scope}|${JSON.stringify(requestId)}`;
+
+function beginInflightCall(scope, requestId, method) {
+    const key = inflightKey(scope, requestId);
+    const controller = new AbortController();
+    const entry = { method, controller, startedAt: Date.now() };
+    IN_FLIGHT.set(key, entry);
+    return {
+        signal: controller.signal,
+        end: () => { if (IN_FLIGHT.get(key) === entry) IN_FLIGHT.delete(key); }
+    };
+}
+
+function cancelInflightCall(scope, requestId, reason, { quietIfMissing = false } = {}) {
+    const key = inflightKey(scope, requestId);
+    const entry = IN_FLIGHT.get(key);
+    if (!entry) {
+        // Normal race: the call settled between the client's decision to cancel
+        // and the notification arriving. quietIfMissing is for the disconnect
+        // path, where a completed call's stream always closes afterwards.
+        if (!quietIfMissing) {
+            logger.warn(`[MCP] notifications/cancelled for unknown or already-finished request ${key}`, null, 'MCP');
+        }
+        return;
+    }
+    logger.warn(`[MCP] notifications/cancelled: aborting ${entry.method} (${key}, running ${Date.now() - entry.startedAt}ms)${reason ? ` — ${reason}` : ''}`, null, 'MCP');
+    entry.controller.abort(reason || new Error('cancelled by client'));
+}
+
+// Abort every in-flight call under one scope prefix. Used when a client
+// disconnects: work continuing after the client left is the same failure as a
+// cancelled call that keeps running (2026-09-24, and the earlier ElevenLabs
+// incident) — the client is gone either way, so the spend must stop either way.
+function cancelScopedCalls(scopePrefix, reason) {
+    for (const [key, entry] of IN_FLIGHT) {
+        if (!key.startsWith(`${scopePrefix}|`)) continue;
+        logger.warn(`[MCP] aborting ${entry.method} (${key}) — ${reason}`, null, 'MCP');
+        entry.controller.abort(new Error(reason));
+    }
+}
+
 function sseWrite(res, event, data) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -995,7 +1049,20 @@ IMPORTANT RULES
         const msg = req.body;
         logger.info(`[Compact] ${msg.method}`, msg.method === 'tools/call' ? { name: msg.params?.name, innerMethod: msg.params?.arguments?.method } : {}, 'MCP');
 
+        // Cancellation scope for this client. JSON-RPC ids are only unique per
+        // client, so a single shared 'http' scope would let one client's cancel
+        // abort another's call — and the victim's response is then suppressed,
+        // so it hangs. Prefer the MCP session header; fall back to the peer
+        // address, which identifies a client on a LAN but not behind a proxy.
+        const httpScope = `http:${req.headers['mcp-session-id'] || req.ip || 'anon'}`;
+
         if (msg.id === undefined || msg.id === null) {
+            // Notifications carry no id. The only one we act on is cancellation;
+            // everything else is accepted and ignored, as before.
+            if (msg.method === 'notifications/cancelled') {
+                const { requestId, reason } = msg.params || {};
+                cancelInflightCall(httpScope, requestId, reason);
+            }
             res.status(202).send('Accepted');
             return;
         }
@@ -1089,22 +1156,41 @@ IMPORTANT RULES
                 const sendEvent = (data) => res.write(`event: message\ndata: ${JSON.stringify(data)}\n\n`);
                 const keepalive = setInterval(() => res.write(':\n\n'), 15000);
 
+                const call = beginInflightCall(httpScope, msg.id, args?.method || name);
                 const context = {
                     ...globalContext,
+                    signal: call.signal,
                     progress: (message, progress, total) => {
                         if (!progressToken) return;
                         sendEvent({ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken, progress, total, message } });
                     }
                 };
 
+                // Client vanished mid-call: treat it as a cancel. A completed call
+                // has already cleared its entry by the time the stream closes, so
+                // this is a no-op then.
+                res.on('close', () => cancelInflightCall(httpScope, msg.id, 'client disconnected', { quietIfMissing: true }));
+
                 try {
                     const toolResult = await routeCompactCall(name, args, context);
                     clearInterval(keepalive);
-                    sendEvent(jsonrpcResponse(msg.id, toolResult));
+                    // A cancelled request gets no response — the client already
+                    // discarded it (MCP: the receiver SHOULD NOT respond).
+                    if (call.signal.aborted) {
+                        logger.info(`[Compact] tools/call CANCELLED: ${args?.method || name} — response suppressed`, null, 'MCP');
+                    } else {
+                        sendEvent(jsonrpcResponse(msg.id, toolResult));
+                    }
                 } catch (err) {
                     clearInterval(keepalive);
-                    logger.info(`[Compact] tools/call FAILED: ${err.message}`, null, 'MCP');
-                    sendEvent(jsonrpcError(msg.id, -32603, err.message));
+                    if (call.signal.aborted) {
+                        logger.info(`[Compact] tools/call CANCELLED: ${args?.method || name} aborted: ${err.message}`, null, 'MCP');
+                    } else {
+                        logger.info(`[Compact] tools/call FAILED: ${err.message}`, null, 'MCP');
+                        sendEvent(jsonrpcError(msg.id, -32603, err.message));
+                    }
+                } finally {
+                    call.end();
                 }
                 res.end();
                 return;
@@ -1134,6 +1220,9 @@ IMPORTANT RULES
         res.on('close', () => {
             logger.info(`Compact session disconnected`, { sessionId }, 'MCP');
             sessions.delete(sessionId);
+            // The client is gone but its tool calls are not — stop them. This is
+            // the disconnect door the 2026-09-24 spend went out of.
+            cancelScopedCalls(`sse:${sessionId}`, 'client disconnected');
         });
     });
 
@@ -1145,6 +1234,12 @@ IMPORTANT RULES
         const msg = req.body;
         logger.info(`[Compact:legacy] ${msg.method}`, msg.method === 'tools/call' ? { name: msg.params?.name, innerMethod: msg.params?.arguments?.method } : {}, 'MCP');
         if (msg.id === undefined || msg.id === null) {
+            // Notifications carry no id. The only one we act on is cancellation;
+            // everything else is accepted and ignored, as before.
+            if (msg.method === 'notifications/cancelled') {
+                const { requestId, reason } = msg.params || {};
+                cancelInflightCall(`sse:${sessionId}`, requestId, reason);
+            }
             res.status(202).send('Accepted');
             return;
         }
@@ -1226,8 +1321,10 @@ IMPORTANT RULES
             case 'tools/call': {
                 const { name, arguments: args } = msg.params || {};
                 const progressToken = msg.params?._meta?.progressToken;
+                const call = beginInflightCall(`sse:${sessionId}`, msg.id, args?.method || name);
                 const context = {
                     ...globalContext,
+                    signal: call.signal,
                     progress: (message, progress, total) => {
                         if (!progressToken) return;
                         session.send({
@@ -1239,9 +1336,23 @@ IMPORTANT RULES
                 };
                 try {
                     const toolResult = await routeCompactCall(name, args, context);
-                    result = jsonrpcResponse(msg.id, toolResult);
+                    // A cancelled request gets no response — the client already
+                    // discarded it (MCP: the receiver SHOULD NOT respond).
+                    if (call.signal.aborted) {
+                        logger.info(`[Compact:legacy] tools/call CANCELLED: ${args?.method || name} — response suppressed`, null, 'MCP');
+                        result = null;
+                    } else {
+                        result = jsonrpcResponse(msg.id, toolResult);
+                    }
                 } catch (err) {
-                    result = jsonrpcError(msg.id, -32603, err.message);
+                    if (call.signal.aborted) {
+                        logger.info(`[Compact:legacy] tools/call CANCELLED: ${args?.method || name} aborted: ${err.message}`, null, 'MCP');
+                        result = null;
+                    } else {
+                        result = jsonrpcError(msg.id, -32603, err.message);
+                    }
+                } finally {
+                    call.end();
                 }
                 break;
             }
@@ -1249,7 +1360,9 @@ IMPORTANT RULES
                 result = jsonrpcError(msg.id, -32601, `Method not found: ${msg.method}`);
         }
 
-        session.send(result);
+        // null means the request was cancelled — the client discarded it, so no
+        // response is sent (MCP: the receiver SHOULD NOT respond to a cancel).
+        if (result) session.send(result);
         res.status(202).send('Accepted');
     });
 

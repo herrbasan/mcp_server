@@ -41,10 +41,16 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
     }
 
-    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress, stream = true, tools, timeoutMs }) {
+    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress, stream = true, tools, timeoutMs, signal: externalSignal }) {
         const fullMessages = systemPrompt
             ? [{ role: 'system', content: systemPrompt }, ...messages]
             : messages;
+
+        // A caller that has already aborted should not build a request body, log a
+        // POST, or arm timers for a call that is dead on arrival.
+        if (externalSignal?.aborted) {
+            throw new Error('Gateway chat aborted before it started (caller signal already aborted)');
+        }
 
         // Non-streaming mode (chat sessions, summarize calls): one POST, full
         // JSON response, returns content + tool_calls + finish_reason + usage.
@@ -71,6 +77,15 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             });
 
             const controller = new AbortController();
+            // Optional external cancellation, COMPOSED with the internal controller
+            // rather than handled alongside it. AbortSignal.any holds only WEAK
+            // references to its sources, so a long-lived signal passed to many
+            // sequential calls — which is exactly what the forge relay does —
+            // accumulates nothing on it and needs no listener removal. Callers that
+            // pass no signal behave exactly as before.
+            const callSignal = externalSignal
+                ? AbortSignal.any([externalSignal, controller.signal])
+                : controller.signal;
             const timer = timeoutMs != null
                 ? setTimeout(() => controller.abort(new Error(`Gateway chat timed out after ${timeoutMs}ms (non-streaming)`)), timeoutMs)
                 : null;
@@ -79,7 +94,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
                     method: 'POST',
                     headers: authHeaders(),
                     body: JSON.stringify(body),
-                    signal: controller.signal
+                    signal: callSignal
                 });
                 if (!res.ok) {
                     const errText = await res.text().catch(() => res.statusText);
@@ -131,6 +146,12 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         });
 
         const controller = new AbortController();
+        // Composed, as in the non-streaming path above: an external abort must
+        // actually cut the upstream stream rather than leave it generating into a
+        // socket nobody reads. The internal controller still owns the stall guard.
+        const callSignal = externalSignal
+            ? AbortSignal.any([externalSignal, controller.signal])
+            : controller.signal;
         const startedAt = Date.now();
         const response = { content: '', cancelled: false };
 
@@ -163,9 +184,14 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
                 method: 'POST',
                 headers: authHeaders(),
                 body: JSON.stringify(body),
-                signal: controller.signal
+                signal: callSignal
             });
         } catch (err) {
+            // Distinguish a caller-driven abort from a transport failure: the former
+            // is expected (a cancelled tool) and should not read as a gateway fault.
+            if (externalSignal?.aborted) {
+                throw new Error(`Gateway chat aborted by the caller — ${err.message}`);
+            }
             throw new Error(`Gateway connection failed: ${err.message}`);
         }
 
