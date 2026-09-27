@@ -47,23 +47,6 @@ const providerHealth = new Map(); // name -> { lastOk, lastError, okCount, errCo
 
 let launchedByUs = false;
 
-// --window-position alone is NOT enough: Chrome restores the last window
-// bounds from the profile's Preferences, ignoring the flag. Setting bounds
-// via CDP after launch reliably moves the window off-screen while keeping it
-// "visible" to the page (visibilityState stays 'visible', which Cloudflare
-// passively checks — minimizing would risk failing the challenge).
-async function hideWindowOffscreen(browser) {
-    const target = (await browser.targets()).find(t => t.type() === 'page');
-    if (!target) return;
-    const cdp = await target.createCDPSession();
-    try {
-        const { windowId } = await cdp.send('Browser.getWindowForTarget');
-        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { left: -32000, top: -32000 } });
-    } finally {
-        await cdp.detach();
-    }
-}
-
 async function getBrowser() {
     if (browser) return browser;
     const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
@@ -75,25 +58,24 @@ async function getBrowser() {
     } catch {
         // fall through to launch
     }
-    // HEADED but positioned off-screen. OpenAI's Cloudflare challenges
-    // headless Chrome ("Just a moment..." + empty body, verified 2026-09-26);
-    // headed passes. Off-screen keeps it invisible on the desktop.
+    // HEADLESS. All extraction routes verified working headless 2026-09-27;
+    // openai's Cloudflare passes once the UA override in runCycle strips the
+    // 'Headless' marker. The old headed off-screen launch was dropped because
+    // Chrome clamps restored window bounds back on-screen before the CDP move
+    // lands — a visible window flash every cycle.
     browser = await puppeteer.launch({
-        headless: false,
+        headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
-            '--window-position=-32000,-32000',
-            '--window-size=1280,900',
             `--remote-debugging-port=${DEBUGGING_PORT}`,
             `--user-data-dir=${CHROME_PROFILE_DIR}`
         ]
     });
     launchedByUs = true;
     browser.on('disconnected', () => { browser = null; launchedByUs = false; });
-    await hideWindowOffscreen(browser).catch(e => logger.warn(`[UsageMonitor] window hide failed: ${e.message}`, null, 'Usage'));
-    logger.info('[UsageMonitor] Launched headed off-screen Chrome on shared profile', null, 'Usage');
+    logger.info('[UsageMonitor] Launched headless Chrome on shared profile', null, 'Usage');
     return browser;
 }
 
@@ -134,6 +116,13 @@ async function debugCapture(page, name, err) {
 // Each returns { windows: [...] }. Windows: { kind, usedPct?, used?, limit?, unit?, resetAt?, extra? }
 // Every extractor throws on missing data — never fabricates values.
 
+// z.ai omits nextResetTime on unused windows (proto3 JSON drops zero
+// values — verified 2026-09-27: a 0% window ships no reset time in API
+// and DOM). The window itself is still valid; carry the absence as a note.
+const zaiReset = (l) => l.nextResetTime
+    ? { resetAt: new Date(l.nextResetTime).toISOString() }
+    : { note: 'no reset time — window unused' };
+
 async function extractZai(page) {
     await page.goto('https://z.ai/manage-apikey/coding-plan/personal/usage', { waitUntil: 'domcontentloaded', timeout: 45000 });
     await page.waitForSelector('text/Quota', { timeout: 20000 }).catch(() => {});
@@ -152,8 +141,8 @@ async function extractZai(page) {
         return win;
     `);
     return { windows: [
-        { kind: '5h', usedPct: res.fiveHour.percentage, resetAt: new Date(res.fiveHour.nextResetTime).toISOString(), primary: true },
-        { kind: 'weekly', usedPct: res.weekly.percentage, resetAt: new Date(res.weekly.nextResetTime).toISOString(), primary: true }
+        { kind: '5h', usedPct: res.fiveHour.percentage, ...zaiReset(res.fiveHour), primary: true },
+        { kind: 'weekly', usedPct: res.weekly.percentage, ...zaiReset(res.weekly), primary: true }
     ] };
 }
 
@@ -250,10 +239,14 @@ async function extractKimi(page) {
     `);
     const w5 = res.ratelimitCode5h, w7 = res.ratelimitCode7d, sub = res.subscriptionBalance, booster = (res.boosterWallets || [])[0];
     if (!w5 || !w7 || !sub) throw new Error('kimi: expected fields missing');
+    // proto3 JSON omits zero-valued fields: an absent ratio IS 0% used
+    // (verified 2026-09-27 — the 5h window at zero usage ships
+    // {enabled, resetTime} with no ratio, while the weekly window has one).
+    const pct = (r) => Math.round((r ?? 0) * 100);
     const windows = [
-        { kind: '5h', usedPct: Math.round(w5.ratio * 100), resetAt: w5.resetTime, primary: true },
-        { kind: 'weekly', usedPct: Math.round(w7.ratio * 100), resetAt: w7.resetTime, primary: true },
-        { kind: 'monthly', usedPct: Math.round(sub.amountUsedRatio * 100), resetAt: sub.expireTime, note: 'subscription credits' }
+        { kind: '5h', usedPct: pct(w5.ratio), resetAt: w5.resetTime, primary: true },
+        { kind: 'weekly', usedPct: pct(w7.ratio), resetAt: w7.resetTime, primary: true },
+        { kind: 'monthly', usedPct: pct(sub.amountUsedRatio), resetAt: sub.expireTime, note: 'subscription credits' }
     ];
     if (booster) {
         windows.push({
@@ -405,6 +398,11 @@ async function runCycle() {
                     if (!page) {
                         const b = await getBrowser();
                         page = await b.newPage();
+                        // New headless still advertises 'HeadlessChrome' in the
+                        // UA — OpenAI's Cloudflare gates on it. Stripping the
+                        // marker passes (verified 2026-09-27). On a normal UA
+                        // the replace is a no-op, so attach mode is unaffected.
+                        await page.setUserAgent((await b.userAgent()).replace('Headless', ''));
                     }
                     result = await p.fn(page);
                 } else {
