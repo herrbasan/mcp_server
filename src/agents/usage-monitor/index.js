@@ -268,12 +268,33 @@ async function extractMinimax(page) {
         if (r.status !== 200) throw new Error('minimax HTTP ' + r.status);
         return await r.json();
     `);
+    if (res.base_resp && res.base_resp.status_code !== 0) {
+        throw new Error('minimax API: ' + (res.base_resp.status_msg || res.base_resp.status_code));
+    }
     const m = (res.model_remains || []).find(x => x.model_name === 'general') || (res.model_remains || [])[0];
     if (!m) throw new Error('minimax: no model_remains');
-    const usedPct = 100 - Number(m.current_interval_total_percent.replace('%', ''));
-    return { windows: [
-        { kind: '5h', usedPct, resetAt: new Date(m.end_time).toISOString(), primary: true }
-    ] };
+    // The response carries explicit per-window USED-percent fields. The sibling
+    // *_total_percent field is a fixed "100%" label, NOT a remaining figure —
+    // computing used as (100 - total_percent) pinned every window to 0% used
+    // (bug fixed 2026-09-28). The *_count fields are -1 on credit/PAYG accounts
+    // and are unusable; upstream *also* mislabels *_usage_count as "used" when
+    // it actually returns REMAINING (MiniMax-AI/MiniMax-M2#99). The percent
+    // fields are the authoritative source.
+    const pct = (s) => {
+        const n = Number(String(s).replace('%', ''));
+        if (Number.isNaN(n)) throw new Error(`minimax: unparseable percent "${s}"`);
+        return n;
+    };
+    const windows = [
+        { kind: '5h', usedPct: pct(m.current_interval_used_percent), resetAt: new Date(m.end_time).toISOString(), primary: true }
+    ];
+    // A window with status 3 is unlimited / not enforced (community-documented
+    // signature: total=0, remaining=100%, status=3). Emitting it would be a
+    // permanently-0% misleading chip, so it stays out while inactive.
+    if (m.current_weekly_status !== 3) {
+        windows.push({ kind: 'weekly', usedPct: pct(m.current_weekly_used_percent), resetAt: new Date(m.weekly_end_time).toISOString(), primary: true });
+    }
+    return { windows };
 }
 
 async function extractOpenai(page) {
