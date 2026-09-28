@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
+import { htmlToMarkdown } from '../../lib/html-to-markdown.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
@@ -25,6 +26,11 @@ const SESSION_IDLE_TIMEOUT = 10 * 60 * 1000; // 10 minutes per session
 
 // Visible browser instances - maps sessionId -> Browser instance (for headed sessions)
 const visibleBrowsers = new Map();
+
+// Populated by init(): the internal page API (for browser.fetch) and the storage
+// coordinates it writes into.
+let internalApi = null;
+let fetchStorage = { root: null, uncShare: null, publicUrl: null };
 
 function log(message) {
     console.log(`[Browser] ${message}`);
@@ -155,9 +161,19 @@ async function getBrowser() {
     return browser;
 }
 
-export async function init() {
+export async function init(context) {
+    // Storage coordinates for browser.fetch (it writes converted pages there
+    // rather than returning bodies). Optional: the fetch tool throws a clear
+    // error if they are missing, everything else in this agent is unaffected.
+    const storageConfig = context?.config?.agents?.storage || {};
+    fetchStorage = {
+        root: storageConfig.root || null,
+        uncShare: storageConfig.uncShare || null,
+        publicUrl: storageConfig.publicUrl || null
+    };
+
     // Export standard internal APIs for cross-agent use (like web research)
-    return {
+    const api = {
         async getPage() {
             const b = await getBrowser();
             const page = await b.newPage();
@@ -236,6 +252,9 @@ export async function init() {
             }
         }
     };
+
+    internalApi = api;
+    return api;
 }
 
 export async function shutdown() {
@@ -399,7 +418,7 @@ async function ensurePageForSession(session) {
     }
 }
 
-async function formatResult(page, mode, url) {
+async function formatResult(page, mode, url, options = {}) {
     if (mode === 'screenshot') {
         const screenshot = await page.screenshot({ encoding: 'base64', fullPage: true });
         return {
@@ -412,7 +431,28 @@ async function formatResult(page, mode, url) {
     }
 
     const html = await page.content();
-    
+
+    // 'markdown' is a real conversion (headings, code fences, GFM tables).
+    // It used to be Readability's textContent with '# Title' glued on top, which
+    // flattened the two structures documentation is mostly made of. A page that
+    // cannot be converted is an error, not an empty string — the caller needs to
+    // know the extraction failed.
+    if (mode === 'markdown') {
+        try {
+            const result = htmlToMarkdown(html, {
+                url,
+                scope: options.scope || 'auto',
+                maxLength: options.maxLength || 0,
+                minChars: options.minChars || 0
+            });
+            const header = result.title ? `# ${result.title}\n\n` : '';
+            const note = result.stats.truncated ? `\n\n<!-- truncated at ${options.maxLength} chars -->` : '';
+            return { content: [{ type: "text", text: `${header}${result.markdown}${note}`.substring(0, 200000) }] };
+        } catch (e) {
+            return { content: [{ type: "text", text: `Markdown conversion failed: ${e.message}` }], isError: true };
+        }
+    }
+
     try {
         const dom = new JSDOM(html, { url });
         const reader = new Readability(dom.window.document);
@@ -422,13 +462,9 @@ async function formatResult(page, mode, url) {
         // Clean excessive whitespace
         text = text.replace(/\n\s*\n/g, '\n\n').trim();
 
-        if (mode === 'markdown') {
-            text = `# ${article?.title || 'Page'}\n\n${text}`;
-        }
-        
         return { content: [{ type: "text", text: text.substring(0, 50000) }] };
     } catch (e) {
-        return { content: [{ type: "text", text: `Extraction error: ${e.message}\n\nRaw HTML prefix:\n${html.substring(0, 5000)}` }] };
+        return { content: [{ type: "text", text: `Extraction error: ${e.message}\n\nRaw HTML prefix:\n${html.substring(0, 5000)}` }], isError: true };
     }
 }
 
@@ -605,7 +641,7 @@ export async function browser_session_goto(args, context) {
 }
 
 export async function browser_session_content(args, context) {
-    const { sessionId, mode = 'text' } = args;
+    const { sessionId, mode = 'text', scope, maxLength, minChars } = args;
 
     if (!sessionId) {
         return { content: [{ type: "text", text: "sessionId is required" }], isError: true };
@@ -619,7 +655,7 @@ export async function browser_session_content(args, context) {
     await ensurePageForSession(session);
     resetSessionIdleTimer(sessionId);
 
-    return await formatResult(session.page, mode, session.page.url());
+    return await formatResult(session.page, mode, session.page.url(), { scope, maxLength, minChars });
 }
 
 export async function browser_session_click(args, context) {
@@ -1026,4 +1062,353 @@ export async function browser_session_metadata(args, context) {
             text: `URL: ${url}\nTitle: ${title}\nViewport: ${viewport.width}x${viewport.height}`
         }]
     };
+}
+
+// ============================================
+// browser.fetch — one URL in, Markdown in storage
+// ============================================
+//
+// Takes a URL, renders it, converts with htmlToMarkdown, writes the result into
+// storage and returns the COORDINATES — not the body. That is deliberate: a page
+// must never arrive truncated, and a caller holding a path reads exactly the
+// range it needs (storage.read takes offset+length windows) instead of losing a
+// third of the document to a hidden cap.
+//
+// RENDERING IS THE DEFAULT, not the fallback. A plain HTTP fetch looks like the
+// fast path and is not: measured 2026-09-28 against nine bot-protected sites,
+// five refused it outright (StackOverflow 403, Glassdoor 403, and challenge pages
+// from Zillow, Medium and TikTok), and Chrome gets past some of those. Trying HTTP
+// first would mean a wasted request on every protected site and a Chrome render
+// anyway — no time or CPU saved. `prefer: 'http'` survives for resources that are
+// not pages (sitemap.xml, llms.txt, a JSON endpoint), where rendering is wrong
+// rather than merely slower.
+//
+// The failure that still needs guarding runs the other way: a block page has HTTP
+// 200, real English, and enough characters to pass any length check. Stored
+// unexamined it is indistinguishable from a document — Glassdoor's Cloudflare
+// interstitial was captured as content during testing.
+
+// Only used by the opt-in HTTP path; a UA makes no measurable difference to
+// whether a site blocks (Chrome/120, Chrome/141 and no UA all blocked the same
+// five sites).
+const FETCH_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const FETCH_TIMEOUT_MS = 25000;
+
+// Block pages are the failure that hides best: HTTP 200, a few hundred
+// characters of English, and the tool stores a "Just a moment..." wall as if it
+// were the document. Measured 2026-09-28: StackOverflow 403s a plain fetch,
+// Medium and Glassdoor serve challenges, and headless Chrome does NOT always get
+// through either (Glassdoor returned Cloudflare's interstitial to Chrome too).
+//
+// Matched against the CONVERTED TEXT — title plus the document body — because
+// that is what a block page is almost entirely made of. A substring test for
+// 'captcha' looked tempting and is wrong: Wikipedia's ordinary JSON article
+// contains that word, and a false positive turns a good fetch into an error.
+// These markers are all high-precision phrases with no other use.
+const BLOCK_MARKERS = [
+    'just a moment...',
+    'checking your browser before accessing',
+    'enable javascript and cookies to continue',
+    'attention required!',
+    'verifying you are human',
+    'verify you are human',
+    'request unsuccessful. incapsula',
+    'vercel security checkpoint',
+    'unusual traffic from your computer',
+    'your request has been blocked'
+];
+
+function detectBlockPage(result) {
+    const text = `${result.title || ''}\n${result.markdown.slice(0, 4000)}`.toLowerCase();
+    return BLOCK_MARKERS.find(m => text.includes(m)) || null;
+}
+
+function isHtmlLike(contentType) {
+    return !contentType || contentType === 'text/html' || contentType === 'application/xhtml+xml';
+}
+
+function isTextLike(contentType) {
+    return contentType.startsWith('text/') || contentType === 'application/json' ||
+        contentType === 'application/xml' || contentType.endsWith('+json') || contentType.endsWith('+xml');
+}
+
+async function fetchOverHttp(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const started = Date.now();
+    try {
+        const res = await fetch(url, {
+            headers: {
+                'User-Agent': FETCH_USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+                'Accept-Language': 'en-US,en;q=0.9'
+            },
+            redirect: 'follow',
+            signal: controller.signal
+        });
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+        }
+        const body = await res.text();
+        const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        log(`fetch HTTP ${res.status}: ${body.length} bytes, type '${contentType || '(none)'}', ${Date.now() - started}ms`);
+        return { body, contentType, finalUrl: res.url || url };
+    } catch (e) {
+        throw new Error(e.name === 'AbortError' ? `timed out after ${FETCH_TIMEOUT_MS}ms` : e.message);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// Convert, or return null. A page with nothing extractable is a signal to try the
+// other transport, not an error yet — the caller decides once it has seen both.
+function tryConvertToMarkdown(html, baseUrl, options) {
+    try {
+        return htmlToMarkdown(html, {
+            url: baseUrl,
+            scope: options.scope,
+            maxLength: options.maxLength,
+            minChars: options.minChars
+        });
+    } catch (e) {
+        log(`conversion produced nothing: ${e.message}`);
+        return null;
+    }
+}
+
+async function fetchViaBrowser(url) {
+    if (!internalApi) {
+        throw new Error('browser: agent not initialised');
+    }
+    const { page, markUsed, close, pageId } = await internalApi.getPage();
+    const started = Date.now();
+    try {
+        log(`[${pageId}] rendering ${url}`);
+        const response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+        // Only 4xx/5xx are failures. A 304 Not Modified is a SUCCESS here: this
+        // agent uses a persistent Chrome profile, so a second visit to a page
+        // sends a conditional request and the server answers "not modified" —
+        // Chrome then serves the cached body, which is exactly what we want. An
+        // `!response.ok()` test rejected those and failed whole harvests on the
+        // second run.
+        if (response && response.status() >= 400) {
+            throw new Error(`HTTP ${response.status()} ${response.statusText() || ''}`.trim());
+        }
+        const body = await page.content();
+        // Read from the navigation response so a .txt or .json gets treated as
+        // what it is, whichever transport brought it in.
+        const contentType = (response?.headers()?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+        const finalUrl = page.url();
+        log(`[${pageId}] rendered ${body.length} bytes, type '${contentType || '(none)'}', ${Date.now() - started}ms`);
+        return { body, contentType, finalUrl };
+    } finally {
+        markUsed();
+        await close(0);
+    }
+}
+
+// One place decides what a fetched response becomes, so a .txt is stored verbatim
+// whether it arrived over HTTP or through Chrome, and a challenge page is refused
+// either way.
+function storeFetched({ body, contentType, finalUrl, via, options, name, dir }) {
+    if (!isHtmlLike(contentType) && !isTextLike(contentType)) {
+        throw new Error(
+            `browser_fetch: content-type '${contentType}' is not text — this tool converts ` +
+            'HTML and text. Fetch binary files another way.'
+        );
+    }
+
+    // Not a document — store it byte-for-byte rather than mangling it.
+    if (!isHtmlLike(contentType)) {
+        return writeFetchResult({
+            result: {
+                markdown: body,
+                title: null,
+                strategy: 'raw',
+                stats: { markdownLength: body.length, codeBlocks: 0, tables: 0, tableRows: 0, truncated: false }
+            },
+            finalUrl,
+            via: `${via} (raw ${contentType})`,
+            relPath: fetchRawPath(finalUrl, name, dir),
+            verbatim: true
+        });
+    }
+
+    const result = tryConvertToMarkdown(body, finalUrl, options);
+    if (!result) {
+        throw new Error(`browser_fetch: no extractable content from ${finalUrl} (via ${via})`);
+    }
+
+    const block = detectBlockPage(result);
+    if (block) {
+        throw new Error(
+            `browser_fetch: the site served a block page instead of content ` +
+            `(matched "${block}", via ${via}). The page is probably behind bot protection — ` +
+            'try a browser session with a visible window, or fetch it another way.'
+        );
+    }
+
+    return writeFetchResult({
+        result,
+        finalUrl,
+        via,
+        relPath: fetchStoragePath(finalUrl, name, dir)
+    });
+}
+
+function fetchSlug(s) {
+    return s.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
+// Stable, human-readable, idempotent: re-fetching a URL overwrites the same file
+// (storage snapshots the previous version).
+function fetchStoragePath(finalUrl, name, dir) {
+    const u = new URL(finalUrl);
+    const host = fetchSlug(u.hostname) || 'unknown-host';
+    const p = fetchSlug(u.pathname.replace(/\/+$/, '')) || 'index';
+    return `${dir}/${host}/${name ? fetchSlug(name) : p}.md`;
+}
+
+// Verbatim text keeps its own extension — slugging the path turned
+// `/raw.txt` into `raw-txt.txt` and `/data.json` into `data-json.txt`, so a
+// caller could no longer see what the file was.
+function fetchRawPath(finalUrl, name, dir) {
+    const u = new URL(finalUrl);
+    const host = fetchSlug(u.hostname) || 'unknown-host';
+    const base = path.posix.basename(u.pathname);
+    const ext = path.posix.extname(base).toLowerCase();
+    const stem = ext ? base.slice(0, base.length - ext.length) : base;
+    const safeExt = /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : '.txt';
+    return `${dir}/${host}/${name ? fetchSlug(name) : (fetchSlug(stem) || 'index')}${safeExt}`;
+}
+
+// Writes the result and returns it in structured form. The tool wrapper turns
+// this into the text summary a caller reads; other agents (harvest) call
+// runBrowserFetch directly and use the fields, so the storage path is never
+// recovered by parsing prose.
+function writeFetchResult({ result, finalUrl, via, relPath, verbatim = false }) {
+    const abs = path.join(fetchStorage.root, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+
+    // Provenance frontmatter belongs on converted Markdown, not on a verbatim
+    // passthrough: prepending YAML to a .json response makes it unparseable.
+    let content;
+    if (verbatim) {
+        content = result.markdown;
+    } else {
+        // JSON.stringify yields a valid double-quoted YAML scalar.
+        const front = [
+            '---',
+            `source: ${JSON.stringify(finalUrl)}`,
+            `fetched: ${new Date().toISOString()}`,
+            result.title ? `title: ${JSON.stringify(result.title)}` : null,
+            `via: ${via}`,
+            '---',
+            ''
+        ].filter(l => l !== null).join('\n');
+        content = `${front}\n${result.markdown}\n`;
+    }
+
+    fs.writeFileSync(abs, content, 'utf8');
+    const stat = fs.statSync(abs);
+    log(`wrote ${relPath} (${stat.size} bytes, via ${via}${verbatim ? ', verbatim' : ''})`);
+
+    return {
+        relPath,
+        absPath: abs,
+        finalUrl,
+        via,
+        verbatim,
+        bytes: stat.size,
+        title: result.title || null,
+        strategy: result.strategy,
+        stats: result.stats,
+        url: fetchStorage.publicUrl ? `${fetchStorage.publicUrl.replace(/\/+$/, '')}/storage/${relPath}` : null,
+        unc: fetchStorage.uncShare ? `${fetchStorage.uncShare.replace(/[\\/]+$/, '')}\\${relPath.replace(/\//g, '\\')}` : null
+    };
+}
+
+function formatFetchSummary(r) {
+    const lines = [
+        `Fetched ${r.finalUrl}`,
+        `  via        ${r.via}`,
+        `  title      ${r.title || '(none)'}`,
+        `  strategy   ${r.strategy}`,
+        `  size       ${(r.bytes / 1024).toFixed(1)} KB  (${r.stats.markdownLength} chars of markdown)`,
+        `  structure  ${r.stats.codeBlocks} code block(s), ${r.stats.tables} table(s), ${r.stats.tableRows} table row(s)`,
+        `  storage    ${r.relPath}`,
+        r.url ? `  url        ${r.url}` : null,
+        r.unc ? `  unc        ${r.unc}` : null,
+        '',
+        r.verbatim
+            ? 'Stored byte-for-byte: not a document, so it was not converted and nothing was added to it.'
+            : 'Read it with storage.read (offset + length for partial reads), or hand the path to a smarter model. Nothing was truncated.'
+    ].filter(l => l !== null);
+    return lines.join('\n');
+}
+
+// Structured core — the tool below is a text presenter over this. Exported so
+// sibling agents (harvest) reuse the whole retrieve/convert/store path without
+// parsing a human-readable summary to find out where the file went.
+export async function runBrowserFetch(args) {
+    const {
+        url,
+        scope = 'auto',
+        maxLength = 0,
+        minChars = 0,
+        name,
+        dir = 'fetch',
+        prefer = 'browser'
+    } = args;
+
+    if (typeof url !== 'string' || !url.trim()) {
+        throw new Error('browser_fetch: url is required');
+    }
+    let target;
+    try {
+        target = new URL(url.trim());
+    } catch {
+        throw new Error(`browser_fetch: not a valid absolute URL: ${url}`);
+    }
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+        throw new Error(`browser_fetch: only http and https URLs are supported, got '${target.protocol}'`);
+    }
+    if (!['browser', 'http'].includes(prefer)) {
+        throw new Error(`browser_fetch: prefer must be browser|http, got '${prefer}'`);
+    }
+    if (!fetchStorage.root) {
+        throw new Error('browser_fetch: config agents.storage.root is required to write the result');
+    }
+    if (path.isAbsolute(dir) || dir.includes('..')) {
+        throw new Error(`browser_fetch: dir must be a relative path inside storage, got '${dir}'`);
+    }
+
+    const options = { scope, maxLength, minChars };
+
+    // Opt-in, and only for things that are not pages: sitemap.xml, llms.txt, a
+    // raw JSON endpoint. Rendering those in Chrome is wrong, not just slower —
+    // it would wrap them in a viewer page.
+    if (prefer === 'http') {
+        const res = await fetchOverHttp(url.trim());
+        return storeFetched({ ...res, via: 'http', options, name, dir });
+    }
+
+    // Default: render. See the section comment for why HTTP-first was abandoned.
+    const res = await fetchViaBrowser(url.trim());
+
+    // The render told us this is not a page (text/plain, JSON, XML). Chrome wraps
+    // those in a viewer document, so page.content() is the wrapper, not the
+    // resource — fetch the actual bytes before storing them verbatim.
+    if (!isHtmlLike(res.contentType)) {
+        const raw = await fetchOverHttp(res.finalUrl);
+        return storeFetched({ ...raw, via: 'http (non-HTML resource)', options, name, dir });
+    }
+
+    return storeFetched({ ...res, via: 'browser', options, name, dir });
+}
+
+export async function browser_fetch(args, _context) {
+    const result = await runBrowserFetch(args);
+    return { content: [{ type: 'text', text: formatFetchSummary(result) }], isError: false };
 }

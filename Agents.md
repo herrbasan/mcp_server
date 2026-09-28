@@ -12,7 +12,7 @@
 - **Entry point**: `src/server.js` — HTTP server on port 3100.
 - **Transport**: Per-session SSE mapped by `sessionId`.
 - **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
-- **Agents**: `src/agents/` — browser, chat, dreaming, forge, github, image, inspector, llm, memory, research, storage, telemetry, vision.
+- **Agents**: `src/agents/` — browser, chat, dreaming, forge, github, harvest, image, inspector, llm, memory, research, storage, telemetry, vision.
 - **Loader**: `src/agent-loader.js` — loads agents and registers tools.
 - **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 
@@ -71,7 +71,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `src/` — server, gateway client, agent loader, agents.
 - `src/agents/` — agent implementations.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
-- `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
+- `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index.
 - `data/chat/sessions/` — persistent headless chat sessions (one pretty-printed JSON per session, owned by the `chat` agent).
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).

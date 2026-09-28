@@ -6,8 +6,9 @@ and their `config.json` files.
 
 ## Browser agent (`src/agents/browser/`)
 
-Puppeteer-based headless Chrome with persistent sessions. 14 tools, all under
-the `browser.*` method namespace (`browser.session_create`, `browser.goto`, …).
+Puppeteer-based headless Chrome with persistent sessions. 15 tools under the
+`browser.*` method namespace. Fourteen drive a session (`browser.session_create`,
+`browser.goto`, …); the fifteenth, `browser.fetch`, deliberately does not.
 
 ### Engine & lifecycle
 
@@ -30,11 +31,12 @@ the `browser.*` method namespace (`browser.session_create`, `browser.goto`, …)
 
 | Tool | Key args (defaults) | Notes |
 |---|---|---|
+| `browser.fetch` | `url*`, `scope?`, `maxLength?` (0), `minChars?` (0), `name?`, `dir?` ('fetch'), `prefer?` ('browser') | **Renders by default.** Fetches the URL in Chrome, converts via `htmlToMarkdown`, writes to storage, returns the coordinates — never the body, never truncated. `prefer: 'http'` skips Chrome and is only for resources that are not pages (sitemap.xml, llms.txt, raw JSON/XML), where rendering would wrap the resource in a viewer document. Non-HTML responses are stored byte-for-byte with their own extension and no frontmatter (that would corrupt JSON); binary content-types are rejected. Block/challenge pages are detected and refused rather than stored. Files land at `<dir>/<host>/<slug>.md`; re-fetching is idempotent. |
 | `browser.session_create` | `viewport? {width,height}`, `userAgent?`, `visible?` | Returns `{sessionId, visible, pageUrl}`. |
 | `browser.session_list` | — | `[id][VISIBLE] url (age)`. |
 | `browser.session_metadata` | `sessionId*` | URL, title, viewport. |
 | `browser.goto` | `url*`, `waitFor?` (CSS, 15 s), `timeout?` (30 s), `retries?` (2) | `waitUntil: 'load'`. |
-| `browser.content` | `mode?` text\|html\|markdown\|screenshot | text/markdown: Readability extraction, whitespace-collapsed, **50 000 char cap** (markdown prefixed `# <title>`); html: **100 000 char cap**; screenshot: full-page PNG as image content. Extraction failure returns raw first 5 000 chars, not an error. |
+| `browser.content` | `mode?` text\|html\|markdown\|screenshot, `scope?`, `maxLength?`, `minChars?` | text: Readability textContent, whitespace-collapsed, **50 000 char cap**. markdown: real CommonMark via `htmlToMarkdown` (headings, fenced code with language, GFM tables) — **no cap by default**, `maxLength` truncates at a block boundary; `scope` `auto`\|`article`\|`document`; conversion failure returns `isError: true`, not raw text. html: **100 000 char cap**; screenshot: full-page PNG as image content. Extraction failure returns raw first 5 000 chars. See `documentation/html-to-markdown.md`. |
 | `browser.click` | `selector*`, `waitAfter?`, `mode?`, `retries?` (2) | |
 | `browser.fill` | `fields* [{selector,value}]`, `submit?`, `waitAfter?`, `retries?` (2) | Clears via input event first; submit waits navigation (networkidle2, 15 s). |
 | `browser.type` | `text?`, `key?`, `selector?`, `delay?` (0 ms/keystroke), `keystrokes?` | Named keys: Enter, Tab, Escape, arrows, Backspace, Delete, Home, End, PageUp, PageDown. |
@@ -50,12 +52,25 @@ anywhere in this stack); fixed-position elements break `offsetParent !== null`
 checks — use bounding rects. `browser.research` in the method map is an alias
 for `research.topic`, not a browser tool.
 
+The `research` agent still uses `extractContent()` (Readability
+`textContent`) — it has not been moved onto `htmlToMarkdown` yet. That is fine
+for synthesis (the model reads prose, not tables), but it is the reason
+`research.topic` reports lose structure; a docs harvester must use the browser
+agent's `mode: 'markdown'` or call the module directly.
+
 ### Exported seam for other agents
 
-`init()` returns `{ getPage(), fetch(url) }` — research (and any future
-agent) borrows pages from the shared browser: `getPage()` →
-`{page, markUsed(), close(delay)}`; `fetch()` navigates to networkidle2
-(30 s), returns full HTML, leaves the page alive 15 s.
+`init(context)` returns `{ getPage(), fetch(url) }` — research borrows pages from
+the shared browser: `getPage()` → `{page, markUsed(), close(delay)}`;
+`fetch()` navigates to networkidle2 (30 s), returns full HTML, leaves the page
+alive 15 s.
+
+`init()` also captures `agents.storage.{root,uncShare,publicUrl}` for
+`browser.fetch`, and stores the returned object in `internalApi` so the fetch
+tool can acquire a page for its Chrome fallback.
+
+Note: `fetch()` on this seam has no callers. `browser.fetch` is the supported
+way to retrieve a page; the raw seam is left in place for page-borrowing only.
 
 ## Research agent (`src/agents/research/`)
 

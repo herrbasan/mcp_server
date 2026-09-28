@@ -401,12 +401,25 @@ TYPICAL WORKFLOW:
 CONTENT MODES (used by browser.content, browser.click, browser.fill):
   "text"       — readable text (default)
   "html"       — raw HTML source
-  "markdown"   — markdown-formatted content
+  "markdown"   — real CommonMark: headings, fenced code blocks with language,
+                 GFM tables with alignment. Not a dressed-up text dump.
   "screenshot" — base64 PNG image
+
+  browser.content — { sessionId*, mode?, scope?, maxLength?, minChars? }
+      scope (markdown only): 'auto' (default) | 'article' | 'document'.
+      'document' takes the body minus nav/header/footer — use it when
+      Readability mangles a reference page.
 
   browser.session_create — { viewport?: {width,height}, userAgent?, visible? }
       Create a browser session. Returns a sessionId — use it in all other
       browser calls. Set visible:true for manual interaction (e.g. login).
+
+  browser.fetch — { url*, scope?, maxLength?, minChars?, name?, dir?, prefer? }
+      Fetch ONE url, render it, convert to Markdown, write into storage, return
+      the path + url + stats. Nothing is returned inline and nothing is
+      truncated — read the file afterwards with storage.read. Rendering is the
+      default; prefer:'http' skips Chrome and is only for resources that are
+      not pages (sitemap.xml, llms.txt, raw JSON).
 
   browser.session_list — {}
       List all active browser sessions.
@@ -454,6 +467,24 @@ CONTENT MODES (used by browser.content, browser.click, browser.fill):
 
 
 ═══════════════════════════════════════════════════════════════
+HARVEST — Collect a documentation section
+
+  harvest.collect — { url*, intent?, max_pages?, select?, select_model?, whole_site?, include?, exclude?, dir?, concurrency? }
+      Discover the pages around a seed URL (sitemap.xml, llms.txt, the page's own
+      nav, the section's landing page), choose which to fetch, render them into
+      storage, and write a manifest listing EVERY discovered link — fetched,
+      failed, not selected, or filtered out — with the reason. Scope defaults to
+      the seed's own section (its directory).
+      Exactly one model call: when the section holds more pages than the budget,
+      the local model (badkid-llama-chat) ranks the link list against the intent
+      and picks the best max_pages. select:'deep' instead scores every candidate
+      0-3 in batches and ranks by score — steadier, and it reports the score
+      distribution and how many equally-good pages the budget left behind, at
+      about four times the selection time. select:'heuristic' never calls a
+      model. A short answer is topped up in heuristic order, and an unreachable
+      or unusable reply falls back with the reason recorded in the manifest.
+      Nothing is returned inline: read the manifest, then storage.read the pages.
+
 RESEARCH — Deep Web Research
 ═══════════════════════════════════════════════════════════════
 
@@ -936,6 +967,8 @@ IMPORTANT RULES
         "browser.type": "browser_session_type", "browser.content": "browser_session_content",
         "browser.evaluate": "browser_session_evaluate", "browser.inspect": "browser_session_inspect",
         "browser.console": "browser_session_console", "browser.wait": "browser_session_wait",
+        "browser.fetch": "browser_fetch",
+        "harvest.collect": "harvest_collect",
         "browser.research": "research_topic",
         "research.topic": "research_topic",
 

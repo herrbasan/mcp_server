@@ -1,0 +1,27 @@
+{
+    "agent": "harvest",
+    "description": "Collect a documentation section from a seed URL into storage. Mechanical pass 1: discover the pages reachable from a seed, render and convert each one to Markdown, and write a manifest listing every discovered link — including the ones not fetched — so a smarter second pass can decide what belongs in the final document. No model is called. Page retrieval is delegated to browser.fetch, so rendering, conversion, block-page detection and per-page storage layout behave identically.",
+    "dependsOn": ["browser"],
+    "tools": [
+        {
+            "name": "harvest_collect",
+            "description": "Given a seed documentation URL, discover the pages around it, choose which to fetch, render them into storage, and write a manifest. Discovery tries sitemap.xml, llms.txt, the seed's own nav, and the section's landing page; candidates are limited to the seed's section (its directory) unless whole_site is set, and to the same origin. When more pages are discovered than the budget allows, a small local model is asked once to rank the link list against `intent` and pick the best max_pages — one structured call, not an agent driving the crawl — and the manifest records exactly what it chose, how many slots were topped up in heuristic order, and the model used. If the model is unreachable or answers with nothing usable, selection falls back to shallowest-path-first and says so in the manifest. Pages land at <dir>/<host>/<slug>.md and the manifest at <dir>/<host>/_manifest.json, listing every discovered link with a reason — fetched, failed, not selected, or filtered out — so nothing is dropped silently. Page failures are recorded and the run continues, but a run where every page fails throws. Nothing is returned inline; read the manifest, then the pages with storage.read.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Seed URL to start from (an absolute http(s) URL)." },
+                    "intent": { "type": "string", "description": "What you want out of these docs (e.g. 'the string formatting reference', 'how routing works'). This is what the selecting model ranks the link list against. Without it the model is asked for the pages that best represent the seed's subject matter — useful, but vaguer." },
+                    "select": { "type": "string", "enum": ["auto", "llm", "deep", "heuristic"], "description": "How to choose when more pages are discovered than the budget allows. 'auto'/'llm' (default) ask the local model for its picks in one call over the whole list — fast, good, slightly variable. 'deep' scores every candidate 0-3 in batches of 45 and ranks by score: steadier and it reports the score distribution plus how many equally-good pages the budget left behind, at roughly four times the selection time — the mode to use when you really want to dig into something. 'heuristic' never calls a model. Ignored when everything discovered fits in the budget." },
+                    "select_model": { "type": "string", "description": "Gateway chat model ID to do the selecting. Defaults to badkid-llama-chat, the always-available local model — selection is a small judgement over a bounded list, so it costs nothing and its 256k context fits the whole candidate list. Use chat.models to list valid IDs." },
+                    "max_pages": { "type": "number", "description": "Maximum pages to fetch (default 30). Skipped pages are not discarded — they stay in the manifest as discovered links, so a second pass can still reach them." },
+                    "whole_site": { "type": "boolean", "description": "Widen scope from the seed's own section (its directory, the default) to the whole origin. Ignored when the seed is a site root, which is already site-wide." },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Only keep discovered URLs containing any of these substrings (scope narrowing, not relevance ranking)." },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Drop discovered URLs containing any of these substrings." },
+                    "dir": { "type": "string", "description": "Storage folder for the harvest (default 'harvest')." },
+                    "concurrency": { "type": "number", "description": "Pages rendered in parallel (default 4). Each is a Chrome page, so raising this trades the shared browser's memory for wall-clock." }
+                },
+                "required": ["url"]
+            }
+        }
+    ]
+}

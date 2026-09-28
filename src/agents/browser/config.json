@@ -4,6 +4,23 @@
     "defaultViewport": { "width": 1280, "height": 1280 },
     "tools": [
         {
+            "name": "browser_fetch",
+            "description": "Fetch one URL, convert it to Markdown and write it into storage. Returns the storage path, HTTP url and a size/structure summary — NOT the document body, and never truncated. Read the result afterwards with storage.read (offset+length for partial reads). The page is RENDERED in Chrome by default: plain HTTP looks like the fast path but is not, since bot-protected sites refuse it and the render is needed anyway. Conversion keeps structure — fenced code blocks with their language, GFM tables with alignment, nested lists. Block/challenge pages are detected and refused rather than stored as content. Non-HTML text (txt/json/xml) is stored byte-for-byte with its own extension and no added frontmatter; binary content-types are rejected. Set prefer:'http' only for resources that are not pages (sitemap.xml, llms.txt, a raw API endpoint).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Absolute http(s) URL to fetch." },
+                    "scope": { "type": "string", "enum": ["auto", "article", "document"], "description": "Content selection. 'auto' (default) uses Readability and falls back to the whole body when it finds nothing or when it loses the page's code blocks and tables. 'article' forces content extraction; 'document' takes the body minus nav/header/footer/sidebar — use it when Readability mangles a reference page." },
+                    "maxLength": { "type": "number", "description": "Truncate at a block boundary. Default 0 = no truncation, which is almost always what you want." },
+                    "minChars": { "type": "number", "description": "Reject an extraction shorter than this. Default 0 = only an empty page is an error." },
+                    "name": { "type": "string", "description": "Optional filename slug. Defaults to the URL path." },
+                    "dir": { "type": "string", "description": "Storage folder for the result (default 'fetch'). Files land at <dir>/<host>/<slug>.md; re-fetching the same URL overwrites the same file." },
+                    "prefer": { "type": "string", "enum": ["browser", "http"], "description": "Transport. 'browser' (default) renders the page in Chrome. 'http' does a plain request without launching Chrome — only for resources that are not pages (sitemap.xml, llms.txt, a raw JSON/XML endpoint), where rendering would wrap the resource in a viewer document." }
+                },
+                "required": ["url"]
+            }
+        },
+        {
             "name": "browser_session_create",
             "description": "Create a persistent browser session. Returns a sessionId in the response text. Use this sessionId in all subsequent browser_session_* calls (goto, content, screenshot, click, fill, evaluate, scroll, metadata, close). Example: call this first, then use browser_session_goto with the returned sessionId.",
             "inputSchema": {
@@ -55,12 +72,15 @@
         },
         {
             "name": "browser_session_content",
-            "description": "Get page content. mode 'text' extracts readable text, 'screenshot' returns base64 image, 'html' returns raw HTML, 'markdown' returns markdown-formatted content. Requires sessionId from browser_session_create.",
+            "description": "Get page content. mode 'text' extracts readable text, 'screenshot' returns base64 image, 'html' returns raw HTML, 'markdown' returns a real CommonMark conversion (headings, fenced code blocks with language, GFM tables with alignment) — use markdown when structure matters, text when it does not. Requires sessionId from browser_session_create.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "sessionId": { "type": "string" },
-                    "mode": { "type": "string", "enum": ["text", "html", "markdown", "screenshot"] }
+                    "mode": { "type": "string", "enum": ["text", "html", "markdown", "screenshot"] },
+                    "scope": { "type": "string", "enum": ["auto", "article", "document"], "description": "markdown only. 'auto' (default) uses Readability and falls back to the whole body when it finds nothing; 'article' forces content extraction; 'document' takes the body minus nav/header/footer — use it when Readability mangles a reference page." },
+                    "maxLength": { "type": "number", "description": "markdown only. Truncate at a block boundary (0 = no truncation, default)." },
+                    "minChars": { "type": "number", "description": "markdown only. Reject an extraction shorter than this (0 = only an empty page is an error)." }
                 },
                 "required": ["sessionId"]
             }

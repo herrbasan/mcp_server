@@ -3,8 +3,10 @@
 Index of every agent and tool in the MCP server, with links to the detailed
 reference docs. Last verified 2026-09-22.
 
-Detailed docs live in this folder, one file per system. Shared infrastructure
-(`fileops`) is documented in `documentation/fileops.md`.
+Detailed docs live in this folder, one file per system. Shared infrastructure is
+documented alongside: `documentation/fileops.md` (root-confined file operations)
+and `documentation/html-to-markdown.md` (HTML→CommonMark conversion, used by
+`browser.content` `mode: 'markdown'`).
 
 ## How tools are invoked
 
@@ -33,7 +35,8 @@ nesting level.
 | **dreaming** | `memory.dream_generate/dream_status/dream_inject` | Consolidation pipeline (every 15 min): clusters, bridges, scores, wildcards. No `dream.*` namespace. | [memory.md](memory.md) |
 | **storage** | `storage.*` (18 file ops + `storage.resources_*`) | Root-confined file store (`D:\MCP_Storage`) with snapshots, trash, bulk ops, semantic search, REST + MCP resources. | [storage.md](storage.md) |
 | **vdb** | `vdb.search/status/trigger_scan/build_index` | nVDB vector index: watches storage, chunks + LLM-enhances + embeds files every 5 min; owns the memory collection. | [vdb.md](vdb.md) |
-| **browser** | `browser.session_*`, `browser.goto/content/click/fill/type/evaluate/scroll/inspect/console/wait` (14) | Persistent headless Chrome (Puppeteer) with idle-timeout session lifecycle. | [browser.md](browser.md) |
+| **browser** | `browser.fetch`, `browser.session_*`, `browser.goto/content/click/fill/type/evaluate/scroll/inspect/console/wait` (15) | Persistent headless Chrome (Puppeteer) with idle-timeout session lifecycle, plus `browser.fetch`: one URL in, rendered Markdown written to storage, path returned. | [browser.md](browser.md) |
+| **harvest** | `harvest.collect` | Pass 1 of docs harvesting: discover a seed's section, render every page into storage, write a manifest listing every discovered link. No model. | [harvest.md](harvest.md) |
 | **research** | `research.topic` | Multi-engine search → scrape → cite-tracked synthesis + confidence evaluation. | [browser.md](browser.md) |
 | **forge** | `forge.write/update/read/list/delete/call/stop/history/rollback/help` | Git-versioned custom tools executing in isolated worker threads. | [forge.md](forge.md) |
 | **chat** | `chat.create/models/send/inject/list/status/history/update/compact/delete` | Named headless LLM sessions, persisted to disk, full workshop tool access. | [chat.md](chat.md) |
