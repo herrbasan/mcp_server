@@ -1,7 +1,15 @@
 import { searchGoogle } from './scrapers/google-adapter.js';
 import { searchDuckDuckGo } from './scrapers/duckduckgo-adapter.js';
-import { extractContent } from './scrapers/content-extractor.js';
+import { htmlToMarkdown } from '../../lib/html-to-markdown.js';
+import { detectBlockPage } from '../browser/index.js';
 import { StreamingResearchPipeline, prioritizeUrls } from './streaming-research.js';
+
+// Per-source ceiling for the synthesis prompt. This pass SUMMARISES, so unlike
+// browser.fetch it hands the model one prompt containing every source at once,
+// and an uncapped docs page is 30-60 KB of Markdown. The old extractor capped at
+// 50000 silently; the cap stays, but truncation is now reported in the output
+// rather than being invisible.
+const SYNTHESIS_PAGE_CHARS = 50000;
 
 export async function research_topic(args, context) {
     const { agents, gateway, prompts, progress } = context;
@@ -54,10 +62,35 @@ export async function research_topic(args, context) {
         try {
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
             const html = await page.content();
-            const extracted = extractContent(html, url);
-            return extracted ? { success: true, url, ...extracted } : null;
+
+            // Same conversion as browser.fetch: fenced code keeps its language and
+            // tables keep their structure, which the old textContent extraction
+            // flattened — the two things most worth having when the model is
+            // summarising technical material.
+            const md = htmlToMarkdown(html, { url, maxLength: SYNTHESIS_PAGE_CHARS });
+
+            // A challenge page is not a source. Summarising one produces confident
+            // nonsense, so it is refused here for the same reason browser.fetch
+            // refuses to store it.
+            const block = detectBlockPage(md);
+            if (block) {
+                return { success: false, url, error: `the site served a block page (matched "${block}")` };
+            }
+
+            return {
+                success: true,
+                url,
+                title: md.title,
+                content: md.markdown,
+                excerpt: md.excerpt || md.markdown.slice(0, 200),
+                strategy: md.strategy,
+                truncated: md.stats.truncated
+            };
         } catch (e) {
-            return null;
+            // Recorded, never swallowed: a source that vanished silently is the
+            // one failure this pipeline must not make, because the synthesis is
+            // indistinguishable from one built on complete evidence.
+            return { success: false, url, error: e.message };
         } finally {
             markUsed();
             await close(5000);
@@ -73,7 +106,11 @@ export async function research_topic(args, context) {
     }
 
     if (!scrapedContent.length) {
-        return { content: [{ type: "text", text: "Failed to extract content from any search results." }], isError: true };
+        const reasons = pipeline.getFailures().map(f => `\n  ${f.url}: ${f.error}`).join('');
+        return {
+            content: [{ type: "text", text: `Failed to extract content from any search result.${reasons}` }],
+            isError: true
+        };
     }
 
     log(`Phase 4: Synthesizing ${scrapedContent.length} sources...`, 75);
@@ -98,7 +135,24 @@ export async function research_topic(args, context) {
         enableThinking: false
     });
 
-    const finalOutput = `${synthesisResult.content}\n\n---\n*Evaluation:\n${evalResult.content}*`;
+    const finalOutput = `${synthesisResult.content}\n\n---\n*Evaluation:\n${evalResult.content}*${sourceNotes(scrapedContent, pipeline.getFailures())}`;
 
     return { content: [{ type: "text", text: finalOutput }] };
+}
+
+// The report is stamped with what it is actually built on. A synthesis over four
+// of seven sources reads identically to one over all seven unless the gaps are
+// named, and the same goes for a source that was cut off at the cap.
+function sourceNotes(scraped, failures) {
+    const lines = [];
+    if (failures.length) {
+        lines.push('', `*Sources not retrieved (${failures.length}):*`);
+        for (const f of failures) lines.push(`- ${f.url} — ${f.error}`);
+    }
+    const truncated = scraped.filter(s => s.truncated);
+    if (truncated.length) {
+        lines.push('', `*Truncated at ${SYNTHESIS_PAGE_CHARS} characters (${truncated.length}):*`);
+        for (const s of truncated) lines.push(`- ${s.url}`);
+    }
+    return lines.join('\n');
 }

@@ -15,6 +15,10 @@ const defaultViewport = agentConfig.defaultViewport || { width: 1280, height: 12
 
 // Browser state tracking
 let browser = null;
+// True only when THIS process launched the browser. Connecting to a Chrome that
+// was already running (another agent, or a previous run) must never close it:
+// puppeteer's browser.close() on a connected browser kills the remote process.
+let browserOwnedByUs = false;
 let browserIdleTimer = null;
 const BROWSER_IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 let activePages = new Set();
@@ -68,21 +72,49 @@ async function withRetry(fn, options = {}) {
 const DEBUGGING_PORT = 9222;
 const CHROME_PROFILE_DIR = path.join(__dirname, '..', '..', '..', 'data', 'chrome-profile');
 
+// Serialised so concurrent callers cannot each launch a browser. The search
+// adapters run in parallel and so do the first scraper pages, so several callers
+// can see `browser === null` at once — and without this the loser of the race
+// dies with Chrome's "the browser is already running for <profile>", failing the
+// fetch it was serving for no real reason.
+let browserInitPromise = null;
+
 async function getBrowser() {
     if (isShuttingDown) {
         throw new Error('Browser is shutting down');
     }
-    
-    if (!browser) {
-        const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
 
-        // Try to connect to existing Chrome with debugging enabled
+    if (browser) {
+        resetBrowserIdleTimer();
+        return browser;
+    }
+
+    if (!browserInitPromise) {
+        browserInitPromise = initBrowser().finally(() => { browserInitPromise = null; });
+    }
+    await browserInitPromise;
+    return browser;
+}
+
+async function initBrowser() {
+    if (!browser) {
+        const debugUrl = `http://localhost:${DEBUGGING_PORT}`;
+
+        // Try to connect to an already-running Chrome with debugging enabled.
+        //
+        // browserURL, NOT browserWSEndpoint: a bare `ws://localhost:9222` is not
+        // a CDP endpoint and answers 404, so this branch never once succeeded —
+        // every call launched a second Chrome, and a second Chrome cannot start
+        // on the same profile ("the browser is already running for <profile>").
+        // The http URL makes Puppeteer read /json/version and use the real
+        // webSocketDebuggerUrl.
         try {
             log('Attempting to connect to existing Chrome via CDP...');
             browser = await puppeteer.connect({
-                browserWSEndpoint: wsUrl,
+                browserURL: debugUrl,
                 timeout: 3000
             });
+            browserOwnedByUs = false;
 
             // Verify it's still responsive
             const version = await browser.version();
@@ -131,6 +163,7 @@ async function getBrowser() {
                 });
 
                 log(`Browser launched successfully (PID: ${browser.process()?.pid})`);
+                browserOwnedByUs = true;
             } catch (launchErr) {
                 log(`Failed to launch browser: ${launchErr.message}`);
                 throw launchErr;
@@ -138,27 +171,38 @@ async function getBrowser() {
         }
     }
 
-    // Reset idle timer
+    return browser;
+}
+
+// Kept separate from init so every caller — not just the one that happened to
+// launch the browser — keeps the idle window open.
+function resetBrowserIdleTimer() {
     if (browserIdleTimer) {
         clearTimeout(browserIdleTimer);
         browserIdleTimer = null;
     }
-    
+
     browserIdleTimer = setTimeout(async () => {
         if (browser && !isShuttingDown && sessions.size === 0) {
             log(`Idle timeout (${BROWSER_IDLE_TIMEOUT}ms) reached, closing browser (no active sessions)`);
             try {
-                await browser.close();
-                log('Browser closed due to idle timeout');
+                if (browserOwnedByUs) {
+                    await browser.close();
+                    log('Browser closed due to idle timeout');
+                } else {
+                    // Attached to someone else's Chrome — drop the connection and
+                    // leave their browser running.
+                    browser.disconnect();
+                    log('Dropped idle connection to a browser this process did not launch');
+                }
             } catch (err) {
                 log(`Error closing idle browser: ${err.message}`);
             }
             browser = null;
+            browserOwnedByUs = false;
             activePages.clear();
         }
     }, BROWSER_IDLE_TIMEOUT);
-
-    return browser;
 }
 
 export async function init(context) {
@@ -308,10 +352,17 @@ export async function shutdown() {
             log('All pages closed');
         }
         
-        // Then close the browser
-        log('Closing browser process...');
-        await browser.close();
-        log(`Browser (PID: ${pid}) closed successfully`);
+        // Then close the browser — but only one we started. Closing a browser we
+        // merely connected to would take down whatever process owns it.
+        if (browserOwnedByUs) {
+            log('Closing browser process...');
+            await browser.close();
+            log(`Browser (PID: ${pid}) closed successfully`);
+        } else {
+            log('Disconnecting from a browser this process did not launch...');
+            browser.disconnect();
+            log('Disconnected');
+        }
         
     } catch (err) {
         log(`Error during shutdown: ${err.message}`);
@@ -1119,7 +1170,7 @@ const BLOCK_MARKERS = [
     'your request has been blocked'
 ];
 
-function detectBlockPage(result) {
+export function detectBlockPage(result) {
     const text = `${result.title || ''}\n${result.markdown.slice(0, 4000)}`.toLowerCase();
     return BLOCK_MARKERS.find(m => text.includes(m)) || null;
 }

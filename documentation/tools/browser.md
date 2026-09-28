@@ -12,10 +12,19 @@ Puppeteer-based headless Chrome with persistent sessions. 15 tools under the
 
 ### Engine & lifecycle
 
-- **Connect-first**: tries `puppeteer.connect(ws://localhost:9222, 3 s)` to an
-  already-running Chrome; else launches with `--no-sandbox`,
-  `--disable-blink-features=AutomationControlled`, `--remote-debugging-port=9222`,
-  `--user-data-dir=data/chrome-profile`.
+- **Connect-first**: `puppeteer.connect({ browserURL: 'http://localhost:9222' })`
+  attaches to an already-running Chrome and reuses it; otherwise launches with
+  `--no-sandbox`, `--disable-blink-features=AutomationControlled`,
+  `--remote-debugging-port=9222`, `--user-data-dir=data/chrome-profile`.
+- **Ownership matters.** `browserOwnedByUs` records whether this process launched
+  the browser. Shutdown and the idle timer only `close()` a browser we started;
+  one we merely attached to is `disconnect()`ed, because Puppeteer's
+  `browser.close()` on a connected browser kills the remote process — which would
+  take down whatever owns it.
+- **Initialisation is serialised** (`browserInitPromise`): the search adapters run
+  in parallel and so do the first scraper pages, so several callers can see
+  `browser === null` at once. Without the guard the loser of the race dies with
+  Chrome's "the browser is already running for <profile>".
 - Default viewport **1280×1280** (agent-local config `defaultViewport`; the
   root config's `agents.browser.viewport/userDataDir` are **dead config** —
   never read). Default UA `Chrome/120.0.0.0`, `Accept-Language: en-US,en;q=0.9`.
@@ -52,11 +61,25 @@ anywhere in this stack); fixed-position elements break `offsetParent !== null`
 checks — use bounding rects. `browser.research` in the method map is an alias
 for `research.topic`, not a browser tool.
 
-The `research` agent still uses `extractContent()` (Readability
-`textContent`) — it has not been moved onto `htmlToMarkdown` yet. That is fine
-for synthesis (the model reads prose, not tables), but it is the reason
-`research.topic` reports lose structure; a docs harvester must use the browser
-agent's `mode: 'markdown'` or call the module directly.
+### Gotcha — "the browser is already running for <profile>"
+
+On Windows that message does not mean a browser is running. Puppeteer raises it
+from its launch `catch` whenever a launch failed **and** a file named `lockfile`
+exists in the profile directory (Puppeteer's `BrowserLauncher`). `lockfile` is
+Chrome's process singleton, removed on a clean exit — but a hard-killed process
+leaves it behind, so an orphaned run poisons every later attempt.
+
+Diagnose before deleting: `Get-CimInstance Win32_Process -Filter "Name='chrome.exe'"`
+and check whether any command line contains the profile path. If none does, the
+lock is stale and `data/chrome-profile/lockfile` can go. If one does — the MCP
+server's own browser, for instance — delete nothing; either use the running
+browser (connect-first now reuses it) or stop the server first.
+
+Bot-wall detection in `browser.fetch` (`detectBlockPage`) matches high-precision
+phrases in the converted text (`just a moment...`, `attention required!`,
+`verifying you are human`, `vercel security checkpoint`, …). Deliberately not a
+substring test for `captcha` — Wikipedia's ordinary JSON article contains that
+word, and a false positive turns a good fetch into an error.
 
 ### Exported seam for other agents
 
@@ -90,19 +113,24 @@ Pipeline (streaming-research.js):
    questions +90, GitHub issues +85 / discussions +80, github.blog +70,
    dev.to +50, Wikipedia +45, Medium +40, query words in URL +20 each, app-
    store pages −100, short-path noise −30. Keeps `max_pages × 2`.
-3. **Scrape**: `getPage()` → domcontentloaded (15 s) → content extraction →
-   page released after 5 s linger. `scrapeTimeout 10 s`, `maxConcurrent 5`,
-   `maxTotalTime 60 s`.
+3. **Scrape**: `getPage()` → domcontentloaded (15 s) → `htmlToMarkdown`
+   (`maxLength` 50 000 per source) → page released after 5 s linger.
+   `scrapeTimeout 10 s`, `maxConcurrent 5`, `maxTotalTime 60 s`. A block page is
+   refused here too — summarising a challenge wall produces confident nonsense —
+   and **every source that did not make it is recorded with its reason** and
+   listed at the end of the report as *Sources not retrieved*. A synthesis over
+   four of seven sources used to read exactly like one over all seven.
 4. **Synthesize** (gateway task `synthesis`): report with `[Source N: url]`
    citations; partial synthesis streams every 3 pages.
 5. **Evaluate** (task `analysis`): confidence assessment appended.
 
-Content extraction cascade (`scrapers/content-extractor.js`):
-readability → semantic (article/main/[role=main]/.content/… selectors) →
-paragraph-density scoring (top 20 `<p>`) → fallback (body minus chrome);
-each capped at 50 000 chars, excerpt 300. Bot-wall detection (captcha /
-cloudflare / "verify you are human" patterns) exists but only on the legacy
-code path.
+The converter replaced the old `scrapers/content-extractor.js` cascade
+(readability → semantic → density → fallback, which returned Readability
+`textContent` and flattened code blocks and tables). The file is still on disk
+for the archived `web-research-ref.js`; nothing live imports it.
+
+Sources truncated at the per-source cap are listed in the report alongside the
+failures, so the cap is visible rather than invisible.
 
 Known dead weight (documented for archaeology, do not build on it):
 `web-research-ref.js` (unreachable legacy job system), the root config's

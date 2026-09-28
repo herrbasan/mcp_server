@@ -37,7 +37,7 @@ nesting level.
 | **vdb** | `vdb.search/status/trigger_scan/build_index` | nVDB vector index: watches storage, chunks + LLM-enhances + embeds files every 5 min; owns the memory collection. | [vdb.md](vdb.md) |
 | **browser** | `browser.fetch`, `browser.session_*`, `browser.goto/content/click/fill/type/evaluate/scroll/inspect/console/wait` (15) | Persistent headless Chrome (Puppeteer) with idle-timeout session lifecycle, plus `browser.fetch`: one URL in, rendered Markdown written to storage, path returned. | [browser.md](browser.md) |
 | **harvest** | `harvest.collect` | Pass 1 of docs harvesting: discover a seed's section, render every page into storage, write a manifest listing every discovered link. No model. | [harvest.md](harvest.md) |
-| **research** | `research.topic` | Multi-engine search → scrape → cite-tracked synthesis + confidence evaluation. | [browser.md](browser.md) |
+| **research** | `research.topic` | Multi-engine search → scrape → cite-tracked synthesis + confidence evaluation, with unretrieved sources named in the report. | [browser.md](browser.md) |
 | **forge** | `forge.write/update/read/list/delete/call/stop/history/rollback/help` | Git-versioned custom tools executing in isolated worker threads. | [forge.md](forge.md) |
 | **chat** | `chat.create/models/send/inject/list/status/history/update/compact/delete` | Named headless LLM sessions, persisted to disk, full workshop tool access. | [chat.md](chat.md) |
 | **llm** | `llm.query`, `llm.session_create/query/close` | One-shot clean-context queries + in-memory pinned sessions. | [llm.md](llm.md) |

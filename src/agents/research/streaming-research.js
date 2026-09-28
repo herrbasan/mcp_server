@@ -1,4 +1,4 @@
-import { extractContent, validateContent } from './scrapers/content-extractor.js';
+import { validateContent } from './scrapers/content-extractor.js';
 
 /**
  * Stream scrape URLs with concurrent synthesis
@@ -11,8 +11,12 @@ export class StreamingResearchPipeline {
     this.maxConcurrent = options.maxConcurrent || 10;
     this.synthesisInterval = options.synthesisInterval || 3; // Synthesize every N pages
     this.maxTotalTime = options.maxTotalTime || 50000; // 50s max (leaves buffer for client timeout)
-    
+
     this.results = [];
+    // Every source that did not make it, with the reason. A research report built
+    // on four of seven sources reads exactly like one built on all seven unless
+    // the missing ones are named.
+    this.failures = [];
     this.startTime = null;
     this.synthesisCallbacks = [];
     this.isComplete = false;
@@ -52,6 +56,8 @@ export class StreamingResearchPipeline {
           const synthesis = await this._quickSynthesize(this.results);
           yield { type: 'synthesis', data: synthesis, partial: true };
         }
+      } else if (result) {
+        this.failures.push({ url, error: result.error || 'no content extracted' });
       }
       
       if (remaining.length > 0 && !signal?.aborted) {
@@ -90,7 +96,8 @@ export class StreamingResearchPipeline {
       
     } catch (err) {
       console.error(`[StreamingResearch] ${url.substring(0, 50)}... failed: ${err.message}`);
-      return null;
+      // A failure object rather than null, so the caller can name what was lost.
+      return { success: false, url, error: err.message };
     }
   }
 
@@ -121,6 +128,10 @@ export class StreamingResearchPipeline {
 
   getResults() {
     return this.results;
+  }
+
+  getFailures() {
+    return this.failures;
   }
 
   hasMinimumContent(minSources = 3, minTotalChars = 2000) {
@@ -185,7 +196,7 @@ export function shouldTerminateEarly(results, options = {}) {
   
   const highQuality = results.filter(r => 
     r.content?.length > 500 && 
-    ['readability', 'semantic'].includes(r.strategy)
+    ['readability', 'semantic', 'document'].includes(r.strategy)
   ).length;
   
   if (highQuality >= minHighQualitySources) {

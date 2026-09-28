@@ -235,4 +235,8 @@ GFM column alignment. Before parsing, the module copies alignment intent to a
 - `src/agents/harvest/index.js` — `harvest.collect`, which delegates every page
   retrieval to `browser.runBrowserFetch` and so inherits the same conversion,
   block-page and storage behaviour.
+- `src/agents/research/index.js` — `research.topic` scrapes each source with
+  `htmlToMarkdown` (`maxLength` 50 000 per source, because this pass hands the
+  model every source in one prompt), refuses block pages, and lists any source it
+  could not retrieve at the end of its report.
 - Planned: docs harvest pass 2 — composing the collected pages into one document.
