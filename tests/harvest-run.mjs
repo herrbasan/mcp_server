@@ -1,18 +1,19 @@
-// Run harvest.collect against real URLs, with a throwaway storage root so a
-// check never litters the real one.
+// Run harvest.collect — and optionally harvest.compose — against real URLs, with
+// a throwaway storage root so a check never litters the real one.
 //
-//   node tests/harvest-run.mjs <url> [maxPages] [--intent "..."] [--deep] [--no-llm] [--keep]
-//   node tests/harvest-run.mjs https://docs.astral.sh/uv/ 12 --intent "plugins and hooks"
+//   node tests/harvest-run.mjs <url> [maxPages] [--intent "..."] [--deep] [--no-llm] [--keep] [--compose]
+//   node tests/harvest-run.mjs https://docs.astral.sh/uv/ 12 --intent "plugins and hooks" --compose
 //
 // Uses the real LLM Gateway for the selecting model. --deep scores every
 // candidate in batches instead of one call over the whole list. --no-llm forces
-// heuristic selection. --keep leaves the storage root and prints its path.
+// heuristic selection. --compose runs pass 2 as well. --keep leaves the storage
+// root and prints its path.
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import dotenv from 'dotenv';
 import { init as initBrowser, shutdown } from '../src/agents/browser/index.js';
-import { init as initHarvest, harvest_collect } from '../src/agents/harvest/index.js';
+import { init as initHarvest, harvest_collect, harvest_compose } from '../src/agents/harvest/index.js';
 import { createGatewayClient } from '../src/gateway-client.js';
 import { createEmbedClient } from '../src/embed-client.js';
 
@@ -28,6 +29,7 @@ const intent = flag('--intent');
 const noLlm = argv.includes('--no-llm');
 const deep = argv.includes('--deep');
 const keep = argv.includes('--keep');
+const compose = argv.includes('--compose');
 const rest = argv.filter(a => !a.startsWith('--'));
 const [url, maxPagesArg] = rest;
 
@@ -67,6 +69,13 @@ try {
         select: noLlm ? 'heuristic' : deep ? 'deep' : 'auto'
     }, toolContext);
     console.log(r.content[0].text);
+
+    if (compose) {
+        const manifestRel = /manifest\s+(\S+)/.exec(r.content[0].text)?.[1];
+        console.log(`\n${'='.repeat(70)}\n`);
+        const c = await harvest_compose({ manifest: manifestRel, intent: intent || undefined }, toolContext);
+        console.log(c.content[0].text);
+    }
 } catch (e) {
     console.log(`FAILED: ${e.message}`);
     process.exitCode = 1;

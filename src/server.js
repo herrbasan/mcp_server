@@ -485,6 +485,15 @@ HARVEST — Collect a documentation section
       or unusable reply falls back with the reason recorded in the manifest.
       Nothing is returned inline: read the manifest, then storage.read the pages.
 
+  harvest.compose — { manifest*, intent?, title?, model?, fetch_missing?, max_extra_pages?, out? }
+      Pass 2: read the manifest, read the pages it names, optionally go back for
+      the abandoned links worth having, and write ONE Markdown document with a
+      large-context model. Restructures rather than summarises — code verbatim,
+      tables intact, no compression. Sources are appended from the manifest, never
+      written by the model. No model-free fallback: it fails loudly and writes
+      nothing if the model is unavailable or the sources exceed its context.
+      Returns the document's storage path.
+
 RESEARCH — Deep Web Research
 ═══════════════════════════════════════════════════════════════
 
@@ -969,6 +978,7 @@ IMPORTANT RULES
         "browser.console": "browser_session_console", "browser.wait": "browser_session_wait",
         "browser.fetch": "browser_fetch",
         "harvest.collect": "harvest_collect",
+        "harvest.compose": "harvest_compose",
         "browser.research": "research_topic",
         "research.topic": "research_topic",
 

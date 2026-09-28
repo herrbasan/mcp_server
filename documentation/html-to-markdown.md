@@ -166,11 +166,18 @@ floating chat/help widgets are marked (Docker's `#gordon-chat`).
 | Permalink `<a>` (`#`, `¶`, `§`, or empty, href `#...`) | Dropped |
 | MediaWiki `[edit](…action=edit…)` | Dropped |
 
-Code language is looked up on **both** the `<code>` and the `<pre>` (generators
-disagree about where it goes), then `data-lang`, then — last resort — the `<pre>`'s
-own class, which is the language on rustdoc (`<pre class="rust rust-example-rendered">`).
-That last step is deliberately narrow (single lowercase token, no hyphen, not in
-`GENERIC_PRE_CLASSES`) so `item-decl` and `line-numbers` cannot masquerade as one.
+Code language is looked up on the `<code>`, then the `<pre>`, then — for **Sphinx
+and Pygments markup, where it lives two levels out on the wrapper** — up to two
+ancestor elements. That last step matters: docs.python.org marks it as
+`<div class="highlight-python3 notranslate">`, and without the ancestor lookup
+all 15 code blocks on its `json` page came out bare (they now read `python` ×12
+and `shell` ×3). Pygments aliases (`python3`, `py`, `sh`, `yml`) normalise to the
+info string a renderer expects.
+
+The `<pre>`'s own class is the final fallback — the language on rustdoc
+(`<pre class="rust rust-example-rendered">`). Deliberately narrow: single
+lowercase token, no hyphen, and not in `GENERIC_PRE_CLASSES`, so `item-decl`,
+`line-numbers`, `default` and `source` cannot masquerade as one.
 
 ### Text escaping
 

@@ -360,8 +360,20 @@ const TABLE_PAD_MAX = 160;
 const GENERIC_PRE_CLASSES = new Set([
     'highlight', 'hljs', 'code', 'pre', 'codeblock', 'code-block', 'prism',
     'shiki', 'chroma', 'snippet', 'sample', 'example', 'linenums', 'monospace',
-    'prettyprint', 'dark', 'light', 'notranslate', 'scroll', 'nowrap', 'wrap'
+    'prettyprint', 'dark', 'light', 'notranslate', 'scroll', 'nowrap', 'wrap',
+    'default', 'docutils', 'source'
 ]);
+
+// Pygments lexer names that are aliases rather than the info string a Markdown
+// renderer expects. Short and unambiguous — anything not listed passes through
+// unchanged.
+const LANGUAGE_ALIASES = {
+    python3: 'python',
+    python2: 'python',
+    py: 'python',
+    sh: 'bash',
+    yml: 'yaml'
+};
 
 function preBlock(node, ctx) {
     const codeEl = node.querySelector('code');
@@ -392,6 +404,25 @@ function preBlock(node, ctx) {
         const tokens = (node.getAttribute('class') || '').split(/\s+/).filter(Boolean);
         lang = tokens.find(t => !GENERIC_PRE_CLASSES.has(t.toLowerCase())
             && /^[a-z][a-z0-9+#]{1,13}$/.test(t)) || '';
+    }
+    // Nothing on the code or the pre: check the wrappers. Sphinx and Pygments
+    // mark it two levels out, as `<div class="highlight-python3 notranslate">`,
+    // which is why every code block on docs.python.org came out bare. Only a
+    // class that itself names a language is read, so a generic container cannot
+    // contribute one.
+    if (!lang) {
+        for (let el = node.parentElement, hops = 0; el && hops < 2; el = el.parentElement, hops++) {
+            const cls = el.getAttribute('class') || '';
+            // The specific form first: `highlight-source-python` would otherwise
+            // yield `source`.
+            const m = /highlight-source-([\w+#.-]+)/i.exec(cls)
+                || /(?:language|highlight)-([a-z0-9+#.]+)/i.exec(cls);
+            if (!m) continue;
+            const token = m[1].toLowerCase();
+            if (GENERIC_PRE_CLASSES.has(token)) continue;
+            lang = LANGUAGE_ALIASES[token] || m[1];
+            break;
+        }
     }
 
     const fence = '`'.repeat(Math.max(3, longestRun(code, '`') + 1));

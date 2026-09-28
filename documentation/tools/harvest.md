@@ -27,18 +27,19 @@ Two principles decide its behaviour:
 ## Location
 
 ```
-src/agents/harvest/index.js     — agent (ES module)
-src/agents/harvest/config.json  — agent + tool declarations
-tests/smoke-harvest-collect.mjs — node smoke test against a local fixture site
-tests/harvest-run.mjs           — run against real URLs with a throwaway storage root
+src/agents/harvest/index.js          — agent (ES module)
+src/agents/harvest/config.json       — agent + tool declarations
+tests/smoke-harvest-collect.mjs      — pass 1 against a local fixture site
+tests/smoke-harvest-compose.mjs      — pass 2 with a stub model
+tests/harvest-run.mjs                — run both against real URLs, throwaway storage root
 ```
 
 Depends on `browser`. Retrieval is delegated to `browser.runBrowserFetch`, so
 rendering, conversion, block-page detection and the per-page storage layout are
 shared with the single-URL `browser.fetch` tool.
 
-Run smoke: `node tests/smoke-harvest-collect.mjs`
-Run live: `node tests/harvest-run.mjs <url> [maxPages] [--keep]`
+Run smoke: `node tests/smoke-harvest-collect.mjs` and `node tests/smoke-harvest-compose.mjs`
+Run live: `node tests/harvest-run.mjs <url> [maxPages] [--intent "..."] [--deep] [--compose] [--keep]`
 
 ## Tool
 
@@ -57,6 +58,51 @@ Run live: `node tests/harvest-run.mjs <url> [maxPages] [--keep]`
 | `concurrency` | 4 | Pages rendered in parallel. |
 
 Returns a summary plus the manifest path — never the pages themselves.
+
+### `harvest.compose`
+
+| Arg | Default | Meaning |
+|---|---|---|
+| `manifest*` | — | Storage path to the harvest's `_manifest.json`. |
+| `intent` | manifest's | What the document should cover. |
+| `title` | subject | H1 and frontmatter title. |
+| `model` | `deepseek-flash-chat` | The writing model. |
+| `fetch_missing` | true | Ask the model which abandoned links are worth going back for. |
+| `max_extra_pages` | 10 | Cap on that second round. |
+| `out` | `_document.md` beside the manifest | Output path. |
+
+Returns the document's storage path.
+
+### Pass 2 in detail
+
+1. **Read the manifest**, then read every page it names out of storage. A page
+   the manifest claims but storage lacks is a hard error: the harvest is
+   incomplete, and composing over the remainder would produce a document missing
+   a section it claims to cover.
+2. **Go back for what pass 1 left behind.** The abandoned links that could
+   actually be fetched — the ones ranked out or left over budget — are offered to
+   the model, which picks up to `max_extra_pages`. Scope filters are never
+   offered back: `include`/`exclude` are the caller's explicit boundaries, and
+   "not a document" or "different origin" cannot be fetched into this corpus. A
+   link the model asks for that then fails is recorded in the document rather than
+   quietly dropped.
+3. **Check the sources fit.** The model's context window is read from the gateway
+   (`listModels` reports `context_length`), and the source text is measured against
+   half of it. Over budget fails loudly with the numbers and a way out — nothing is
+   truncated.
+4. **Compose.** One call, non-streaming. The system prompt says outright that this
+   is reorganisation and that compressing the detail away is a failure.
+5. **Append the sources.** Built from the manifest, never asked of the model —
+   source URLs are provenance, and a model writing them out is a chance to invent
+   one.
+
+There is **no model-free fallback**. If the gateway is missing, the reply is
+empty, a named page is absent from storage, or the sources exceed the context,
+compose throws and writes nothing. A plausible-looking document assembled from
+half the evidence is the one outcome worth refusing.
+
+Measured on `docs.astral.sh/uv/`, 6 pages collected then composed: the model asked
+for 9 of 133 abandoned links, and a 48 KB document came out of 15 sources in 61 s.
 
 ## Scope
 
@@ -266,10 +312,6 @@ now fails only on `status >= 400`.
 
 ## Not built yet
 
-- **Pass 2.** The manifest is designed as its input: pages with storage paths plus
-  the full link list, including everything not fetched. The intent is a chat
-  session with a pinned model that can read pages out of storage and go back for
-  the abandoned links.
 - **Git repositories.** A repo is the other half of the original idea and a
   different code path entirely — `git.tree` + `git.read` walk README and `docs/`
   with no rendering at all. Not implemented.

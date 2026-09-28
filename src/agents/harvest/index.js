@@ -1,29 +1,33 @@
 // ============================================
-// harvest — collect a documentation section, mechanically
+// harvest — collect a documentation section, then write it up
 // ============================================
 //
-// Pass 1 of the docs-harvest design: given a seed URL, find the pages around it,
-// render and convert each one into storage, and write a manifest.
+// Two tools, two passes.
 //
-// Three things are deliberate:
+// `harvest.collect` is pass 1: given a seed URL, find the pages around it, choose
+// which to fetch, render each into storage, and write a manifest. It is
+// mechanical apart from ONE model call — ranking the link list against an intent
+// when there is more to fetch than the budget allows.
 //
-// 1. NO MODEL IS CALLED. This pass is discovery and retrieval — deterministic
-//    and cheap to re-run. Judging what belongs in the final document is pass 2's
-//    job, with a smarter model and the whole corpus in front of it.
+// `harvest.compose` is pass 2: read the manifest, read the pages it names, ask
+// for any abandoned links worth going back for, and write one document. This is
+// where the writing model lives.
 //
-// 2. RECALL OVER PRECISION. Selection here is by scope (same origin, the seed's
-//    section) and nothing else. Relevance filtering would need the model we are
-//    saving for pass 2, and a page wrongly dropped in pass 1 is invisible to
-//    everything downstream.
+// Three things are deliberate throughout:
 //
-// 3. NOTHING IS DROPPED SILENTLY. Every discovered link appears in the manifest
-//    — fetched, skipped over the budget, filtered out, or failed — each with the
-//    reason. A harvester that loses a page without saying so is worse than one
-//    that returns too much, because pass 2 can discard surplus and cannot
-//    recover a loss.
+// 1. RECALL OVER PRECISION. Pass 1 selects by scope and budget, never by
+//    relevance, and a page wrongly dropped there is invisible to everything
+//    downstream. So nothing is dropped silently: every discovered link appears in
+//    the manifest — fetched, failed, not selected, or filtered out — with its
+//    reason, and compose can reach the ones pass 1 left behind.
 //
-// Retrieval is delegated to browser.fetch, so rendering, conversion, block-page
-// detection and the storage layout are shared with the single-URL tool.
+// 2. PASS 2 RESTRUCTURES, IT DOES NOT SUMMARISE. The material has to survive
+//    into the document: code verbatim, tables intact, specific values kept. An
+//    organiser that compresses is just a worse research.topic.
+//
+// 3. RETRIEVAL IS SHARED. Every page comes through browser.fetch, so rendering,
+//    conversion, block-page detection and the storage layout are the same code
+//    as the single-URL tool.
 
 import fs from 'fs';
 import path from 'path';
@@ -873,5 +877,313 @@ export async function harvest_collect(args, context) {
     ].filter(l => l !== null);
 
     log(`done: ${fetched.length} fetched, ${failed.length} failed, ${dropped.length} not fetched`);
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+// ============================================
+// harvest.compose — pass 2
+// ============================================
+//
+// Read the manifest, read the pages it names, optionally go back for the links
+// pass 1 left behind, and write one Markdown document.
+//
+// This is the pass that needs a model, and it has NO FALLBACK: there is no
+// mechanical substitute for writing a document, so if the model is unreachable
+// the tool fails rather than emitting something plausible.
+
+// Composition wants a large window and good writing; the local 12B is fine at
+// ranking links and not at this.
+const DEFAULT_COMPOSE_MODEL = 'deepseek-flash-chat';
+// A document, not a paragraph. Well under the model's own output cap.
+const COMPOSE_MAX_TOKENS = 32000;
+const DEFAULT_EXTRA_PAGES = 10;
+// Used only when the gateway will not tell us the model's context window.
+const FALLBACK_CONTEXT_BUDGET_CHARS = 900000;
+const CHARS_PER_TOKEN = 4;
+// Half the window, leaving room for the prompt, the instructions and the output.
+const CONTEXT_INPUT_FRACTION = 0.5;
+
+// Reasons a link was left behind that pass 2 could actually want. Scope filters
+// are NOT offered: `include`/`exclude` are the caller's explicit boundaries, and
+// "not a document" / "different origin" cannot be fetched into this corpus.
+const REACHABLE_REASONS = [/^not selected/, /budget \(discovered/];
+
+function loadManifest(manifestRel) {
+    const abs = path.join(storageRoot, manifestRel);
+    if (!fs.existsSync(abs)) {
+        throw new Error(`harvest_compose: manifest not found in storage: ${manifestRel}`);
+    }
+    let manifest;
+    try {
+        manifest = JSON.parse(fs.readFileSync(abs, 'utf8'));
+    } catch (e) {
+        throw new Error(`harvest_compose: manifest is not valid JSON (${manifestRel}): ${e.message}`);
+    }
+    if (!Array.isArray(manifest.pages)) {
+        throw new Error(`harvest_compose: manifest has no pages array: ${manifestRel}`);
+    }
+    return { manifest, abs };
+}
+
+function readSources(manifest) {
+    return manifest.pages.map((p) => {
+        const abs = path.join(storageRoot, p.storage);
+        if (!fs.existsSync(abs)) {
+            // The manifest asserts this page exists. If it does not, the harvest
+            // is broken and composing over the remainder would silently produce a
+            // document missing a section it claims to cover.
+            throw new Error(
+                `harvest_compose: manifest lists ${p.storage} but it is not in storage — ` +
+                'the harvest is incomplete; re-run harvest.collect'
+            );
+        }
+        return {
+            url: p.url,
+            title: p.title || p.url,
+            storage: p.storage,
+            text: fs.readFileSync(abs, 'utf8')
+        };
+    });
+}
+
+// How much source text the model can take, from its declared context window
+// rather than a guess, with a conservative fallback.
+async function contextBudgetChars(gateway, model) {
+    try {
+        const models = await gateway.listModels('chat');
+        const list = Array.isArray(models) ? models : (models?.data || models?.models || []);
+        const entry = list.find(m => (m.id || m.name) === model);
+        const ctx = entry?.context_length || entry?.limit?.context;
+        if (Number.isFinite(ctx) && ctx > 0) {
+            return Math.floor(ctx * CONTEXT_INPUT_FRACTION * CHARS_PER_TOKEN);
+        }
+    } catch {
+        // Unknown is not fatal — fall through to the conservative default.
+    }
+    return FALLBACK_CONTEXT_BUDGET_CHARS;
+}
+
+// One call over the links pass 1 abandoned, asking which are worth going back
+// for. Bounded by maxExtra, so this cannot become a crawl, and its failures are
+// non-fatal: a document from what we already have beats no document.
+async function fetchAbandonedLinks({ gateway, model, manifest, intent, maxExtra, dir }) {
+    const reachable = (manifest.not_fetched || [])
+        .filter(d => REACHABLE_REASONS.some(re => re.test(d.reason)));
+    if (!reachable.length || maxExtra < 1) return { fetched: [], offered: 0 };
+
+    const offered = reachable.slice(0, MAX_LINKS_TO_MODEL);
+    const prompt = [
+        'A reference document is being assembled from a set of pages.',
+        '',
+        `Subject: ${intent || manifest.seed}`,
+        '',
+        'These links were found but not fetched. Pick the ones worth fetching to fill gaps,',
+        `at most ${maxExtra}. If none would help, answer with an empty array.`,
+        'Answer with ONLY a JSON array of line numbers, e.g. [3, 7]',
+        '',
+        'Links:',
+        ...offered.map((d, i) => `${i + 1}. ${d.url}`)
+    ].join('\n');
+
+    let picks;
+    try {
+        const res = await gateway.chat({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            systemPrompt: 'You choose pages to fetch. You reply with a JSON array of numbers and nothing else.',
+            enableThinking: false,
+            maxTokens: SELECT_MAX_TOKENS,
+            stream: false
+        });
+        picks = parseIndexList(res.content, offered.length, maxExtra).map(i => offered[i]);
+    } catch (e) {
+        log(`compose: could not ask for extra pages (${e.message}); composing from what was collected`);
+        return { fetched: [], offered: offered.length, error: e.message };
+    }
+
+    if (!picks.length) {
+        log('compose: the model asked for none of the abandoned links');
+        return { fetched: [], offered: offered.length, chose: 0 };
+    }
+
+    const fetched = [];
+    for (const pick of picks) {
+        try {
+            const r = await runBrowserFetch({ url: pick.url, dir });
+            fetched.push({
+                url: pick.url,
+                title: r.title || pick.url,
+                storage: r.relPath,
+                text: fs.readFileSync(path.join(storageRoot, r.relPath), 'utf8')
+            });
+        } catch (e) {
+            // Recorded, not swallowed: the document should say a gap stayed a gap.
+            fetched.push({ url: pick.url, error: e.message });
+        }
+    }
+    const ok = fetched.filter(f => !f.error);
+    log(`compose: went back for ${ok.length}/${picks.length} abandoned link(s)`);
+    return { fetched: ok, failed: fetched.filter(f => f.error), offered: offered.length, chose: picks.length };
+}
+
+const COMPOSE_SYSTEM_PROMPT = [
+    'You write reference documentation from source material.',
+    '',
+    'You are REORGANISING the sources into one coherent document, not summarising',
+    'them. The material must survive: keep code blocks verbatim and in order, keep',
+    'tables, keep specific names, parameters, defaults and version numbers.',
+    'Compressing the detail away is a failure.',
+    '',
+    'Remove navigation, breadcrumbs, "edit this page", related-links blocks and',
+    'other page furniture. Merge material that is duplicated across sources. Order',
+    'it the way a reader would want it: overview first, then the detail, then edge',
+    'cases.',
+    '',
+    'Write CommonMark. Use ATX headings, fenced code blocks with a language, and',
+    'pipe tables. Do not add a preamble about what you were given, and do not add a',
+    'sources section — that is appended separately.'
+].join('\n');
+
+export async function harvest_compose(args, context) {
+    const {
+        manifest: manifestRel,
+        intent,
+        title,
+        model = DEFAULT_COMPOSE_MODEL,
+        fetch_missing = true,
+        max_extra_pages = DEFAULT_EXTRA_PAGES,
+        out
+    } = args;
+
+    if (typeof manifestRel !== 'string' || !manifestRel.trim()) {
+        throw new Error('harvest_compose: manifest is required (a storage path to a harvest _manifest.json)');
+    }
+    if (!storageRoot) {
+        throw new Error('harvest_compose: config agents.storage.root is required');
+    }
+    // No fallback exists for this pass, so an unreachable model is a hard error
+    // rather than a degraded run.
+    if (!context?.gateway) {
+        throw new Error('harvest_compose: a gateway is required — this pass has no model-free fallback');
+    }
+    if (out !== undefined && (path.isAbsolute(out) || out.includes('..'))) {
+        throw new Error(`harvest_compose: out must be a relative path inside storage, got '${out}'`);
+    }
+
+    const { manifest, abs: manifestAbs } = loadManifest(manifestRel.trim());
+    const subject = intent || manifest.selection?.intent || manifest.seed;
+
+    // Storage paths are forward-slash everywhere else in this system (the
+    // manifest's own `storage` fields, browser.fetch's relPath), so both outputs
+    // keep that shape rather than picking up Windows separators from path.join
+    // and reporting paths that do not match the others.
+    const manifestDir = manifestRel.trim().replace(/\/[^/]*$/, '');
+    const docRel = out || `${manifestDir}/_document.md`;
+
+    log(`compose from ${manifestRel} (${manifest.pages.length} page(s), model ${model})`);
+
+    const collected = readSources(manifest);
+
+    // ---- go back for what pass 1 left behind ----------------------------
+    let extra = { fetched: [] };
+    if (fetch_missing) {
+        extra = await fetchAbandonedLinks({
+            gateway: context.gateway,
+            model,
+            manifest,
+            intent: subject,
+            maxExtra: Math.max(0, Math.floor(max_extra_pages)),
+            dir: manifestDir
+        });
+    }
+
+    const sources = [...collected, ...(extra.fetched || [])];
+
+    // ---- can the model hold it? -----------------------------------------
+    const totalChars = sources.reduce((n, s) => n + s.text.length, 0);
+    const budget = await contextBudgetChars(context.gateway, model);
+    if (totalChars > budget) {
+        throw new Error(
+            `harvest_compose: ${sources.length} sources total ${totalChars.toLocaleString()} characters, ` +
+            `over the ~${budget.toLocaleString()} this model can take. Nothing was truncated — ` +
+            'use a larger-context model, or collect fewer pages (lower max_pages and re-collect).'
+        );
+    }
+
+    // ---- write the document ---------------------------------------------
+    const contextBlock = sources.map((s, i) =>
+        `[Source ${i + 1}: ${s.url}]\nTitle: ${s.title}\n\n${s.text}`
+    ).join('\n\n---\n\n');
+
+    log(`compose: sending ${sources.length} source(s), ${(totalChars / 1024).toFixed(0)} KB, to ${model}`);
+    const res = await context.gateway.chat({
+        model,
+        messages: [{
+            role: 'user',
+            content: `Write one reference document${title ? ` titled "${title}"` : ''} covering:\n` +
+                `${subject}\n\n` +
+                'Reorganise the following sources into it. Keep the detail; drop the furniture.\n\n' +
+                `SOURCES:\n\n${contextBlock}`
+        }],
+        systemPrompt: COMPOSE_SYSTEM_PROMPT,
+        enableThinking: false,
+        maxTokens: COMPOSE_MAX_TOKENS,
+        stream: false
+    });
+
+    const body = String(res.content ?? '').trim();
+    if (!body) {
+        throw new Error(
+            `harvest_compose: ${model} returned an empty document ` +
+            `(finish=${res.finish_reason || '?'}). Nothing was written.`
+        );
+    }
+
+    const heading = title ? `# ${title}\n\n` : '';
+    const front = [
+        '---',
+        `title: ${JSON.stringify(title || subject)}`,
+        `source: ${JSON.stringify(manifest.seed)}`,
+        `manifest: ${JSON.stringify(manifestRel)}`,
+        `composed: ${new Date().toISOString()}`,
+        `model: ${JSON.stringify(model)}`,
+        `pages: ${sources.length}`,
+        '---',
+        ''
+    ].join('\n');
+
+    // Appended here rather than asked of the model: source URLs are provenance,
+    // and a model writing them out is a chance to invent one.
+    const sourcesSection = [
+        '',
+        '## Sources',
+        '',
+        ...sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})${s.storage ? ` — \`${s.storage}\`` : ''}`),
+        '',
+        ...(extra.failed?.length
+            ? ['*Requested for this document but not retrieved:*', '', ...extra.failed.map(f => `- ${f.url} — ${f.error}`), '']
+            : [])
+    ].join('\n');
+
+    const docAbs = path.join(storageRoot, docRel);
+    fs.mkdirSync(path.dirname(docAbs), { recursive: true });
+    fs.writeFileSync(docAbs, `${front}${heading}${body}\n${sourcesSection}`, 'utf8');
+
+    const stat = fs.statSync(docAbs);
+    const lines = [
+        `Composed ${docRel}`,
+        `  subject    ${subject}`,
+        `  model      ${model}`,
+        `  sources    ${collected.length} collected` +
+            (extra.fetched?.length ? ` + ${extra.fetched.length} fetched on request` : '') +
+            (extra.offered ? ` (${extra.offered} abandoned link(s) offered)` : ''),
+        `  size       ${(stat.size / 1024).toFixed(1)} KB  (${body.length} chars of document)`,
+        `  storage    ${docRel}`,
+        siteBaseUrl ? `  url        ${siteBaseUrl.replace(/\/+$/, '')}/storage/${docRel}` : null,
+        '',
+        'Every source is listed in the document. Read it with storage.read; the per-page Markdown is still alongside it if the document needs work.'
+    ].filter(l => l !== null);
+
+    log(`composed ${docRel} (${stat.size} bytes from ${sources.length} source(s))`);
     return { content: [{ type: 'text', text: lines.join('\n') }] };
 }

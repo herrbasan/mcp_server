@@ -326,6 +326,31 @@ test('a language marker on the pre element is honoured', () => {
     assert.match(markdown, /```yaml\na: 1\n```/);
 });
 
+test('Sphinx wrapper class supplies the language', () => {
+    // docs.python.org marks it two levels out, on the wrapper div.
+    const html = `<html><body><article>
+        <div class="highlight-python3 notranslate"><div class="highlight"><pre><span></span><code>&gt;&gt;&gt; import json</code></pre></div></div>
+    </article></body></html>`;
+    const { markdown } = htmlToMarkdown(html, { scope: 'article' });
+    assert.match(markdown, /```python\n>>> import json\n```/, 'python3 is normalised to python');
+});
+
+test('a github-style wrapper class is read before the generic form', () => {
+    const html = `<html><body><article>
+        <div class="highlight highlight-source-js"><pre><code>let a = 1;</code></pre></div>
+    </article></body></html>`;
+    const { markdown } = htmlToMarkdown(html, { scope: 'article' });
+    assert.match(markdown, /```js\nlet a = 1;\n```/, 'must not become "source"');
+});
+
+test('a generic wrapper contributes no language', () => {
+    for (const wrapper of ['highlight', 'highlight-default notranslate', 'code-block', 'docutils']) {
+        const html = `<html><body><article><div class="${wrapper}"><pre><code>plain</code></pre></div></article></body></html>`;
+        const { markdown } = htmlToMarkdown(html, { scope: 'article' });
+        assert.match(markdown, /```\nplain\n```/, `'${wrapper}' should not become a language`);
+    }
+});
+
 test('mkdocs-style permalink heading unwraps to plain text', () => {
     const html = `<html><body><article><h2><a href="#highlights">Highlights</a></h2></article></body></html>`;
     const { markdown } = htmlToMarkdown(html, { url: 'https://docs.astral.sh/uv/', scope: 'article' });

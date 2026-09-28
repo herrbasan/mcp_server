@@ -1,6 +1,6 @@
 {
     "agent": "harvest",
-    "description": "Collect a documentation section from a seed URL into storage. Mechanical pass 1: discover the pages reachable from a seed, render and convert each one to Markdown, and write a manifest listing every discovered link — including the ones not fetched — so a smarter second pass can decide what belongs in the final document. No model is called. Page retrieval is delegated to browser.fetch, so rendering, conversion, block-page detection and per-page storage layout behave identically.",
+    "description": "Collect a documentation section from a seed URL, then write it up as one document. Two passes. `harvest.collect` discovers the pages around a seed, selects with one local-model call, renders each into storage and writes a manifest listing every discovered link with a reason. `harvest.compose` reads that manifest, goes back for any abandoned links worth having, and asks a large-context model to reorganise the material into a single Markdown document — restructuring, not summarising.",
     "dependsOn": ["browser"],
     "tools": [
         {
@@ -21,6 +21,23 @@
                     "concurrency": { "type": "number", "description": "Pages rendered in parallel (default 4). Each is a Chrome page, so raising this trades the shared browser's memory for wall-clock." }
                 },
                 "required": ["url"]
+            }
+        },
+        {
+            "name": "harvest_compose",
+            "description": "Pass 2: turn a harvest manifest into one Markdown document. Reads every page the manifest names out of storage, optionally asks the model which of the ABANDONED links (the ones harvest.collect ranked out or left over budget) are worth going back for and fetches those, then asks a large-context model to reorganise the whole corpus into a single document. It RESTRUCTURES rather than summarises: code stays verbatim, tables stay tables, specific names and defaults survive — an organiser that compresses is just a worse research.topic. Sources are appended from the manifest, never written by the model, so a URL cannot be invented. There is no model-free fallback: if the gateway is missing, the model returns nothing, the model's context cannot hold the sources, or a page the manifest names is missing from storage, this fails loudly and writes nothing. Returns the document's storage path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "manifest": { "type": "string", "description": "Storage path to the harvest's _manifest.json (e.g. 'harvest/docs-astral-sh/_manifest.json')." },
+                    "intent": { "type": "string", "description": "What the document should cover. Defaults to the intent recorded in the manifest, then to the seed URL." },
+                    "title": { "type": "string", "description": "Document title, used as the H1 and in the frontmatter. Defaults to the subject." },
+                    "model": { "type": "string", "description": "Gateway chat model for the writing. Default deepseek-flash-chat (1M context, good prose). The local 12B ranks links well and writes documents badly." },
+                    "fetch_missing": { "type": "boolean", "description": "Ask the model which abandoned links are worth fetching before composing (default true). Scope filters are never offered back — include/exclude are the caller's boundaries." },
+                    "max_extra_pages": { "type": "number", "description": "Cap on that second round of fetching (default 10). Bounded so it cannot become a crawl." },
+                    "out": { "type": "string", "description": "Output path inside storage. Default is _document.md beside the manifest." }
+                },
+                "required": ["manifest"]
             }
         }
     ]
