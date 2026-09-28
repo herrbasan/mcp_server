@@ -461,9 +461,11 @@ CONTENT MODES (used by browser.content, browser.click, browser.fill):
   browser.wait — { sessionId*, selectors?, text?, urlPattern?, condition?, timeout? }
       Wait for a condition on the page before proceeding.
 
-  browser.research — { query*, engines?: ["google"|"duckduckgo"|"bing"], max_pages? }
-      Quick web research. Searches multiple engines, scrapes results, synthesizes
-      findings. For deeper research use the research agent instead.
+  browser.research — ALIAS of research.topic. Same tool, same handler, no
+      difference in depth. { query*, engines?: ["google"|"duckduckgo"], max_pages? }
+      The name exists under browser.* only because that is where a caller looks
+      for "search the web". Prefer research.topic. Engines are google and
+      duckduckgo; anything else is rejected.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -497,12 +499,15 @@ HARVEST — Collect a documentation section
 RESEARCH — Deep Web Research
 ═══════════════════════════════════════════════════════════════
 
-Multi-source web research with a persistent browser pool. Deeper than
-browser.research: multi-phase search, scrape, and synthesis with citations.
+Multi-source web research with a persistent browser pool. ONE tool reachable as
+research.topic or browser.research — the same handler both ways, not a quick one
+and a deep one.
 
-  research.topic — { query*, max_pages? }
+  research.topic — { query*, engines?, max_pages? }
       Research a topic via web search. Multi-phase: search, scrape, synthesize
-      with citations. Use when browser.research is too shallow.
+      with citations, then a confidence evaluation. Sources that could not be
+      retrieved (blocked pages, failures, truncation) are listed at the end of
+      the report rather than dropped silently.
 
 
 ═══════════════════════════════════════════════════════════════
