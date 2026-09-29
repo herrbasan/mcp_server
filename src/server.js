@@ -257,6 +257,20 @@ RESPONSE FORMAT
   The actual result is in content[0].text — parse it to get the data.
   On error, isError is true and content[0].text contains the error message.
 
+WORKED EXAMPLE — the envelope nests ONE level. The outer payload is the
+argument object for the method; inside it, the method's own fields go verbatim,
+including a field that is itself named payload:
+
+  tools(method="forge.call", payload={
+      "name": "icons_add",
+      "args": { "query": "format_align_left" },
+      "payload": ["D:\\MCP_Storage\\file.svg"]     ← ARRAY — this is the inner payload
+  })
+
+The inner payload is an ARRAY of strings. Do not wrap it in an object and do not
+rename it: {"item": [...]}, {"items": [...]}, {"paths": [...]} are all wrong.
+There is no "item" field anywhere in this API — the array IS the payload field.
+
 
 ═══════════════════════════════════════════════════════════════
 EXECUTION CONTEXTS — Tools live in one of these
@@ -830,9 +844,13 @@ and execute them in isolated worker_threads with Gateway access.
   forge.delete — { name* }
       Soft-delete tool + state. Commits deletion. Recoverable via rollback.
 
-  forge.call — { name*, args?, payload?, timeout?, captureLogs? }
-      Execute a tool. payload[] items (file paths or URLs) resolved to Buffers
-      on main thread before worker spawn. Timeout enforced via worker.terminate().
+  forge.call — { name*, args?: object, payload?: string[] (ARRAY of paths/URLs), timeout?, model? }
+      Execute a tool. payload MUST be a JSON array of strings — e.g.
+      payload: ["D:\\MCP_Storage\\file.svg"] — NOT an object, NOT a bare
+      string, NOT a path under args. Each item (file path or URL) is resolved
+      to a Buffer on the main thread before worker spawn, and arrives as
+      ctx.payload[0], ctx.payload[1], ... in the tool. Console output is always
+      captured and returned in _logs. Timeout enforced via worker.terminate().
       ⚠️ payload PATH RESOLUTION: http(s):// URLs are fetched; UNC paths
       (\\BADKID\...) are translated to local; absolute paths (D:\...) are read
       directly; RELATIVE paths resolve against the SERVER's project root

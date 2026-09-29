@@ -444,7 +444,31 @@ async function readPayloadItem(plan) {
 // Returns { buffers, reservedBytes }. The caller MUST release reservedBytes when
 // the buffers are no longer needed; on failure this releases its own reservation.
 async function resolvePayload(payload) {
-    if (!payload || payload.length === 0) return { buffers: [], reservedBytes: 0 };
+    if (payload === undefined || payload === null) return { buffers: [], reservedBytes: 0 };
+    // Fail loud on a non-array. An object (e.g. {item:"..."}) has no `.length`,
+    // so the old `!payload || payload.length === 0` guard fell through, the
+    // `i < payload.length` loop never ran, and a malformed payload resolved to
+    // exactly the same 0-buffer result as no payload at all — the caller got
+    // `payloadCount: 0` and no way to tell the two apart. Observed 2026-09-28:
+    // a model passed {item:"<path>"} on every attempt and its tool reported an
+    // empty payload while the server reported nothing wrong.
+    if (!Array.isArray(payload)) {
+        const keys = payload && typeof payload === 'object' ? Object.keys(payload) : [];
+        const preview = JSON.stringify(payload)?.slice(0, 160) ?? String(payload);
+        // A single invented key wrapping the real list is the signature of a
+        // caller that could not put an array where an object was expected, so it
+        // made up a key for it. `payload` has no such key in any schema — name
+        // the case rather than making the caller guess a second time.
+        const hint = keys.length === 1
+            ? ` It arrives wrapped under an invented key "${keys[0]}" — no such field exists. ` +
+              `The array IS the payload field itself: pass payload: ["C:\\path\\to\\file"], ` +
+              `not payload: {${keys[0]}: [...]}.`
+            : ` Pass payload: ["C:\\path\\to\\file"] — an array of strings, not an object.`;
+        throw new Error(
+            `payload must be an array of file paths or URLs, got ${typeof payload} (${preview}).${hint}`
+        );
+    }
+    if (payload.length === 0) return { buffers: [], reservedBytes: 0 };
     if (payload.length > CONFIG.maxPayloadItems) {
         throw new Error(`payload has ${payload.length} items, max is ${CONFIG.maxPayloadItems}`);
     }
@@ -1731,6 +1755,33 @@ Every forged tool receives (args, ctx). The ctx object provides:
   ctx.spawn      — Child process spawner with bookkeeping (see ctx.spawn API below)
   ctx.args       — The args object passed to forge_call (same as first parameter)
 
+GETTING DATA IN AND OUT — MCP STORAGE IS THE EXCHANGE CHANNEL
+  Payload paths are opened on the SERVER (BADKID), never on the machine you are
+  running on. A path that exists only on your own machine fails with ENOENT no
+  matter how correct it looks. Both sides of a call therefore meet in MCP
+  storage: stage the input there, pass its storage path as payload, and read the
+  result back from the path reported in _outputs. A tool never needs to know
+  where the caller is, and the caller never needs access to the tool's disk.
+
+  Accepted forms for a file that lives in storage:
+    \\\\BADKID\\Stuff\\MCP_Storage\\<path>   UNC — the server translates this to D:\\MCP_Storage\\<path>
+    ../../MCP_Storage/<path>            relative to the SERVER's project root (D:\\DEV\\mcp_server), NOT the storage root
+    D:\\MCP_Storage\\<path>               absolute, as seen on the server
+    https://...                         fetched by the server
+
+  Payload must be a JSON ARRAY of these strings — one string per item:
+    { "name": "my_tool", "payload": ["../../MCP_Storage/in.pdf"] }
+  Not an object, not a bare string, not a path tucked under args. A wrapper key
+  such as {"item": [...]} or {"items": [...]} is rejected, and the key is named
+  back to you.
+
+  Output: a tool writes into ctx.storagePath, which is D:\\MCP_Storage\\forge\\<tool>\\
+  on the server. forge_call reports every new file in _outputs as
+  { name, path, url, uncPath, size } — use path with storage.read, or uncPath
+  (\\\\BADKID\\Stuff\\MCP_Storage\\forge\\<tool>\\<file>) to copy it back over SMB from
+  another machine. Prefer ctx.fileops.write for anything the caller should see;
+  it is confined to storagePath and atomic.
+
 ctx.mcp API (workshop dispatcher — same router the chat agent uses)
   Every call relays to the main thread, where credentials (GIT_TOKEN etc.)
   live. Workers never see secrets. Method names are 'agent.action' form.
@@ -1872,6 +1923,12 @@ ctx.payload
   payload: ["C:\\\\path\\\\to\\\\file.pdf", "https://example.com/data.csv"]
   → ctx.payload[0] is the PDF Buffer, ctx.payload[1] is the CSV Buffer.
   Empty array if no payload was passed.
+
+  WHERE THOSE PATHS RESOLVE: on the SERVER (BADKID), not on the caller's machine.
+  A caller-local path that is not also present on the server fails with ENOENT.
+  Relative paths resolve against the server's project root. See "GETTING DATA IN
+  AND OUT — MCP STORAGE IS THE EXCHANGE CHANNEL" above: stage inputs in MCP
+  storage and pass the storage path.
 
 WRITING A TOOL
   export default async function(args, ctx) {

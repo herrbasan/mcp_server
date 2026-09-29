@@ -33,7 +33,7 @@ data/forge/                     git repo (auto-init, .gitignore: tools/*/state/,
 | `forge.read` | `name*`, `ref?` | Current or `git show <ref>` source. |
 | `forge.list` | `name?` | Summary list, or full manifest + version hash for one tool. |
 | `forge.delete` | `name*` | Soft delete (commits the removal — recoverable via rollback). Refuses while a **live call** of that tool exists: it would delete the state and storage directories out from under the running process. |
-| `forge.call` | `name*`, `args?`, `payload?` (≤10 file paths/URLs → Buffers), `timeout?`, `model?` | Executes in its own process. See below. |
+| `forge.call` | `name*`, `args?`, `payload?` (**ARRAY** of ≤10 file paths/URLs), `timeout?`, `model?` | Executes in its own process. See below. |
 | `forge.stop` | `callId?` / `name?` / `all?` | No args = list running calls. Kills the tool's process tree (`taskkill /T /F`), which covers every `ctx.spawn` child. |
 | `forge.history` | `name?`, `limit?` (20) | `{hash, date, message}` per commit. |
 | `forge.rollback` | `name*`, `commit*` | State snapshotted → source restored → state reset → commit. Also refuses while a live call exists — `resetState` wipes the live tool's `toolStatePath`. |
@@ -71,8 +71,21 @@ data/forge/                     git repo (auto-init, .gitignore: tools/*/state/,
   reserve the total against the global budget, then read. URLs reserve the
   per-item ceiling pessimistically and are corrected to the real size after the
   fetch. Paths/URLs are resolved to Buffers on the main thread before spawn;
-  HTTP fetch 30 s cap; storage-root relative paths resolve against
-  `D:\MCP_Storage`; UNC paths translated. Refusal is loud and names the numbers.
+  HTTP fetch 30 s cap; UNC storage paths translated to local; relative paths
+  resolve against the _server's_ project root (`D:\DEV\mcp_server`), NOT the
+  storage root — for a storage file prefer the UNC form
+  (`\\BADKID\Stuff\MCP_Storage\<path>`) or `../../MCP_Storage/<path>`. Refusal
+  is loud and names the numbers.
+- **`payload` must be a JSON array** — one string per item, not an object and
+  not a bare string. A non-array is refused loudly, and when it arrives wrapped
+  under a single invented key (`{"item": ["..."]}`, `{"items": ...}`) the key
+  is named back to the caller. Before this guard the shape resolved to zero
+  buffers silently, indistinguishable from passing no payload at all.
+- **Payload paths are opened on the server**, so a caller on another machine
+  (e.g. Coolkid) cannot pass a path that exists only on its own disk — that
+  fails with `ENOENT` however correct it looks. MCP storage is the exchange
+  channel: stage the input in storage, pass its storage path, and read the
+  result back from `_outputs` (see `storage.md`).
 - **Returns**: `{ result, _diagnostics: {callId, durationMs, logCount,
   droppedLogLines, outputsTruncated, …}, _outputs: [{name, path
   (storage.read-ready), url, uncPath?, size}], _logs: [{level,message}]
