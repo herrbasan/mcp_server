@@ -49,9 +49,13 @@ let launchedByUs = false;
 
 async function getBrowser() {
     if (browser) return browser;
-    const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
     try {
-        browser = await puppeteer.connect({ browserWSEndpoint: wsUrl, timeout: 3000 });
+        // browserURL, NOT browserWSEndpoint: a bare `ws://localhost:9222` is
+        // not a CDP endpoint (answers 404), so that branch never succeeded —
+        // every cycle fell through to launch and died on the profile lock
+        // whenever the workshop Chrome already held data/chrome-profile
+        // (same bug the browser agent fixed; see its initBrowser comment).
+        browser = await puppeteer.connect({ browserURL: `http://localhost:${DEBUGGING_PORT}`, timeout: 3000 });
         launchedByUs = false;
         logger.info('[UsageMonitor] Attached to running Chrome via CDP', null, 'Usage');
         return browser;
@@ -203,10 +207,19 @@ async function extractGemini(page) {
         if (!u || !l) throw new Error('gemini: spend spans missing');
         return { used: u.textContent.trim(), limit: l.textContent.trim() };
     `);
-    const eur = (s) => Number(s.replace(/[€\s]/g, ''));
+    // Throws on unparseable text: a NaN here would serialize as null and
+    // look like a successful 0-info window instead of a broken scrape
+    // (observed 2026-09-30 — spend spans rendered a placeholder mid-load).
+    const eur = (s) => {
+        const n = Number(String(s).replace(/[€\s]/g, ''));
+        if (!Number.isFinite(n)) throw new Error(`gemini: spend span unparseable: "${s}"`);
+        return n;
+    };
+    const usedEur = eur(spend.used), limitEur = eur(spend.limit);
+    if (limitEur <= 0) throw new Error(`gemini: spend limit not positive: "${spend.limit}"`);
     return { windows: [
         { kind: 'tpm-day', model: top.model, used: top.used, limit: top.limit, usedPct: top.usedPct, primary: true, models: tpmWindows },
-        { kind: 'monthly', used: eur(spend.used), limit: eur(spend.limit), unit: 'EUR', usedPct: Math.round((eur(spend.used) / eur(spend.limit)) * 100), primary: true }
+        { kind: 'monthly', used: usedEur, limit: limitEur, unit: 'EUR', usedPct: Math.round((usedEur / limitEur) * 100), primary: true }
     ] };
 }
 
@@ -288,11 +301,34 @@ async function extractMinimax(page) {
     const windows = [
         { kind: '5h', usedPct: pct(m.current_interval_used_percent), resetAt: new Date(m.end_time).toISOString(), primary: true }
     ];
-    // A window with status 3 is unlimited / not enforced (community-documented
-    // signature: total=0, remaining=100%, status=3). Emitting it would be a
-    // permanently-0% misleading chip, so it stays out while inactive.
+    // Window status: 1 = enforced, 3 = unlimited / not enforced
+    // (community-documented signature: total=0, remaining=100%, status=3).
+    // Under the Token Plan weekly was status 3 and stayed out; the M Plan
+    // (2026-09-30) enforces it — a genuine 7-day second limit — so it emits.
+    // The API names it "weekly" even though the plan bills monthly; the
+    // reset timestamp (weekly_end_time, exactly +7d) is the truth.
     if (m.current_weekly_status !== 3) {
         windows.push({ kind: 'weekly', usedPct: pct(m.current_weekly_used_percent), resetAt: new Date(m.weekly_end_time).toISOString(), primary: true });
+    }
+    // M Plan credit balance — consumed automatically once plan quota is
+    // exhausted ("Credit balance" card on the usage console).
+    const cred = await evalOn(page, `
+        const r = await fetch('https://platform.minimax.io/backend/account/token_plan_credit', { credentials: 'include' });
+        if (r.status !== 200) throw new Error('minimax HTTP ' + r.status);
+        return await r.json();
+    `);
+    if (cred.base_resp && cred.base_resp.status_code !== 0) {
+        throw new Error('minimax credits: ' + (cred.base_resp.status_msg || cred.base_resp.status_code));
+    }
+    if (typeof cred.total_credits !== 'number' || typeof cred.used_credits !== 'number' || typeof cred.remaining_credits !== 'number') {
+        throw new Error('minimax credits: fields missing');
+    }
+    if (cred.total_credits > 0) {
+        windows.push({
+            kind: 'pool', unit: 'credits',
+            used: cred.used_credits, limit: cred.total_credits, remaining: cred.remaining_credits,
+            usedPct: Math.round((cred.used_credits / cred.total_credits) * 100)
+        });
     }
     return { windows };
 }
@@ -387,16 +423,20 @@ async function extractOpenrouter() {
 
 // ── orchestration ───────────────────────────────────────────────────────
 
-// priority = the chip that matters most to Dave, listed first per provider
+// Array order = listing order in usage-limits.json (Dave's priority,
+// 2026-09-30): kimi, z.ai, minimax, deepseek, gemini, openrouter, openai,
+// anthropic. Key insertion order follows this loop, so reordering here
+// reorders the dashboard. Execution order follows too — providers are
+// independent, interleaving browser/direct is harmless.
 const PROVIDERS = [
-    { name: 'zai', browser: true, fn: extractZai },
-    { name: 'gemini', browser: true, fn: extractGemini },
     { name: 'kimi', browser: true, fn: extractKimi },
+    { name: 'zai', browser: true, fn: extractZai },
     { name: 'minimax', browser: true, fn: extractMinimax },
-    { name: 'openai', browser: true, fn: extractOpenai },
-    { name: 'anthropic', browser: true, fn: extractAnthropic },
     { name: 'deepseek', browser: false, fn: extractDeepseek },
-    { name: 'openrouter', browser: false, fn: extractOpenrouter }
+    { name: 'gemini', browser: true, fn: extractGemini },
+    { name: 'openrouter', browser: false, fn: extractOpenrouter },
+    { name: 'openai', browser: true, fn: extractOpenai },
+    { name: 'anthropic', browser: true, fn: extractAnthropic }
 ];
 
 async function runCycle() {
