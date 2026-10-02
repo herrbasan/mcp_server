@@ -288,7 +288,7 @@ Tools are NOT interchangeable across contexts. Each tool executes in ONE place:
   CONTEXT A: MCP Server (this server, port 3100)
     Your top-level MCP calls land here. Tools: storage.*, memory.*,
     forge.*, vdb.*, vision.*, llm.*, git.*, browser.*,
-    research.*, inspector.*.
+    research.*, inspector.*, media.*.
     Runs in the MCP server Node.js process.
     CAN reach: filesystem, LLM Gateway, browser sessions, GitHub API.
 
@@ -647,6 +647,31 @@ The caller copies out whichever sizes it needs.
       image-to-image on editing-capable models. Returns the file list plus
       an inline preview (largest derived variant, 1280px). Takes 1-2 minutes
       — the tool waits internally.
+
+
+═══════════════════════════════════════════════════════════════
+MEDIA — Render into storage (nMedia proxy)
+═══════════════════════════════════════════════════════════════
+
+Deterministic media conversion: storage path in → nMedia → storage path
+out. The bytes never enter any model context — the result names the
+written storage path, which a chat session can then attach natively
+(image_attach) or a caller can fetch. Covers diagram → PNG, screenshot →
+thumbnail, m4a → mp3, video → keyframe, transcode.
+
+  media.process — { in*, out?, processor?, mode?, options? }
+      Convert a storage file to a new storage asset. "processor" is
+      inferred from the input extension (image | audio | video); "out"
+      extension selects the output format (image: png/jpg/webp/avif/gif —
+      audio: mp3/m4a/wav/flac/ogg/opus — video: mp4/webm/mkv); default
+      out: temp/<input basename>.<ext>. Image defaults: max_dimension
+      2000. Video takes mode: extract_keyframes (default) |
+      extract_audio | transcode. Options pass through to nMedia. Rasters
+      that come back empty or single-colour are REFUSED with the
+      raster-unsafe-styling explanation (SVGs themed via
+      @media (prefers-color-scheme) rasterize to invisible text — use
+      explicit presentation attributes). Returns
+      { out, bytes, width, height, ms, assetId }.
 
   telemetry.report — { sections?: ["status"|"hardware"|"alerts"|"cluster"|"services"] }
       Combined read-only lab telemetry report from localweb2: environment
@@ -1027,6 +1052,8 @@ IMPORTANT RULES
         "vision.analyze": "vision_analyze",
 
         "image.generate": "image_generate",
+
+        "media.process": "media_process",
 
         "telemetry.report": "telemetry_report",
 

@@ -1,0 +1,21 @@
+{
+    "agent": "media",
+    "description": "Media conversion via nMedia (POST /v1/process): storage path in → rasterize/transcode → storage path out. SVG→PNG, PNG→thumbnail, m4a→mp3, video→keyframe, transcode. The bytes never enter a model context — the tool returns the storage path of the result. Refuses to write rasters that come back empty or single-colour (the raster-unsafe styling failure).",
+    "tools": [
+        {
+            "name": "media_process",
+            "description": "Convert a media file from MCP storage into a new asset, also in MCP storage. Typical uses: SVG diagram → PNG raster, screenshot → thumbnail, m4a → mp3, video → keyframe frame, transcode. Pass storage-relative paths for `in` and `out`; `processor` is inferred from the input extension when omitted (image | audio | video), and `options` pass through to nMedia (e.g. max_dimension, quality; video also takes `mode`: extract_keyframes | extract_audio | transcode). The result JSON names the written storage path plus bytes and image dimensions. Renders that come back empty or single-colour are refused with the raster-unsafe-styling explanation instead of being written.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "in": { "type": "string", "description": "Storage path of the source media file (required). Absolute paths under the storage root are accepted." },
+                    "out": { "type": "string", "description": "Storage path for the converted asset. Its extension selects the output format and must be valid for the processor (image: png/jpg/webp/avif/gif — audio: mp3/m4a/wav/flac/ogg/opus — video: mp4/webm/mkv). Default: temp/<input basename>.<png|mp3|mp4>." },
+                    "processor": { "type": "string", "enum": ["image", "audio", "video"], "description": "nMedia processor. Inferred from the input extension when omitted." },
+                    "mode": { "type": "string", "enum": ["extract_keyframes", "extract_audio", "transcode"], "description": "Video processor mode only. Default: extract_keyframes (returns the first frame as an image)." },
+                    "options": { "type": "object", "description": "Passthrough options for nMedia. Image defaults: { max_dimension: 2000, format: from out extension }. Video keyframes accept fps/count; transcode accepts codec settings. options.format must agree with the out extension." }
+                },
+                "required": ["in"]
+            }
+        }
+    ]
+}

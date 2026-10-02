@@ -40,6 +40,10 @@
       "timeoutMs": 300000,
       "defaultSize": "1920x1440"
     },
+    "media": {
+      "timeoutMs": 120000,
+      "pollIntervalMs": 400
+    },
     "telemetry": {
       "localwebUrl": "http://192.168.0.100:4445",
       "npmUrl": "http://192.168.0.100:9333"

@@ -44,6 +44,7 @@ nesting level.
 | **github** | `git.read/tree/log/commit/diff/branches/repo_info`, `git.search_repos/code/issues`, `git.issue_*`, `git.pr_list/get` (17) | GitHub REST relay (read-heavy; issue writes). Needs `GIT_TOKEN`. | [github.md](github.md) |
 | **vision** | `vision.session_create/analyze/get/list/close` | Multi-pass image analysis with region/grid focus, preprocessed via nMedia. | [vision.md](vision.md) |
 | **image** | `image.generate` | Image generation via gateway, rendered to webp size variants + JSON sidecar in storage; inline thumbnail in the result. | [image.md](image.md) |
+| **media** | `media.process` | nMedia proxy: storage path in → rasterize/transcode → storage path out (SVG→PNG, thumbnails, m4a→mp3, video→keyframe). Blank-render guard. Bytes never enter a context. | [media.md](media.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 
@@ -54,12 +55,18 @@ nesting level.
   dreamer/distiller), embeddings (foreground + background batch), predict.
   Routing is task-based; `chat.models` / `forge.help` / `llm.session_create`
   are the model-discovery points.
-- **nMedia** (`http://localhost:3500`) — image crop/optimize for vision.
+- **nMedia** (`http://localhost:3500`) — media processing: `/v1/process` jobs
+  (media.agent), `/v1/process/image` inline (image + vision preprocessing,
+  `image_attach` downscale in the chat app).
 - **localweb2 / nPM** (`:4445` / `:9333`) — telemetry sources.
 - **nDB submodule** (`nDB/`) — native document store (memories). The memory
   agent refuses to boot on a binary older than the v1.3 delta-op index fix.
 - **fileops** (`src/lib/fileops.js`) — the shared confinement/snapshot/atomic-
   write engine under storage (and forge ctx). See `documentation/fileops.md`.
+
+How the contexts interoperate — render→attach→inspect, describe vs see, the
+storage box as the only interchange — is formalized in
+[`documentation/pathways.md`](../pathways.md).
 
 ## Gotchas register
 

@@ -2154,9 +2154,10 @@ export async function init(context) {
 
 // ── Startup Health Checks ────────────────────────────────────────────────────
 async function startupHealthChecks() {
-    // 1. git fsck — verify repo integrity
+    // 1. git fsck — verify repo integrity (--no-dangling: the dangling-object
+    //    report is not a defect; fsck has no --quiet to suppress it with)
     try {
-        await git(['fsck', '--quiet']);
+        await git(['fsck', '--no-dangling']);
     } catch (e) {
         logger.warn(`[Forge] git fsck failed: ${e.message}`, null, 'Forge');
     }
