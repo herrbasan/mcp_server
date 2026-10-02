@@ -521,33 +521,72 @@ async function formatResult(page, mode, url, options = {}) {
 
 // Session management tools
 export async function browser_session_create(args, context) {
-    const { viewport = defaultViewport, userAgent, visible = false } = args;
+    const { viewport, userAgent, visible = false } = args;
 
     let page;
     let sessionBrowser = null;
 
     if (visible) {
-        const wsUrl = `ws://localhost:${DEBUGGING_PORT}`;
+        const debugUrl = `http://localhost:${DEBUGGING_PORT}`;
 
-        // For visible sessions, try to connect to existing Chrome first
+        // For visible sessions, try to connect to an existing Chrome first.
+        // browserURL, NOT browserWSEndpoint — same fix as initBrowser(): a bare
+        // ws://localhost:9222 is not a CDP endpoint and answers 404, so the
+        // connect never succeeded and the launch below collided with whatever
+        // was already running on this profile ("the browser is already running
+        // for <profile>", seen 2026-10-02).
+        let runningIsHeadless = false;
         try {
             log('Attempting to connect to existing Chrome for visible session...');
             sessionBrowser = await puppeteer.connect({
-                browserWSEndpoint: wsUrl,
+                browserURL: debugUrl,
                 timeout: 3000
             });
+            const versionInfo = await fetch(`${debugUrl}/json/version`)
+                .then(r => r.json())
+                .catch(() => ({}));
+            runningIsHeadless = String(versionInfo['User-Agent'] || '').includes('HeadlessChrome');
+        } catch (err) {
+            log('No existing Chrome for visible session, launching new instance...');
+            sessionBrowser = null;
+        }
+
+        if (sessionBrowser && runningIsHeadless) {
+            // newPage() on a headless instance is a "visible" session the user
+            // cannot see. Take over only an idle instance this process launched;
+            // anything else fails loud instead of closing someone else's browser.
+            sessionBrowser.disconnect();
+            sessionBrowser = null;
+            if (browser && browserOwnedByUs && sessions.size === 0) {
+                log('Closing idle headless Chrome (launched here) to make room for a visible session');
+                await browser.close();
+                browser = null;
+                browserOwnedByUs = false;
+            } else {
+                throw new Error(
+                    `A headless Chrome is already running on the shared profile ` +
+                    `(ownedByUs: ${browserOwnedByUs}, active sessions: ${sessions.size}). ` +
+                    'Close it first, then retry the visible session.'
+                );
+            }
+        }
+
+        if (sessionBrowser) {
             const version = await sessionBrowser.version();
             log(`Connected to existing Chrome for visible session (version: ${version})`);
-        } catch (err) {
-            // Launch new headed browser if no existing Chrome
-            log('No existing Chrome for visible session, launching new instance...');
+        } else {
+            // Launch new headed browser if no existing Chrome.
+            // defaultViewport:null + --start-maximized: a visible page is for
+            // human eyes — it follows the real window instead of emulating a
+            // fixed viewport that letterboxes when maximized (2026-10-02).
             sessionBrowser = await puppeteer.launch({
                 headless: false,
+                defaultViewport: null,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-blink-features=AutomationControlled',
-                    '--window-size=1280,900',
+                    '--start-maximized',
                     `--remote-debugging-port=${DEBUGGING_PORT}`,
                     `--user-data-dir=${CHROME_PROFILE_DIR}`
                 ]
@@ -564,7 +603,16 @@ export async function browser_session_create(args, context) {
 
     const sessionId = randomUUID();
 
-    await page.setViewport(viewport);
+    // Headless pages have no real window, so give them the configured default
+    // viewport. A visible page follows its actual window — emulating a fixed
+    // viewport there letterboxes the content when the user maximizes (seen
+    // 2026-10-02: 1280x900 emulation inside a maximized window). Only an
+    // explicitly passed viewport overrides either behaviour.
+    if (viewport) {
+        await page.setViewport(viewport);
+    } else if (!visible) {
+        await page.setViewport(defaultViewport);
+    }
     // No UA/Accept-Language overrides unless the caller passes one. A spoofed
     // stale UA (Chrome/120 under a 143+ engine) contradicts the TLS/JS
     // fingerprint and trips Cloudflare bot detection (seen on DeepSeek
@@ -591,7 +639,7 @@ export async function browser_session_create(args, context) {
         page,
         createdAt: new Date().toISOString(),
         lastActivity: new Date(),
-        viewport,
+        viewport: viewport || null,
         idleTimer: null,
         consoleBuffer,
         visible

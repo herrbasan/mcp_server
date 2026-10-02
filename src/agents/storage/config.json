@@ -31,7 +31,7 @@
         },
         {
             "name": "storage_write",
-            "description": "Write a file to storage. Creates parent directories automatically. Overwrites existing files. Content can be utf8 text or base64-encoded binary. Files above maxWriteSize are rejected. FULL-FILE REPLACEMENT only — content must be the ENTIRE file, not a section or fragment. For targeted edits use storage_replace (marker swap, server-side, no full content needed), for adding to the end use storage_append. The response is self-verifying: after writing, the server re-stats the file on disk and returns verified:true with size and mtime. If the post-write check fails, the call throws instead of returning ok — ok:true means the bytes are provably on disk. Example: {\"method\":\"storage_write\",\"payload\":{\"path\":\"notes/idea.md\",\"content\":\"# My Idea\\nHello world.\"}}.",
+            "description": "Write a file to storage. Creates parent directories automatically. Overwrites existing files. Content can be utf8 text or base64-encoded binary. Files above maxWriteSize are rejected. FULL-FILE REPLACEMENT only — content must be the ENTIRE file, not a section or fragment. For targeted edits use storage_replace (marker swap, server-side, no full content needed), for adding to the end use storage_append. Never prepend timestamps, chunk labels or any other bracketed context marker to content — a marker before a YAML frontmatter block breaks the document (frontmatter must open at line 1 with exactly '---'). Leading markers are stripped and reported in the response so you can self-correct. The response is self-verifying: after writing, the server re-stats the file on disk and returns verified:true with size and mtime. If the post-write check fails, the call throws instead of returning ok — ok:true means the bytes are provably on disk. Example: {\"method\":\"storage_write\",\"payload\":{\"path\":\"notes/idea.md\",\"content\":\"# My Idea\\nHello world.\"}}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -44,13 +44,14 @@
         },
         {
             "name": "storage_list",
-            "description": "List a directory in storage (shallow by default — one level, cheap). COMPACT by default: one line per entry (d/f type, human-readable size, name; ✓ marks directories containing an Agents.md briefing — read that file first for directory-specific instructions before working inside it) plus a summary header — a fraction of the tokens of full JSON. detail:'full' returns the legacy JSON entries with timestamps. Use recursive=true only when you genuinely need all descendants as a flat list (can be huge; compact render is grouped by subdirectory, truncated with a flag at 2000 entries).",
+            "description": "List a directory in storage (shallow by default — one level, cheap). COMPACT by default: one line per entry (d/f type, human-readable size, created + modified UTC, name; ✓ marks directories containing an Agents.md briefing — read that file first for directory-specific instructions before working inside it) plus a summary header — a fraction of the tokens of full JSON. sort:'modified' orders files newest-first so 'most recent file' reads off the top line. detail:'full' returns the JSON entries with created+modified ISO timestamps. Use recursive=true only when you genuinely need all descendants as a flat list (can be huge; compact render is grouped by subdirectory, truncated with a flag at 2000 entries).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Directory to list (default: storage root)" },
                     "recursive": { "type": "boolean", "description": "List all descendants as a flat list (default: false)" },
-                    "detail": { "type": "string", "enum": ["compact", "full"], "description": "compact (default): tree-style text, token-efficient; full: legacy JSON with modified timestamps" }
+                    "detail": { "type": "string", "enum": ["compact", "full"], "description": "compact (default): tree-style text, token-efficient; full: JSON with created+modified timestamps" },
+                    "sort": { "type": "string", "enum": ["name", "modified"], "description": "Order files by name (default) or by modified desc (newest first; dirs stay first)" }
                 }
             }
         },
@@ -175,7 +176,7 @@
         },
         {
             "name": "storage_append",
-            "description": "Append content to a file (creates it if missing). O(1) — the existing file is NOT read into context. Use for logs, journals, growing notes. Self-verifying: the response re-stats the file on disk and includes verified:true with the new total size.",
+            "description": "Append content to a file (creates it if missing). O(1) — the existing file is NOT read into context. Use for logs, journals, growing notes. When the append CREATES a fresh file, never prepend a bracketed timestamp or chunk label before a YAML frontmatter opener — it is stripped and reported in the response (a marker stamped onto an EXISTING journal is legitimate and kept). Self-verifying: the response re-stats the file on disk and includes verified:true with the new total size.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -188,7 +189,7 @@
         },
         {
             "name": "storage_replace",
-            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. Args: marker (alias: oldString), replacement (alias: newString), occurrence: 'first' (default), 'last', or 'all'. Throws with a DETAILED diagnostic if the marker is not found (file size, closest anchor position, line number, actual file snippet near the anchor) so you can repair the marker from the error alone — no blind retries. Pre-flight with storage_find if unsure whether the marker exists. Self-verifying: the response re-stats the file on disk and includes verified:true with the post-edit size — ok:true means the edit provably landed. Example: {\"method\":\"storage_replace\",\"payload\":{\"path\":\"a/b.md\",\"marker\":\"old text\",\"replacement\":\"new text\"}}.",
+            "description": "Replace text in a file server-side: finds a marker string and swaps it for the replacement, without the file content ever entering your context. The primary way to edit large files — no chunked reads, no read-modify-write round trip. Args: marker (alias: oldString), replacement (alias: newString), occurrence: 'first' (default), 'last', or 'all'. Throws with a DETAILED diagnostic if the marker is not found (file size, closest anchor position, line number, actual file snippet near the anchor) so you can repair the marker from the error alone — no blind retries. Pre-flight with storage_find if unsure whether the marker exists. Never put a bracketed timestamp or chunk label before a YAML frontmatter opener in the replacement — it is stripped and reported. Self-verifying: the response re-stats the file on disk and includes verified:true with the post-edit size — ok:true means the edit provably landed. Example: {\"method\":\"storage_replace\",\"payload\":{\"path\":\"a/b.md\",\"marker\":\"old text\",\"replacement\":\"new text\"}}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

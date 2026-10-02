@@ -61,10 +61,10 @@ Config (root `config.json` → `agents.storage`):
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `storage.stat` | `path?` | exists/type/size/modified. Defaults to root. |
+| `storage.stat` | `path?` | exists/type/size/created/modified. Defaults to root. |
 | `storage.read` | `path*`, `encoding?` utf8\|base64, window: `offset`+`length` (bytes) OR `head` N OR `tail` N (mutually exclusive; `offset` requires `length`) | Raw text for utf8 (full file ≤64 KB, windowed text always raw). Directory read throws. |
 | `storage.readMany` | `paths*: string[]` | Bulk read, one call. Delimited `════` plain-text stream; per-file errors and too-large pointers inline (`✗` error / `△` pointer). |
-| `storage.list` | `path?`, `recursive?`, `detail?` compact\|full | Compact (default): one line per entry, human sizes, `✓` marks dirs containing an `Agents.md` briefing (read it first — directory-specific instructions), 2000-entry cap with TRUNCATED flag. `full`: JSON with ISO timestamps. Recursive renders grouped by subdirectory. |
+| `storage.list` | `path?`, `recursive?`, `detail?` compact\|full, `sort?` name\|modified | Compact (default): one line per entry — human size, created + modified (UTC), name; `✓` marks dirs containing an `Agents.md` briefing (read it first — directory-specific instructions); 2000-entry cap with TRUNCATED flag. `sort:'modified'` = files newest-first. `full`: JSON with ISO timestamps. Recursive renders grouped by subdirectory. |
 | `storage.recent` | `path?`, `limit?` (default 20, max 200), `ignoreDirs?` (default `['nvdb','forge','temp','_trash']`) | N most recently modified files — "what was recently worked on". |
 | `storage.search_file` | `query*`, `path?`, `limit?` (default 20, max 200) | Find by NAME (exact basename first `=`, substring `~`). No embeddings. |
 | `storage.search` | `query*`, `folder?`, `extension?`, `top_k?` (default 10), `include_content?` | Semantic content search via the vdb agent (`storage` collection). |
@@ -75,10 +75,10 @@ Config (root `config.json` → `agents.storage`):
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `storage.write` | `path*`, `content*`, `encoding?` | **Full-file replacement only** — `content` must be the ENTIRE file. Atomic (temp+rename), snapshots prior content. |
+| `storage.write` | `path*`, `content*`, `encoding?` | **Full-file replacement only** — `content` must be the ENTIRE file. Atomic (temp+rename), snapshots prior content. Frontmatter guard (#46): a bracketed timestamp/chunk-label marker glued before the `---` opener is stripped, logged, and reported in the response (`stripped` + `note`). |
 | `storage.import` | `files*: [{path, content, encoding?}]` | Bulk write, one call, all entries validated BEFORE touching disk. Each file individually verified. Use for 2+ writes. |
-| `storage.append` | `path*`, `content*`, `encoding?` | O(1) append; cannot destroy prior content (no snapshot needed). |
-| `storage.replace` | `path*`, `marker*` (alias `oldString`), `replacement*` (alias `newString`), `occurrence?` first\|last\|all | Targeted marker swap, server-side, line-ending-agnostic multi-line markers. Marker-not-found errors are diagnostics: file size, closest anchor, line number, nearby snippet. |
+| `storage.append` | `path*`, `content*`, `encoding?` | O(1) append; cannot destroy prior content (no snapshot needed). Fresh-file appends get the same frontmatter guard as `write` (existing-file marker lines are legitimate stamps and kept). |
+| `storage.replace` | `path*`, `marker*` (alias `oldString`), `replacement*` (alias `newString`), `occurrence?` first\|last\|all | Targeted marker swap, server-side, line-ending-agnostic multi-line markers. Marker-not-found errors are diagnostics: file size, closest anchor, line number, nearby snippet. Result gets the same frontmatter guard as `write`. Verify size is the true on-disk byte count (CRLF-safe, #54/#55). |
 | `storage.batch` | `ops*: [{op, …args}]`, `onError?` collect\|abort | Mixed ops in one atomic call. |
 | `storage.move` | `from*`, `to*` | Rename/relocate. Refuses to overwrite. |
 | `storage.copy` | `from*`, `to*`, `overwrite?` | Copies; snapshots destination's prior content when overwriting. |
@@ -108,8 +108,11 @@ tools for clients that only speak `tools/call`.
 ## REST API (same server, port 3100)
 
 - `GET /storage` — root listing JSON.
-- `GET /storage/<path>` — streams file content with mime guessing; directories
-  return a listing JSON. 403 on confinement errors, 404 when missing.
+- `GET /storage/<path>` — serves file content with mime guessing; directories
+  return a listing JSON. 403 on confinement errors, 404 when missing. Supports
+  HTTP byte ranges (`Accept-Ranges: bytes`, single-range `206` + `Content-Range`,
+  `416` when the start is past EOF) and always sends `Content-Length` — media
+  elements need both to report a duration and allow seeking.
 - `PUT /storage/<path>` — raw binary upload (any Content-Type), streamed to a
   temp file then atomically renamed. Enforces `maxWriteSize` with 413.
   Bypasses MCP JSON-RPC transport limits — the right channel for large blobs.

@@ -98,6 +98,36 @@ function guessMime(p) {
     return TEXT_MIME[ext] || 'application/octet-stream';
 }
 
+// Parse a single HTTP Range header (RFC 7233) against a known file size.
+// Returns { start, end } for a satisfiable byte span, null when the header is
+// absent / multi-range / unparseable (the caller serves the whole entity), or
+// { unsatisfiable: true } when the requested start is past EOF (→ 416).
+//
+// Only single ranges are parsed. Browsers never send multi-range for media
+// playback, and a syntactically valid multi-range response is optional — it is
+// served in full (200) rather than as a fabricated multipart body.
+function parseRangeHeader(header, size) {
+    if (typeof header !== 'string') return null;
+    const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+    if (!m) return null;
+    const [, rawStart, rawEnd] = m;
+    if (rawStart === '' && rawEnd === '') return null;   // "bytes=-" — no span
+    let start, end;
+    if (rawStart === '') {
+        const suffix = parseInt(rawEnd, 10);             // "bytes=-N" → last N bytes
+        if (!Number.isFinite(suffix) || suffix === 0) return { unsatisfiable: true };
+        start = Math.max(0, size - suffix);
+        end = size - 1;
+    } else {
+        start = parseInt(rawStart, 10);
+        end = rawEnd === '' ? size - 1 : Math.min(parseInt(rawEnd, 10), size - 1);
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+        return { unsatisfiable: true };
+    }
+    return { start, end };
+}
+
 // Normalize root-path probes: LLMs often try "/" or "\\" which on Windows
 // resolve as absolute drive root and fail confinement. Map them to "" (storage
 // root). Also strip LEADING slashes from subpaths ("/docs" → "docs") — without
@@ -142,6 +172,15 @@ function verifyGone(userPath) {
         throw new Error(`storage verify failed: path still exists after delete/move: "${userPath}"`);
     }
     return { verified: true };
+}
+
+// In-band self-correction (issue #46): the engine's frontmatter guard strips
+// echoed context markers; the note rides the tool result so the model sees
+// the rule in the same turn instead of repeating the marker next write.
+const FM_STAMP_NOTE = 'Context marker(s) were stripped from before the YAML frontmatter. Timestamps and chunk labels are conversation context — never write them into files; a YAML frontmatter block must open at line 1 with exactly "---".';
+function guardNote(engineResult) {
+    if (!engineResult?.strippedMarkers?.length) return {};
+    return { stripped: engineResult.strippedMarkers, note: FM_STAMP_NOTE };
 }
 
 export async function init(context) {
@@ -215,7 +254,30 @@ export async function init(context) {
             const ext = path.extname(urlPath).toLowerCase();
             const mime = mimeMap[ext] || 'application/octet-stream';
             res.set('Content-Type', mime);
-            fs.createReadStream(target).pipe(res);
+            res.set('Accept-Ranges', 'bytes');
+
+            // HTTP Range support. A bare createReadStream().pipe(res) emits a
+            // chunked 200 with no Content-Length, so <audio>/<video> elements
+            // report a NaN duration and an empty seekable range (no seek bar).
+            // Range requests must answer 206 + Content-Range + an exact
+            // Content-Length; a past-EOF start is 416.
+            const range = parseRangeHeader(req.headers.range, stat.size);
+            if (range && range.unsatisfiable) {
+                return res.status(416).set('Content-Range', `bytes */${stat.size}`).end();
+            }
+            const start = range ? range.start : 0;
+            const end = range ? range.end : stat.size - 1;
+            if (end < start) {                 // zero-byte file
+                res.set('Content-Length', '0');
+                return res.end();
+            }
+            res.set('Content-Length', String(end - start + 1));
+            if (range) {
+                res.status(206);
+                res.set('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+            }
+            if (req.method === 'HEAD') return res.end();
+            fs.createReadStream(target, { start, end }).pipe(res);
         });
 
         // PUT /storage/* — upload raw binary body to a path.
@@ -312,6 +374,7 @@ export async function storage_stat(args) {
         exists: true,
         type: st.type,
         size: st.size,
+        created: new Date(st.created).toISOString(),
         modified: new Date(st.modified).toISOString()
     });
 }
@@ -433,7 +496,7 @@ export async function storage_write(args) {
     const engineResult = await OPS.write(userPath, content, { encoding, overwrite: true });
     const proof = verifyFile(userPath, engineResult.size);
     logger.info(`[Storage] storage_write OK: "${userPath}" (${engineResult.size}B, verified, total=${Date.now() - t0}ms)`, null, 'Storage');
-    return result(true, 'storage_write', userPath, { size: engineResult.size, previousVersion: engineResult.previousVersion ?? null, ...proof });
+    return result(true, 'storage_write', userPath, { size: engineResult.size, previousVersion: engineResult.previousVersion ?? null, ...proof, ...guardNote(engineResult) });
 }
 
 // Invisible/problematic filename characters: Private Use Area, zero-width,
@@ -454,8 +517,12 @@ export async function storage_list(args) {
     const userPath = normPath(args.path ?? '');
     const recursive = args.recursive || false;
     const detail = args.detail ?? 'compact';
+    const sort = args.sort ?? 'name';
     if (detail !== 'compact' && detail !== 'full') {
         throw new Error(`storage_list: invalid detail "${detail}" — must be "compact" or "full"`);
+    }
+    if (sort !== 'name' && sort !== 'modified') {
+        throw new Error(`storage_list: invalid sort "${sort}" — must be "name" or "modified"`);
     }
     logger.info(`[Storage] storage_list: "${userPath}"`, { recursive, detail }, 'Storage');
     const st = await OPS.stat(userPath);
@@ -468,7 +535,7 @@ export async function storage_list(args) {
     // directory-specific instructions live (Windows fs is case-insensitive, so
     // one probe covers Agents.md / agents.md).
     const normalized = entries.map(e => {
-        const out = { ...e, modified: new Date(e.modified).toISOString() };
+        const out = { ...e, created: new Date(e.created).toISOString(), modified: new Date(e.modified).toISOString() };
         if (e.type === 'dir' && fs.existsSync(safeResolve(userPath ? `${userPath}/${e.name}/Agents.md` : `${e.name}/Agents.md`))) {
             out.hasAgents = true;
         }
@@ -497,29 +564,37 @@ export async function storage_list(args) {
         return `${v >= 10 ? Math.round(v) : v.toFixed(1)}${units[i]}`;
     };
     const lines = [
-        `${userPath || '.'}/ — ${nFiles} file(s), ${nDirs} dir(s), ${human(totalBytes)} total${truncated ? ` — TRUNCATED at ${MAX_ENTRIES} of ${normalized.length} entries` : ''} (detail:'full' for JSON with timestamps)`
+        `${userPath || '.'}/ — ${nFiles} file(s), ${nDirs} dir(s), ${human(totalBytes)} total${truncated ? ` — TRUNCATED at ${MAX_ENTRIES} of ${normalized.length} entries` : ''} (columns: created modified, UTC — detail:'full' for JSON)`
     ];
+    const stamp = (iso) => iso.slice(0, 16).replace('T', ' ');
+    const dates = (e) => `${stamp(e.created)}  ${stamp(e.modified)}`;
+    const line = (e) => {
+        const warn = e.nameWarning ? `  ⚠ ${e.nameWarning}` : '';
+        return e.type === 'dir'
+            ? `d${e.hasAgents ? '✓' : ' '}         ${dates(e)}  ${e.name}/${warn}`
+            : `f   ${human(e.size).padStart(6)} ${dates(e)}  ${e.name}${warn}`;
+    };
+    // sort='modified': dirs first still (tree stays readable), files newest-first —
+    // 'most recent article' reads straight off the top line
+    const cmp = sort === 'modified'
+        ? (a, b) => (a.type === b.type ? b.modified.localeCompare(a.modified) : a.type === 'dir' ? -1 : 1)
+        : (a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1);
     if (!recursive) {
         // shallow: dirs first, then files — name alone suffices (parent known)
-        const sorted = [...shown].sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-        for (const e of sorted) {
-            const warn = e.nameWarning ? `  ⚠ ${e.nameWarning}` : '';
-            lines.push(e.type === 'dir'
-                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/${warn}`
-                : `f   ${human(e.size).padStart(6)} ${e.name}${warn}`);
-        }
+        for (const e of [...shown].sort(cmp)) lines.push(line(e));
     } else {
         // recursive flat: group by parent directory, header per group —
         // keeps full paths visible without repeating them per entry
-        const sorted = [...shown].sort((a, b) => a.path.localeCompare(b.path));
+        const sorted = [...shown].sort((a, b) => {
+            const pa = a.path.includes('/') ? a.path.slice(0, a.path.lastIndexOf('/')) : '';
+            const pb = b.path.includes('/') ? b.path.slice(0, b.path.lastIndexOf('/')) : '';
+            return pa !== pb ? pa.localeCompare(pb) : cmp(a, b);
+        });
         let curParent = null;
         for (const e of sorted) {
             const parent = e.path.includes('/') ? e.path.slice(0, e.path.lastIndexOf('/')) : '';
             if (parent !== curParent) { curParent = parent; lines.push(`== ${parent || userPath || '.'} ==`); }
-            const warn = e.nameWarning ? `  ⚠ ${e.nameWarning}` : '';
-            lines.push(e.type === 'dir'
-                ? `d${e.hasAgents ? '✓' : ' '} ${e.name}/${warn}`
-                : `f   ${human(e.size).padStart(6)} ${e.name}${warn}`);
+            lines.push(line(e));
         }
     }
     return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -751,7 +826,7 @@ export async function storage_append(args) {
     const engineResult = await OPS.append(userPath, content, { encoding });
     const proof = verifyFile(userPath, engineResult.size);
     logger.info(`[Storage] storage_append OK: "${userPath}" (total=${engineResult.size}B, verified)`, null, 'Storage');
-    return result(true, 'storage_append', userPath, { size: engineResult.size, ...proof });
+    return result(true, 'storage_append', userPath, { size: engineResult.size, ...proof, ...guardNote(engineResult) });
 }
 
 export async function storage_replace(args) {
@@ -772,7 +847,7 @@ export async function storage_replace(args) {
     const engineResult = await OPS.replace(userPath, marker, replacement, { occurrence });
     const proof = verifyFile(userPath, engineResult.size);
     logger.info(`[Storage] storage_replace OK: "${userPath}" (${engineResult.replacements} replacement(s), ${engineResult.size}B, verified)`, null, 'Storage');
-    return result(true, 'storage_replace', userPath, { ...engineResult, ...proof });
+    return result(true, 'storage_replace', userPath, { ...engineResult, ...proof, ...guardNote(engineResult) });
 }
 
 export async function storage_find(args) {

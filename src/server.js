@@ -252,6 +252,13 @@ HOW IT WORKS
   method = which agent + which action (e.g. "memory.recall", "browser.goto")
   payload = the arguments for that action (see tables below)
 
+⚠ THIS DISPATCHER IS WORKSHOP-ONLY. Do NOT call NATIVE chat tools through it —
+  native tools (chat_archive_*, browser_fetch, context_retire/unretire,
+  attachment_save, chat_preview_*, and the host platform's own storage_* /
+  storage.list / storage.read variants) are registered SEPARATELY and must be
+  invoked directly by their own name. Calling them here fails with
+  "Unknown method" — the tables below list ONLY workshop methods (issue #36).
+
 RESPONSE FORMAT
   Every call returns { content: [{ type: "text", text: "..." }], isError: false }.
   The actual result is in content[0].text — parse it to get the data.

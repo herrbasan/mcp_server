@@ -57,6 +57,12 @@ async function fetchImageAsBase64(url) {
   try {
     const response = await fetch(url);
     if (!response.ok) {
+      // 401/403 = the URL needs chat-app auth (bucket URLs are session-protected),
+      // NOT missing data. The old text claimed the data was gone and sent callers
+      // chasing a dead end (issue #44). Name the working detour instead.
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`image_fetch_failed: ${response.status} ${response.statusText} — this URL requires chat-app authentication (bucket/attachment URLs are session-protected). The image data still exists. Save it to storage first with the chat's native attachment_save tool, then pass the storage URL (/storage/<path>) here.`);
+      }
       throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
     }
     const arrayBuffer = await response.arrayBuffer();
@@ -72,7 +78,7 @@ async function fetchImageAsBase64(url) {
     };
   } catch (error) {
     if (error.message.startsWith('image_fetch_failed:')) throw error;
-    throw new Error(`image_fetch_failed: ${error.message}. If this image was provided by the user in this conversation, the data may no longer be available. Check vision_list_sessions for an existing session before creating a new one.`);
+    throw new Error(`image_fetch_failed: ${error.message}. If this image came from a chat attachment, save it to storage first (native attachment_save tool) and pass the /storage/<path> URL. Otherwise check vision_list_sessions for an existing session before creating a new one.`);
   }
 }
 

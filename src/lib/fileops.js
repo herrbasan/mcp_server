@@ -83,6 +83,48 @@ export function joinNormalizedTail(realBase, tail, log) {
 }
 
 // ============================================
+// Frontmatter guard (issue #46)
+// ============================================
+
+// Models see every message stamped '[YYYY-MM-DD@HH:MM] ' (context injection)
+// and echo that marker into file writes — glued before the YAML frontmatter
+// opener, where it breaks the document (frontmatter must open at line 1 with
+// exactly '---'). Proven fix ported from LLM-Gateway-Chat server/storage-tools.js
+// (shipped 2026-09-25, 13 cases green): strip the marker, log loud, report it
+// in the op result so the model self-corrects in-band. Narrow by design:
+// bracketed timestamp/chunk-label tokens ONLY, and only directly before the
+// '---' opener — a marker with no frontmatter behind it (journal opening
+// line) and other bracketed text are content, never touched.
+const FM_MARKER_TS = /\d{4}-\d{2}-\d{2}([@T ]\d{2}:\d{2}(:\d{2})?)?/;
+const FM_MARKER_CHUNK = /chunk_[a-z0-9]+/;
+
+function isMarkerToken(token) {
+    if (typeof token !== 'string') return false;
+    const inner = token.replace(/^\[/, '').replace(/\]$/, '');
+    return FM_MARKER_TS.test(inner) || FM_MARKER_CHUNK.test(inner);
+}
+
+function stripFrontmatterMarkers(content) {
+    if (typeof content !== 'string') return { content, stripped: [] };
+    const stripped = [];
+    let out = content;
+    // Same-line: '[2026-09-25@22:39] ---' — marker glued onto the opener.
+    out = out.replace(/^[ \t]*(\[[^\]\n]+\])[ \t]*(?=---[ \t]*(?:\r?\n|$))/, (m, tok) => {
+        if (!isMarkerToken(tok)) return m;
+        stripped.push(tok);
+        return '';
+    });
+    // Own-line: marker line(s) directly above the '---' opener.
+    out = out.replace(/^((?:[ \t]*\[[^\]\n]+\][ \t]*\r?\n)+)(?=[ \t]*---[ \t]*(?:\r?\n|$))/, (m, block) => {
+        const lines = block.split(/\r?\n/).filter(l => l.trim() !== '');
+        if (!lines.every(l => isMarkerToken(l.replace(/[ \t]/g, '')))) return m;
+        stripped.push(...lines.map(l => l.trim()));
+        return '';
+    });
+    return { content: out, stripped };
+}
+
+// ============================================
 // Factory
 // ============================================
 
@@ -248,9 +290,9 @@ export function createFileOps({ root, translator = null }) {
         if (!fs.existsSync(abs)) return { exists: false };
         const st = fs.statSync(abs);
         if (st.isDirectory()) {
-            return { exists: true, type: 'dir', size: st.size, modified: st.mtime };
+            return { exists: true, type: 'dir', size: st.size, created: st.birthtime, modified: st.mtime };
         }
-        return { exists: true, type: 'file', size: st.size, modified: st.mtime };
+        return { exists: true, type: 'file', size: st.size, created: st.birthtime, modified: st.mtime };
     }
 
     // ============================================
@@ -276,13 +318,16 @@ export function createFileOps({ root, translator = null }) {
         if (encoding !== 'utf8' && encoding !== 'base64') {
             throw new Error('write: encoding must be utf8 or base64');
         }
+        // Guard utf8 text only — base64 payloads are binary, frontmatter is
+        // not a concept there.
+        const guard = encoding === 'utf8' ? stripFrontmatterMarkers(content) : { content, stripped: [] };
         const abs = resolve(userPath);
         if (fs.existsSync(abs) && !overwrite) {
             throw new Error('write: target exists, pass overwrite:true');
         }
-        const buf = Buffer.from(content, encoding);
+        const buf = Buffer.from(guard.content, encoding);
         const previousVersion = atomicWrite(abs, buf);
-        return { size: buf.length, previousVersion };
+        return { size: buf.length, previousVersion, strippedMarkers: guard.stripped };
     }
 
     // ============================================
@@ -320,6 +365,7 @@ export function createFileOps({ root, translator = null }) {
                     name: ent.name,
                     type,
                     size: st.size,
+                    created: st.birthtime,
                     modified: st.mtime,
                     path: entRel
                 });
@@ -402,11 +448,15 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('append: encoding must be utf8 or base64');
         }
         const abs = resolve(userPath);
-        const buf = Buffer.from(content, encoding);
+        // Guard only when this append CREATES the file — a marker prepended to
+        // an existing journal is a legitimate stamp, not context echo.
+        const fresh = !fs.existsSync(abs) || fs.statSync(abs).size === 0;
+        const guard = (fresh && encoding === 'utf8') ? stripFrontmatterMarkers(content) : { content, stripped: [] };
+        const buf = Buffer.from(guard.content, encoding);
         const fd = fs.openSync(abs, 'a');
         fs.writeSync(fd, buf);
         fs.closeSync(fd);
-        return { size: fs.statSync(abs).size };
+        return { size: fs.statSync(abs).size, strippedMarkers: guard.stripped };
     }
 
     // ============================================
@@ -542,8 +592,22 @@ export function createFileOps({ root, translator = null }) {
             throw new Error('replace: replacement is identical to marker — no change');
         }
 
-        const previousVersion = atomicWrite(abs, Buffer.from(eol === '\r\n' ? updated.replace(/\n/g, '\r\n') : updated, 'utf8'));
-        return { size: Buffer.byteLength(updated, 'utf8'), replacements: count, previousVersion };
+        // Guard the RESULT (issue #46): a marker the model prepended inside its
+        // replacement, now sitting before the frontmatter opener, breaks the
+        // document exactly like a full-file write would.
+        const guarded = stripFrontmatterMarkers(updated);
+        updated = guarded.content;
+
+        // Size MUST describe the bytes on disk, not the in-memory LF-land
+        // string: verifyFile re-stats and compares. On a CRLF file the written
+        // buffer is longer than `updated` by one byte per line break, so the
+        // old LF-land size failed the self-verify on every CRLF file — and the
+        // same number recurred across edits, looking like a stale cache
+        // (issues #54/#55, 2026-10-02: no cache existed, one wrong number did).
+        const finalRaw = eol === '\r\n' ? updated.replace(/\n/g, '\r\n') : updated;
+        const buf = Buffer.from(finalRaw, 'utf8');
+        const previousVersion = atomicWrite(abs, buf);
+        return { size: buf.length, replacements: count, previousVersion, strippedMarkers: guarded.stripped };
     }
 
     // ============================================
