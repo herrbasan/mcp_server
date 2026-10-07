@@ -638,8 +638,9 @@ IMAGE — Image Generation
 
 Generate images via the gateway's image models. Results are rendered into
 MCP storage under images/ as webp in five sizes (full, 1920, 1280, 720,
-180) plus a .json sidecar with prompt, model, usage/cost and lineage.
-The caller copies out whichever sizes it needs.
+180), plus the lossless PNG original (<base>_full.png — for platforms
+that reject webp, e.g. YouTube) and a .json sidecar with prompt, model,
+usage/cost and lineage. The caller copies out whichever sizes it needs.
 
   image.generate — { prompt*, name?, references?, model?, size?, aspect_ratio?, seed?, extra_body? }
       Generate (or edit, when references is set) an image. Base name:

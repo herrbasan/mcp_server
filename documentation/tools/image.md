@@ -11,8 +11,8 @@ MCP storage. Added 2026-09-25.
 
 Calls the gateway's `POST /v1/images/generations` (synchronous, model of
 `type: "image"` or the default `imagegen` task when `model` is omitted),
-then renders the result through nMedia into a fixed set of webp sizes and
-writes everything to storage under `images/`.
+then renders the result through nMedia into a fixed set of webp sizes, the
+lossless PNG original, and writes everything to storage under `images/`.
 
 **Output naming** — base = `YYYYMMDD_HHMM_<slug>` (local server time; slug
 from `name` or the first 6 prompt words; `-2`, `-3` … on collision):
@@ -23,9 +23,18 @@ images/<base>_1920.webp    longest-edge downscale, shrink-only
 images/<base>_1280.webp
 images/<base>_720.webp
 images/<base>_180.webp     thumbnail
+images/<base>_full.png     lossless PNG original (#58) — for platforms that
+                           reject webp (YouTube thumbnails/logos/banners)
 images/<base>.json         sidecar: prompt, model, request params, references,
                            lineage, usage/cost, per-file width/height/bytes
 ```
+
+The PNG original is written in addition to the webp set: when the provider
+returns PNG (the normal case) those bytes are written untouched with the
+dimensions read from the IHDR chunk; any other source format gets one
+nMedia re-encode to PNG under the same shrink-only cap as `full`. In the
+sidecar's `files` map it appears under the `png` key alongside the size
+keys.
 
 **Returns:** text with model, cost and the per-size file list, plus an MCP
 image content block with the 1280px variant (`image/webp`) — the largest

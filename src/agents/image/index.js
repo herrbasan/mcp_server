@@ -95,6 +95,27 @@ async function renderVariant(rawBase64, maxDimension) {
     return { base64: stripDataUri(data.base64), width: data.width, height: data.height };
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// The lossless PNG original (#58): platforms with format allowlists (YouTube et al.) reject webp.
+// Providers normally return PNG — those bytes are written untouched (dimensions read from IHDR).
+// Any other source format gets one nMedia re-encode to PNG under the same shrink-only cap as full.
+async function renderOriginal(rawBase64) {
+    const buf = Buffer.from(rawBase64, 'base64');
+    if (buf.subarray(0, 8).equals(PNG_SIGNATURE)) {
+        if (buf.length < 24 || buf.readUInt32BE(12) !== 0x49484452) throw new Error('image_generate: gateway PNG is malformed (no IHDR at offset 12)');
+        return { buf, width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    const res = await fetch(`${nMediaUrl}/v1/process/image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64: rawBase64, max_dimension: sizes[0].maxDimension, format: 'png', response_type: 'base64' })
+    });
+    if (!res.ok) throw new Error(`nMedia PNG render failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    return { buf: Buffer.from(stripDataUri(data.base64), 'base64'), width: data.width, height: data.height };
+}
+
 export async function image_generate(args) {
     if (typeof args?.prompt !== 'string' || args.prompt.length === 0) {
         throw new Error('image_generate: "prompt" (non-empty string) is required');
@@ -152,6 +173,7 @@ export async function image_generate(args) {
         const base = uniqueBase(images.length > 1 ? `${slug}-${idx + 1}` : slug);
 
         const variants = await Promise.all(sizes.map(s => renderVariant(raw, s.maxDimension)));
+        const original = await renderOriginal(raw);
 
         const dir = path.join(storageRoot, imageDir);
         const files = {};
@@ -164,6 +186,11 @@ export async function image_generate(args) {
             files[sizes[v].name] = { path: relPath, width: variants[v].width, height: variants[v].height, bytes: buf.length };
             if (sizes[v].name === '1280') thumb = variants[v].base64; // largest derived variant — inline preview keeps the detail
         }
+
+        // PNG original — last entry in files so the text table lists it after the sizes
+        const pngName = `${base}_full.png`;
+        fs.writeFileSync(path.join(dir, pngName), original.buf);
+        files.png = { path: `${imageDir}/${pngName}`, width: original.width, height: original.height, bytes: original.buf.length };
 
         const sidecar = {
             name: base,
@@ -187,7 +214,7 @@ export async function image_generate(args) {
         fs.writeFileSync(path.join(dir, sidecarName), JSON.stringify(sidecar, null, 2));
 
         outputs.push({ base, sidecar: `${imageDir}/${sidecarName}`, files, thumb });
-        logger.info(`[image] Wrote ${base} (${Object.keys(files).length} sizes + sidecar)`, null, 'Image');
+        logger.info(`[image] Wrote ${base} (${sizes.length} webp sizes + png original + sidecar)`, null, 'Image');
     }
 
     // 3. Result: text file list + inline thumbnail of the first image
@@ -199,7 +226,7 @@ export async function image_generate(args) {
     });
     const model = gen.model ?? args.model ?? '(gateway default)';
     const cost = gen.usage?.cost != null ? ` · cost ${gen.usage.cost}` : '';
-    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\nCopy whichever sizes you need from storage (images/). Full prompt, parameters, usage and lineage are in the .json sidecar.`;
+    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\nCopy whichever sizes you need from storage (images/) — use the _full.png original for platforms that reject webp (YouTube et al.). Full prompt, parameters, usage and lineage are in the .json sidecar.`;
 
     const content = [{ type: 'text', text }];
     if (outputs[0].thumb) {
