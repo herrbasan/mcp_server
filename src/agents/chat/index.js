@@ -347,7 +347,8 @@ async function chatWithTransientRetry({ model, wire, name, hops }) {
         messages: wire,
         stream: false,
         tools: [dispatcherDef()],
-        timeoutMs: CONFIG.requestTimeoutMs
+        timeoutMs: CONFIG.requestTimeoutMs,
+        clientSession: name
     });
     try {
         return await call();
@@ -701,7 +702,8 @@ export async function chat_compact(args, ctx) {
             model,
             messages: [{ role: 'user', content: `${SUMMARY_PROMPT}\n\n${transcript}` }],
             stream: false,
-            timeoutMs: CONFIG.requestTimeoutMs
+            timeoutMs: CONFIG.requestTimeoutMs,
+            clientSession: name
         });
         if (!res.content) throw new Error('chat_compact: summarize produced empty content — history left untouched');
         // Summary stored as role:"user" with [context summary] prefix (spec §9 R1).

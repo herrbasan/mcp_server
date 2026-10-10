@@ -1,6 +1,13 @@
+import { createRequire } from 'module';
 import { getLogger } from './utils/logger.js';
 
 const logger = getLogger();
+
+// Identity on every gateway call. The gateway attaches these headers to its
+// failure and warning lines (LLM-Gateway src/utils/client-identity.js) — after
+// the 2026-10 context-window bursts, an anonymous "node @ 192.168.0.100" was
+// the difference between a fixable incident and an unsolvable one.
+const { version: SERVER_VERSION } = createRequire(import.meta.url)('../package.json');
 
 /**
  * LLM Gateway client — SSE transport (chat only).
@@ -28,8 +35,13 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
     if (!embedClient) throw new Error('createGatewayClient: embedClient is required');
     const baseUrl = httpUrl.replace(/\/+$/, '');
 
-    function authHeaders() {
-        const headers = { 'Content-Type': 'application/json' };
+    function authHeaders(sessionId) {
+        const headers = {
+            'Content-Type': 'application/json',
+            'X-Client-Name': 'mcp-server',
+            'X-Client-Version': SERVER_VERSION
+        };
+        if (sessionId) headers['X-Session-Id'] = String(sessionId);
         if (accessKey) {
             headers['Authorization'] = `Bearer ${accessKey}`;
         }
@@ -41,7 +53,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
     }
 
-    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress, stream = true, tools, timeoutMs, signal: externalSignal }) {
+    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, onDelta, onProgress, stream = true, tools, timeoutMs, signal: externalSignal, clientSession }) {
         const fullMessages = systemPrompt
             ? [{ role: 'system', content: systemPrompt }, ...messages]
             : messages;
@@ -92,7 +104,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             try {
                 const res = await fetch(`${baseUrl}/v1/chat/completions`, {
                     method: 'POST',
-                    headers: authHeaders(),
+                    headers: authHeaders(clientSession),
                     body: JSON.stringify(body),
                     signal: callSignal
                 });
@@ -182,7 +194,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         try {
             res = await fetch(`${baseUrl}/v1/chat/completions`, {
                 method: 'POST',
-                headers: authHeaders(),
+                headers: authHeaders(clientSession),
                 body: JSON.stringify(body),
                 signal: callSignal
             });
