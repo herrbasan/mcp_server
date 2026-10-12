@@ -15,6 +15,15 @@ interceptConsole(logger);
 import { loadAgents } from './agent-loader.js';
 import { createGatewayClient } from './gateway-client.js';
 import { createEmbedClient } from './embed-client.js';
+import {
+    store as notepadStore,
+    addItem as notepadAdd, listItems as notepadList, getItem as notepadGet,
+    updateItem as notepadUpdate, completeItem as notepadComplete, removeItem as notepadRemove,
+    promoteIdea as notepadPromote, attachBuffer as notepadAttachBuffer,
+    getFileBuffer as notepadGetFileBuffer, snapshot as notepadSnapshot,
+    contextAdd as notepadContextAdd, contexts as notepadContexts,
+    contextRename as notepadContextRename, contextRemove as notepadContextRemove,
+} from './agents/notepad/index.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = {
@@ -39,7 +48,9 @@ const corsOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',
 app.use(cors({
     origin: corsOrigins,
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
+    // PATCH + DELETE needed by the notepad REST API (component edits items
+    // in place; without them preflight fails in the browser components).
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept']
 }));
 
@@ -230,6 +241,71 @@ async function start() {
         }
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(usagePath);
+    });
+
+    // ── Notepad REST API ──
+    // Same data the notepad agent exposes as MCP tools — one writer (the
+    // agent's nDB at data/notepad/), two transports. Consumed by the shared
+    // notepad component (localweb dashboard + chat app) and for manual edits.
+    // LAN-trust posture, same as /storage/ — no auth until multi-user (see
+    // docs/plan-multi-user-mcp.md). Routes 503 until the agent has initialized.
+    const notepadReady = (req, res, next) => {
+        if (!notepadStore.db) { res.status(503).json({ error: 'notepad agent not initialized' }); return; }
+        next();
+    };
+    const notepadRoute = (fn) => (req, res) => {
+        try { res.json(fn(req)); } catch (e) { res.status(400).json({ error: e.message }); }
+    };
+    const notepadId = (req) => parseInt(req.params.id, 10);
+
+    app.get('/notepad/snapshot', notepadReady, notepadRoute((req) => notepadSnapshot({ context: req.query.context })));
+
+    app.get('/notepad/items', notepadReady, notepadRoute((req) =>
+        notepadList({ type: req.query.type, status: req.query.status, owner: req.query.owner, context: req.query.context, limit: req.query.limit ? parseInt(req.query.limit, 10) : undefined })));
+
+    app.get('/notepad/contexts', notepadReady, notepadRoute(() => notepadContexts()));
+    app.post('/notepad/contexts', notepadReady, express.json({ limit: '64kb' }), notepadRoute((req) => notepadContextAdd(req.body)));
+    app.patch('/notepad/contexts/:name', notepadReady, express.json({ limit: '64kb' }), notepadRoute((req) =>
+        notepadContextRename({ from: req.params.name, to: req.body?.to })));
+    app.delete('/notepad/contexts/:name', notepadReady, notepadRoute((req) => notepadContextRemove({ name: req.params.name })));
+
+    app.post('/notepad/items', notepadReady, express.json({ limit: '1mb' }), notepadRoute((req) => notepadAdd(req.body)));
+
+    app.get('/notepad/items/:id', notepadReady, notepadRoute((req) => notepadGet({ id: notepadId(req) })));
+
+    app.patch('/notepad/items/:id', notepadReady, express.json({ limit: '1mb' }), notepadRoute((req) =>
+        notepadUpdate({ id: notepadId(req), ...req.body })));
+
+    app.delete('/notepad/items/:id', notepadReady, notepadRoute((req) => notepadRemove({ id: notepadId(req) })));
+
+    // Promote shares the mutation signature but is its own verb — keep it
+    // explicit so the component's idea→task action doesn't masquerade as PATCH.
+    app.post('/notepad/items/:id/promote', notepadReady, notepadRoute((req) => notepadPromote({ id: notepadId(req) })));
+
+    app.post('/notepad/items/:id/complete', notepadReady, express.json({ limit: '1mb' }), notepadRoute((req) =>
+        notepadComplete({ id: notepadId(req), stepIndex: req.body?.stepIndex })));
+
+    // Raw-body upload: POST /notepad/items/12/attachments?name=photo.jpg
+    app.post('/notepad/items/:id/attachments', notepadReady,
+        express.raw({ type: '*/*', limit: '25mb' }),
+        notepadRoute((req) => {
+            if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw new Error('request body must be the raw file bytes');
+            const name = req.query.name || `attachment-${Date.now()}`;
+            const mime = req.headers['content-type']?.split(';')[0]?.trim() || 'application/octet-stream';
+            return notepadAttachBuffer(notepadId(req), name, req.body, mime);
+        }));
+
+    // Bucket files by nURI tail (hash.ext) — <img> / thumbnail sources.
+    app.get('/notepad/files/:fileRef', notepadReady, (req, res) => {
+        const m = /^([0-9a-f]{8})\.([A-Za-z0-9]+)$/.exec(req.params.fileRef);
+        if (!m) { res.status(400).json({ error: 'fileRef must be <8-char-hash>.<ext>' }); return; }
+        try {
+            const buf = notepadGetFileBuffer(m[1], m[2]);
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // content-hashed — safe to cache forever
+            res.type(m[2]).end(buf);
+        } catch (e) {
+            res.status(404).json({ error: `file not found: ${req.params.fileRef}` });
+        }
     });
 
     // PATCH /api/config - deep-merge update config (persists to config.json)
@@ -975,6 +1051,74 @@ fails as a tool-result error, never hangs).
 
 
 ═══════════════════════════════════════════════════════════════
+NOTEPAD — deliberate state (pins, tasks, dates, contacts)
+═══════════════════════════════════════════════════════════════
+
+NOT memory — this is deliberate state someone decided matters. Memory
+answers "what do I know about X"; the notepad answers "what's
+outstanding, what's due, what shouldn't be lost".
+
+Two boards: owner="david" (his board — the machine maintains it as
+secretary, writes only on his explicit request) and owner="machine"
+(the machine's own notes — invisible to David unless he asks).
+Contexts name the project/domain (registry-validated: notepad.contexts
+before inventing one). body is the long payload — delivered ONLY by
+notepad.get, never in list/snapshot. Titles stay short and
+human-legible — they are post-it lines, not database sludge.
+
+Item types: idea/pin (status open|promoted|archived), task (status
+open|done|cancelled, optional due YYYY-MM-DD, ordered steps checklist),
+date (when YYYY-MM-DD, recur none|yearly), contact (phone/email/address).
+
+  notepad.add — { type*, title*, owner*, notes?, body?, context?, ref?, due?, steps?, when?, recur?, phone?, email?, address? }
+      Create an item. task steps: array of strings. date requires when.
+      contact requires at least one of phone|email|address and takes no context.
+      ref: array of pointer strings (session ids, storage paths, URLs).
+
+  notepad.list — { type?, status?, owner?, context?, limit? }
+      List items, filtered. Default: everything.
+
+  notepad.get — { id* }
+      Full record — the ONLY path that returns body.
+
+  notepad.update — { id*, title?, notes?, owner?, context?, ref?, body?, due?, status?, steps?, when?, recur?, phone?, email?, address? }
+      Patch fields valid for the item's type. steps/ref REPLACE wholesale.
+      owner moves the item between boards. Type is immutable — use
+      notepad.promote for idea→task.
+
+  notepad.complete — { id*, stepIndex? }
+      Mark a task's step done (0-based), or the whole task done without it.
+
+  notepad.remove — { id* }         Soft delete; attachments GC'd via nDB refs.
+
+  notepad.promote — { id* }        Idea → task; keeps owner/context/ref/body,
+                                    the idea keeps a promotedTo link.
+
+  notepad.attach — { id*, path*, name? }
+      Attach a file (absolute path, e.g. one written via storage.write) to an
+      item. Stored in the nDB bucket (SHA-256 dedup). Served at
+      /notepad/files/<hash>.<ext>.
+
+  notepad.snapshot — { context? }
+      The Today view, both boards (David's first): optional project-start
+      view for a context (open pins + open tasks — run this when starting
+      project work, same slot as reading the project's Agents.md), overdue
+      tasks, due within 7 days, open tasks with step progress, upcoming
+      dates (yearly mapped forward), 5 newest open ideas, stale pins (open
+      >2 months — cleanup PROMPTS only, never act without David), context
+      registry footer. READ AT SESSION START per the priming sequence.
+
+  notepad.context_add — { name* }  Register a context (lowercase, hyphens).
+  notepad.contexts — {}            List the registry. Check before inventing.
+  notepad.context_rename — { from*, to* }   Rewrites items referencing it.
+  notepad.context_remove — { name* }        Refuses while items still use it.
+
+BOUNDARY: the dreaming system and background automation NEVER touch the
+notepad — every mutation comes from David or a seat in an active session.
+Stale pins are surfaced, never auto-archived.
+
+
+═══════════════════════════════════════════════════════════════
 IMPORTANT RULES
 ═══════════════════════════════════════════════════════════════
 
@@ -1090,7 +1234,15 @@ IMPORTANT RULES
         "chat.inject": "chat_inject", "chat.list": "chat_list",
         "chat.status": "chat_status",
         "chat.history": "chat_history", "chat.update": "chat_update",
-        "chat.compact": "chat_compact", "chat.delete": "chat_delete"
+        "chat.compact": "chat_compact", "chat.delete": "chat_delete",
+
+        "notepad.add": "notepad_add", "notepad.list": "notepad_list",
+        "notepad.get": "notepad_get", "notepad.update": "notepad_update",
+        "notepad.complete": "notepad_complete", "notepad.remove": "notepad_remove",
+        "notepad.promote": "notepad_promote", "notepad.attach": "notepad_attach",
+        "notepad.snapshot": "notepad_snapshot",
+        "notepad.context_add": "notepad_context_add", "notepad.contexts": "notepad_contexts",
+        "notepad.context_rename": "notepad_context_rename", "notepad.context_remove": "notepad_context_remove"
     };
 
     const routeCompactCall = async (name, args, context) => {

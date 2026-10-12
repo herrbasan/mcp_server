@@ -1,0 +1,171 @@
+{
+    "agent": "notepad",
+    "description": "Deliberate state store — ideas (pins), tasks with step checklists, important dates, contacts, attachments. Two boards (owner: david | machine). Registry-validated contexts. Backed by its own nDB database (data/notepad/) with file buckets for attachments. Exposes LLM tools plus REST routes (/notepad/*) on the same server for manual editing and dashboard components.",
+    "tools": [
+        {
+            "name": "notepad_add",
+            "description": "Add an item to the notepad. owner is REQUIRED ('david' = David's board, maintained as secretary on his request; 'machine' = the machine's own board, invisible to David unless he asks). Types: 'idea' (pin — title, notes, optional context, ref, body), 'task' (optional due YYYY-MM-DD, optional steps array of strings, context), 'date' (when YYYY-MM-DD, optional recur 'yearly', context), 'contact' (title + at least one of phone/email/address; no context). Returns the created item with its id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "type": { "type": "string", "enum": ["idea", "task", "date", "contact"] },
+                    "title": { "type": "string", "description": "short and human-legible — the post-it line" },
+                    "owner": { "type": "string", "enum": ["david", "machine"] },
+                    "notes": { "type": "string", "description": "one-line clarifier" },
+                    "body": { "type": "string", "description": "long payload — delivered only via notepad.get, never in list/snapshot" },
+                    "context": { "type": "string", "description": "project/domain — must exist in the registry (see notepad.contexts)" },
+                    "ref": { "type": "array", "items": { "type": "string" }, "description": "pointers, not copies: session ids, storage paths, URLs" },
+                    "notes": { "type": "string" },
+                    "due": { "type": "string", "description": "task only — due date YYYY-MM-DD" },
+                    "steps": {
+                        "type": "array",
+                        "description": "task only — ordered checklist; strings or {text, done}",
+                        "items": {}
+                    },
+                    "when": { "type": "string", "description": "date only — event date YYYY-MM-DD" },
+                    "recur": { "type": "string", "enum": ["none", "yearly"], "description": "date only, default none" },
+                    "phone": { "type": "string", "description": "contact only" },
+                    "email": { "type": "string", "description": "contact only" },
+                    "address": { "type": "string", "description": "contact only" }
+                },
+                "required": ["type", "title", "owner"]
+            }
+        },
+        {
+            "name": "notepad_list",
+            "description": "List notepad items. Optional filters: type, status, owner (david|machine), context (registry-validated). Returns compact records; body is never included (use notepad.get).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "type": { "type": "string", "enum": ["idea", "task", "date", "contact"] },
+                    "status": { "type": "string" },
+                    "owner": { "type": "string", "enum": ["david", "machine"] },
+                    "context": { "type": "string" },
+                    "limit": { "type": "number", "description": "max items returned, default 100" }
+                }
+            }
+        },
+        {
+            "name": "notepad_get",
+            "description": "Get one notepad item by id — the full record including steps, attachments, refs, and body (body is available ONLY here, never in list/snapshot).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "number" } },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "notepad_update",
+            "description": "Update fields on a notepad item. Common: title, notes, owner (moves the item between boards), context, ref (replaces the array), body. task: due, status (open|done|cancelled), steps (replaces the whole checklist). idea: status (open|promoted|archived). date: when, recur. contact: phone, email, address. Type cannot be changed (use notepad.promote for idea→task).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "number" },
+                    "title": { "type": "string" },
+                    "notes": { "type": "string" },
+                    "owner": { "type": "string", "enum": ["david", "machine"] },
+                    "context": { "type": "string" },
+                    "ref": { "type": "array", "items": { "type": "string" } },
+                    "body": { "type": "string" },
+                    "due": { "type": "string" },
+                    "status": { "type": "string" },
+                    "steps": { "type": "array", "items": {} },
+                    "when": { "type": "string" },
+                    "recur": { "type": "string", "enum": ["none", "yearly"] },
+                    "phone": { "type": "string" },
+                    "email": { "type": "string" },
+                    "address": { "type": "string" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "notepad_complete",
+            "description": "Complete a task. With stepIndex: mark that step done (0-based). Without: mark the whole task done. Rejects non-task items.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "number" },
+                    "stepIndex": { "type": "number" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "notepad_remove",
+            "description": "Delete a notepad item (soft delete — restorable via nDB). Releases the item's bucket attachments (trashed only if no other item references them).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "number" } },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "notepad_promote",
+            "description": "Promote an idea to a task: creates the task with the idea's title/notes/context/refs/body/owner and marks the idea 'promoted' with a link to the new task id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": { "type": "number" } },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "notepad_attach",
+            "description": "Attach a file (image, pdf, …) to an item. path is an absolute file path (e.g. an MCP_Storage path you wrote via storage.write). Stored in the nDB 'notepad' bucket with SHA-256 dedup; returns the attachment ref and its HTTP URL.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "number" },
+                    "path": { "type": "string", "description": "absolute path of the file to attach" },
+                    "name": { "type": "string", "description": "display name, defaults to the file's basename" }
+                },
+                "required": ["id", "path"]
+            }
+        },
+        {
+            "name": "notepad_snapshot",
+            "description": "The Today view, both boards (David's items first). Order: optional per-context project-start view (pass context), overdue tasks, due within 7 days, open tasks with step progress, upcoming dates (yearly recurrences mapped forward), 5 newest open ideas, stale pins (open ideas >2 months — cleanup prompts only, never acted on automatically), context registry footer. body never appears here. Read at session start; pass context when starting project work (the pin check).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "context": { "type": "string", "description": "include the project-start view for this context (open pins + open tasks)" }
+                }
+            }
+        },
+        {
+            "name": "notepad_context_add",
+            "description": "Create a context in the registry. Canonical form: lowercase, hyphens (e.g. materna-bav). Rejects duplicates.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }
+        },
+        {
+            "name": "notepad_contexts",
+            "description": "List all registered contexts. Read this before inventing a new context name.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "notepad_context_rename",
+            "description": "Rename a context (admin op): rewrites the registry entry and every item referencing it. No alias system — aliases recreate the drift problem.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string" },
+                    "to": { "type": "string" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "notepad_context_remove",
+            "description": "Remove a context from the registry. Refuses while any item still references it — move or clear those items first.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }
+        }
+    ]
+}

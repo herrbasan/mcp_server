@@ -72,7 +72,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `src/agents/` — agent implementations.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
 - `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
-- `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index.
+- `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).
 - `data/chat/sessions/` — persistent headless chat sessions (one pretty-printed JSON per session, owned by the `chat` agent).
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
 - `tests/` — benchmarks and quick tests.
@@ -88,6 +88,30 @@ The `memory` agent uses a two-database architecture (mirrors the LLM Gateway Cha
 The legacy `data/memories.json` (37MB, inline embeddings) is kept as a cold backup and vector source for backfill. It is no longer read or written by the memory agent at runtime.
 
 The dreaming agent accesses memories via `memoryAgent.memories.iter()` (with fallback to `.memories` array for backward compatibility).
+
+## Notepad (deliberate state)
+
+The `notepad` agent (`src/agents/notepad/`, own nDB at `data/notepad/`) stores
+ideas (pins), tasks with flat step checklists, important dates (optionally
+yearly recurring), contacts, and file attachments (nDB bucket, SHA-256 dedup).
+It is deliberate state — NOT memory; don't merge the two. Two boards
+(`owner: david | machine`); registry-validated contexts; `body` long-payload
+delivered only via `notepad.get`.
+
+- **MCP tools**: `notepad.add/list/get/update/complete/remove/promote/attach/snapshot`
+  + `notepad.context_add/contexts/context_rename/context_remove`.
+- **`notepad.snapshot`** is the Today view (optional per-context project-start
+  view / overdue / due-soon / open tasks with step progress / upcoming dates /
+  recent ideas / stale pins / context footer), computed on read. Session-start
+  priming reads this; project work starts with `snapshot(context)` (pin check).
+- **REST API** on the same server: `/notepad/items*`, `/notepad/snapshot`,
+  `/notepad/files/:hash.:ext`, `/notepad/items/:id/attachments` (raw upload),
+  `/notepad/contexts*`. Consumed by the shared notepad component (localweb
+  dashboard + chat app).
+- **Boundary**: the dreaming system and background automation never touch the
+  notepad — mutations only via explicit `notepad.*` calls from David or an
+  active session. Stale pins are surfaced, never auto-archived.
+- Details: `documentation/tools/notepad.md` (spec: `scratch/notepad-proposal.md`).
 
 ## VDB Indexing
 

@@ -47,6 +47,7 @@ nesting level.
 | **media** | `media.process` | nMedia proxy: storage path in → rasterize/transcode → storage path out (SVG→PNG, thumbnails, m4a→mp3, video→keyframe). Blank-render guard. Bytes never enter a context. | [media.md](media.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
+| **notepad** | `notepad.add/list/get/update/complete/remove/promote/attach/snapshot` | Deliberate state — ideas, tasks with step checklists, dates, contacts, bucket attachments. `snapshot` = Today view; REST at `/notepad/*` for manual edits and dashboard components. | [notepad.md](notepad.md) |
 
 ## Cross-cutting dependencies
 
