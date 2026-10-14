@@ -1003,10 +1003,14 @@ workshop tools via a single 'workshop' dispatcher (including other chat
 sessions — recursion is bounded by a run-chain cycle guard; a cyclic send
 fails as a tool-result error, never hangs).
 
-  chat.create — { name*, model*, systemPrompt? }
+  chat.create — { name*, model*, systemPrompt?, timeoutMs? }
       Create a session. Throws if the name exists. model must be a known
       gateway chat model ID (validated at create time).
       Name charset: [a-z0-9][a-z0-9._-]*.
+      timeoutMs: session-scoped per-hop gateway request timeout in ms
+      (default: config requestTimeoutMs, 120000) — raise it (e.g. 600000)
+      when the session must handle long generations. Changeable via
+      chat.update.
 
   chat.models — {}
       List valid gateway chat model IDs (with owner/type metadata where
@@ -1037,8 +1041,10 @@ fails as a tool-result error, never hangs).
       Stored messages, chronological, full fidelity. lastN trims to the
       last N messages.
 
-  chat.update — { name*, systemPrompt?, model? }
-      Mid-life re-pin. At least one field required.
+  chat.update — { name*, systemPrompt?, model?, timeoutMs? }
+      Mid-life re-pin. At least one field required. timeoutMs: number sets
+      the session's per-hop gateway request timeout (ms); null resets to
+      the config default (120000).
 
   chat.compact — { name*, strategy*, keep?, upTo?, model? }
       Caller-invoked compaction: 'clear' (wipe; keep preserves last N),

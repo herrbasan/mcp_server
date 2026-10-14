@@ -27,14 +27,14 @@ are addressable by name from any platform.
 
 | Tool | Args | Returns (JSON in text) |
 |---|---|---|
-| `chat.create` | `name*`, `model*`, `systemPrompt?` | `{ok, name, model, messageCount: 0, historyBytes: 0}`. Model validated against `chat.models` at create. |
+| `chat.create` | `name*`, `model*`, `systemPrompt?`, `timeoutMs?` (session-scoped per-hop gateway timeout ms; null/absent → config `requestTimeoutMs` 120000) | `{ok, name, model, timeoutMs, messageCount: 0, historyBytes: 0}`. Model validated against `chat.models` at create. |
 | `chat.models` | — | `{models: [{id, ownedBy?, type?}]}` — the authoritative model-ID source. |
-| `chat.send` | `name*`, `message*`, `model?` (per-send override, pin unchanged) | `{reply, toolCalls: [{name,status,error?}], hops, usage, messageCount, historyBytes}`. |
+| `chat.send` | `name*`, `message*`, `model?` (per-send override, pin unchanged) | `{reply, toolCalls: [{name,status,error?}], hops, usage, messageCount, historyBytes}`. Timeout comes from the session (`timeoutMs`, set via create/update). |
 | `chat.inject` | `name*`, `messages? [{role,content}]`, `files? [storage paths]` | Appends context WITHOUT calling the model. Files: `storage.stat` → size check (≤5 MB) → full read, appended as `=== storage:<path> ===\n<content>`. |
 | `chat.list` | — | All sessions with counts and sizes. |
 | `chat.status` | `name?` | Live/last run detail: phase, hops, current tool, token tally, last 20 events. In-memory only (dies with the process); unknown name → phase `never-run`. |
 | `chat.history` | `name*`, `lastN?` | Stored messages, chronological, full fidelity. |
-| `chat.update` | `name*`, `systemPrompt?`, `model?` (≥1 required) | Mid-life re-pin. |
+| `chat.update` | `name*`, `systemPrompt?`, `model?`, `timeoutMs?` (≥1 required; `timeoutMs: null` resets to config default) | Mid-life re-pin. |
 | `chat.compact` | `name*`, `strategy*` clear\|truncate\|summarize, `keep?`, `upTo?`, `model?` | clear: wipe (keep last N); truncate: keep last N; summarize: messages [0..upTo) replaced by ONE model-generated summary — history rewritten only after the summary exists. |
 | `chat.delete` | `name*` | Irreversible. |
 
@@ -57,6 +57,9 @@ are addressable by name from any platform.
 - **Recursion guard**: a session calling `chat.send` on an ancestor in its
   run-chain fails as a tool-result error before queueing (bounded recursion).
 - Gateway call: `stream: false`, `timeoutMs: 120000` (`requestTimeoutMs`).
+  The timeout is per gateway round-trip (per hop), not for the whole loop;
+  a session can override it via its `timeoutMs` field
+  (`chat.create`/`chat.update`; `null` → config default).
 
 ## Config (`agents.chat`, effective)
 

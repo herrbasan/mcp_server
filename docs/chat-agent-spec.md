@@ -110,8 +110,8 @@ Message stored-form: role, content, createdAt, plus `tool_calls` / `tool_call_id
 
 All methods via `agent.action` (compact endpoint), legacy names `chat_*`. `*` = required.
 
-### `chat.create` — `{ name*, model*, systemPrompt? }`
-Creates session. Throws if name exists (no silent reuse). `model` must be a known gateway model ID (verified against `listModels('chat')` at create time — typos fail immediately, not on first send).
+### `chat.create` — `{ name*, model*, systemPrompt?, timeoutMs? }`
+Creates session. Throws if name exists (no silent reuse). `model` must be a known gateway model ID (verified against `listModels('chat')` at create time — typos fail immediately, not on first send). `timeoutMs` — optional session-scoped per-hop gateway request timeout in ms (positive number); default `null` → config `requestTimeoutMs` (120000). Changeable later via `chat.update` (`timeoutMs: null` resets to the config default).
 
 ### `chat.send` — `{ name*, message*, model? }`
 Appends user message, runs the tool loop (§5), appends assistant outcome(s). Returns:
@@ -120,6 +120,7 @@ Appends user message, runs the tool loop (§5), appends assistant outcome(s). Re
   "hops": 2, "usage": { }, "messageCount": 14, "historyBytes": 38211 }
 ```
 Optional `model` override for one send (does NOT re-pin the session; `chat.update` re-pins).
+Gateway request timeout comes from the session (`timeoutMs` field, set at create or via `chat.update`; `null` → config `requestTimeoutMs` 120000). It bounds one gateway round-trip, not the whole tool loop.
 
 ### `chat.inject` — `{ name*, messages?[], files?[] }`
 Appends context **without** calling the model. This is the twin-ingest primitive: stuffing N documents via `send` would pay for N DeepSeek replies saying "noted".
@@ -136,8 +137,8 @@ Live activity of running/last runs from a module-level in-memory registry (`Map<
 ### `chat.history` — `{ name*, lastN? }`
 Stored messages (chronological). `lastN` trims from the tail for large sessions. Full-fidelity by default — callers need the exact wire form to reason about context.
 
-### `chat.update` — `{ name*, systemPrompt?, model? }`
-Mid-life re-pin. At least one field required. Model change validated like create.
+### `chat.update` — `{ name*, systemPrompt?, model?, timeoutMs? }`
+Mid-life re-pin. At least one field required. Model change validated like create. `timeoutMs`: number sets the session's per-hop gateway request timeout (ms); `null` resets to the config default.
 
 ### `chat.compact` — `{ name*, strategy*, keep? , upTo?, model? }`
 Caller-invoked compaction, three strategies:
@@ -195,7 +196,7 @@ Everything the compact endpoint exposes — including `chat.*` (recursion), `mem
 
 Config knob `agents.chat.toolsExclude: []` — array of `agent.action` prefixes removed from the advertised catalog (e.g. `["chat.", "forge."]` to defuse recursion for a given deployment). Empty default = advertise all (owner explicitly wants recursion available).
 
-Stall guards from the runner, adapted: request-level **TTFT abort 120 s**, **stall abort** n/a (non-streaming — no stream to stall; the whole-response timeout is the TTFT timer). One in-flight gateway call per session run (§2.3 queue).
+Stall guards from the runner, adapted: request-level **TTFT abort 120 s** (session `timeoutMs` option overrides; see §6 chat.create/chat.update), **stall abort** n/a (non-streaming — no stream to stall; the whole-response timeout is the TTFT timer). One in-flight gateway call per session run (§2.3 queue).
 
 ## 6. Failure semantics (fail fast & loud)
 

@@ -80,6 +80,15 @@ function requireString(args, field) {
     return v;
 }
 
+// Session-scoped per-hop gateway request timeout (ms). null = config default.
+function validateTimeoutMs(v) {
+    if (v === undefined || v === null) return v;
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+        throw new Error('chat: timeoutMs must be a positive number of milliseconds (per-hop gateway request timeout), or null to reset to the config default');
+    }
+    return v;
+}
+
 function toMcp(data) {
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
@@ -341,13 +350,13 @@ function isConnectionFailure(err) {
     return /fetch failed|ECONNREFUSED|ECONNRESET|EPIPE|Gateway connection failed/i.test(err?.message || '');
 }
 
-async function chatWithTransientRetry({ model, wire, name, hops }) {
+async function chatWithTransientRetry({ model, wire, name, hops, timeoutMs }) {
     const call = () => GATEWAY.chat({
         model,
         messages: wire,
         stream: false,
         tools: [dispatcherDef()],
-        timeoutMs: CONFIG.requestTimeoutMs,
+        timeoutMs: timeoutMs ?? CONFIG.requestTimeoutMs,
         clientSession: name
     });
     try {
@@ -403,7 +412,7 @@ async function runSend({ name, message, model: modelOverride, ctx, chain }) {
             const waiting = `hop ${hops}: waiting for gateway`;
             pr.set(waiting, Math.min(95, hops * 5), true);
             updateActivity(name, waiting, { phase: 'waiting-gateway', hops, detail: null, phaseSince: now() });
-            const res = await chatWithTransientRetry({ model, wire, name, hops });
+            const res = await chatWithTransientRetry({ model, wire, name, hops, timeoutMs: session.timeoutMs });
             mergeUsage(usageTotal, res.usage);
             updateActivity(name, null, { tokensSoFar: usageTotal.total_tokens });
 
@@ -495,18 +504,20 @@ export async function chat_create(args) {
     const model = requireString(args, 'model');
     if (!NAME_RE.test(name)) throw new Error(`chat_create: invalid name '${name}' — must match [a-z0-9][a-z0-9._-]*`);
     if (args.systemPrompt !== undefined && typeof args.systemPrompt !== 'string') throw new Error('chat_create: systemPrompt must be a string');
+    const timeoutMs = validateTimeoutMs(args.timeoutMs) ?? null;
     if (fs.existsSync(sessionPath(name))) throw new Error(`chat_create: session '${name}' already exists`);
     await assertKnownModel(model);
     const session = {
         name,
         model,
         systemPrompt: args.systemPrompt ?? null,
+        timeoutMs,
         createdAt: now(),
         updatedAt: now(),
         messages: []
     };
     persist(session);
-    return toMcp({ ok: true, name, model, messageCount: 0, historyBytes: 0 });
+    return toMcp({ ok: true, name, model, timeoutMs, messageCount: 0, historyBytes: 0 });
 }
 
 export async function chat_send(args, ctx) {
@@ -599,6 +610,7 @@ export async function chat_list() {
         .map(s => ({
             name: s.name,
             model: s.model,
+            timeoutMs: s.timeoutMs ?? null,
             messageCount: s.messages.length,
             historyBytes: historyBytes(s.messages),
             createdAt: s.createdAt,
@@ -646,8 +658,8 @@ export async function chat_history(args) {
 export async function chat_update(args) {
     const name = requireString(args, 'name');
     const session = loadSession(name);
-    if (args.systemPrompt === undefined && args.model === undefined) {
-        throw new Error('chat_update: at least one of systemPrompt or model is required');
+    if (args.systemPrompt === undefined && args.model === undefined && args.timeoutMs === undefined) {
+        throw new Error('chat_update: at least one of systemPrompt, model, or timeoutMs is required');
     }
     if (args.systemPrompt !== undefined) {
         if (typeof args.systemPrompt !== 'string') throw new Error('chat_update: systemPrompt must be a string');
@@ -658,8 +670,11 @@ export async function chat_update(args) {
         await assertKnownModel(args.model);
         session.model = args.model;
     }
+    if (args.timeoutMs !== undefined) {
+        session.timeoutMs = validateTimeoutMs(args.timeoutMs);
+    }
     persist(session);
-    return toMcp({ ok: true, name, model: session.model, messageCount: session.messages.length, historyBytes: historyBytes(session.messages) });
+    return toMcp({ ok: true, name, model: session.model, timeoutMs: session.timeoutMs ?? null, messageCount: session.messages.length, historyBytes: historyBytes(session.messages) });
 }
 
 export async function chat_compact(args, ctx) {
