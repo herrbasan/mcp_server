@@ -48,6 +48,7 @@ nesting level.
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 | **notepad** | `notepad.add/list/get/update/complete/remove/promote/attach/snapshot` | Deliberate state — ideas, tasks with step checklists, dates, contacts, bucket attachments. `snapshot` = Today view; REST at `/notepad/*` for manual edits and dashboard components. | [notepad.md](notepad.md) |
+| **usage-monitor** | `usage_scan`, `usage_status` | LLM subscription usage collector: 8 providers (browser sessions + direct APIs) folded into one normalized snapshot on a 10-min timer, served as `/usage-limits.json` for the localweb2 card. | [usage-monitor.md](usage-monitor.md) |
 
 ## Cross-cutting dependencies
 

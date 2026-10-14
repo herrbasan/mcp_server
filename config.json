@@ -18,7 +18,8 @@
     },
     "usage-monitor": {
       "intervalMinutes": 10,
-      "autoStart": true
+      "autoStart": true,
+      "geminiAccount": "david@raum.com"
     },
     "memory": {
       "dbPath": "data/memories/data.jsonl",

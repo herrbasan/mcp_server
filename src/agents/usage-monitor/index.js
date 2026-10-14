@@ -4,13 +4,15 @@
 //   { updatedAt, providers: { <name>: { windows: [...] } }, stale: [...] }
 // Window kinds: "5h" | "weekly" | "tpm-day" | "monthly" | "pool".
 //
-// Extraction routes (all verified 2026-09-26, see docs/usage-monitor.md):
+// Extraction routes (see documentation/tools/usage-monitor.md):
 //   z.ai      page-context fetch, Bearer from localStorage
-//   gemini    DOM scrape (rate-limit table w/ range forced to 1 Day + spend page)
+//   gemini    DOM scrape (rate-limit table w/ range forced to 1 Day + spend page).
+//             Needs the profile signed in as an account that has an AI Studio
+//             project — the table renders per project, not per account.
 //   kimi      page-context RPC, Bearer from localStorage
 //   minimax   page-context fetch, cookies
 //   openai    DOM scrape (span matching "$X / $Y")
-//   anthropic page-context fetch (cookies) + DOM scrape for the spend line
+//   anthropic console JSON (current_spend / spend_limits / prepaid credits)
 //   deepseek  direct API with gateway-config key
 //   openrouter direct API with gateway-config key
 //
@@ -79,6 +81,20 @@ async function getBrowser() {
     });
     launchedByUs = true;
     browser.on('disconnected', () => { browser = null; launchedByUs = false; });
+    // The shared profile accumulates tabs, and a browser we launched owns all of
+    // them — nothing else can be using it (the profile lock guarantees that). The
+    // browser agent sweeps only its own visible launches, so a pile restored from
+    // the profile's session state rode along on every headless cycle: 62 tabs,
+    // 53 of them about:blank, on 2026-10-14. Only sweep what we launched; an
+    // attached browser may be Dave's, or may be running a live scraper page.
+    const pages = await browser.pages();
+    const keeper = pages.find(p => p.url() === 'about:blank') || pages[0];
+    let closed = 0;
+    for (const page of pages) {
+        if (page === keeper) continue;
+        try { await page.close(); closed++; } catch { /* already gone */ }
+    }
+    if (closed) logger.info(`[UsageMonitor] swept ${closed} leftover tab(s) restored on the shared profile`, null, 'Usage');
     logger.info('[UsageMonitor] Launched headless Chrome on shared profile', null, 'Usage');
     return browser;
 }
@@ -113,6 +129,11 @@ async function debugCapture(page, name, err) {
         try { url = page.url(); text = (await page.evaluate(() => (document.body?.innerText || '').slice(0, 3000))) || ''; } catch { /* page gone */ }
         fs.writeFileSync(path.join(dir, `${name}-${stamp}.txt`), `url: ${url}\nerror: ${err.message}\n\n${text}`, 'utf8');
         await page.screenshot({ path: path.join(dir, `${name}-${stamp}.png`) }).catch(() => {});
+        // One capture per failed provider per cycle, and nothing ever pruned
+        // them: 1694 files / 21.5 MB had accumulated by 2026-10-14. Keep the
+        // newest 30 (5 h of 10-min cycles) — the stamp sorts chronologically.
+        const mine = fs.readdirSync(dir).filter(f => f.startsWith(`${name}-`)).sort().reverse();
+        for (const old of mine.slice(30)) fs.unlinkSync(path.join(dir, old));
     } catch { /* never mask the real error */ }
 }
 
@@ -159,10 +180,161 @@ function parseNum(s) {
     return m[2] ? n * K_M[m[2].toUpperCase()] : n;
 }
 
+// ── gemini session ──────────────────────────────────────────────────────
+// AI Studio answers every /u/N with the account Google holds as the signed-in
+// default, so the index selects nothing while a single account is signed in
+// (measured 2026-10-14: /u/0 … /u/3 all resolved to /u/0 and the same email).
+// Which account owns the Gemini project is a fact about accounts, not URLs —
+// so select by reading the account the page actually shows, and only walk the
+// indices when the first one is not the account we want.
+const GEMINI_INDEXES = [0, 1, 2, 3];
+let geminiAccount = null;     // agents.usage-monitor.geminiAccount
+let signInAttempted = false;  // one credential sign-in per process, never a retry loop
+
+function geminiPassword() { return process.env.USAGE_MONITOR_GEMINI_PASSWORD || null; }
+
+async function geminiProbe(page, index) {
+    await page.goto(`https://aistudio.google.com/u/${index}/rate-limit`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (page.url().includes('accounts.google.com')) {
+        // Not just "signed out": Google's account chooser names every account
+        // this device remembers and whether it is live (measured 2026-10-14 —
+        // david@raum.com listed, "Signed out"). That distinction is the whole
+        // diagnosis, so carry it.
+        const chooser = await page.evaluate(() => ({
+            chooser: /Choose an account/i.test(document.body.innerText),
+            accounts: [...new Set((document.body.innerText.match(/[\w.+-]+@[\w.-]+\.\w+/g) || []))],
+        })).catch(() => ({ chooser: false, accounts: [] }));
+        return { index, state: chooser.chooser ? 'chooser' : 'signin', accounts: chooser.accounts };
+    }
+    // The shell is server-rendered but the account and the table are not: read
+    // them only once the app has painted, or "no account found" and "table
+    // missing" are just statements about page load timing.
+    await page.waitForFunction(() => /Time Range|No Cloud Projects Available/.test(document.body.innerText), { timeout: 20000 }).catch(() => {});
+    const page1 = await page.evaluate(() => ({
+        account: (document.body.innerText.match(/[\w.+-]+@[\w.-]+\.\w+/) || [null])[0],
+        hasTable: !!document.querySelector('table'),
+        noProject: /No Cloud Projects Available/i.test(document.body.innerText),
+    }));
+    return { index, state: 'ok', ...page1 };
+}
+
+async function findGeminiAccount(page, seen) {
+    const remembered = new Set();
+    for (const index of GEMINI_INDEXES) {
+        const probe = await geminiProbe(page, index);
+        seen.push(probe.state === 'ok' ? `/u/${index}: ${probe.account || 'no account'}`
+            : probe.state === 'chooser' ? `/u/${index}: account chooser (${(probe.accounts || []).join(', ') || 'no accounts'})`
+            : `/u/${index}: signed out`);
+        if (probe.state === 'chooser') (probe.accounts || []).forEach(a => remembered.add(a));
+        if (probe.state !== 'ok') continue;
+        if (!geminiAccount || probe.account === geminiAccount) return { probe, remembered };
+    }
+    return { probe: null, remembered };
+}
+
+// is-same-host test, never a substring of the whole URL: Google's sign-in pages
+// carry continue=https://aistudio.google.com/… so /aistudio\.google\.com/.test(url)
+// answers true for a password prompt sitting on accounts.google.com.
+function onAistudio(url) {
+    try { return new URL(url).hostname === 'aistudio.google.com'; } catch { return false; }
+}
+
+// Driven only when the configured account is absent AND a password is
+// configured. Google decides whether it will accept an automated sign-in at
+// all: a 2FA/device challenge, a captcha, or "this browser may not be secure"
+// all end here as a loud, named failure rather than a retry — the visible
+// path (scripts/gemini-login.mjs) is the one that always works.
+//
+// Entry point matters: the plain sign-in URL redirects straight to
+// myaccount.google.com when another account holds the session (measured
+// 2026-10-14), so nothing can be typed. AddSession shows the account chooser
+// instead, which already lists david@raum.com — remembered, "Signed out" —
+// and one click leads to the password step. That is the human flow, and the
+// only one Google offers.
+async function signInGoogle(page, email, password) {
+    signInAttempted = true;
+    logger.warn(`[UsageMonitor] gemini: ${email} is not signed in — attempting credential sign-in`, null, 'Usage');
+    await page.goto('https://accounts.google.com/AddSession?hl=en&continue=' + encodeURIComponent('https://aistudio.google.com/u/0/rate-limit'), { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+    let emailField = await page.waitForSelector('input[type="email"]', { timeout: 8000 }).catch(() => null);
+    if (!emailField) {
+        const picked = await page.evaluate((wanted) => {
+            const hits = [...document.querySelectorAll('div, li, button')].filter(e => (e.textContent || '').includes(wanted));
+            // innermost node that carries the address, so the click lands on the row
+            const hit = hits[hits.length - 1];
+            if (!hit) return false;
+            (hit.closest('[data-authuser]') || hit).click();
+            return true;
+        }, email).catch(() => false);
+        if (!picked) {
+            const shown = await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 160)).catch(() => '');
+            throw new Error(`gemini: Google offered no account matching ${email} (${page.url().slice(0, 90)}) — page reads: ${shown}`);
+        }
+        emailField = await page.waitForSelector('input[type="email"]', { timeout: 15000 }).catch(() => null);
+        if (!emailField) {
+            // The remembered session was still valid — no password needed.
+            if (onAistudio(page.url())) return;
+        }
+        if (!emailField) throw new Error(`gemini: picking ${email} in the account chooser led somewhere unexpected (${page.url().slice(0, 100)}) — sign in visibly with scripts/gemini-login.mjs`);
+    }
+    if (emailField) {
+        await emailField.type(email, { delay: 25 });
+        await page.click('#identifierNext');
+    }
+
+    const passField = await page.waitForSelector('input[type="password"]', { timeout: 20000 }).catch(() => null);
+    if (!passField) {
+        if (onAistudio(page.url())) return;
+        throw new Error(`gemini: no password step for ${email} — Google is asking for something else (2-Step Verification / "verify it is you"); sign in visibly with scripts/gemini-login.mjs`);
+    }
+    await passField.type(password, { delay: 25 });
+    await page.click('#passwordNext');
+    await page.waitForFunction(() => !/accounts\.google\.com\/v3\/signin/.test(location.href), { timeout: 30000 }).catch(() => {});
+    const body = await page.evaluate(() => document.body.innerText.slice(0, 400)).catch(() => '');
+    if (/Wrong password|find your Google Account|browser or app may not be secure/i.test(body)) {
+        throw new Error('gemini: Google refused the credentials — "USAGE_MONITOR_GEMINI_PASSWORD" wrong, or automation refused (' + body.replace(/\s+/g, ' ').slice(0, 120) + ')');
+    }
+    logger.info(`[UsageMonitor] gemini: sign-in submitted for ${email}`, null, 'Usage');
+}
+
+async function geminiSession(page) {
+    const seen = [];
+    const { probe: found, remembered } = await findGeminiAccount(page, seen);
+    if (found) return found;
+    if (geminiAccount && geminiPassword() && !signInAttempted) {
+        await signInGoogle(page, geminiAccount, geminiPassword());
+        const after = await findGeminiAccount(page, []);
+        if (after.probe) return after.probe;
+    }
+    const knowsAccount = geminiAccount && remembered.has(geminiAccount);
+    const remedy = !geminiAccount
+        ? 'set agents.usage-monitor.geminiAccount in config.json'
+        : knowsAccount
+            ? `Google remembers ${geminiAccount} on this device but it is signed out — one interactive sign-in (scripts/gemini-login.mjs) restores it, or set USAGE_MONITOR_GEMINI_PASSWORD in .env for the automated path`
+            : signInAttempted
+                ? 'the credential sign-in already ran this process — the visible path is scripts/gemini-login.mjs'
+                : 'sign in once via scripts/gemini-login.mjs, or set USAGE_MONITOR_GEMINI_PASSWORD in .env for the automated path';
+    throw new Error(`gemini: ${geminiAccount || 'the configured account'} is not signed in in the shared profile (${seen.join('; ')}) — ${remedy}`);
+}
+
 async function extractGemini(page) {
     // 1) rate-limit table with range forced to "1 Day"
-    await page.goto('https://aistudio.google.com/u/1/rate-limit', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForSelector('table', { timeout: 25000 });
+    const target = await geminiSession(page);
+    const base = `https://aistudio.google.com/u/${target.index}`;
+    // A bare "Waiting for selector `table` failed" says nothing about why; the
+    // page does. The table renders per *project*, and an account with no
+    // imported AI Studio project renders an empty state instead — 43 cycles ran
+    // blind against that on 2026-10-13/14.
+    const tableReady = target.hasTable || await page.waitForSelector('table', { timeout: 25000 }).then(() => true).catch(() => false);
+    if (!tableReady) {
+        const state = await page.evaluate(() => ({
+            account: (document.body.innerText.match(/[\w.+-]+@[\w.-]+\.\w+/) || ['unknown account'])[0],
+            noProject: /No Cloud Projects Available/i.test(document.body.innerText),
+        }));
+        throw new Error(state.noProject
+            ? `gemini: no AI Studio project for ${state.account} — the page shows "No Cloud Projects Available", so no rate-limit table can render. Import a project into that account, or point geminiAccount at the one that owns the Gemini API project (config.json), then re-run.`
+            : `gemini: rate-limit table never rendered (url ${page.url().slice(0, 110)}, account ${state.account})`);
+    }
     // force the time range (default 28 Days shows 28-day peaks — misleading)
     const switched = await evalOn(page, `
         const sel = [...document.querySelectorAll('mat-select')].find(s => /Last Hour|1 Day|7 Days|28 Days/i.test(s.textContent || ''));
@@ -179,9 +351,17 @@ async function extractGemini(page) {
     const tpmRows = await evalOn(page, `
         const t = document.querySelector('table');
         if (!t) throw new Error('gemini: no rate table');
+        // Header-driven columns — the dashboard reordered its table once
+        // (2026-10-14: Model, Category, RPM, TPM, RPD after the project
+        // column appeared). Hardcoded indices would silently read the
+        // wrong column on the next reorder.
+        const heads = [...t.querySelectorAll('thead th')].map(th => (th.textContent || '').trim().toLowerCase());
+        const col = (name) => heads.findIndex(h => h.startsWith(name));
+        const cModel = col('model'), cRpm = col('rpm'), cTpm = col('tpm'), cRpd = col('rpd');
+        if (cModel < 0 || cTpm < 0) throw new Error('gemini: unexpected table columns: ' + heads.join('|'));
         const rows = [...t.querySelectorAll('tbody tr')].map(tr => [...tr.querySelectorAll('td')].map(td => (td.textContent || '').trim()));
         if (!rows.length) throw new Error('gemini: empty rate table');
-        return rows.map(r => ({ status: r[0], model: r[1], rpm: r[3], tpm: r[4], rpd: r[5] }));
+        return rows.map(r => ({ status: r[cModel - 1] ?? '', model: r[cModel], rpm: cRpm >= 0 ? r[cRpm] : '', tpm: r[cTpm], rpd: cRpd >= 0 ? r[cRpd] : '' }));
     `);
     const tpmWindows = [];
     for (const row of tpmRows) {
@@ -198,9 +378,13 @@ async function extractGemini(page) {
     // primary chip = the model closest to its TPM limit today (what Dave trips);
     // full per-model detail rides along in `models`
     const top = tpmWindows.reduce((a, b) => (b.usedPct > a.usedPct ? b : a));
-    // 2) spend cap
-    await page.goto('https://aistudio.google.com/u/1/spend', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForSelector('span.usage', { timeout: 25000 });
+    // 2) spend cap — same account, so the same index
+    await page.goto(`${base}/spend`, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    if (page.url().includes('accounts.google.com')) {
+        throw new Error('gemini: Google session died between the rate-limit and spend pages — landed on ' + page.url().slice(0, 120));
+    }
+    const spendReady = await page.waitForSelector('span.usage', { timeout: 25000 }).then(() => true).catch(() => false);
+    if (!spendReady) throw new Error(`gemini: spend spans never rendered (url ${page.url().slice(0, 110)})`);
     const spend = await evalOn(page, `
         const u = document.querySelector('span.usage');
         const l = document.querySelector('span.limit');
@@ -352,30 +536,47 @@ async function extractOpenai(page) {
 }
 
 const ANTHROPIC_ORG = '1880fff6-d300-41e2-b981-7d13e4869b58';
+
+// The console UI is localized (the shared profile renders it in German), so the
+// DOM scrape read "17,35 $" where the English regexes expected "$17.35" — and
+// the class `text-primary text-3xl` is shared by the credits badge and the
+// spend metric, so querySelector returned the credit *balance* as the month's
+// spend (the dashboard read 35% used while the console said 1%). Both faults
+// vanish against the JSON the dashboard itself consumes: same numbers, in
+// cents, locale-free, with an ISO reset timestamp instead of a translated word.
 async function extractAnthropic(page) {
-    await page.goto('https://platform.claude.com/dashboard', { waitUntil: 'networkidle2', timeout: 60000 });
-    const res = await evalOn(page, `
-        // wait for the spend widget to hydrate
-        for (let i = 0; i < 30; i++) {
-            const el = document.querySelector('span.text-primary.text-3xl');
-            if (el && /^\\$[\\d.]+$/.test(el.textContent.trim())) break;
-            await new Promise(r => setTimeout(r, 1000));
-        }
-        const base = 'https://platform.claude.com/api/organizations/${ANTHROPIC_ORG}';
-        const credits = await (await fetch(base + '/prepaid/credits', { credentials: 'include' })).json();
-        const limits = await (await fetch(base + '/spend_limits', { credentials: 'include' })).json();
-        const spendEl = document.querySelector('span.text-primary.text-3xl');
-        const limitEl = document.querySelector('span.text-muted.text-body');
-        if (!spendEl || !limitEl) throw new Error('anthropic: dashboard spans missing after 30s (url: ' + location.pathname + ')');
-        const mSpend = spendEl.textContent.trim().match(/^\\$([\\d.]+)$/);
-        const mLimit = limitEl.textContent.trim().match(/of \\$([\\d.]+) limit \\u00b7 resets (\\w+ \\d+)/);
-        if (!mSpend) throw new Error('anthropic: spend unparseable: "' + spendEl.textContent.trim() + '"');
-        if (!mLimit) throw new Error('anthropic: limit line unparseable: "' + limitEl.textContent.trim() + '"');
-        return { credits, limits, spend: Number(mSpend[1]), limit: Number(mLimit[1]), resets: mLimit[2] };
-    `);
-    const pause = (res.limits.spend_limits || []).find(l => l.limit_action === 'notify_and_pause');
+    await page.goto('https://platform.claude.com/dashboard', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const base = `https://platform.claude.com/api/organizations/${ANTHROPIC_ORG}`;
+    let res;
+    try {
+        res = await evalOn(page, `
+            const get = async (p) => {
+                const r = await fetch('${base}' + p, { credentials: 'include' });
+                const t = await r.text();
+                if (r.status !== 200) throw new Error(p + ' HTTP ' + r.status + ' — ' + t.slice(0, 120));
+                try { return JSON.parse(t); } catch { throw new Error(p + ' returned non-JSON: ' + t.slice(0, 120)); }
+            };
+            return { spend: await get('/current_spend'), limits: await get('/spend_limits'), credits: await get('/prepaid/credits') };
+        `);
+    } catch (err) {
+        throw new Error('anthropic: ' + String(err.message).replace(/^Evaluation failed: /, ''));
+    }
+    if (typeof res.spend.amount !== 'number') throw new Error('anthropic: current_spend.amount missing');
+    if (typeof res.spend.resets_at !== 'string') throw new Error('anthropic: current_spend.resets_at missing');
+    if (typeof res.credits.amount !== 'number') throw new Error('anthropic: prepaid credits amount missing');
+    // The console's "of $X limit" line is the self-selected limit; the org
+    // ceiling (enforced_limit_usd, in cents) is the fallback when none is set.
+    const configured = res.limits.spend_limits || [];
+    const pause = configured.find(l => l.limit_action === 'notify_and_pause');
+    const chosen = pause || configured.find(l => l.limit_action === 'notify_only');
+    const limitCents = chosen ? chosen.limit_usd : res.limits.enforced_limit_usd;
+    if (typeof limitCents !== 'number' || limitCents <= 0) {
+        throw new Error(`anthropic: no usable spend limit (configured ${configured.length}, enforced ${res.limits.enforced_limit_usd})`);
+    }
+    const used = res.spend.amount / 100, limit = limitCents / 100;
     const windows = [
-        { kind: 'monthly', used: res.spend, limit: res.limit, unit: 'USD', usedPct: Math.round((res.spend / res.limit) * 100), resetAt: res.resets, note: 'spend this month', primary: true },
+        { kind: 'monthly', used, limit, unit: 'USD', usedPct: Math.round((used / limit) * 100), resetAt: res.spend.resets_at,
+          note: chosen ? 'spend this month' : 'spend this month vs org ceiling', primary: true },
         { kind: 'pool', remaining: res.credits.amount / 100, unit: 'USD', note: 'prepaid credits' }
     ];
     if (pause) windows[0].hardLimit = pause.limit_usd / 100;
@@ -522,13 +723,14 @@ export async function init(context) {
     const conf = context.config?.agents?.['usage-monitor'] || {};
     const intervalMin = conf.intervalMinutes ?? DEFAULT_INTERVAL_MIN;
     const autoStart = conf.autoStart !== false;
+    geminiAccount = conf.geminiAccount || process.env.USAGE_MONITOR_GEMINI_ACCOUNT || null;
 
     if (autoStart) {
         // first run shortly after boot, then on the timer
         setTimeout(() => { runCycle().catch(e => logger.error('[UsageMonitor] initial cycle failed', e, null, 'Usage')); }, 15000);
         scheduler = setInterval(() => { runCycle().catch(e => logger.error('[UsageMonitor] cycle failed', e, null, 'Usage')); }, intervalMin * 60 * 1000);
         nextRunAt = new Date(Date.now() + intervalMin * 60 * 1000).toISOString();
-        logger.info(`[UsageMonitor] started — every ${intervalMin} min, output ${OUT_PATH}`, null, 'Usage');
+        logger.info(`[UsageMonitor] started — every ${intervalMin} min, output ${OUT_PATH}, gemini account ${geminiAccount || 'unset'}`, null, 'Usage');
     }
     return {};
 }
