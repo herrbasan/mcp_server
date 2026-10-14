@@ -31,6 +31,25 @@ Puppeteer-based headless Chrome with persistent sessions. 15 tools under the
 - **Idle timers**: browser closes after 5 min idle (only when zero sessions);
   individual sessions close after 10 min idle. Visible (`visible: true`)
   sessions close the whole browser on expiry.
+- **Launch-time tab sweep** (`closeLeftoverTabs`). A fresh launch closes every
+  page target it did not create, then keeps one blank tab (closing the last tab
+  quits a headed Chrome). Two leaks make this necessary: a profile whose
+  `exit_type` is `Crashed` hands its whole tab pile back on the next launch, and
+  pages opened over a *different* CDP connection in this process — the usage
+  monitor attaches separately — never reach `activePages` or the
+  `targetcreated` log (2026-10-14: 43 page targets destroyed at once, only 20
+  ever logged as created). Unswept, the pile compounds: a visible window opened
+  with ~50 stale tabs. The sweep runs **only on launch** — when the agent
+  merely connects, the pages belong to whoever is already running. Idle shutdown
+  sweeps before `browser.close()` for the same reason: Chrome records open tabs
+  as its last session.
+- **Sweeper's boundary — tabs, never the profile.** A page holds no session
+  state; logins and tokens live in the profile's cookie/local-storage stores, so
+  sweeping tabs cannot sign anything out. Deleting profile *files* can and did:
+  wiping the profile's Google cookies (2026-10-13) signed it out of every Google
+  service, which made both search engines serve bot walls and broke
+  `research.topic` until the profile was signed back in. Clean up tabs; never
+  clean up `data/chrome-profile`.
 - Pages auto-recreate on next use if closed; viewport restored.
 - Retry helper: 3 attempts, exponential backoff (500 ms base); hard errors
   (unknown session, navigation failed) short-circuit. Per-tool overrides:
@@ -108,7 +127,11 @@ removed from the enum 2026-09-22; the handler never supported it),
 Pipeline (streaming-research.js):
 
 1. **Search**: Google + DuckDuckGo in parallel (15 s timeout each, browser-
-   driven form fill + result extraction), allSettled, URLs deduped.
+   driven form fill + result extraction), allSettled, URLs deduped. Each adapter
+   `close()`s its page in a `finally` — results are plain objects, so the page is
+   finished the moment extraction returns. Leaving them open leaked a tab per
+   search, and those pages were the bulk of the restored pile that grew into
+   ~50 stale tabs in the shared profile (2026-10-14).
 2. **Prioritize** heuristically: docs/api/reference URLs +100, StackOverflow
    questions +90, GitHub issues +85 / discussions +80, github.blog +70,
    dev.to +50, Wikipedia +45, Medium +40, query words in URL +20 each, app-

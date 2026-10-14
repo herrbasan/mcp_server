@@ -57,7 +57,7 @@ export async function searchGoogle(query, browserServer, timeoutMs = 15000) {
   }
   
   const pageHandle = await browserServer.getPage();
-  const { page, markUsed } = pageHandle;
+  const { page, markUsed, close } = pageHandle;
   const startTime = Date.now();
   
   try {
@@ -79,7 +79,6 @@ export async function searchGoogle(query, browserServer, timeoutMs = 15000) {
     
     console.error(`[Google] Found ${results.length} results in ${Date.now() - startTime}ms`);
     
-    markUsed();
     return results;
     
   } catch (error) {
@@ -87,12 +86,16 @@ export async function searchGoogle(query, browserServer, timeoutMs = 15000) {
       const partial = await extractSearchResults(page);
       if (partial.length > 0) {
         console.error(`[Google] Partial results (${partial.length})`);
-        markUsed();
         return partial;
       }
     } catch {}
     
-    await page.close().catch(() => {});
     throw error;
+  } finally {
+    // The page's work is done once results are read — the results are plain
+    // objects. Leaving it open leaked a tab per search: the engine pages were
+    // the bulk of the pile that grew into ~50 restored tabs (2026-10-14).
+    markUsed();
+    await close();
   }
 }

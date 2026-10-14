@@ -36,7 +36,7 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
   }
   
   const pageHandle = await browserServer.getPage();
-  const { page, markUsed } = pageHandle;
+  const { page, markUsed, close } = pageHandle;
   const startTime = Date.now();
   
   try {
@@ -53,7 +53,6 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
     
     console.error(`[DuckDuckGo] Found ${results.length} results in ${Date.now() - startTime}ms`);
     
-    markUsed();
     return results;
     
   } catch (error) {
@@ -63,12 +62,15 @@ export async function searchDuckDuckGo(query, browserServer, timeoutMs = 15000) 
       const partial = await extractSearchResults(page);
       if (partial.length > 0) {
         console.error(`[DuckDuckGo] Partial results (${partial.length})`);
-        markUsed();
         return partial;
       }
     } catch {}
     
-    await page.close().catch(() => {});
     throw error;
+  } finally {
+    // Same leak as the Google adapter: a page per search, never closed, until
+    // the pile was restored into every new window (2026-10-14).
+    markUsed();
+    await close();
   }
 }

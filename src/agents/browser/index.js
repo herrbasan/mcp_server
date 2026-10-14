@@ -96,6 +96,51 @@ async function getBrowser() {
     return browser;
 }
 
+// Close page targets this agent does not own. Two leak paths put tabs in the
+// shared profile that nothing else here can reach: a crashed profile hands its
+// whole tab pile back on the next launch, and pages opened over a *different*
+// CDP connection in this process (the usage monitor attaches separately) never
+// reach activePages or the targetcreated log — 2026-10-14, 43 page targets were
+// destroyed at once while only 20 had ever been logged as created. Left alone
+// the pile compounds: a window opened with ~50 stale tabs, several of them
+// search pages leaked from earlier research runs.
+//
+// Tabs only. A page carries no session state worth keeping — logins and tokens
+// live in the profile's cookie/local-storage stores — so closing tabs cannot
+// sign anything out. Profile *files* are the opposite: wiping the profile's
+// Google cookies on 2026-10-13 signed the profile out and broke every search
+// until it was signed back in. Sweep tabs; never sweep the profile.
+async function closeLeftoverTabs(b, reason) {
+    let pages;
+    try {
+        pages = await b.pages();
+    } catch (err) {
+        log(`[sweep:${reason}] cannot enumerate pages: ${err.message}`);
+        return;
+    }
+
+    // Closing the last tab quits a headed Chrome, which would take the window
+    // (and the session about to be created in it) down with the sweep. One page
+    // always survives; a blank one is preferred so a launcher window does not
+    // hand back a restored research or login page.
+    const keeper = pages.find(p => p.url() === 'about:blank') || pages[0];
+
+    for (const page of pages) {
+        if (page === keeper) {
+            log(`[sweep:${reason}] kept one tab open: ${keeper?.url()}`);
+            continue;
+        }
+        if (activePages.has(page)) continue;
+        const url = page.url();
+        try {
+            await page.close();
+            log(`[sweep:${reason}] closed leftover tab: ${url}`);
+        } catch (err) {
+            log(`[sweep:${reason}] could not close ${url}: ${err.message}`);
+        }
+    }
+}
+
 async function initBrowser() {
     if (!browser) {
         const debugUrl = `http://localhost:${DEBUGGING_PORT}`;
@@ -164,6 +209,10 @@ async function initBrowser() {
 
                 log(`Browser launched successfully (PID: ${browser.process()?.pid})`);
                 browserOwnedByUs = true;
+
+                // Restored tabs are already open at this point — a fresh launch
+                // has no legitimate pages, so everything here is a leftover.
+                await closeLeftoverTabs(browser, 'launch');
             } catch (launchErr) {
                 log(`Failed to launch browser: ${launchErr.message}`);
                 throw launchErr;
@@ -187,6 +236,10 @@ function resetBrowserIdleTimer() {
             log(`Idle timeout (${BROWSER_IDLE_TIMEOUT}ms) reached, closing browser (no active sessions)`);
             try {
                 if (browserOwnedByUs) {
+                    // Close the tabs first. Chrome records open tabs as its last
+                    // session, and the next launch restores that pile — which is
+                    // how leak #1 above compounds instead of resetting.
+                    await closeLeftoverTabs(browser, 'idle');
                     await browser.close();
                     log('Browser closed due to idle timeout');
                 } else {
@@ -592,6 +645,9 @@ export async function browser_session_create(args, context) {
                 ]
             });
             log('Visible browser launched successfully');
+            // The window the user is about to look at: sweep the restored pile
+            // before it is on screen.
+            await closeLeftoverTabs(sessionBrowser, 'visible-launch');
         }
 
         page = await sessionBrowser.newPage();
