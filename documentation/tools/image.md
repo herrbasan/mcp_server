@@ -9,6 +9,13 @@ MCP storage. Added 2026-09-25.
 
 `{ prompt*, name?, references?, model?, size?, aspect_ratio?, seed?, extra_body? }`
 
+`size` (`"WxH"`) is forwarded upstream as exact pixel dimensions
+(`width`/`height` + `size`, never snapped or discarded) — 4K requests arrive
+as 4K and custom ratios (e.g. `1920x960`) keep their composition.
+`aspect_ratio` (`"W:H"`) is a composition preset validated against the
+model's declared ratios; when given alongside `size` the explicit resolution
+is preserved and the ratio rides along as metadata.
+
 Calls the gateway's `POST /v1/images/generations` (synchronous, model of
 `type: "image"` or the default `imagegen` task when `model` is omitted),
 then renders the result through nMedia into a fixed set of webp sizes, the
@@ -35,6 +42,28 @@ dimensions read from the IHDR chunk; any other source format gets one
 nMedia re-encode to PNG under the same shrink-only cap as `full`. In the
 sidecar's `files` map it appears under the `png` key alongside the size
 keys.
+
+**Vector output (OmniSVG, StarVector)** — the branch is chosen *per returned
+image*, sniffed from `media_type` and, failing that, the decoded bytes
+(`<svg` in the first 512 bytes), so a model returning a mixed candidate set
+gets both treatments. For an SVG the size-variant set and the PNG original are
+skipped — a vector rescales losslessly, and the PNG re-encode would replace the
+real deliverable with a raster copy. Instead:
+
+```
+images/<base>.svg           provider bytes, written verbatim (the deliverable)
+images/<base>_preview.webp  raster ≤1280, shrink-only
+images/<base>_thumb.webp    raster ≤180, shrink-only
+```
+
+`files.svg` reports the SVG's own intrinsic size (root `width`/`height`,
+falling back to `viewBox`) — not the preview raster's capped size. Verified
+2026-10-16 against nGen: `coolkid-omnisvg` returns `media_type: image/svg+xml`
+at a fixed 200×200 viewBox for icons (it ignores `width`/`height`);
+`coolkid-starvector` returns `editing: true` and takes the input image via
+`input_references`, emitting a viewBox matching the reference. Note omnisvg can
+return several candidates, some raster — the `n`-suffixes and per-image branch
+handle that. Neither nGen model exposes a `GET /v1/models` endpoint (404).
 
 **Returns:** text with model, cost and the per-size file list, plus an MCP
 image content block with the 1280px variant (`image/webp`) — the largest

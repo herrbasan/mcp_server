@@ -97,6 +97,26 @@ async function renderVariant(rawBase64, maxDimension) {
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+const SVG_SNIFF_LEN = 512;
+function isSvgPayload(mediaType, rawB64) {
+    if (typeof mediaType === 'string' && /svg/i.test(mediaType)) return true;
+    const head = Buffer.from(rawB64, 'base64').subarray(0, SVG_SNIFF_LEN).toString('utf8');
+    return /<svg[\s>]/i.test(head);
+}
+
+// Vector intrinsic size — the SVG's own width/height attrs, falling back to the
+// viewBox. A preview raster reports the nMedia cap, not the vector's size.
+function svgIntrinsicSize(buf) {
+    const root = buf.subarray(0, SVG_SNIFF_LEN).toString('utf8').match(/<svg[^>]*>/i)?.[0] ?? '';
+    const attr = name => root.match(new RegExp(`\\b${name}\\s*=\\s*["']([\\d.]+)`, 'i'))?.[1];
+    const w = Number(attr('width'));
+    const h = Number(attr('height'));
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return { width: w, height: h };
+    const vb = root.match(/viewBox\s*=\s*["']([^"']+)["']/i)?.[1]?.trim().split(/[\s,]+/).map(Number);
+    if (vb?.length === 4 && vb[2] > 0 && vb[3] > 0) return { width: vb[2], height: vb[3] };
+    return null;
+}
+
 // The lossless PNG original (#58): platforms with format allowlists (YouTube et al.) reject webp.
 // Providers normally return PNG — those bytes are written untouched (dimensions read from IHDR).
 // Any other source format gets one nMedia re-encode to PNG under the same shrink-only cap as full.
@@ -171,26 +191,48 @@ export async function image_generate(args) {
         if (!img.b64_json) throw new Error(`image_generate: image ${idx + 1} of ${images.length} has no b64_json`);
         const raw = stripDataUri(img.b64_json);
         const base = uniqueBase(images.length > 1 ? `${slug}-${idx + 1}` : slug);
-
-        const variants = await Promise.all(sizes.map(s => renderVariant(raw, s.maxDimension)));
-        const original = await renderOriginal(raw);
-
         const dir = path.join(storageRoot, imageDir);
         const files = {};
         let thumb = null;
-        for (let v = 0; v < sizes.length; v++) {
-            const fileName = `${base}_${sizes[v].name}.webp`;
-            const buf = Buffer.from(variants[v].base64, 'base64');
-            fs.writeFileSync(path.join(dir, fileName), buf);
-            const relPath = `${imageDir}/${fileName}`;
-            files[sizes[v].name] = { path: relPath, width: variants[v].width, height: variants[v].height, bytes: buf.length };
-            if (sizes[v].name === '1280') thumb = variants[v].base64; // largest derived variant — inline preview keeps the detail
-        }
+                let vector = false;
 
-        // PNG original — last entry in files so the text table lists it after the sizes
-        const pngName = `${base}_full.png`;
-        fs.writeFileSync(path.join(dir, pngName), original.buf);
-        files.png = { path: `${imageDir}/${pngName}`, width: original.width, height: original.height, bytes: original.buf.length };
+        if (isSvgPayload(img.media_type, raw)) {
+            // Vector output: the SVG source IS the deliverable — the size-variant
+            // set is meaningless (unbounded rescaling) and the PNG re-encode would
+            // replace the vector original with a raster copy. Persist the source
+            // verbatim plus two raster derivatives for inline display.
+            const svgBuf = Buffer.from(raw, 'base64');
+            const preview = await renderVariant(raw, 1280); // shrink-only → intrinsic size when smaller
+            const thumbRender = await renderVariant(raw, 180);
+            const previewName = `${base}_preview.webp`;
+            const thumbName = `${base}_thumb.webp`;
+            fs.writeFileSync(path.join(dir, `${base}.svg`), svgBuf);
+            fs.writeFileSync(path.join(dir, previewName), Buffer.from(preview.base64, 'base64'));
+            fs.writeFileSync(path.join(dir, thumbName), Buffer.from(thumbRender.base64, 'base64'));
+            const intrinsic = svgIntrinsicSize(svgBuf);
+                        files.svg = { path: `${imageDir}/${base}.svg`, width: intrinsic?.width ?? preview.width, height: intrinsic?.height ?? preview.height, bytes: svgBuf.length };
+                        files.preview = { path: `${imageDir}/${previewName}`, width: preview.width, height: preview.height, bytes: Buffer.from(preview.base64, 'base64').length };
+                        files.thumb = { path: `${imageDir}/${thumbName}`, width: thumbRender.width, height: thumbRender.height, bytes: Buffer.from(thumbRender.base64, 'base64').length };
+                        thumb = preview.base64;
+                        vector = true;
+        } else {
+            const variants = await Promise.all(sizes.map(s => renderVariant(raw, s.maxDimension)));
+            const original = await renderOriginal(raw);
+
+            for (let v = 0; v < sizes.length; v++) {
+                const fileName = `${base}_${sizes[v].name}.webp`;
+                const buf = Buffer.from(variants[v].base64, 'base64');
+                fs.writeFileSync(path.join(dir, fileName), buf);
+                const relPath = `${imageDir}/${fileName}`;
+                files[sizes[v].name] = { path: relPath, width: variants[v].width, height: variants[v].height, bytes: buf.length };
+                if (sizes[v].name === '1280') thumb = variants[v].base64; // largest derived variant — inline preview keeps the detail
+            }
+
+            // PNG original — last entry in files so the text table lists it after the sizes
+            const pngName = `${base}_full.png`;
+            fs.writeFileSync(path.join(dir, pngName), original.buf);
+            files.png = { path: `${imageDir}/${pngName}`, width: original.width, height: original.height, bytes: original.buf.length };
+        }
 
         const sidecar = {
             name: base,
@@ -213,8 +255,8 @@ export async function image_generate(args) {
         const sidecarName = `${base}.json`;
         fs.writeFileSync(path.join(dir, sidecarName), JSON.stringify(sidecar, null, 2));
 
-        outputs.push({ base, sidecar: `${imageDir}/${sidecarName}`, files, thumb });
-        logger.info(`[image] Wrote ${base} (${sizes.length} webp sizes + png original + sidecar)`, null, 'Image');
+        outputs.push({ base, sidecar: `${imageDir}/${sidecarName}`, files, thumb, vector });
+                logger.info(`[image] Wrote ${base} (${vector ? 'svg source + preview/thumb raster' : `${sizes.length} webp sizes + png original`} + sidecar)`, null, 'Image');
     }
 
     // 3. Result: text file list + inline thumbnail of the first image
@@ -226,7 +268,13 @@ export async function image_generate(args) {
     });
     const model = gen.model ?? args.model ?? '(gateway default)';
     const cost = gen.usage?.cost != null ? ` · cost ${gen.usage.cost}` : '';
-    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\nCopy whichever sizes you need from storage (images/) — use the _full.png original for platforms that reject webp (YouTube et al.). Full prompt, parameters, usage and lineage are in the .json sidecar.`;
+    const vectors = outputs.filter(o => o.vector).length;
+        const guidance = vectors === outputs.length
+        ? 'The .svg is the source of truth — it scales to any size losslessly, so use it wherever the target accepts vectors. The _preview/_thumb webp files are rasters of it for display only (regenerate them at any size with nMedia instead of rescaling these).'
+            : vectors === 0
+                ? 'Copy whichever sizes you need from storage (images/) — use the _full.png original for platforms that reject webp (YouTube et al.).'
+                : `Mixed output: ${vectors} vector and ${outputs.length - vectors} raster image${outputs.length - vectors > 1 ? 's' : ''}. The .svg files are losslessly scalable sources; the raster sets carry the webp sizes plus a _full.png original (for platforms that reject webp, e.g. YouTube).`;
+    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\n${guidance} Full prompt, parameters, usage and lineage are in the .json sidecar.`;
 
     const content = [{ type: 'text', text }];
     if (outputs[0].thumb) {

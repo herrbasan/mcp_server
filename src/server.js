@@ -718,12 +718,18 @@ MCP storage under images/ as webp in five sizes (full, 1920, 1280, 720,
 that reject webp, e.g. YouTube) and a .json sidecar with prompt, model,
 usage/cost and lineage. The caller copies out whichever sizes it needs.
 
+Vector models (OmniSVG, StarVector) instead yield <base>.svg written
+verbatim as the deliverable, with _preview.webp (≤1280) and _thumb.webp
+(180) rasters for display — no size-variant set and no PNG original,
+since a vector scales losslessly. Branching is per returned image, so a
+model returning mixed candidates gets both treatments.
+
   image.generate — { prompt*, name?, references?, model?, size?, aspect_ratio?, seed?, extra_body? }
       Generate (or edit, when references is set) an image. Base name:
       YYYYMMDD_HHMM_<slug>. references: storage paths or http(s) URLs for
       image-to-image on editing-capable models. Returns the file list plus
-      an inline preview (largest derived variant, 1280px). Takes 1-2 minutes
-      — the tool waits internally.
+      an inline preview (largest derived variant, or the vector preview).
+      Takes 1-2 minutes — the tool waits internally.
 
 
 ═══════════════════════════════════════════════════════════════
