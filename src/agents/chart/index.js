@@ -33,7 +33,6 @@ let gatewayKey;
 let previewSize;
 let hybridSize;
 let hybridTimeoutMs;
-let driftFloor;
 let presets;
 let hybridModels;
 let defaultPreset;
@@ -48,7 +47,6 @@ export async function init(context) {
     previewSize = conf.previewSize ?? 1600;
     hybridSize = conf.hybridSize ?? 1920;
     hybridTimeoutMs = conf.hybridTimeoutMs ?? 180000;
-    driftFloor = conf.driftFloor ?? 0.55;
 
     gatewayHttp = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
     gatewayKey = context.config.gateway?.accessKey ?? null;
@@ -137,18 +135,6 @@ async function nmediaProcess(base64, { format, maxDimension, quality } = {}) {
     return { buf: Buffer.from(stripDataUri(payload.base64), 'base64'), width: payload.width, height: payload.height };
 }
 
-// nMedia's color_scheme option is accepted and ignored on this route — measured:
-// light and dark requests return identical bytes. So the scheme is resolved in
-// the SVG first. A document with no dark block simply rasterizes as it is.
-async function previewRaster(svg, theme) {
-    const resolved = variantSvg(svg, theme === 'dark' ? 'dark' : 'light');
-    return nmediaProcess(Buffer.from(resolved, 'utf8').toString('base64'), {
-        format: 'webp',
-        maxDimension: previewSize,
-        quality: 90
-    });
-}
-
 function canvasSize(svg) {
     const m = /<svg\b[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/.exec(svg);
     if (!m) throw new Error('chart: the SVG needs width and height attributes — the backdrop is placed against them');
@@ -196,15 +182,12 @@ function compositeHybrid(svg, href, paper) {
     return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);
 }
 
-// ── Drift audit ─────────────────────────────────────────────────────────────
-// The geometry audit is the oracle for layout; this is the oracle for the
-// surface. A restyle that moves the boxes leaves the vector type sitting off its
-// shapes, which is invisible until someone looks. Comparing ink coverage per grid
-// cell turns that into a number.
-//
-// A minimal PNG reader: 8-bit, non-interlaced — what Chrome and the image models
-// emit. Anything else is refused by name rather than guessed at.
-function pngInk(buf) {
+// ── PNG decode ──────────────────────────────────────────────────────────────
+// Used for two things, both of which need pixels: the paper colour a label chip
+// must be filled with (a white plate on warm paper reads as a punched hole), and
+// an informational drift score. A minimal reader: 8-bit, non-interlaced, which is
+// what Chrome and the image models emit. Anything else is refused by name.
+function decodePng(buf) {
     if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) throw new Error('chart audit: not a PNG');
     let pos = 8;
     let width = 0;
@@ -267,11 +250,11 @@ function pngInk(buf) {
         prev = cur;
     }
 
-    const ink = new Float32Array(width * height);
     let paperR = 0;
     let paperG = 0;
     let paperB = 0;
     let paperCount = 0;
+    const ink = new Float32Array(width * height);
     for (let i = 0; i < width * height; i += 1) {
         const o = i * channels;
         let r;
@@ -291,8 +274,7 @@ function pngInk(buf) {
         }
         const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         ink[i] = 1 - luminance / 255;
-        // The paper is the bright majority. Its average is what a label chip has
-        // to be filled with — a pure-white plate on warm paper reads as a hole.
+        // The paper is the bright majority.
         if (luminance > 200) {
             paperR += r;
             paperG += g;
@@ -307,8 +289,8 @@ function pngInk(buf) {
 }
 
 // Ink coverage per cell, on a grid whose aspect matches the image. Coarse on
-// purpose: a hand-drawn line wanders a few pixels, and the question is whether
-// the boxes are still where the layout put them — not whether the pixels match.
+// purpose: a hand-drawn line wanders a few pixels, and the question the score
+// answers is only whether the boxes are still where the layout put them.
 function inkGrid({ width, height, ink }, cols = 16) {
     const rows = Math.max(1, Math.round((cols * height) / width));
     const cell = new Float32Array(cols * rows);
@@ -325,6 +307,9 @@ function inkGrid({ width, height, ink }, cols = 16) {
     return { cols, rows, cell };
 }
 
+// Informational, never a gate: Pearson correlation of where the ink is. It says
+// nothing about colour, legibility or whether the result looks right — those are
+// for the eye. Reported so a human has a number to compare runs by.
 function driftReport(base, surface) {
     const a = inkGrid(base);
     const b = inkGrid(surface);
@@ -335,10 +320,6 @@ function driftReport(base, surface) {
         sumA += a.cell[i];
         sumB += b.cell[i];
     }
-
-    // Correlation, not difference. A restyle adds paper grain, which raises ink
-    // everywhere and would swamp an absolute comparison; what has to match is
-    // *where* the ink is. Pearson on the cell coverage ignores the global scale.
     const meanA = sumA / n;
     const meanB = sumB / n;
     let covariance = 0;
@@ -351,24 +332,18 @@ function driftReport(base, surface) {
         covariance += x * y;
         varianceA += x * x;
         varianceB += y * y;
-        // The worst-cell list uses each surface's *share* of total ink, so a
-        // heavy-texture render does not drown the structural difference.
-        const shareA = sumA > 0 ? a.cell[i] / sumA : 0;
-        const shareB = sumB > 0 ? b.cell[i] / sumB : 0;
-        cells.push({ i, diff: Math.abs(shareA - shareB) });
+        cells.push({ i, diff: Math.abs((sumA > 0 ? a.cell[i] / sumA : 0) - (sumB > 0 ? b.cell[i] / sumB : 0)) });
     }
     const score = varianceA > 0 && varianceB > 0 ? covariance / Math.sqrt(varianceA * varianceB) : 0;
-    const worst = cells
-        .sort((x, y) => y.diff - x.diff)
-        .slice(0, 5)
-        .map((c) => ({ x: c.i % a.cols, y: Math.floor(c.i / a.cols), diff: Math.round(c.diff * 1000) / 1000 }));
-
     return {
         score: Math.round(score * 100) / 100,
         grid: `${a.cols}x${a.rows}`,
         inkBase: Math.round(sumA * 100) / 100,
         inkSurface: Math.round(sumB * 100) / 100,
-        worst
+        worst: cells
+            .sort((x, y) => y.diff - x.diff)
+            .slice(0, 5)
+            .map((c) => ({ x: c.i % a.cols, y: Math.floor(c.i / a.cols), diff: Math.round(c.diff * 1000) / 1000 }))
     };
 }
 
@@ -511,15 +486,24 @@ export async function chart_render(args) {
         `  spec     ${rel(specPath)}`
     ];
 
-    let previewBuf = null;
+    let previewPng = null;
     if (args?.preview !== false) {
         // nMedia is an outside service, and the diagram is already written. A
         // preview failure is reported in the result rather than thrown, so a
         // caller does not lose a good render because a rasterizer was down.
         try {
-            previewBuf = (await previewRaster(svgOut, withText ? args?.theme : 'light')).buf;
+            const raster = await nmediaProcess(Buffer.from(variantSvg(svgOut, withText ? args?.theme : 'light'), 'utf8').toString('base64'), {
+                format: 'png',
+                maxDimension: previewSize
+            });
+            previewPng = raster.buf;
+            const previewWebp = await nmediaProcess(previewPng.toString('base64'), {
+                format: 'webp',
+                maxDimension: previewSize,
+                quality: 90
+            });
             const previewPath = path.join(dir, `${base}${withText ? '' : '-base'}_preview.webp`);
-            fs.writeFileSync(previewPath, previewBuf);
+            fs.writeFileSync(previewPath, previewWebp.buf);
             lines.push(`  preview  ${rel(previewPath)}`);
         } catch (err) {
             logger.warn(`[chart] preview failed for ${base}: ${err.message}`, null, 'Chart');
@@ -540,9 +524,9 @@ export async function chart_render(args) {
     );
 
     const content = [{ type: 'text', text: lines.join('\n') }];
-    if (previewBuf) content.push({ type: 'image', data: previewBuf.toString('base64'), mimeType: 'image/webp' });
+    if (previewPng) content.push({ type: 'image', data: previewPng.toString('base64'), mimeType: 'image/png' });
 
-    logger.info(`[chart] Wrote ${base}${withText ? '' : ' (textless base)'}${previewBuf ? ' + preview' : ''}`, null, 'Chart');
+    logger.info(`[chart] Wrote ${base}${withText ? '' : ' (textless base)'}${previewPng ? ' + preview' : ''}`, null, 'Chart');
     return { content, isError: false };
 }
 
@@ -590,8 +574,7 @@ export async function chart_hybrid(args) {
     const dir = path.join(storageRoot, chartDir);
     const rel = (p) => path.relative(storageRoot, p).split(path.sep).join('/');
 
-    // 1. Textless, weighted base — this is what the model sees, and what the
-    // drift audit compares the surface against.
+    // 1. Textless, weighted base — this is what the model sees.
     const baseSvg = prepareBase(svg, args?.strength);
     const baseSvgPath = path.join(dir, `${base}-base.svg`);
     fs.writeFileSync(baseSvgPath, baseSvg, 'utf8');
@@ -614,8 +597,8 @@ export async function chart_hybrid(args) {
         surface = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps });
     }
 
-    // The audit reads PNG; a saved WebP is normalised first. The PNG on disk is
-    // therefore always the bytes that were judged.
+    // The composite needs a PNG to read the paper colour from; a saved WebP is
+    // normalised first, and the PNG on disk is then always what was measured.
     let surfacePng = surface.buf;
     if (!surfacePng.subarray(0, 8).equals(PNG_SIGNATURE)) {
         surfacePng = (await nmediaProcess(surfacePng.toString('base64'), { format: 'png', maxDimension: hybridSize })).buf;
@@ -629,15 +612,14 @@ export async function chart_hybrid(args) {
     const backdropWebpPath = path.join(dir, `${base}-backdrop.webp`);
     fs.writeFileSync(backdropWebpPath, webp.buf);
 
-    const surfaceInk = pngInk(surfacePng);
-    const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`, surfaceInk.paper);
+    const surfaceDecoded = decodePng(surfacePng);
+    const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`, surfaceDecoded.paper);
     const hybridPath = path.join(dir, `${base}.svg`);
     fs.writeFileSync(hybridPath, hybridSvg, 'utf8');
 
-    // 4. Did the surface stay where the layout is? Type is placed from the
-    // original geometry, so a surface that drifted leaves the words off the boxes.
-    const drift = driftReport(pngInk(raster.buf), surfaceInk);
-    const drifted = drift.score < driftFloor;
+    // Informational only: how faithfully the surface kept the ink where the
+    // layout put it. Not a gate — colour, legibility and taste are not in it.
+    const drift = driftReport(decodePng(raster.buf), surfaceDecoded);
 
     const sidecar = {
         kind: 'hybrid',
@@ -670,29 +652,29 @@ export async function chart_hybrid(args) {
         `  backdrop  ${rel(backdropWebpPath)}  (${webp.width}x${webp.height}, from ${surface.model})`,
         `  base      ${rel(baseSvgPath)}`,
         `  meta      ${rel(path.join(dir, `${base}-hybrid.json`))}`,
-        `  drift     ${drift.score}  (${drift.grid} grid, ink ${drift.inkBase} → ${drift.inkSurface})`,
+        `  drift     ${drift.score}  (informational: where the ink is, not how it looks)`,
         '',
         `The type is vector and pinned to ${theme}; the surface is one raster.`,
         `Re-composite without another model call: pass backdropPath "${rel(backdropPath)}".`
     ];
 
-    if (drifted) {
-        lines.push(
-            '',
-            `DRIFT: the surface moved away from the geometry (${drift.score} < ${driftFloor}). The type is`,
-            'placed from the original layout, so the words no longer sit on their shapes.',
-            `Worst cells (grid x,y — difference): ${drift.worst.map((c) => `${c.x},${c.y} Δ${c.diff}`).join('  ')}`,
-            'Lower denoise (0.35–0.45 holds), or use a preset whose model keeps the structure.'
-        );
-        logger.warn(`[chart] drift ${drift.score} below floor ${driftFloor} for ${base}`, null, 'Chart');
-    }
-
-    let previewBuf = null;
+    let previewPng = null;
     if (args?.preview !== false) {
         try {
-            previewBuf = (await previewRaster(hybridSvg, theme)).buf;
+            // PNG for the caller: an MCP image part is what a model can actually
+            // look at. WebP for the file — same picture, a tenth of the bytes.
+            const raster = await nmediaProcess(Buffer.from(hybridSvg, 'utf8').toString('base64'), {
+                format: 'png',
+                maxDimension: previewSize
+            });
+            previewPng = raster.buf;
+            const previewWebp = await nmediaProcess(previewPng.toString('base64'), {
+                format: 'webp',
+                maxDimension: previewSize,
+                quality: 90
+            });
             const previewPath = path.join(dir, `${base}_preview.webp`);
-            fs.writeFileSync(previewPath, previewBuf);
+            fs.writeFileSync(previewPath, previewWebp.buf);
             lines.push(`  preview   ${rel(previewPath)}`);
         } catch (err) {
             logger.warn(`[chart] hybrid preview failed for ${base}: ${err.message}`, null, 'Chart');
@@ -701,8 +683,8 @@ export async function chart_hybrid(args) {
     }
 
     const content = [{ type: 'text', text: lines.join('\n') }];
-    if (previewBuf) content.push({ type: 'image', data: previewBuf.toString('base64'), mimeType: 'image/webp' });
+    if (previewPng) content.push({ type: 'image', data: previewPng.toString('base64'), mimeType: 'image/png' });
 
-    logger.info(`[chart] Wrote hybrid ${base} via ${surface.model}, drift ${drift.score}`, null, 'Chart');
-    return { content, isError: drifted };
+    logger.info(`[chart] Wrote hybrid ${base} via ${surface.model}`, null, 'Chart');
+    return { content, isError: false };
 }

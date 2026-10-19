@@ -772,19 +772,14 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       backdrop — so the picture can look hand-drawn while the wording
       stays true and selectable. preset picks the look (handdrawn);
       prompt overrides its wording; denoise controls how far the model
-      may drift (0.35-0.5 holds the boxes under the type; 0.75 moves
-      them). The model chain
-      is local krea2 first, cloud only if the local worker refuses, so
-      the common case is free. Writes <base>.svg, the backdrop, the
-      base, a sidecar (preset/prompt/model/usage) and a preview. A
+      may depart. The model chain is local krea2 first, cloud only if
+      the local worker refuses, so the common case is free. Writes
+      <base>.svg, the backdrop, the base, a sidecar and a preview, and
+      returns a PNG of the result inline so the caller can see it. A
       hybrid is single-theme — the backdrop is one fixed image.
 
-      A drift audit correlates the returned surface against the base
-      geometry: below the floor the call returns isError with the
-      score and the worst cells, because the words would be floating
-      off their shapes. backdropPath re-composites an edited spec over
-      a backdrop from an earlier run — no model call, ~200 ms, same
-      surface, same audit.
+      backdropPath re-composites an edited spec over a backdrop from an
+      earlier run — no model call, ~200 ms, same surface.
 
 
 ═══════════════════════════════════════════════════════════════

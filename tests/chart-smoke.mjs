@@ -103,12 +103,13 @@ if (process.env.CHART_HYBRID === '1') {
     const hybridSvg = fs.readFileSync(path.join(root, hybridRel), 'utf8');
     const driftScore = Number(hybrid.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
     const chipCount = (hybridSvg.match(/class="nc-chip"/g) ?? []).length;
+    const imagePart = hybrid.content.find((c) => c.type === 'image');
     console.log(
         'hybrid has text:', /<text\b/.test(hybridSvg),
         '| webp backdrop:', /<image href="data:image\/webp;base64,/.test(hybridSvg),
         '| label chips kept:', chipCount,
-        '| drift:', driftScore,
-        '| isError:', hybrid.isError
+        '| inline raster:', imagePart ? imagePart.mimeType : 'none',
+        '| drift:', driftScore
     );
 
     // Same surface, edited words: no model call, so it must be fast and the text
@@ -126,9 +127,10 @@ if (process.env.CHART_HYBRID === '1') {
         '| isError:', recomposed.isError
     );
 
-    // A restyle that leaves the geometry must be refused, not shipped.
+    // A restyle that departs far is still returned — drift is information, not a
+    // gate. The score is what tells a caller it went wrong.
     const drifted = await chart_hybrid({ spec, denoise: 0.85, steps: 20, preview: false });
-    console.log('--- drift guard ---', 'isError:', drifted.isError, '|', drifted.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
+    console.log('--- far departure ---', 'isError:', drifted.isError, '| drift:', drifted.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
 } else {
     console.log('--- hybrid skipped (set CHART_HYBRID=1 to run the real model call) ---');
 }

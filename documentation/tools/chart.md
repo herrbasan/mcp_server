@@ -108,26 +108,18 @@ each time. The surface you approved stops changing under you, and the local GPU 
 touched once instead of per edit. The result is a new artifact with its own base
 name; the source backdrop is copied in, never mutated.
 
-#### Drift audit — the oracle for the surface
+#### Drift score — informational
 
 The type is placed from the original geometry, so a restyle that moves the boxes
-leaves the words floating off their shapes. That used to be caught by eye. Now both
-rasterizations — the base the model saw and the surface it returned — are read back
-(8-bit PNG, decoded in-process, no dependency), reduced to ink coverage on a 16-cell
-grid, and correlated:
+leaves the words floating off their shapes. The result reports a score comparing
+ink coverage between the base and the surface (8-bit PNG decoded in-process,
+16-cell grid, Pearson correlation of *where* the ink is — not how much, because
+paper grain raises ink everywhere).
 
-- **`score`** is Pearson correlation of cell coverage, in `-1..1`. Correlation, not
-  difference: paper grain raises ink everywhere, and what must match is *where* the
-  ink is, not how much of it there is.
-- Below `driftFloor` (0.55) the call returns **`isError: true`** with the score, the
-  five worst cells, and the advice to lower denoise. The artifacts are still written
-  — the backdrop and the base are what you need to see why it drifted.
-- Calibrated on `flow-gateway` through the local krea2: **0.77 at the shipped
-  preset, 0.32 at denoise 0.85**. The floor sits between them with margin on both
-  sides.
-
-The audit runs on re-composites too — it is cheap, and a backdrop kept from an older
-diagram can still be wrong for the new one.
+It is **information, not a gate**: the call does not fail on a low score, because
+the score cannot see colour, legibility or taste. What it is for is comparing
+runs — 0.97 and 0.26 are different animals even when both produce a file. The
+picture in the same result is what the caller should actually look at.
 
 ## Storage layout
 
@@ -166,7 +158,6 @@ a dark reader.
     "previewSize": 1600,
     "hybridSize": 1920,
     "hybridTimeoutMs": 180000,
-    "driftFloor": 0.55,
     "hybridModels": ["coolkid-krea2", "qwen-image"],
     "defaultPreset": "handdrawn",
     "presets": { "handdrawn": { "denoise": 0.45, "steps": 20, "prompt": "…" } }
@@ -215,9 +206,10 @@ render (svg + spec + preview, with the inline image part), the textless base (no
 audit rejection (three tones in a structure diagram: nothing written), a supplied
 geometry key (throws naming `nodes[0].x`), and nMedia-down (the render still lands
 and says so). `CHART_HYBRID=1` adds a real hybrid through the Gateway (asserts
-`<text>` + WebP `<image>`, and a drift score above the floor), a **re-composite**
-(the label is swapped, the model line says `saved backdrop`, ~200 ms) and a **drift
-guard** run at denoise 0.85 (`isError: true`, score below the floor).
+`<text>` + WebP `<image>`, kept label chips, an inline PNG part and a drift score),
+a **re-composite** (the label is swapped, the model line says `saved backdrop`,
+~200 ms) and a **far-departure** run at denoise 0.85 (still returns a file — the
+score reports ~0.29, which is the information, not a verdict).
 
 Verified against live services 2026-10-19: `coolkid-krea2` accepts the init image
 through the Gateway and holds the layout at the shipped preset; `qwen-image` is a
@@ -259,7 +251,7 @@ working fallback (it is also the only image model in `data/models.json` declarin
   minute land on the same name — the second silently overwrote the first, and a
   re-composite then reused the wrong backdrop.
 - **The drift score is a heuristic, not a proof.** It reads ink distribution on a
-  16-cell grid, so it catches boxes that moved or vanished, not a subtly wrong
-  stroke. A different diagram type (bars, a dense table) can score lower without
-  being wrong — the floor is calibrated on `flow-gateway`, and `driftFloor` is
-  config for that reason. Trust the score to raise a question, then look.
+  16-cell grid, so it catches boxes that moved or vanished, not a wrong colour, a
+  lost chip or a bad font. It is reported, never enforced: the tool is brittle in
+  ways a number cannot see, so the caller gets a raster of the result and should
+  look at it. Use the score to compare runs, not to accept one.
