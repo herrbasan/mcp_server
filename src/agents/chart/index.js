@@ -189,7 +189,9 @@ function compositeHybrid(svg, href, paper) {
     // the sampled paper colour; a later rule with equal specificity wins.
     const plate = `<style>.nc-chip{fill:rgb(${paper.r},${paper.g},${paper.b})}</style>`;
     const layer = [image, plate, ...chips, ...icons].join('\n');
-    const textOnly = svg.replace(SHAPE_ELEMENT, '');
+    // Icons are re-inserted above, so the empty wrappers left by stripping their
+    // paths are removed here rather than duplicated in the document.
+    const textOnly = svg.replace(ICON_GROUP, '').replace(SHAPE_ELEMENT, '');
     if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${layer}`);
     return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);
 }
@@ -430,9 +432,10 @@ async function selfCheck(gateway, png) {
                     text: 'Check this generated diagram. Answer in at most five short lines:\n' +
                         '1. COLOUR: list the hues present and which shape carries each; say "none" if it is monochrome.\n' +
                         '2. TEXT FIT: does every label sit inside or on its shape, and do the arrow labels sit in a clean gap (no line crossing the letters)?\n' +
-                        '3. DEFECTS: ghost lettering, doubled lines, missing or extra shapes — or "none".\n' +
-                        '4. TEXT: the labels you can read, comma-separated.\n' +
-                        'Do not describe the layout beyond what these four questions ask.'
+                        '3. ICONS: if any card has an icon, name what each depicts. Say "blob" where you cannot tell.\n' +
+                        '4. DEFECTS: ghost lettering, doubled lines, missing or extra shapes — or "none".\n' +
+                        '5. TEXT: the labels you can read, comma-separated.\n' +
+                        'Do not describe the layout beyond what these five questions ask.'
                 },
                 { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
             ]
