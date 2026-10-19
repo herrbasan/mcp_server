@@ -41,6 +41,21 @@
       "timeoutMs": 300000,
       "defaultSize": "1920x1440"
     },
+    "chart": {
+      "folder": "charts",
+      "previewSize": 1600,
+      "hybridSize": 1920,
+      "hybridTimeoutMs": 180000,
+      "hybridModels": ["coolkid-krea2", "qwen-image"],
+      "defaultPreset": "handdrawn",
+      "presets": {
+        "handdrawn": {
+          "denoise": 0.45,
+          "steps": 20,
+          "prompt": "Redraw the boxes and arrows of this diagram by hand in dark ink on warm off-white paper: fine pen outlines, slightly wobbly hand-drawn edges, subtle paper grain, no colour fills. Keep every shape exactly where it is and keep its proportions. Draw no lettering at all — the shapes stay empty."
+        }
+      }
+    },
     "media": {
       "timeoutMs": 120000,
       "pollIntervalMs": 400
@@ -96,7 +111,7 @@
       "maxRetries": 1,
       "batchDelayMs": 100,
       "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
-      "ignore": ["forge", "temp", "_trash", ".backups"],
+      "ignore": ["forge", "temp", "_trash", ".backups", "charts"],
       "contextEnhancement": {
         "enabled": true,
         "task": "local",

@@ -66,6 +66,19 @@ Rules (non-negotiable):
 - **SVG is refused** — rasterize first (`media.process`); SVG is text, and
   renderers treat it as executable.
 
+**Shortcut for diagrams (2026-10-19).** `chart.render` composes steps 1–2 for
+figures it draws itself: it writes the SVG, renders a preview through nMedia, and
+returns the preview as an inline image part in the same result. The model sees its
+diagram without a second call. The written SVG is still refused by `image_attach`
+for the reason above — re-attach the preview, or `media.process` it to a raster
+first.
+
+**Hybrid surface (2026-10-19).** `chart.hybrid` takes the same spec and returns a
+diagram whose shapes are an image-model restyle (hand-drawn ink on paper by
+default) with the words still vector on top. It composes the whole chain — base,
+raster, model, composite — and returns a preview too, so the model sees the styled
+result in one call. Single-theme by nature: the backdrop is one fixed image.
+
 ## Pathway 2 — describe ≠ see
 
 Two different channels, never conflate them:

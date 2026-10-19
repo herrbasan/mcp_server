@@ -11,3 +11,7 @@
 	path = nDB
 	url = https://github.com/herrbasan/nDB.git
 	branch = main
+[submodule "src/nCharts"]
+	path = src/nCharts
+	url = https://github.com/herrbasan/nCharts.git
+	branch = main
