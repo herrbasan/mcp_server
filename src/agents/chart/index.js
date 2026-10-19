@@ -520,22 +520,23 @@ export async function chart_render(args) {
 // a storage path. A base written by chart_render has no text, so it is refused —
 // the text layer has to come from a full render.
 function resolveSvg(args) {
-    if (args?.spec) {
-        const report = audit(args.spec);
+    let spec = args?.spec;
+    if (!spec && args?.specPath) {
+        spec = JSON.parse(fs.readFileSync(storageFile('chart_hybrid', args.specPath), 'utf8'));
+    }
+    if (spec) {
+        const report = audit(spec);
         if (!report.ok) {
             throw new Error(`chart_hybrid: the spec does not pass the geometry audit:\n  ${report.errors.join('\n  ')}`);
         }
-        return { svg: render(args.spec), spec: args.spec };
+        return { svg: render(spec), spec };
     }
     let svg = args?.svg;
     if (!svg && args?.svgPath) {
-        const abs = path.join(storageRoot, args.svgPath);
-        if (!abs.startsWith(path.resolve(storageRoot))) throw new Error('chart_hybrid: svgPath escapes the storage root');
-        if (!fs.existsSync(abs)) throw new Error(`chart_hybrid: no such SVG: ${args.svgPath}`);
-        svg = fs.readFileSync(abs, 'utf8');
+        svg = fs.readFileSync(storageFile('chart_hybrid', args.svgPath), 'utf8');
     }
     if (typeof svg !== 'string' || !/<svg[\s>]/i.test(svg)) {
-        throw new Error('chart_hybrid: "spec", "svg" or "svgPath" is required');
+        throw new Error('chart_hybrid: "spec", "specPath", "svg" or "svgPath" is required');
     }
     if (!/<text\b/.test(svg)) {
         throw new Error('chart_hybrid: this SVG has no <text> elements — it is a textless base, so the words would be lost. Pass the spec (or its sidecar) instead: the text layer is re-rendered from it.');

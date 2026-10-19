@@ -65,10 +65,11 @@ written, because the text layer can only be recovered by re-rendering.
 
 ### `chart.hybrid`
 
-`{ spec* | svg* | svgPath*, name?, preset?, prompt?, denoise?, steps?, theme?, strength?, backdropPath?, preview? }`
+`{ spec* | specPath* | svg* | svgPath*, name?, preset?, prompt?, denoise?, steps?, theme?, strength?, backdropPath?, preview? }`
 
-A restyled surface with exact vector type on top. Input is a spec, an SVG string,
-or a storage path — any SVG whose words live in `<text>` elements.
+A restyled surface with exact vector type on top. Input is a spec, a spec sidecar
+(`charts/<base>.json`, the same file `chart.render` wrote), an SVG string, or a
+storage path — any SVG whose words live in `<text>` elements.
 
 Pipeline:
 

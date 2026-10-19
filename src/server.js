@@ -763,7 +763,7 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       after editing it. text:false writes the textless geometry base
       (the handoff hybrid uses) and still writes the spec sidecar.
 
-  chart.hybrid — { spec* | svg* | svgPath*, name?, preset?, prompt?,
+  chart.hybrid — { spec* | specPath* | svg* | svgPath*, name?, preset?, prompt?,
                    denoise?, steps?, theme?, strength?, backdropPath?,
                    preview? }
       A restyled surface with exact vector type on top. The SVG's

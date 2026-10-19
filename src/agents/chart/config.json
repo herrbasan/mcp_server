@@ -36,6 +36,7 @@
                 "type": "object",
                 "properties": {
                     "spec": { "type": "object", "description": "Diagram spec to render first (the text layer comes from this render). See chart_guide." },
+                    "specPath": { "type": "string", "description": "Storage path of an earlier spec sidecar (charts/<base>.json) — the same sidecar chart_render wrote. The text layer is re-rendered from it; `spec` wins if both are given." },
                     "svg": { "type": "string", "description": "An SVG document as a string. Must contain <text> elements — that is the layer that survives." },
                     "svgPath": { "type": "string", "description": "Storage path to an SVG (e.g. charts/<base>.svg). A chart_render textless base has no text and is refused." },
                     "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to the spec title, else 'hybrid'." },
