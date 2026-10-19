@@ -45,6 +45,7 @@ nesting level.
 | **vision** | `vision.session_create/analyze/get/list/close` | Multi-pass image analysis with region/grid focus, preprocessed via nMedia. | [vision.md](vision.md) |
 | **image** | `image.generate` | Image generation via gateway, rendered to webp size variants + lossless PNG original + JSON sidecar in storage; inline thumbnail in the result. | [image.md](image.md) |
 | **media** | `media.process` | nMedia proxy: storage path in → rasterize/transcode → storage path out (SVG→PNG, thumbnails, m4a→mp3, video→keyframe). Blank-render guard. Bytes never enter a context. | [media.md](media.md) |
+| **chart** | `chart.guide`, `chart.render` | Deterministic SVG diagrams from a semantic spec (nCharts, vendored submodule). No geometry keys; audits before writing; the spec sidecar is the diagram's source. | [chart.md](chart.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 | **notepad** | `notepad.add/list/get/update/complete/remove/promote/attach/snapshot` | Deliberate state — ideas, tasks with step checklists, dates, contacts, bucket attachments. `snapshot` = Today view; REST at `/notepad/*` for manual edits and dashboard components. | [notepad.md](notepad.md) |

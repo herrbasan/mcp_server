@@ -51,4 +51,12 @@ try {
 }
 
 console.log('files:', fs.readdirSync(path.join(root, 'charts')).join(', '));
+
+// nMedia down: the render must still land, and say so.
+await init({ config: { ...context.config, nMediaUrl: 'http://127.0.0.1:1' } });
+const noPreview = await chart_render({ spec });
+console.log('--- nMedia unreachable ---');
+console.log(noPreview.content[0].text.split('\n').filter((l) => l.includes('preview')).join(' | '));
+console.log('isError:', noPreview.isError, '| parts:', noPreview.content.map((c) => c.type).join(','));
+
 fs.rmSync(root, { recursive: true, force: true });

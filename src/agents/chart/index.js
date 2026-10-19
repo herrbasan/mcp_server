@@ -187,10 +187,18 @@ export async function chart_render(args) {
 
     let previewBuf = null;
     if (args?.preview !== false) {
-        previewBuf = await rasterize(svg, base, args?.theme === 'light' ? 'light' : 'dark');
-        const previewPath = path.join(dir, `${base}_preview.webp`);
-        fs.writeFileSync(previewPath, previewBuf);
-        lines.push(`  preview  ${rel(previewPath)}`);
+        // nMedia is an outside service, and the diagram is already written. A
+        // preview failure is reported in the result rather than thrown, so a
+        // caller does not lose a good render because a rasterizer was down.
+        try {
+            previewBuf = await rasterize(svg, base, args?.theme === 'light' ? 'light' : 'dark');
+            const previewPath = path.join(dir, `${base}_preview.webp`);
+            fs.writeFileSync(previewPath, previewBuf);
+            lines.push(`  preview  ${rel(previewPath)}`);
+        } catch (err) {
+            logger.warn(`[chart] preview failed for ${base}: ${err.message}`, null, 'Chart');
+            lines.push(`  preview  FAILED — ${err.message}`);
+        }
     }
 
     if (report.warnings.length) {
