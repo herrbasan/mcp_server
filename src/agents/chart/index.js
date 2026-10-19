@@ -30,6 +30,7 @@ let chartDir;
 let nMediaUrl;
 let gatewayHttp;
 let gatewayKey;
+let gatewayClient;
 let previewSize;
 let hybridSize;
 let hybridTimeoutMs;
@@ -50,6 +51,7 @@ export async function init(context) {
 
     gatewayHttp = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
     gatewayKey = context.config.gateway?.accessKey ?? null;
+    gatewayClient = context.gateway ?? null;
 
     presets = conf.presets ?? {};
     defaultPreset = conf.defaultPreset ?? 'handdrawn';
@@ -402,6 +404,33 @@ async function restyle(reference, { prompt, denoise, steps }) {
     throw new Error(`chart_hybrid: no image model accepted the restyle —\n  ${failures.join('\n  ')}`);
 }
 
+// The tool is brittle: a restyle can drop a hue, forget a chip, drift the boxes —
+// and a text summary will not say so. So the agent looks at its own output and
+// reports what it sees, in words a text-only caller can read. Best effort: a
+// failed check is reported, never fatal, because the artifact is already written.
+async function selfCheck(gateway, png) {
+    const response = await gateway.chat({
+        task: 'vision',
+        systemPrompt: 'You are a precise visual QA assistant for technical diagrams. No preamble, no praise.',
+        messages: [{
+            role: 'user',
+            content: [
+                {
+                    type: 'text',
+                    text: 'Check this generated diagram. Answer in at most five short lines:\n' +
+                        '1. COLOUR: list the hues present and which shape carries each; say "none" if it is monochrome.\n' +
+                        '2. TEXT FIT: does every label sit inside or on its shape, and do the arrow labels sit in a clean gap (no line crossing the letters)?\n' +
+                        '3. DEFECTS: ghost lettering, doubled lines, missing or extra shapes — or "none".\n' +
+                        '4. TEXT: the labels you can read, comma-separated.\n' +
+                        'Do not describe the layout beyond what these four questions ask.'
+                },
+                { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
+            ]
+        }]
+    });
+    return String(response?.content ?? '').trim();
+}
+
 export async function chart_guide(args) {
     const wanted = args?.example;
 
@@ -684,6 +713,18 @@ export async function chart_hybrid(args) {
 
     const content = [{ type: 'text', text: lines.join('\n') }];
     if (previewPng) content.push({ type: 'image', data: previewPng.toString('base64'), mimeType: 'image/png' });
+
+    // Look at it. The caller may be text-only; this is what tells it whether the
+    // colour survived and the labels still sit on their shapes.
+    if (previewPng && args?.check !== false && gatewayClient?.chat) {
+        try {
+            const verdict = await selfCheck(gatewayClient, previewPng);
+            content.unshift({ type: 'text', text: `check (vision, on the raster in this result):\n${verdict}` });
+        } catch (err) {
+            logger.warn(`[chart] self-check failed for ${base}: ${err.message}`, null, 'Chart');
+            content.unshift({ type: 'text', text: `check FAILED — ${err.message}. The files above are still the result; look at the preview.` });
+        }
+    }
 
     logger.info(`[chart] Wrote hybrid ${base} via ${surface.model}`, null, 'Chart');
     return { content, isError: false };

@@ -46,7 +46,8 @@
                     "steps": { "type": "integer", "description": "Sampler steps for the local krea2 model. Default 20." },
                     "theme": { "type": "string", "enum": ["dark", "light"], "description": "Palette the vector type is pinned to. A backdrop is one fixed image, so a hybrid is single-theme. Defaults to light." },
                     "strength": { "type": "number", "description": "Stroke weight in the rasterized base. Defaults to 2.5 for nCharts documents; omit to leave other SVGs as authored." },
-                    "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to WebP for inline display. Default true." },
+                    "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to PNG for inline display (WebP on disk). Default true." },
+                    "check": { "type": "boolean", "description": "After composing, run a vision pass over the raster and return its verdict as text — colour present, labels fitting, defects. Costs a few seconds, and worth it: a model cannot confirm what it did not look at. Default true; set false to skip." },
                     "backdropPath": { "type": "string", "description": "Re-composite instead of generating: a stored backdrop (charts/<base>-backdrop.png) from an earlier run. Skips the image model entirely — ~200 ms — so text edits do not cost a generation or change the surface. The drift audit still runs." }
                 },
                 "required": []
