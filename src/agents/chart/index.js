@@ -188,12 +188,22 @@ function compositeHybrid(svg, href, paper) {
     // On a hybrid the page is the model's paper, so the plate is re-filled with
     // the sampled paper colour; a later rule with equal specificity wins.
     const plate = `<style>.nc-chip{fill:rgb(${paper.r},${paper.g},${paper.b})}</style>`;
-    const layer = [image, plate, ...chips, ...icons].join('\n');
-    // Icons are re-inserted above, so the empty wrappers left by stripping their
-    // paths are removed here rather than duplicated in the document.
-    const textOnly = svg.replace(ICON_GROUP, '').replace(SHAPE_ELEMENT, '');
-    if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${layer}`);
-    return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);
+    let out = svg.replace(ICON_GROUP, '').replace(SHAPE_ELEMENT, '');
+    out = out.replace('</defs>', () => `</defs>\n${image}\n${plate}`);
+
+    // nCharts wraps the body in <g transform="translate(x y)">, so chips and icons
+    // are in body coordinates. Inserted at the root they are offset by that
+    // translate — which is how icons ended up floating at the canvas edge and
+    // plates landed beside their wires instead of over them. They go back inside
+    // the wrapper, after the image, so they paint above the surface and below the
+    // type.
+    const stack = [...chips, ...icons].join('\n');
+    const body = /<g transform="translate\([^)]*\)">/.exec(out);
+    if (body) {
+        const at = out.indexOf(body[0]) + body[0].length;
+        return `${out.slice(0, at)}\n${stack}${out.slice(at)}`;
+    }
+    return out.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${stack}`);
 }
 
 // ── PNG decode ──────────────────────────────────────────────────────────────
