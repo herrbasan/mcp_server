@@ -147,16 +147,23 @@ function canvasSize(svg) {
 // (an SVG with no background rasterizes to transparency and the model invents a
 // ground for it) and, for nCharts documents, with uniformly weighted strokes (at
 // stroke 1 a downscaled base reads as scratches, so the model loses the shape).
+//
+// Type AND icons are removed. Both are content the model must not imitate: it
+// redraws a Material glyph as a letter-shaped blob, and the hybrid puts the real
+// vector glyph back on top.
 function prepareBase(svg, strength) {
-    if (/<svg\b[^>]*class="nc"/.test(svg)) return geometryBase(svg, strength ?? 2.5);
+    const drawing = svg.replace(NC_ICON, '').replace(TEXT_ELEMENT, '');
+    if (/<svg\b[^>]*class="nc"/.test(svg)) return geometryBase(drawing, strength ?? 2.5);
 
     const { width, height } = canvasSize(svg);
     const ground = `<rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff"/>`;
     const weighted = strength ? `<style>[stroke]{stroke-width:${strength}}</style>` : '';
-    return svg
-        .replace(TEXT_ELEMENT, '')
-        .replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${ground}${weighted}`);
+    return drawing.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${ground}${weighted}`);
 }
+
+// Icons are a <g class="nc-icon …" transform="…"> wrapping the glyph path. They are
+// lifted with the text: the template owns them, the model only owns the surface.
+const NC_ICON = /<g class="[^"]*\bnc-icon\b[^"]*"[^>]*>[\s\S]*?<\/g>/g;
 
 // Vector type over a raster surface. Every drawing element goes — the backdrop
 // takes its place — and the image is inserted before the body so the text paints
@@ -173,12 +180,13 @@ const NC_CHIP = /<rect\b[^>]*class="nc-chip"[^>]*\/>/g;
 function compositeHybrid(svg, href, paper) {
     const { width, height } = canvasSize(svg);
     const chips = svg.match(NC_CHIP) ?? [];
+    const icons = svg.match(NC_ICON) ?? [];
     const image = `<image href="${href}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`;
     // The chip's own fill comes from the design token (the document background).
     // On a hybrid the page is the model's paper, so the plate is re-filled with
     // the sampled paper colour; a later rule with equal specificity wins.
     const plate = `<style>.nc-chip{fill:rgb(${paper.r},${paper.g},${paper.b})}</style>`;
-    const layer = [image, plate, ...chips].join('\n');
+    const layer = [image, plate, ...chips, ...icons].join('\n');
     const textOnly = svg.replace(SHAPE_ELEMENT, '');
     if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${layer}`);
     return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);

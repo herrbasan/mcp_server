@@ -245,6 +245,12 @@ working fallback (it is also the only image model in `data/models.json` declarin
   lost their background. The composite keeps chips, re-inserts them under the type,
   and re-fills them with the **paper colour sampled from the backdrop** — the
   token's fill is the document background, which on warm paper reads as a hole.
+- **Icons are lifted like text.** nCharts emits an icon as
+  `<g class="nc-icon" transform="…">`, and the model redraws a Material glyph as a
+  letter-shaped blob (the first hybrid run read them back as "R", "Z", "H", "4").
+  The base has icons removed, and the composite re-inserts the original vector
+  groups — same rule as the words: the template owns them, the model owns only the
+  surface.
 - **A textless base cannot be hybridized.** The words are gone; pass the spec or a
   full SVG. The tool says so instead of returning a wordless picture.
 - **`uniqueBase` must check both sidecars.** A render writes `<base>.json`, a hybrid
