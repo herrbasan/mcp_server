@@ -152,7 +152,7 @@ function canvasSize(svg) {
 // redraws a Material glyph as a letter-shaped blob, and the hybrid puts the real
 // vector glyph back on top.
 function prepareBase(svg, strength) {
-    const drawing = svg.replace(NC_ICON, '').replace(TEXT_ELEMENT, '');
+    const drawing = svg.replace(ICON_GROUP, '').replace(TEXT_ELEMENT, '');
     if (/<svg\b[^>]*class="nc"/.test(svg)) return geometryBase(drawing, strength ?? 2.5);
 
     const { width, height } = canvasSize(svg);
@@ -161,9 +161,11 @@ function prepareBase(svg, strength) {
     return drawing.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${ground}${weighted}`);
 }
 
-// Icons are a <g class="nc-icon …" transform="…"> wrapping the glyph path. They are
-// lifted with the text: the template owns them, the model only owns the surface.
-const NC_ICON = /<g class="[^"]*\bnc-icon\b[^"]*"[^>]*>[\s\S]*?<\/g>/g;
+// Icons are a <g transform="translate(…) scale(…)"> wrapping the glyph path. They
+// carry no distinguishing class — nCharts gives them only the ink class — so the
+// scalable transform is the tell: nothing else in an nCharts document is scaled.
+// They are lifted with the text: the template owns them, the model owns the surface.
+const ICON_GROUP = /<g class="[^"]*" transform="translate\([^)]*\) scale\([^)]*\)">[\s\S]*?<\/g>/g;
 
 // Vector type over a raster surface. Every drawing element goes — the backdrop
 // takes its place — and the image is inserted before the body so the text paints
@@ -180,7 +182,7 @@ const NC_CHIP = /<rect\b[^>]*class="nc-chip"[^>]*\/>/g;
 function compositeHybrid(svg, href, paper) {
     const { width, height } = canvasSize(svg);
     const chips = svg.match(NC_CHIP) ?? [];
-    const icons = svg.match(NC_ICON) ?? [];
+    const icons = svg.match(ICON_GROUP) ?? [];
     const image = `<image href="${href}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`;
     // The chip's own fill comes from the design token (the document background).
     // On a hybrid the page is the model's paper, so the plate is re-filled with
