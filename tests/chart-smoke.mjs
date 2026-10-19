@@ -102,9 +102,11 @@ if (process.env.CHART_HYBRID === '1') {
     const backdropRel = hybrid.content[0].text.match(/backdropPath "([^"]+)"/)[1];
     const hybridSvg = fs.readFileSync(path.join(root, hybridRel), 'utf8');
     const driftScore = Number(hybrid.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
+    const chipCount = (hybridSvg.match(/class="nc-chip"/g) ?? []).length;
     console.log(
         'hybrid has text:', /<text\b/.test(hybridSvg),
         '| webp backdrop:', /<image href="data:image\/webp;base64,/.test(hybridSvg),
+        '| label chips kept:', chipCount,
         '| drift:', driftScore,
         '| isError:', hybrid.isError
     );

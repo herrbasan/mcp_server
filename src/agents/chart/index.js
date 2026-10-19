@@ -174,12 +174,22 @@ function prepareBase(svg, strength) {
 // takes its place — and the image is inserted before the body so the text paints
 // on top of it. `slice` crops the sampler's 64-pixel rounding instead of
 // stretching it, which would slide the shapes out from under the words.
+//
+// The edge-label chips are the exception. A chip is a background rect whose only
+// job is to read as a gap in the wire behind a word — it belongs to the text
+// layer, not to the drawing. Stripped, every label sits straight on the
+// hand-drawn line; at denoise 0.3 the model reproduced the chips itself so the
+// gap survived by luck, and at 0.45 it stopped. They are put back under the text.
+const NC_CHIP = /<rect\b[^>]*class="nc-chip"[^>]*\/>/g;
+
 function compositeHybrid(svg, href) {
     const { width, height } = canvasSize(svg);
+    const chips = svg.match(NC_CHIP) ?? [];
     const image = `<image href="${href}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`;
+    const layer = [image, ...chips].join('\n');
     const textOnly = svg.replace(SHAPE_ELEMENT, '');
-    if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${image}`);
-    return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${image}`);
+    if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${layer}`);
+    return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);
 }
 
 // ── Drift audit ─────────────────────────────────────────────────────────────
