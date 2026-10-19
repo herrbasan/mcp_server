@@ -1,6 +1,6 @@
 {
     "agent": "chart",
-    "description": "Deterministic SVG diagrams from a semantic spec (nCharts). The caller describes meaning — nodes, edges, grouping, emphasis — and the renderer computes every coordinate: no x/y/width is accepted, so the output cannot overlap or drift. Renders into MCP storage under charts/ as <base>.svg (self-contained, carries light AND dark in one file), a .json sidecar holding the exact spec (so the diagram can be re-rendered or edited later), and a preview raster for inline display. Ships the authoring contract as a tool so a caller can learn the spec instead of guessing it.",
+    "description": "Deterministic SVG diagrams from a semantic spec (nCharts), plus a hybrid surface. The caller describes meaning — nodes, edges, grouping, emphasis — and the renderer computes every coordinate: no x/y/width is accepted, so the output cannot overlap or drift. chart_render writes a self-contained SVG (light AND dark in one file) with a .json sidecar holding the exact spec and a preview raster. chart_hybrid restyles the drawing with an image model (local krea2 first, cloud on refusal) while keeping the words as vector type, because diffusion generates glyph-shaped marks rather than preserving text. Ships the authoring contract as a tool so a caller can learn the spec instead of guessing it.",
     "tools": [
         {
             "name": "chart_guide",
@@ -14,7 +14,7 @@
         },
         {
             "name": "chart_render",
-            "description": "Render a diagram spec to SVG in MCP storage. Validates and audits first: a spec that would overlap, leave the canvas or overflow its text fails with the offending field named, and nothing is written. Successful renders return the storage paths (svg, spec sidecar, preview) plus audit warnings that mean 'legible but not perfect' — read them, they are the difference between a good diagram and a merely valid one. Pass specPath to re-render an earlier spec after editing it.",
+            "description": "Render a diagram spec to SVG in MCP storage. Validates and audits first: a spec that would overlap, leave the canvas or overflow its text fails with the offending field named, and nothing is written. Successful renders return the storage paths (svg, spec sidecar, preview) plus audit warnings that mean 'legible but not perfect' — read them, they are the difference between a good diagram and a merely valid one. Pass specPath to re-render an earlier spec after editing it. With text:false it writes the textless geometry base for chart_hybrid instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -22,7 +22,30 @@
                     "specPath": { "type": "string", "description": "Storage path of an earlier spec sidecar (charts/<base>.json). Loaded and rendered; `spec` wins if both are given." },
                     "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to the spec title, else 'chart'." },
                     "theme": { "type": "string", "enum": ["dark", "light"], "description": "Theme for the preview raster only. The SVG itself always carries both themes. Defaults to dark." },
+                    "text": { "type": "boolean", "description": "Set false to write the textless geometry base (no type, weighted strokes, page colour) — the handoff chart_hybrid uses. The spec sidecar is still written so the text layer can be re-rendered. Defaults to true." },
+                    "strength": { "type": "number", "description": "Stroke weight for the textless base, in canvas units. Defaults to 2.5 for nCharts documents." },
                     "preview": { "type": "boolean", "description": "Render a preview raster (webp) alongside the SVG. Default true; set false when only the vector is wanted." }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "chart_hybrid",
+            "description": "Restyle a diagram's shapes with an image model while keeping its words as vector type — a hand-drawn (or otherwise prompted) surface with exact, selectable text on top. Takes a spec, an SVG string, or a storage svgPath; the SVG's <text> elements are lifted, the drawing is rasterized, restyled through the image-model chain (local krea2 first, cloud only when the local worker refuses), and the type is composited back over a WebP backdrop. Returns the hybrid SVG, the backdrop, the base, a JSON sidecar (preset, prompt, model, usage) and a preview image. Costs nothing on the local model; the cloud fallback is billed per image.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "spec": { "type": "object", "description": "Diagram spec to render first (the text layer comes from this render). See chart_guide." },
+                    "svg": { "type": "string", "description": "An SVG document as a string. Must contain <text> elements — that is the layer that survives." },
+                    "svgPath": { "type": "string", "description": "Storage path to an SVG (e.g. charts/<base>.svg). A chart_render textless base has no text and is refused." },
+                    "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to the spec title, else 'hybrid'." },
+                    "preset": { "type": "string", "description": "Style preset from agents.chart.presets (e.g. 'handdrawn'). Defaults to agents.chart.defaultPreset." },
+                    "prompt": { "type": "string", "description": "Custom restyle prompt, overriding the preset's wording. Denoise still comes from the preset unless given." },
+                    "denoise": { "type": "number", "description": "How far the model may depart from the geometry. 0.35-0.5 holds the boxes where the type expects them; 0.75 moves them out from under it. Default from the preset (0.45)." },
+                    "steps": { "type": "integer", "description": "Sampler steps for the local krea2 model. Default 20." },
+                    "theme": { "type": "string", "enum": ["dark", "light"], "description": "Palette the vector type is pinned to. A backdrop is one fixed image, so a hybrid is single-theme. Defaults to light." },
+                    "strength": { "type": "number", "description": "Stroke weight in the rasterized base. Defaults to 2.5 for nCharts documents; omit to leave other SVGs as authored." },
+                    "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to WebP for inline display. Default true." }
                 },
                 "required": []
             }

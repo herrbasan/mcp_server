@@ -753,14 +753,30 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       and the things that are rejected. With "example", returns one
       complete working spec verbatim instead.
 
-  chart.render — { spec* | specPath*, name?, theme?, preview? }
+  chart.render — { spec* | specPath*, name?, theme?, text?, strength?, preview? }
       Audit, render, write. A spec that overlaps, leaves the canvas or
       overflows its text FAILS with the offending field named and
       nothing is written. Success returns the file paths plus audit
       warnings — read them: they separate a valid diagram from a good
       one. theme (light|dark) affects the preview raster only; the SVG
       always carries both. specPath re-renders an earlier sidecar
-      after editing it.
+      after editing it. text:false writes the textless geometry base
+      (the handoff hybrid uses) and still writes the spec sidecar.
+
+  chart.hybrid — { spec* | svg* | svgPath*, name?, preset?, prompt?,
+                   denoise?, steps?, theme?, strength?, preview? }
+      A restyled surface with exact vector type on top. The SVG's
+      <text> elements are lifted, the drawing is rasterized, restyled
+      by an image model, and the words are composited back over a WebP
+      backdrop — so the picture can look hand-drawn while the wording
+      stays true and selectable. preset picks the look (handdrawn);
+      prompt overrides its wording; denoise controls how far the model
+      may drift (0.35-0.5 holds the boxes under the type; 0.75 moves
+      them). The model chain
+      is local krea2 first, cloud only if the local worker refuses, so
+      the common case is free. Writes <base>.svg, the backdrop, the
+      base, a sidecar (preset/prompt/model/usage) and a preview. A
+      hybrid is single-theme — the backdrop is one fixed image.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1241,7 +1257,7 @@ IMPORTANT RULES
 
         "image.generate": "image_generate",
 
-        "chart.guide": "chart_guide", "chart.render": "chart_render",
+        "chart.guide": "chart_guide", "chart.render": "chart_render", "chart.hybrid": "chart_hybrid",
 
         "media.process": "media_process",
 

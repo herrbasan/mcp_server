@@ -9,6 +9,12 @@ coordinate.** `x`, `y`, `width`, `height`, `cx`, `cy` are rejected by validation
 That is what makes two diagrams of the same type look like they belong together,
 and what stops a model from producing a plausible-looking but badly spaced figure.
 
+`chart.hybrid` adds a second surface: the same diagram drawn in a styled raster
+(hand-drawn ink on paper by default) with the words still vector. Diffusion cannot
+preserve lettering — it generates glyph-shaped marks — so the words never enter the
+model. Measured in `src/nCharts/docs/HYBRID.md` (NCC 0.58–0.60 against a 0.16 noise
+floor, across denoise values, two models and two resolutions).
+
 ## Methods
 
 ### `chart.guide`
@@ -26,7 +32,7 @@ not have told it for free.
 
 ### `chart.render`
 
-`{ spec* | specPath*, name?, theme?, preview? }`
+`{ spec* | specPath*, name?, theme?, text?, strength?, preview? }`
 
 `spec` is an **object**, not a path — the chat hemisphere has no filesystem, so a
 path-only signature would be unusable there. `specPath` takes a storage path to an
@@ -50,12 +56,62 @@ not perfect" — text that just fits, a stub arrow, a two-tone cap reached. They
 the difference between a valid diagram and a good one, and they are deliberately
 not fatal.
 
+`text: false` writes the **textless geometry base** instead: no type, strokes
+weighted to `strength` (default 2.5), pinned to the light palette, on a page
+colour. That is what an image model needs — an SVG with no background rasterizes
+to transparency and the model invents a ground for it; at stroke 1 a downscaled
+base reads as scratches, so the model loses the shape. The spec sidecar is still
+written, because the text layer can only be recovered by re-rendering.
+
+### `chart.hybrid`
+
+`{ spec* | svg* | svgPath*, name?, preset?, prompt?, denoise?, steps?, theme?, strength?, preview? }`
+
+A restyled surface with exact vector type on top. Input is a spec, an SVG string,
+or a storage path — any SVG whose words live in `<text>` elements.
+
+Pipeline:
+
+1. **Base** — `chart.render({ text: false })`'s output: the drawing without type,
+   weighted, on a page colour. For a non-nCharts SVG, text is removed and a white
+   ground is added; strokes are left as authored unless `strength` is given.
+2. **Rasterize** through nMedia at `hybridSize` (default 1920, 2× the canvas).
+3. **Restyle** through the Gateway's image route with the base as an init image,
+   `denoise` from the preset, prompt from the preset or `prompt`.
+4. **Transcode** the result to WebP (q92) — a photo-like surface as PNG would put
+   several megabytes of base64 inside the SVG.
+5. **Composite** — every drawing element is stripped, the image is inserted before
+   the body, and the original `<text>` elements paint on top. `xMidYMid slice`
+   crops the sampler's 64-pixel rounding rather than stretching it, which would
+   slide the shapes out from under the words.
+
+**Model chain.** `agents.chart.hybridModels` is tried in order: local
+`coolkid-krea2` (nGen on COOLKID, free) first, cloud `qwen-image` only if the local
+worker refuses. Every refusal is logged with the model and status, and the last
+error lists all of them — a silent downgrade to a paid model is exactly what the
+chain exists to prevent.
+
+**Presets** live in `agents.chart.presets`; `prompt` overrides a preset's wording,
+`denoise` overrides its departure. `handdrawn` is the shipped preset.
+
+**A hybrid is single-theme.** The backdrop is one fixed image, so the vector type
+is pinned to `theme` (default light). A dual-scheme hybrid breaks at the first
+dark-mode reader — the type flips over paper that cannot follow.
+
 ## Storage layout
 
 ```
-charts/<base>.svg            self-contained; carries light AND dark in one file
-charts/<base>.json           the exact spec — the diagram's source
-charts/<base>_preview.webp   display raster; theme picks light or dark
+charts/<base>.svg             render: self-contained, light AND dark in one file
+charts/<base>.json            render: the exact spec — the diagram's source
+charts/<base>_preview.webp    render: display raster; theme picks light or dark
+charts/<base>-base.svg        render text:false / hybrid: the textless handoff
+charts/<base>.svg             hybrid: the deliverable (vector type over the raster)
+charts/<base>_preview.webp    hybrid: display raster
+charts/<base>-backdrop.webp   hybrid: the embedded surface (quality 92)
+charts/<base>-backdrop.png    hybrid: the model's raw output — re-composite without
+                              paying for another generation
+charts/<base>-base.png        hybrid: the rasterized base the model saw
+charts/<base>-hybrid.json     hybrid: preset, prompt, model, usage, seconds, files
 ```
 
 `<base>` = `YYYYMMDD_HHMM_<slug>`, slug from `name`, else the spec title, else
@@ -73,11 +129,34 @@ a dark reader.
 ## Configuration
 
 ```json
-"agents": { "chart": { "folder": "charts", "previewSize": 1600 } }
+"agents": {
+  "chart": {
+    "folder": "charts",
+    "previewSize": 1600,
+    "hybridSize": 1920,
+    "hybridTimeoutMs": 180000,
+    "hybridModels": ["coolkid-krea2", "qwen-image"],
+    "defaultPreset": "handdrawn",
+    "presets": { "handdrawn": { "denoise": 0.45, "steps": 20, "prompt": "…" } }
+  }
+}
 ```
 
-`previewSize` is the longest edge of the preview raster. `nMediaUrl` is the usual
-root config; the agent renders the preview through nMedia's process API.
+`previewSize` is the longest edge of the preview raster; `hybridSize` the same for
+the base and the embedded backdrop. `nMediaUrl` is the usual root config; the agent
+renders through nMedia's process API. The Gateway (`gateway.httpUrl` +
+`gateway.accessKey`) is used only by `chart.hybrid`.
+
+**Tuning, measured through the Gateway's krea2 adapter** (2026-10-19, `flow-gateway`
+base at 1920×640): denoise 0.3 with 12 steps returns a near-copy — the texture is
+there, the hand-drawn quality is not. 0.75 departs so far that boxes move out from
+under the type. **0.45 with 20 steps holds the structure and reads as pen on
+paper**, which is why it is the shipped preset. This differs from nCharts' own 0.3
+default because that measurement was made against nGen directly; the same number
+means a different amount of departure through the Gateway.
+
+`charts` is in `agents.vdb.ignore`: chart output is transient, and a spec sidecar
+per render would otherwise become searchable documents.
 
 ## Submodule
 
@@ -99,9 +178,17 @@ cd ../.. && git add src/nCharts && git commit -m "charts: bump nCharts to <sha>"
 ## Verified
 
 `tests/chart-smoke.mjs` — init against a temp storage root, the guide, a real
-render (svg + spec + preview, with the inline image part), an audit rejection
-(three tones in a structure diagram: nothing written), and a supplied geometry key
-(throws naming `nodes[0].x`).
+render (svg + spec + preview, with the inline image part), the textless base (no
+`<text>` elements, page colour present), hybrid's refusal of a textless base, an
+audit rejection (three tones in a structure diagram: nothing written), a supplied
+geometry key (throws naming `nodes[0].x`), and nMedia-down (the render still lands
+and says so). `CHART_HYBRID=1` adds a real hybrid through the Gateway and asserts
+the composite carries both `<text>` and a WebP `<image>`.
+
+Verified against live services 2026-10-19: `coolkid-krea2` accepts the init image
+through the Gateway and holds the layout at the shipped preset; `qwen-image` is a
+working fallback (it is also the only image model in `data/models.json` declaring
+`editing`).
 
 ## Gotchas
 
@@ -111,5 +198,17 @@ render (svg + spec + preview, with the inline image part), an audit rejection
   the SVG and sidecar are already on disk when it is called, so a rasterizer outage
   is reported in the result (`preview  FAILED — …`) and logged, instead of throwing
   away a good diagram. Any other error still throws.
-- Specs are storage-scoped: `specPath` is resolved against `agents.storage.root`
-  and rejects anything that escapes it.
+- Specs are storage-scoped: `specPath`/`svgPath` resolve against
+  `agents.storage.root` and reject anything that escapes it.
+- **`geometryBase()` hides text with CSS, it does not remove it.** A base that
+  relies on it still *contains* `<text>`, so `chart.hybrid` would treat it as a
+  text layer and composite a wordless diagram. The renderer removes the elements;
+  the smoke test asserts it.
+- **nMedia's `color_scheme` option is accepted and ignored** on `/v1/process/image`
+  (measured: byte-identical light and dark requests). The scheme is resolved in the
+  SVG (`variantSvg`) before rasterizing.
+- **Do not send `size`/`aspect_ratio` with an init image.** The reference defines
+  the frame; a size makes some upstreams treat it as authoritative and breaks the
+  edit path (same trap as issue #67 in `image.generate`).
+- **A textless base cannot be hybridized.** The words are gone; pass the spec or a
+  full SVG. The tool says so instead of returning a wordless picture.
