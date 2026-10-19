@@ -170,13 +170,14 @@ the base and the embedded backdrop. `nMediaUrl` is the usual root config; the ag
 renders through nMedia's process API. The Gateway (`gateway.httpUrl` +
 `gateway.accessKey`) is used only by `chart.hybrid`.
 
-**Tuning, measured through the Gateway's krea2 adapter** (2026-10-19, `flow-gateway`
-base at 1920×640): denoise 0.3 with 12 steps returns a near-copy — the texture is
-there, the hand-drawn quality is not. 0.75 departs so far that boxes move out from
-under the type. **0.45 with 20 steps holds the structure and reads as pen on
-paper**, which is why it is the shipped preset. This differs from nCharts' own 0.3
-default because that measurement was made against nGen directly; the same number
-means a different amount of departure through the Gateway.
+**Tuning, and why the shipped preset is deliberately timid.** At denoise 0.3 the
+model is close to a copy: fills, label chips and alignment all survive, and the
+hand-drawn character is subtle. Raise it and the surface gets more character while
+the model starts dropping things it was not told to preserve — at 0.45 the accent
+fill went from `RGB(238,244,253)` to `RGB(238,233,226)` and the label chips
+disappeared (the old build). So: fidelity first, and let the check drive any
+experiment. 0.3 / 12 steps is the shipped point; `denoise` and `steps` are per-call
+arguments when a run proves it can take more.
 
 `charts` is in `agents.vdb.ignore`: chart output is transient, and a spec sidecar
 per render would otherwise become searchable documents.

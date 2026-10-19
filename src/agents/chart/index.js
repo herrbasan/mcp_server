@@ -681,6 +681,7 @@ export async function chart_hybrid(args) {
         `  backdrop  ${rel(backdropWebpPath)}  (${webp.width}x${webp.height}, from ${surface.model})`,
         `  base      ${rel(baseSvgPath)}`,
         `  meta      ${rel(path.join(dir, `${base}-hybrid.json`))}`,
+        `  knobs     preset=${presetName} denoise=${denoise} steps=${steps} — lower denoise for fidelity, raise it for character`,
         `  drift     ${drift.score}  (informational: where the ink is, not how it looks)`,
         '',
         `The type is vector and pinned to ${theme}; the surface is one raster.`,

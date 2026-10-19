@@ -50,8 +50,8 @@
       "defaultPreset": "handdrawn",
       "presets": {
         "handdrawn": {
-          "denoise": 0.45,
-          "steps": 20,
+          "denoise": 0.3,
+          "steps": 12,
           "prompt": "Redraw the boxes and arrows of this diagram by hand in ink on warm off-white paper: fine pen outlines, slightly wobbly hand-drawn edges, subtle paper grain. Keep every shape exactly where it is and keep its proportions. Keep the existing colours exactly — neutral boxes stay neutral, and only the shapes that already carry a hue keep that same hue as a soft, slightly uneven wash. Do not introduce any new colour. Draw no lettering at all — the shapes stay empty."
         }
       }
