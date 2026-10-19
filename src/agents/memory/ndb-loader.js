@@ -59,12 +59,8 @@ export function loadNdb() {
         fs.copyFileSync(binaryPath, expectedInNapi);
     }
 
-    // napi/index.js also checks for the legacy 'index.<platform>.node' filename.
-    const legacyName = `index.${process.platform === 'win32' ? 'win32-x64-msvc' : process.platform === 'darwin' ? 'darwin-x64' : 'linux-x64-gnu'}.node`;
-    const legacyPath = path.join(napiDir, legacyName);
-    if (!fs.existsSync(legacyPath)) {
-        fs.copyFileSync(binaryPath, legacyPath);
-    }
+    // napi/index.js resolves the canonical binary name itself (legacy
+    // 'index.<platform>.node' filenames were dropped upstream in v1.5.0).
 
     const { Database } = require(path.join(napiDir, 'index.js'));
     cachedModule = { Database };
