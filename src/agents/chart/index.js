@@ -182,11 +182,15 @@ function prepareBase(svg, strength) {
 // gap survived by luck, and at 0.45 it stopped. They are put back under the text.
 const NC_CHIP = /<rect\b[^>]*class="nc-chip"[^>]*\/>/g;
 
-function compositeHybrid(svg, href) {
+function compositeHybrid(svg, href, paper) {
     const { width, height } = canvasSize(svg);
     const chips = svg.match(NC_CHIP) ?? [];
     const image = `<image href="${href}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`;
-    const layer = [image, ...chips].join('\n');
+    // The chip's own fill comes from the design token (the document background).
+    // On a hybrid the page is the model's paper, so the plate is re-filled with
+    // the sampled paper colour; a later rule with equal specificity wins.
+    const plate = `<style>.nc-chip{fill:rgb(${paper.r},${paper.g},${paper.b})}</style>`;
+    const layer = [image, plate, ...chips].join('\n');
     const textOnly = svg.replace(SHAPE_ELEMENT, '');
     if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${layer}`);
     return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${layer}`);
@@ -264,6 +268,10 @@ function pngInk(buf) {
     }
 
     const ink = new Float32Array(width * height);
+    let paperR = 0;
+    let paperG = 0;
+    let paperB = 0;
+    let paperCount = 0;
     for (let i = 0; i < width * height; i += 1) {
         const o = i * channels;
         let r;
@@ -281,9 +289,21 @@ function pngInk(buf) {
             g = pixels[o + 1];
             b = pixels[o + 2];
         }
-        ink[i] = 1 - (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        ink[i] = 1 - luminance / 255;
+        // The paper is the bright majority. Its average is what a label chip has
+        // to be filled with — a pure-white plate on warm paper reads as a hole.
+        if (luminance > 200) {
+            paperR += r;
+            paperG += g;
+            paperB += b;
+            paperCount += 1;
+        }
     }
-    return { width, height, ink };
+    const paper = paperCount > 0
+        ? { r: Math.round(paperR / paperCount), g: Math.round(paperG / paperCount), b: Math.round(paperB / paperCount) }
+        : { r: 255, g: 255, b: 255 };
+    return { width, height, ink, paper };
 }
 
 // Ink coverage per cell, on a grid whose aspect matches the image. Coarse on
@@ -305,9 +325,9 @@ function inkGrid({ width, height, ink }, cols = 16) {
     return { cols, rows, cell };
 }
 
-function driftReport(basePng, surfacePng) {
-    const a = inkGrid(pngInk(basePng));
-    const b = inkGrid(pngInk(surfacePng));
+function driftReport(base, surface) {
+    const a = inkGrid(base);
+    const b = inkGrid(surface);
     const n = a.cell.length;
     let sumA = 0;
     let sumB = 0;
@@ -609,13 +629,14 @@ export async function chart_hybrid(args) {
     const backdropWebpPath = path.join(dir, `${base}-backdrop.webp`);
     fs.writeFileSync(backdropWebpPath, webp.buf);
 
-    const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`);
+    const surfaceInk = pngInk(surfacePng);
+    const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`, surfaceInk.paper);
     const hybridPath = path.join(dir, `${base}.svg`);
     fs.writeFileSync(hybridPath, hybridSvg, 'utf8');
 
     // 4. Did the surface stay where the layout is? Type is placed from the
     // original geometry, so a surface that drifted leaves the words off the boxes.
-    const drift = driftReport(raster.buf, surfacePng);
+    const drift = driftReport(pngInk(raster.buf), surfaceInk);
     const drifted = drift.score < driftFloor;
 
     const sidecar = {

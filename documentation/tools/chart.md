@@ -246,10 +246,12 @@ working fallback (it is also the only image model in `data/models.json` declarin
   edit path (same trap as issue #67 in `image.generate`).
 - **Edge-label chips belong to the text layer.** `compositeHybrid` strips every
   drawing element, but a `nc-chip` rect exists only to read as a gap in the wire
-  behind a word. Stripped, the label sits straight on the hand-drawn line. At
-  denoise 0.3 the model redrew the chips itself, so the gap survived by luck; at
-  0.45 it stopped and the labels lost their background. The composite keeps chips
-  and re-inserts them under the type.
+  behind a word — the wire is drawn whole and the chip is painted over it. Stripped,
+  the label sits straight on the hand-drawn line. At denoise 0.3 the model redrew
+  the chips itself, so the gap survived by luck; at 0.45 it stopped and the labels
+  lost their background. The composite keeps chips, re-inserts them under the type,
+  and re-fills them with the **paper colour sampled from the backdrop** — the
+  token's fill is the document background, which on warm paper reads as a hole.
 - **A textless base cannot be hybridized.** The words are gone; pass the spec or a
   full SVG. The tool says so instead of returning a wordless picture.
 - **`uniqueBase` must check both sidecars.** A render writes `<base>.json`, a hybrid
