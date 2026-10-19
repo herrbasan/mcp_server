@@ -41,6 +41,10 @@
       "timeoutMs": 300000,
       "defaultSize": "1920x1440"
     },
+    "chart": {
+      "folder": "charts",
+      "previewSize": 1600
+    },
     "media": {
       "timeoutMs": 120000,
       "pollIntervalMs": 400

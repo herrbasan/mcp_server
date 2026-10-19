@@ -733,6 +733,37 @@ model returning mixed candidates gets both treatments.
 
 
 ═══════════════════════════════════════════════════════════════
+CHART — Diagrams as SVG (nCharts)
+═══════════════════════════════════════════════════════════════
+
+Diagrams from a semantic spec. You describe meaning — nodes, edges,
+groups, emphasis — and the renderer computes every coordinate. There
+are no x/y/width keys: supplying one is an error, which is why two
+diagrams of the same type always look like they belong together.
+Results go to MCP storage under charts/ as <base>.svg (one file,
+carrying light AND dark), <base>.json (the exact spec — the diagram's
+source, so it can be edited and re-rendered), and <base>_preview.webp
+for display.
+
+The spec format is NOT guessable. Call chart.guide before writing one.
+
+  chart.guide — { example? }
+      The authoring contract: types (flow, tree, timeline, steps,
+      cycle, stack, list, table, matrix, bars, layout), fields, tones,
+      and the things that are rejected. With "example", returns one
+      complete working spec verbatim instead.
+
+  chart.render — { spec* | specPath*, name?, theme?, preview? }
+      Audit, render, write. A spec that overlaps, leaves the canvas or
+      overflows its text FAILS with the offending field named and
+      nothing is written. Success returns the file paths plus audit
+      warnings — read them: they separate a valid diagram from a good
+      one. theme (light|dark) affects the preview raster only; the SVG
+      always carries both. specPath re-renders an earlier sidecar
+      after editing it.
+
+
+═══════════════════════════════════════════════════════════════
 MEDIA — Render into storage (nMedia proxy)
 ═══════════════════════════════════════════════════════════════
 
@@ -1209,6 +1240,8 @@ IMPORTANT RULES
         "vision.analyze": "vision_analyze",
 
         "image.generate": "image_generate",
+
+        "chart.guide": "chart_guide", "chart.render": "chart_render",
 
         "media.process": "media_process",
 

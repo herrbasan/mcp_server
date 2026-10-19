@@ -1,0 +1,31 @@
+{
+    "agent": "chart",
+    "description": "Deterministic SVG diagrams from a semantic spec (nCharts). The caller describes meaning — nodes, edges, grouping, emphasis — and the renderer computes every coordinate: no x/y/width is accepted, so the output cannot overlap or drift. Renders into MCP storage under charts/ as <base>.svg (self-contained, carries light AND dark in one file), a .json sidecar holding the exact spec (so the diagram can be re-rendered or edited later), and a preview raster for inline display. Ships the authoring contract as a tool so a caller can learn the spec instead of guessing it.",
+    "tools": [
+        {
+            "name": "chart_guide",
+            "description": "Read the nCharts spec contract — the authoritative field list, the layout types, the colour rules and the things that are rejected. Call this before authoring a spec: the format is not guessable. Pass `example` to get one complete working spec instead of the contract (call with no arguments first if you want to see the names).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "example": { "type": "string", "description": "Name of a bundled example spec to return verbatim (e.g. 'flow-gateway', 'table-comparison', 'steps-ramp'). Omit to get the contract plus the list of available example names." }
+                }
+            }
+        },
+        {
+            "name": "chart_render",
+            "description": "Render a diagram spec to SVG in MCP storage. Validates and audits first: a spec that would overlap, leave the canvas or overflow its text fails with the offending field named, and nothing is written. Successful renders return the storage paths (svg, spec sidecar, preview) plus audit warnings that mean 'legible but not perfect' — read them, they are the difference between a good diagram and a merely valid one. Pass specPath to re-render an earlier spec after editing it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "spec": { "type": "object", "description": "The diagram spec as an object. Required unless specPath is given. See chart_guide." },
+                    "specPath": { "type": "string", "description": "Storage path of an earlier spec sidecar (charts/<base>.json). Loaded and rendered; `spec` wins if both are given." },
+                    "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to the spec title, else 'chart'." },
+                    "theme": { "type": "string", "enum": ["dark", "light"], "description": "Theme for the preview raster only. The SVG itself always carries both themes. Defaults to dark." },
+                    "preview": { "type": "boolean", "description": "Render a preview raster (webp) alongside the SVG. Default true; set false when only the vector is wanted." }
+                },
+                "required": []
+            }
+        }
+    ]
+}
