@@ -3,8 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
-import { enforceBetween, isNonTrivialDream, dreamEntryText, BETWEEN_CATEGORY } from './between.js';
-import { memory_store } from '../memory/index.js';
+import { enforceBetween } from './between.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -370,8 +369,8 @@ function mergeDelta(delta, previousMap) {
     return {
         meta: {
             ...meta,
-            // Deterministic per-run activity — drives the dream-entry gate
-            // (isNonTrivialDream, spec decision #3). compactMap appends its
+            // Deterministic per-run tending record — observability only; the
+            // dream-entry gate was removed (#66). compactMap appends its
             // compression count when it runs.
             activity: {
                 nodes_added: nodesAdded,
@@ -720,8 +719,8 @@ async function dream(distillate, recentMemories, previousMap, contextBudget) {
 
         parsed.meta.version = '3.0';
         parsed.meta.generated_at = new Date().toISOString();
-        // First build — everything is new. Activity drives the dream-entry
-        // gate; count node ids that actually resolve so the counts stay honest.
+        // First build — everything is new. Count node ids that actually
+        // resolve so the counts stay honest.
         const ids = new Set(parsed.nodes.map(n => n.id));
         let edges = 0;
         for (const n of parsed.nodes) {
@@ -1002,22 +1001,13 @@ async function runPipeline(force = false, onProgress = null) {
             logger.info(`[Dreaming] Between: ${betweenStats.locked} nodes locked in reserved cluster, ${betweenStats.repaired} invariant repairs`, null, 'Dream');
         }
 
-        // Between dream-entry (spec decision #3: non-trivial consolidations
-        // only). The dreamer's own first person — home and gardener, not guest.
-        // Runs with only new memories embedded and no tending write NOTHING.
+        // No dream-entry write (#66, revises spec decision #3): the gate could
+        // not hold — a map above its compactMap budget compresses every run
+        // and a living map forms edges every run, so it fired ~every cycle
+        // and flooded the-between with telemetry again (same failure class as
+        // #24). The tending record stays in meta.activity + the run log; the
+        //-between holds seat entries only.
         pruneConnections(map);
-        if (isNonTrivialDream(map)) {
-            try {
-                const entry = dreamEntryText(map, agentConfig.dreamerLabel);
-                await memory_store({
-                    description: entry.description,
-                    category: BETWEEN_CATEGORY,
-                    confidence: 0.6
-                }, { gateway, progress: null });
-            } catch (err) {
-                logger.warn(`[Dreaming] Between dream-entry failed: ${err.message}`, null, 'Dream');
-            }
-        }
 
         // Phase 3: Save
         onProgress?.(92, 'Phase 3: Saving map...');
@@ -1077,12 +1067,6 @@ export async function init(context) {
     if (!memoryAgent) {
         logger.warn('[Dreaming] Memory agent not available — dreaming disabled', null, 'Dream');
         return {};
-    }
-
-    // Fail fast: the dream-entry substrate tag is required config. Missing it
-    // would otherwise only surface after a full dream run, at entry-write time.
-    if (typeof agentConfig.dreamerLabel !== 'string' || agentConfig.dreamerLabel.trim() === '') {
-        throw new Error('Dreaming agent: agents.dreaming.dreamerLabel missing in config.json — required for dream-entry substrate tags');
     }
 
     const config = context.config?.agents?.dreaming || {};

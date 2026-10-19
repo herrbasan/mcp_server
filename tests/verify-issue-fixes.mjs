@@ -1,8 +1,10 @@
-// Throwaway runtime verification for issues #22 #23 #24 #13 (2026-08-30).
-// Compiles is never success — this exercises the REAL code paths in-process:
+// Throwaway runtime verification for issues #22 #23 #24 #13 #66 (2026-08-30,
+// extended 2026-10-18). Compiles is never success — this exercises the REAL
+// code paths in-process:
 //   #22: src/lib/fileops.js  replace/find line-ending-agnostic matching
 //   #23: memory.list sort/limit (temp nDB, real memory agent init)
-//   #24: dreaming/between.js non-trivial gate + entry text (pure functions)
+//   #24/#66: dreaming/between.js — between guards survive, dream-entry write
+//            path stays removed (pure functions)
 //   #13: llm pinned-model sessions (mock gateway, full lifecycle)
 // Run: node tests/verify-issue-fixes.mjs
 // Exit 0 = all green. Cleans up its temp dir under data/_test/.
@@ -86,32 +88,28 @@ section('#22 fileops: CRLF-agnostic replace + find');
 }
 
 // ═══════════════════════════════════════════════════════════════
-section('#24 dreaming: non-trivial gate + entry text');
+section('#66 dreaming: dream-entry write path removed, between guards intact');
 {
     const between = await import('../src/agents/dreaming/between.js');
     // also proves the dreaming module graph loads (imports memory agent too)
     await import('../src/agents/dreaming/index.js');
 
-    const { isNonTrivialDream, dreamEntryText, isValidBetweenSummary } = between;
-    const act = (a) => ({ meta: { activity: a } });
+    // #66: the dreamer no longer writes the-between entries. The gate and the
+    // entry-text builder must stay gone — the #24 gate could not hold (a map
+    // above compactMap budget compresses every run, a living map forms edges
+    // every run) and flooded the-between with telemetry again. A re-added
+    // gate floods it a third time.
+    ok(between.isNonTrivialDream === undefined, 'gate: isNonTrivialDream removed (#66)');
+    ok(between.dreamEntryText === undefined, 'gate: dreamEntryText removed (#66)');
 
-    ok(isNonTrivialDream(act({ edges_added: 6 })) === true, 'gate: edges formed → non-trivial');
-    ok(isNonTrivialDream(act({ bridges_added: 2 })) === true, 'gate: new bridge → non-trivial');
-    ok(isNonTrivialDream(act({ clusters_added: 1 })) === true, 'gate: cluster organized → non-trivial');
-    ok(isNonTrivialDream(act({ compressed: 3 })) === true, 'gate: compression → non-trivial');
-    ok(isNonTrivialDream(act({ nodes_added: 30, nodes_updated: 5 })) === false, 'gate: pure embedding → NOT non-trivial (the #24 bug)');
-    ok(isNonTrivialDream(act({ surging_nodes: [1, 2] })) === false, 'gate: score drift alone → NOT non-trivial');
-    ok(isNonTrivialDream({ meta: {} }) === false, 'gate: no activity → false');
-
-    const map = { meta: { activity: { edges_added: 6, bridges_added: 2, clusters_added: 1, compressed: 0 }, delta: { surging_nodes: [1, 2], decayed_nodes: [3] } }, clusters: [{ id: 'c_between' }], nodes: [{ id: 1 }, { id: 2 }] };
-    const entry = dreamEntryText(map, 'gemma-4-e4b-dreamer on Badkid');
-    ok(/^I \(the dreamer, \[gemma-4-e4b-dreamer on Badkid\]\) tended the map: connected 6, bridged 2 pairs, formed 1 cluster, watched 2 surge, let 1 fade\.$/.test(entry.description),
-        'entry text: full activity sentence', entry.description);
-    ok(isValidBetweenSummary(entry.description) === true, 'entry text: passes enforceBetween summary validation');
-    await throws(() => dreamEntryText(map, ''), 'entry text: missing substrate label throws', /substrateLabel/);
-
-    const minimal = dreamEntryText({ meta: { activity: { edges_added: 1 } }, clusters: [], nodes: [] }, 'x');
-    ok(minimal.description === 'I (the dreamer, [x]) tended the map: connected 1.', 'entry text: minimal');
+    // The surviving between surface is untouched: summary validation + register lint.
+    ok(typeof between.isValidBetweenSummary === 'function'
+        && between.isValidBetweenSummary('I (the partner, [qwen-3.8-27b]) pushed back on the retry logic.') === true,
+        'between: valid seat summary still accepted');
+    ok(between.isValidBetweenSummary('I (the dreamer, [x]) tended the map: connected 4.') === true,
+        'between: lint does not fire on tending text (doer-language only) — nothing depends on that anymore');
+    ok(between.isValidBetweenSummary('I am the map keeper.') === false,
+        'between: doer-language still rejected');
 }
 
 // ═══════════════════════════════════════════════════════════════

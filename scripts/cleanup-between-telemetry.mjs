@@ -7,8 +7,9 @@
 //   - seat-voiced entries ("I (the partner, [substrate]) ...")
 //   - any dreamer-voiced entry without telemetry vocabulary (real events)
 //
-// The pipeline write-path gate (isNonTrivialDream, src/agents/dreaming/
-// between.js) prevents new telemetry; this script clears the backlog.
+// The pipeline write path was removed outright (2026-10-18, issue #66 — the
+// #24 gate could not hold: routine compaction + ordinary edge growth fire
+// every run); this script clears the backlog it left behind.
 //
 // Orphaned nVDB vectors: memory.recall already skips tombstoned docs; reclaim
 // space afterwards with scripts/cleanup-vdb-garbage.js if wanted.

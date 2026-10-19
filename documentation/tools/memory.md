@@ -136,8 +136,7 @@ If `data/dream_map.json` doesn't exist yet: guidance text pointing at
 
 - Config `agents.dreaming`: `intervalMinutes: 15`, `contextBudget: 800000`
   (tokens), `autoStart: true`, `distillerTask`/`dreamerTask: 'query'`,
-  `dreamerLabel: 'gemini-4-12b-dreamer on Badkid'` (required — init throws if
-  empty), `serendipity { enabled, wildcardBoost: 3, resurfaceThresholdCycles:
+  `serendipity { enabled, wildcardBoost: 3, resurfaceThresholdCycles:
   5, resurfaceChance: 0.3, scoreJitter: 0.05, scoreFloor: 0.15, jitterCeiling:
   0.80, seed: null }`.
 - First run: forced, 10 s after init. Then every 15 min unforced (freshness
@@ -183,9 +182,9 @@ If `data/dream_map.json` doesn't exist yet: guidance text pointing at
    `the-between` nodes locked to cluster `c_between`, first-person `I (…)
    [substrate]` register, doer-language lint, summary compression floor.
    Runs pre-dreamer and post-serendipity.
-10. Gate `isNonTrivialDream` (edges/bridges/clusters added or anything
-    compressed) → the dreamer files its own log entry via `memory.store`
-    (category `the-between`, confidence 0.6) → backup rotate → save map.
+10. No dream-entry write (removed 2026-10-18, #66 — the #24 gate could not
+    hold: routine compaction + ordinary edge growth fire every run) → backup
+    rotate → save map. The tending record stays in `meta.activity` + logs.
 
 ## Config keys
 
@@ -196,7 +195,6 @@ If `data/dream_map.json` doesn't exist yet: guidance text pointing at
 | `agents.dreaming.intervalMinutes` | 15 | Dream cadence. |
 | `agents.dreaming.contextBudget` | 800000 | Distill+dream token budget. |
 | `agents.dreaming.autoStart` | true | Schedule automatically. |
-| `agents.dreaming.dreamerLabel` | (set, required) | Substrate tag for the dreamer's the-between entries. |
 | `agents.dreaming.serendipity.*` | see above | Wildcard/resurface/jitter knobs. |
 
 ## Behaviors worth knowing
