@@ -24,8 +24,8 @@ const context = {
                 defaultPreset: 'handdrawn',
                 presets: {
                     handdrawn: {
-                        denoise: 0.3,
-                        steps: 12,
+                        denoise: 0.45,
+                        steps: 20,
                         prompt:
                             'Redraw the boxes and arrows of this diagram by hand in dark ink on warm off-white paper: ' +
                             'fine pen outlines, slightly wobbly hand-drawn edges, no colour fills. ' +
@@ -99,12 +99,34 @@ if (process.env.CHART_HYBRID === '1') {
     console.log(hybrid.content[0].text);
     console.log('parts:', hybrid.content.map((c) => c.type).join(','));
     const hybridRel = hybrid.content[0].text.match(/svg\s+(charts\/\S+\.svg)/)[1];
+    const backdropRel = hybrid.content[0].text.match(/backdropPath "([^"]+)"/)[1];
     const hybridSvg = fs.readFileSync(path.join(root, hybridRel), 'utf8');
+    const driftScore = Number(hybrid.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
     console.log(
         'hybrid has text:', /<text\b/.test(hybridSvg),
         '| webp backdrop:', /<image href="data:image\/webp;base64,/.test(hybridSvg),
-        '| bytes:', hybridSvg.length
+        '| drift:', driftScore,
+        '| isError:', hybrid.isError
     );
+
+    // Same surface, edited words: no model call, so it must be fast and the text
+    // must actually change.
+    const edited = structuredClone(spec);
+    edited.nodes.find((n) => n.id === 'gw').label = 'Gateway';
+    const started = Date.now();
+    const recomposed = await chart_hybrid({ spec: edited, backdropPath: backdropRel, preview: false });
+    const recomposedSvg = fs.readFileSync(path.join(root, recomposed.content[0].text.match(/svg\s+(charts\/\S+\.svg)/)[1]), 'utf8');
+    console.log(
+        '--- re-composite ---',
+        Date.now() - started, 'ms',
+        '| saved backdrop:', recomposed.content[0].text.includes('saved backdrop'),
+        '| label swapped:', /Gateway/.test(recomposedSvg) && !/LLM Gateway/.test(recomposedSvg),
+        '| isError:', recomposed.isError
+    );
+
+    // A restyle that leaves the geometry must be refused, not shipped.
+    const drifted = await chart_hybrid({ spec, denoise: 0.85, steps: 20, preview: false });
+    console.log('--- drift guard ---', 'isError:', drifted.isError, '|', drifted.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
 } else {
     console.log('--- hybrid skipped (set CHART_HYBRID=1 to run the real model call) ---');
 }

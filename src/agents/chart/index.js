@@ -19,6 +19,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { getLogger } from '../../utils/logger.js';
 import { render, audit, check, CONTRACT, variantSvg, geometryBase } from '../../nCharts/src/index.js';
 
@@ -32,6 +33,7 @@ let gatewayKey;
 let previewSize;
 let hybridSize;
 let hybridTimeoutMs;
+let driftFloor;
 let presets;
 let hybridModels;
 let defaultPreset;
@@ -46,6 +48,7 @@ export async function init(context) {
     previewSize = conf.previewSize ?? 1600;
     hybridSize = conf.hybridSize ?? 1920;
     hybridTimeoutMs = conf.hybridTimeoutMs ?? 180000;
+    driftFloor = conf.driftFloor ?? 0.55;
 
     gatewayHttp = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
     gatewayKey = context.config.gateway?.accessKey ?? null;
@@ -96,7 +99,11 @@ function uniqueBase(slug) {
     const stamp = localTimestamp();
     let candidate = `${stamp}_${slug}`;
     let i = 2;
-    while (fs.existsSync(path.join(dir, `${candidate}.json`))) candidate = `${stamp}_${slug}-${i++}`;
+    // Both sidecars count: a render writes <base>.json, a hybrid writes
+    // <base>-hybrid.json. Checking one lets two hybrids in the same minute
+    // overwrite each other.
+    const taken = (name) => fs.existsSync(path.join(dir, `${name}.json`)) || fs.existsSync(path.join(dir, `${name}-hybrid.json`));
+    while (taken(candidate)) candidate = `${stamp}_${slug}-${i++}`;
     return candidate;
 }
 
@@ -173,6 +180,175 @@ function compositeHybrid(svg, href) {
     const textOnly = svg.replace(SHAPE_ELEMENT, '');
     if (textOnly.includes('</defs>')) return textOnly.replace('</defs>', () => `</defs>\n${image}`);
     return textOnly.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${image}`);
+}
+
+// ── Drift audit ─────────────────────────────────────────────────────────────
+// The geometry audit is the oracle for layout; this is the oracle for the
+// surface. A restyle that moves the boxes leaves the vector type sitting off its
+// shapes, which is invisible until someone looks. Comparing ink coverage per grid
+// cell turns that into a number.
+//
+// A minimal PNG reader: 8-bit, non-interlaced — what Chrome and the image models
+// emit. Anything else is refused by name rather than guessed at.
+function pngInk(buf) {
+    if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) throw new Error('chart audit: not a PNG');
+    let pos = 8;
+    let width = 0;
+    let height = 0;
+    let depth = 0;
+    let colorType = 0;
+    let interlace = 0;
+    let palette = null;
+    const idat = [];
+
+    while (pos + 8 <= buf.length) {
+        const len = buf.readUInt32BE(pos);
+        const type = buf.toString('ascii', pos + 4, pos + 8);
+        const data = buf.subarray(pos + 8, pos + 8 + len);
+        if (type === 'IHDR') {
+            width = data.readUInt32BE(0);
+            height = data.readUInt32BE(4);
+            depth = data[8];
+            colorType = data[9];
+            interlace = data[12];
+        } else if (type === 'PLTE') palette = data;
+        else if (type === 'IDAT') idat.push(data);
+        else if (type === 'IEND') break;
+        pos += 12 + len;
+    }
+    if (depth !== 8) throw new Error(`chart audit: PNG bit depth ${depth} — 8 expected`);
+    if (interlace !== 0) throw new Error('chart audit: interlaced PNG is not supported');
+    const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
+    if (!channels) throw new Error(`chart audit: PNG colour type ${colorType} is not supported`);
+    if (colorType === 3 && !palette) throw new Error('chart audit: palette PNG without PLTE');
+
+    const raw = zlib.inflateSync(Buffer.concat(idat));
+    const stride = width * channels;
+    const pixels = Buffer.alloc(stride * height);
+    let prev = Buffer.alloc(stride);
+    let p = 0;
+
+    for (let y = 0; y < height; y += 1) {
+        const filter = raw[p];
+        p += 1;
+        const cur = Buffer.from(raw.subarray(p, p + stride));
+        p += stride;
+        for (let i = 0; i < stride; i += 1) {
+            const a = i >= channels ? cur[i - channels] : 0;
+            const b = prev[i];
+            const c = i >= channels ? prev[i - channels] : 0;
+            let v = cur[i];
+            if (filter === 1) v = (v + a) & 255;
+            else if (filter === 2) v = (v + b) & 255;
+            else if (filter === 3) v = (v + ((a + b) >> 1)) & 255;
+            else if (filter === 4) {
+                const pa = Math.abs(b - c);
+                const pb = Math.abs(a - c);
+                const pc = Math.abs(a + b - 2 * c);
+                v = (v + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255;
+            } else if (filter !== 0) throw new Error(`chart audit: PNG filter ${filter} is not supported`);
+            cur[i] = v;
+        }
+        cur.copy(pixels, y * stride);
+        prev = cur;
+    }
+
+    const ink = new Float32Array(width * height);
+    for (let i = 0; i < width * height; i += 1) {
+        const o = i * channels;
+        let r;
+        let g;
+        let b;
+        if (colorType === 3) {
+            const idx = pixels[o] * 3;
+            r = palette[idx];
+            g = palette[idx + 1];
+            b = palette[idx + 2];
+        } else if (colorType === 0 || colorType === 4) {
+            r = g = b = pixels[o];
+        } else {
+            r = pixels[o];
+            g = pixels[o + 1];
+            b = pixels[o + 2];
+        }
+        ink[i] = 1 - (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    }
+    return { width, height, ink };
+}
+
+// Ink coverage per cell, on a grid whose aspect matches the image. Coarse on
+// purpose: a hand-drawn line wanders a few pixels, and the question is whether
+// the boxes are still where the layout put them — not whether the pixels match.
+function inkGrid({ width, height, ink }, cols = 16) {
+    const rows = Math.max(1, Math.round((cols * height) / width));
+    const cell = new Float32Array(cols * rows);
+    const cellW = width / cols;
+    const cellH = height / rows;
+    for (let y = 0; y < height; y += 1) {
+        const gy = Math.min(rows - 1, Math.floor(y / cellH));
+        for (let x = 0; x < width; x += 1) {
+            const gx = Math.min(cols - 1, Math.floor(x / cellW));
+            cell[gy * cols + gx] += ink[y * width + x];
+        }
+    }
+    for (let i = 0; i < cell.length; i += 1) cell[i] /= cellW * cellH;
+    return { cols, rows, cell };
+}
+
+function driftReport(basePng, surfacePng) {
+    const a = inkGrid(pngInk(basePng));
+    const b = inkGrid(pngInk(surfacePng));
+    const n = a.cell.length;
+    let sumA = 0;
+    let sumB = 0;
+    for (let i = 0; i < n; i += 1) {
+        sumA += a.cell[i];
+        sumB += b.cell[i];
+    }
+
+    // Correlation, not difference. A restyle adds paper grain, which raises ink
+    // everywhere and would swamp an absolute comparison; what has to match is
+    // *where* the ink is. Pearson on the cell coverage ignores the global scale.
+    const meanA = sumA / n;
+    const meanB = sumB / n;
+    let covariance = 0;
+    let varianceA = 0;
+    let varianceB = 0;
+    const cells = [];
+    for (let i = 0; i < n; i += 1) {
+        const x = a.cell[i] - meanA;
+        const y = b.cell[i] - meanB;
+        covariance += x * y;
+        varianceA += x * x;
+        varianceB += y * y;
+        // The worst-cell list uses each surface's *share* of total ink, so a
+        // heavy-texture render does not drown the structural difference.
+        const shareA = sumA > 0 ? a.cell[i] / sumA : 0;
+        const shareB = sumB > 0 ? b.cell[i] / sumB : 0;
+        cells.push({ i, diff: Math.abs(shareA - shareB) });
+    }
+    const score = varianceA > 0 && varianceB > 0 ? covariance / Math.sqrt(varianceA * varianceB) : 0;
+    const worst = cells
+        .sort((x, y) => y.diff - x.diff)
+        .slice(0, 5)
+        .map((c) => ({ x: c.i % a.cols, y: Math.floor(c.i / a.cols), diff: Math.round(c.diff * 1000) / 1000 }));
+
+    return {
+        score: Math.round(score * 100) / 100,
+        grid: `${a.cols}x${a.rows}`,
+        inkBase: Math.round(sumA * 100) / 100,
+        inkSurface: Math.round(sumB * 100) / 100,
+        worst
+    };
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function storageFile(tool, filePath) {
+    const abs = path.join(storageRoot, filePath);
+    if (!abs.startsWith(path.resolve(storageRoot))) throw new Error(`${tool}: path escapes the storage root: ${filePath}`);
+    if (!fs.existsSync(abs)) throw new Error(`${tool}: no such file: ${filePath}`);
+    return abs;
 }
 
 // Local first, cloud only when the local model refuses — the chain is config, not
@@ -374,8 +550,8 @@ export async function chart_hybrid(args) {
         throw new Error(`chart_hybrid: unknown preset "${presetName}". Available: ${Object.keys(presets).join(', ')}`);
     }
     const prompt = typeof args?.prompt === 'string' && args.prompt.length > 0 ? args.prompt : preset.prompt;
-    const denoise = args?.denoise ?? preset.denoise ?? 0.3;
-    const steps = args?.steps ?? preset.steps ?? 12;
+    const denoise = args?.denoise ?? preset.denoise ?? 0.45;
+    const steps = args?.steps ?? preset.steps ?? 20;
     const theme = args?.theme === 'dark' ? 'dark' : 'light';
 
     const { svg, spec } = resolveSvg(args);
@@ -383,7 +559,8 @@ export async function chart_hybrid(args) {
     const dir = path.join(storageRoot, chartDir);
     const rel = (p) => path.relative(storageRoot, p).split(path.sep).join('/');
 
-    // 1. Textless, weighted base — this is what the model sees.
+    // 1. Textless, weighted base — this is what the model sees, and what the
+    // drift audit compares the surface against.
     const baseSvg = prepareBase(svg, args?.strength);
     const baseSvgPath = path.join(dir, `${base}-base.svg`);
     fs.writeFileSync(baseSvgPath, baseSvg, 'utf8');
@@ -395,20 +572,40 @@ export async function chart_hybrid(args) {
     const basePngPath = path.join(dir, `${base}-base.png`);
     fs.writeFileSync(basePngPath, raster.buf);
 
-    // 2. Restyle the surface. Local model first; the chain is agents.chart.hybridModels.
-    const restyled = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps });
+    // 2. The surface: restyled now, or a backdrop kept from an earlier run. Reuse
+    // is the cheap path — text edits stop costing a generation, and the picture
+    // you approved stops changing under you.
+    let surface;
+    if (args?.backdropPath) {
+        const abs = storageFile('chart_hybrid', args.backdropPath);
+        surface = { buf: fs.readFileSync(abs), model: 'saved backdrop', seconds: 0, usage: null, reused: args.backdropPath };
+    } else {
+        surface = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps });
+    }
+
+    // The audit reads PNG; a saved WebP is normalised first. The PNG on disk is
+    // therefore always the bytes that were judged.
+    let surfacePng = surface.buf;
+    if (!surfacePng.subarray(0, 8).equals(PNG_SIGNATURE)) {
+        surfacePng = (await nmediaProcess(surfacePng.toString('base64'), { format: 'png', maxDimension: hybridSize })).buf;
+    }
     const backdropPath = path.join(dir, `${base}-backdrop.png`);
-    fs.writeFileSync(backdropPath, restyled.buf);
+    fs.writeFileSync(backdropPath, surfacePng);
 
     // 3. Embed it as WebP (a photo-like surface: PNG would be several megabytes of
     // base64 in the SVG) and put the vector type back on top.
-    const webp = await nmediaProcess(restyled.buf.toString('base64'), { format: 'webp', maxDimension: hybridSize, quality: 92 });
+    const webp = await nmediaProcess(surfacePng.toString('base64'), { format: 'webp', maxDimension: hybridSize, quality: 92 });
     const backdropWebpPath = path.join(dir, `${base}-backdrop.webp`);
     fs.writeFileSync(backdropWebpPath, webp.buf);
 
     const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`);
     const hybridPath = path.join(dir, `${base}.svg`);
     fs.writeFileSync(hybridPath, hybridSvg, 'utf8');
+
+    // 4. Did the surface stay where the layout is? Type is placed from the
+    // original geometry, so a surface that drifted leaves the words off the boxes.
+    const drift = driftReport(raster.buf, surfacePng);
+    const drifted = drift.score < driftFloor;
 
     const sidecar = {
         kind: 'hybrid',
@@ -418,9 +615,11 @@ export async function chart_hybrid(args) {
         denoise,
         steps,
         theme,
-        model: restyled.model,
-        usage: restyled.usage,
-        seconds: restyled.seconds,
+        model: surface.model,
+        reused: surface.reused ?? null,
+        usage: surface.usage,
+        seconds: surface.seconds,
+        drift,
         spec: spec ?? null,
         files: {
             hybrid: rel(hybridPath),
@@ -434,15 +633,27 @@ export async function chart_hybrid(args) {
     fs.writeFileSync(path.join(dir, `${base}-hybrid.json`), JSON.stringify(sidecar, null, 2), 'utf8');
 
     const lines = [
-        `${base}  (hybrid, ${presetName}, ${restyled.model})`,
+        `${base}  (hybrid, ${presetName}, ${surface.model})`,
         `  svg       ${rel(hybridPath)}`,
-        `  backdrop  ${rel(backdropWebpPath)}  (${webp.width}x${webp.height}, from ${restyled.model})`,
+        `  backdrop  ${rel(backdropWebpPath)}  (${webp.width}x${webp.height}, from ${surface.model})`,
         `  base      ${rel(baseSvgPath)}`,
         `  meta      ${rel(path.join(dir, `${base}-hybrid.json`))}`,
+        `  drift     ${drift.score}  (${drift.grid} grid, ink ${drift.inkBase} → ${drift.inkSurface})`,
         '',
         `The type is vector and pinned to ${theme}; the surface is one raster.`,
-        `Re-composite without another model call by reusing ${rel(backdropPath)}.`
+        `Re-composite without another model call: pass backdropPath "${rel(backdropPath)}".`
     ];
+
+    if (drifted) {
+        lines.push(
+            '',
+            `DRIFT: the surface moved away from the geometry (${drift.score} < ${driftFloor}). The type is`,
+            'placed from the original layout, so the words no longer sit on their shapes.',
+            `Worst cells (grid x,y — difference): ${drift.worst.map((c) => `${c.x},${c.y} Δ${c.diff}`).join('  ')}`,
+            'Lower denoise (0.35–0.45 holds), or use a preset whose model keeps the structure.'
+        );
+        logger.warn(`[chart] drift ${drift.score} below floor ${driftFloor} for ${base}`, null, 'Chart');
+    }
 
     let previewBuf = null;
     if (args?.preview !== false) {
@@ -460,6 +671,6 @@ export async function chart_hybrid(args) {
     const content = [{ type: 'text', text: lines.join('\n') }];
     if (previewBuf) content.push({ type: 'image', data: previewBuf.toString('base64'), mimeType: 'image/webp' });
 
-    logger.info(`[chart] Wrote hybrid ${base} via ${restyled.model}`, null, 'Chart');
-    return { content, isError: false };
+    logger.info(`[chart] Wrote hybrid ${base} via ${surface.model}, drift ${drift.score}`, null, 'Chart');
+    return { content, isError: drifted };
 }

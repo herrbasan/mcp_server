@@ -764,7 +764,8 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       (the handoff hybrid uses) and still writes the spec sidecar.
 
   chart.hybrid — { spec* | svg* | svgPath*, name?, preset?, prompt?,
-                   denoise?, steps?, theme?, strength?, preview? }
+                   denoise?, steps?, theme?, strength?, backdropPath?,
+                   preview? }
       A restyled surface with exact vector type on top. The SVG's
       <text> elements are lifted, the drawing is rasterized, restyled
       by an image model, and the words are composited back over a WebP
@@ -777,6 +778,13 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       the common case is free. Writes <base>.svg, the backdrop, the
       base, a sidecar (preset/prompt/model/usage) and a preview. A
       hybrid is single-theme — the backdrop is one fixed image.
+
+      A drift audit correlates the returned surface against the base
+      geometry: below the floor the call returns isError with the
+      score and the worst cells, because the words would be floating
+      off their shapes. backdropPath re-composites an edited spec over
+      a backdrop from an earlier run — no model call, ~200 ms, same
+      surface, same audit.
 
 
 ═══════════════════════════════════════════════════════════════

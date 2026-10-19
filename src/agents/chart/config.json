@@ -31,7 +31,7 @@
         },
         {
             "name": "chart_hybrid",
-            "description": "Restyle a diagram's shapes with an image model while keeping its words as vector type — a hand-drawn (or otherwise prompted) surface with exact, selectable text on top. Takes a spec, an SVG string, or a storage svgPath; the SVG's <text> elements are lifted, the drawing is rasterized, restyled through the image-model chain (local krea2 first, cloud only when the local worker refuses), and the type is composited back over a WebP backdrop. Returns the hybrid SVG, the backdrop, the base, a JSON sidecar (preset, prompt, model, usage) and a preview image. Costs nothing on the local model; the cloud fallback is billed per image.",
+            "description": "Restyle a diagram's shapes with an image model while keeping its words as vector type — a hand-drawn (or otherwise prompted) surface with exact, selectable text on top. Takes a spec, an SVG string, or a storage svgPath; the SVG's <text> elements are lifted, the drawing is rasterized, restyled through the image-model chain (local krea2 first, cloud only when the local worker refuses), and the type is composited back over a WebP backdrop. Returns the hybrid SVG, the backdrop, the base, a JSON sidecar (preset, prompt, model, drift score, usage) and a preview image. A drift audit correlates the surface against the base geometry and fails the call when the model moved the boxes out from under the type. Pass backdropPath from an earlier run to re-composite after editing text — no model call, ~200 ms, same surface. Costs nothing on the local model; the cloud fallback is billed per image.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -45,7 +45,8 @@
                     "steps": { "type": "integer", "description": "Sampler steps for the local krea2 model. Default 20." },
                     "theme": { "type": "string", "enum": ["dark", "light"], "description": "Palette the vector type is pinned to. A backdrop is one fixed image, so a hybrid is single-theme. Defaults to light." },
                     "strength": { "type": "number", "description": "Stroke weight in the rasterized base. Defaults to 2.5 for nCharts documents; omit to leave other SVGs as authored." },
-                    "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to WebP for inline display. Default true." }
+                    "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to WebP for inline display. Default true." },
+                    "backdropPath": { "type": "string", "description": "Re-composite instead of generating: a stored backdrop (charts/<base>-backdrop.png) from an earlier run. Skips the image model entirely — ~200 ms — so text edits do not cost a generation or change the surface. The drift audit still runs." }
                 },
                 "required": []
             }

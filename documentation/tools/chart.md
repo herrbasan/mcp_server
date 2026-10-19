@@ -65,7 +65,7 @@ written, because the text layer can only be recovered by re-rendering.
 
 ### `chart.hybrid`
 
-`{ spec* | svg* | svgPath*, name?, preset?, prompt?, denoise?, steps?, theme?, strength?, preview? }`
+`{ spec* | svg* | svgPath*, name?, preset?, prompt?, denoise?, steps?, theme?, strength?, backdropPath?, preview? }`
 
 A restyled surface with exact vector type on top. Input is a spec, an SVG string,
 or a storage path — any SVG whose words live in `<text>` elements.
@@ -97,6 +97,36 @@ chain exists to prevent.
 **A hybrid is single-theme.** The backdrop is one fixed image, so the vector type
 is pinned to `theme` (default light). A dual-scheme hybrid breaks at the first
 dark-mode reader — the type flips over paper that cannot follow.
+
+#### Re-composite — the cheap path
+
+Pass `backdropPath` (the `<base>-backdrop.png` from an earlier run) and the model
+is skipped entirely: 200 ms instead of 20 s. That is the iteration loop that
+matters — restyle once, then edit labels, add a node, fix a typo, and re-composite
+each time. The surface you approved stops changing under you, and the local GPU is
+touched once instead of per edit. The result is a new artifact with its own base
+name; the source backdrop is copied in, never mutated.
+
+#### Drift audit — the oracle for the surface
+
+The type is placed from the original geometry, so a restyle that moves the boxes
+leaves the words floating off their shapes. That used to be caught by eye. Now both
+rasterizations — the base the model saw and the surface it returned — are read back
+(8-bit PNG, decoded in-process, no dependency), reduced to ink coverage on a 16-cell
+grid, and correlated:
+
+- **`score`** is Pearson correlation of cell coverage, in `-1..1`. Correlation, not
+  difference: paper grain raises ink everywhere, and what must match is *where* the
+  ink is, not how much of it there is.
+- Below `driftFloor` (0.55) the call returns **`isError: true`** with the score, the
+  five worst cells, and the advice to lower denoise. The artifacts are still written
+  — the backdrop and the base are what you need to see why it drifted.
+- Calibrated on `flow-gateway` through the local krea2: **0.77 at the shipped
+  preset, 0.32 at denoise 0.85**. The floor sits between them with margin on both
+  sides.
+
+The audit runs on re-composites too — it is cheap, and a backdrop kept from an older
+diagram can still be wrong for the new one.
 
 ## Storage layout
 
@@ -135,6 +165,7 @@ a dark reader.
     "previewSize": 1600,
     "hybridSize": 1920,
     "hybridTimeoutMs": 180000,
+    "driftFloor": 0.55,
     "hybridModels": ["coolkid-krea2", "qwen-image"],
     "defaultPreset": "handdrawn",
     "presets": { "handdrawn": { "denoise": 0.45, "steps": 20, "prompt": "…" } }
@@ -182,8 +213,10 @@ render (svg + spec + preview, with the inline image part), the textless base (no
 `<text>` elements, page colour present), hybrid's refusal of a textless base, an
 audit rejection (three tones in a structure diagram: nothing written), a supplied
 geometry key (throws naming `nodes[0].x`), and nMedia-down (the render still lands
-and says so). `CHART_HYBRID=1` adds a real hybrid through the Gateway and asserts
-the composite carries both `<text>` and a WebP `<image>`.
+and says so). `CHART_HYBRID=1` adds a real hybrid through the Gateway (asserts
+`<text>` + WebP `<image>`, and a drift score above the floor), a **re-composite**
+(the label is swapped, the model line says `saved backdrop`, ~200 ms) and a **drift
+guard** run at denoise 0.85 (`isError: true`, score below the floor).
 
 Verified against live services 2026-10-19: `coolkid-krea2` accepts the init image
 through the Gateway and holds the layout at the shipped preset; `qwen-image` is a
@@ -212,3 +245,12 @@ working fallback (it is also the only image model in `data/models.json` declarin
   edit path (same trap as issue #67 in `image.generate`).
 - **A textless base cannot be hybridized.** The words are gone; pass the spec or a
   full SVG. The tool says so instead of returning a wordless picture.
+- **`uniqueBase` must check both sidecars.** A render writes `<base>.json`, a hybrid
+  writes `<base>-hybrid.json`. Checking only the first let two hybrids in the same
+  minute land on the same name — the second silently overwrote the first, and a
+  re-composite then reused the wrong backdrop.
+- **The drift score is a heuristic, not a proof.** It reads ink distribution on a
+  16-cell grid, so it catches boxes that moved or vanished, not a subtly wrong
+  stroke. A different diagram type (bars, a dense table) can score lower without
+  being wrong — the floor is calibrated on `flow-gateway`, and `driftFloor` is
+  config for that reason. Trust the score to raise a question, then look.
