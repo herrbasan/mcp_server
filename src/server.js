@@ -753,6 +753,11 @@ model returning mixed candidates gets both treatments.
       ends with the sentence that matters: if no image arrived, the host
       dropped it, and the caller must say so rather than guess.
 
+      ⚠ MEASURED 2026-10-20 in VS Code: the client VALIDATES a png block and
+      the model still receives nothing (webp is refused outright). So this
+      does NOT give a model sight here — use a vision check instead. It is
+      kept for hosts that do deliver tool images (the chat app renders them).
+
 
 ═══════════════════════════════════════════════════════════════
 CHART — Diagrams as SVG (nCharts)

@@ -3,7 +3,39 @@
 Image generation via the LLM Gateway with automatic variant rendering into
 MCP storage. Added 2026-09-25.
 
+> **`image.ingest` does not work in VS Code (measured 2026-10-20).** The tool
+> builds a correct PNG image block and the MCP client validates and accepts it —
+> no warning — and the model still receives nothing. WebP blocks are refused
+> outright (`MCP image omitted — MIME type unsupported`). Images the user
+> **pastes** into a message do reach the model, so the gap is the host's handling
+> of tool results, not the block. Do not design a verification loop around
+> returning images from a tool here; run the vision check inside the tool and
+> return text, which is what `chart.hybrid` does.
+
 ## Methods
+
+### `image.ingest`
+
+`{ source* | sources*, max_dimension?, format?, quality?, region?, upscale?, label? }`
+
+Returns an existing image as an MCP image block so a caller can look at it.
+Bounded: ≤4 sources, 24 MB per source, ≤4 MB of base64 per block (halved again
+rather than truncated), and paths resolved against the storage root plus
+`agents.image.ingestRoots` — without that, it is an arbitrary-file-read tool.
+
+`region {x,y,w,h}` crops in **source pixels**, before any resize; it is for
+reading one label band of a chart at a time. `upscale` is honoured for SVG (nMedia
+re-renders it larger) and refused for bitmaps, which the metadata says out loud.
+`format` defaults to **png** because that is the only block the VS Code client
+accepts.
+
+nMedia's limits shape the order of operations: `max_dimension` is a target for an
+SVG but only a cap for a bitmap, crop and resize do not combine in one call, and
+`region` is fractional internally — so an SVG is rendered at the working size
+first, the region is cut from that raster, a bitmap is only ever shrunk, and the
+fractions are computed from the source size.
+
+**It does not give a model sight in VS Code** — see the warning at the top.
 
 ### `image.generate`
 
