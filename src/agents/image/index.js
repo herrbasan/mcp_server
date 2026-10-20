@@ -412,7 +412,7 @@ export async function image_ingest(args) {
     }
 
     const maxDimension = args?.max_dimension ?? 1600;
-    const format = ['webp', 'jpeg', 'png'].includes(args?.format) ? args.format : 'webp';
+    const format = ['webp', 'jpeg', 'png'].includes(args?.format) ? args.format : 'png';
     const qualityValue = Math.min(100, Math.max(1, args?.quality ?? 82));
     const region = args?.region ?? null;
     const upscale = Math.min(3, Math.max(1, args?.upscale ?? 1));
