@@ -42,7 +42,11 @@ Both route all agent methods via `agent.action` (e.g. `storage.write`, `memory.r
 3. Wire into `src/server.js`:
    - Add methods to `COMPACT_TOOL` description.
    - Add `agent.action` → `legacy_tool_name` mappings in `COMPACT_TO_LEGACY`.
-4. Restart server and reconnect client.
+4. Restart server **and reconnect every client**. A client copies the tool
+   description when it connects, so a newly registered agent is invisible to a
+   session that was already open — it will answer "Unknown method" for a method
+   the server has. `methods.list` returns the live registry, which is how you tell
+   "not registered" apart from "stale client copy".
 
 ## Tool Handler Return Format
 

@@ -340,6 +340,14 @@ RESPONSE FORMAT
   The actual result is in content[0].text — parse it to get the data.
   On error, isError is true and content[0].text contains the error message.
 
+⚠ NOT SURE WHAT EXISTS? — methods.list
+  { filter? }
+  The live registry, grouped by agent, e.g. "chart (3) guide, hybrid, render".
+  Your copy of this description was baked in when the client connected; an agent
+  added since then is real but absent from these tables. When a call answers
+  "Unknown method", ask methods.list before inventing a name. Filter with
+  {"filter":"chart"} to see the handler each method routes to.
+
 WORKED EXAMPLE — the envelope nests ONE level. The outer payload is the
 argument object for the method; inside it, the method's own fields go verbatim,
 including a field that is itself named payload:
@@ -1325,9 +1333,50 @@ IMPORTANT RULES
         }
 
         const legacyName = COMPACT_TO_LEGACY[method] ?? COMPACT_TO_LEGACY[method.toLowerCase()];
-        if (!legacyName) throw new Error(`Unknown method: ${method}. See tool description for full list.`);
-        logger.info(`[Compact] Routing ${method} → ${legacyName}`, null, 'MCP');
-        return routeToolCall(legacyName, payload, context);
+        if (legacyName) {
+            logger.info(`[Compact] Routing ${method} → ${legacyName}`, null, 'MCP');
+            return routeToolCall(legacyName, payload, context);
+        }
+
+        // Live registry. The static tool description is baked into the client at
+        // connect time, so a client that connected before an agent was added asks
+        // for a method it was never told about. This answers "does the server know
+        // X" at runtime instead of leaving the caller to guess names.
+        if (method === 'methods.list' || method === 'workshop.methods') {
+            const filter = typeof payload?.filter === 'string' ? payload.filter.toLowerCase() : null;
+            const names = Object.keys(COMPACT_TO_LEGACY)
+                .filter((m) => !filter || m.toLowerCase().includes(filter))
+                .sort();
+
+            if (filter) {
+                const lines = names.map((m) => `${m}  →  ${COMPACT_TO_LEGACY[m]}`);
+                return {
+                    content: [{ type: 'text', text: `${names.length} method(s) matching "${filter}":\n${lines.join('\n')}` }],
+                    isError: false
+                };
+            }
+
+            const byAgent = new Map();
+            for (const m of names) {
+                const prefix = m.split('.')[0];
+                if (!byAgent.has(prefix)) byAgent.set(prefix, []);
+                byAgent.get(prefix).push(m.slice(prefix.length + 1));
+            }
+            const rows = [...byAgent.keys()].sort().map((agent) => {
+                const methods = byAgent.get(agent);
+                return `  ${agent} (${methods.length})  ${methods.join(', ')}`;
+            });
+            return {
+                content: [{
+                    type: 'text',
+                    text: `live methods: ${names.length} across ${byAgent.size} agents\n${rows.join('\n')}\n\n` +
+                        'Filter with {"filter":"chart"} to see the handler names.'
+                }],
+                isError: false
+            };
+        }
+
+        throw new Error(`Unknown method: ${method}. Call methods.list to see what this server knows.`);
     };
 
     // Chat agent tool router: dispatcher-form calls (agent.action method +
