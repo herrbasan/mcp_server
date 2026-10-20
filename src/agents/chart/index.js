@@ -390,7 +390,9 @@ async function restyle(reference, { prompt, denoise, steps, chain }) {
     const failures = [];
     for (const model of chain) {
         const body = { model, prompt, input_references: [reference] };
-        if (/krea/i.test(model)) body.extra_body = { denoise, steps };
+        // Denoise/steps are sampler controls: krea's and moss's local backends take
+        // them; cloud adapters do not, and a 1.0 default would discard the input.
+        if (/krea|moss/i.test(model)) body.extra_body = { denoise, steps };
         const started = Date.now();
         try {
             const res = await fetch(`${gatewayHttp}/v1/images/generations`, {

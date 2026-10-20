@@ -195,6 +195,19 @@ disappeared (the old build). So: fidelity first, and let the check drive any
 experiment. 0.3 / 12 steps is the shipped point; `denoise` and `steps` are per-call
 arguments when a run proves it can take more.
 
+**`coolkid-moss-image` was evaluated and rejected (2026-10-20).** Tried on the flow
+and on the custom composition, at denoise 0.12 / 0.25 / 0.4 / 0.45 / 0.65, against
+bases at stroke 2.5 and 4. What it does better than krea2: **icons** (all six
+Material glyphs stayed crisp) and **colour** (the accent fill survived every run).
+What it does worse, at every setting: **thin connectors fragment** — wires end in
+stubs, arrowheads detach, dashed fallbacks break into dashes with gaps — and it
+produces **no ink-on-paper character** at low denoise, just a cleaner copy. For a
+diagram whose argument is carried by its wires, broken wires are fatal, so krea2
+remains the shipped restyler; moss stays reachable through `model` for a *clean*
+restyle where wires are not the point. Untested lever: its notes advertise
+"JSON layout prompts with bboxes", so a bbox-per-shape prompt may handle connectors
+better than the prose prompt used here.
+
 `charts` is in `agents.vdb.ignore`: chart output is transient, and a spec sidecar
 per render would otherwise become searchable documents.
 
