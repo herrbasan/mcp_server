@@ -348,6 +348,9 @@ RESPONSE FORMAT
   "Unknown method", ask methods.list before inventing a name. Filter with
   {"filter":"chart"} to see the handler each method routes to.
 
+  "<agent>.help" answers with that agent's method names (there is no help METHOD
+  besides forge.help, which is the full tool-authoring guide).
+
 WORKED EXAMPLE — the envelope nests ONE level. The outer payload is the
 argument object for the method; inside it, the method's own fields go verbatim,
 including a field that is itself named payload:
@@ -1349,6 +1352,25 @@ IMPORTANT RULES
             return routeToolCall(legacyName, payload, context);
         }
 
+        // "<agent>.help" is the guess a model makes after seeing forge.help in the
+        // description. Only forge has a real guide; for the rest, answer with that
+        // agent's methods instead of another "Unknown method" round trip.
+        const lower = method.toLowerCase();
+        if (lower.endsWith('.help')) {
+            const agent = lower.slice(0, -5);
+            const siblings = Object.keys(COMPACT_TO_LEGACY).filter((m) => m.toLowerCase().startsWith(`${agent}.`));
+            if (siblings.length) {
+                return {
+                    content: [{
+                        type: 'text',
+                        text: `${agent} has no "help" method. It exposes:\n${siblings.map((m) => `  ${m}`).join('\n')}\n\n` +
+                            'Payload shapes are in this tool description; methods.list lists every agent.'
+                    }],
+                    isError: false
+                };
+            }
+        }
+
         // Live registry. The static tool description is baked into the client at
         // connect time, so a client that connected before an agent was added asks
         // for a method it was never told about. This answers "does the server know
@@ -1387,7 +1409,13 @@ IMPORTANT RULES
             };
         }
 
-        throw new Error(`Unknown method: ${method}. Call methods.list to see what this server knows.`);
+        const prefix = lower.split('.')[0];
+        const near = Object.keys(COMPACT_TO_LEGACY).filter((m) => m.toLowerCase().startsWith(`${prefix}.`)).slice(0, 16);
+        throw new Error(
+            `Unknown method: ${method}.` +
+            (near.length ? ` ${prefix} exposes: ${near.join(', ')}.` : '') +
+            ' Call methods.list to see what this server knows.'
+        );
     };
 
     // Chat agent tool router: dispatcher-form calls (agent.action method +
