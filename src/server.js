@@ -752,10 +752,11 @@ model returning mixed candidates gets both treatments.
       image first, then metadata. The text ends with the sentence that
       matters: if no image arrived, say so rather than guess.
 
-      ⚠ WHETHER YOU SEE IT DEPENDS ON THE PROVIDER EXTENSION (measured
-      2026-10-20, VS Code 1.142). With vizards.deepseek-v4-for-copilot the
-      block arrives. With herrbasan.llm-gateway-copilot 0.3.0 it does not:
-      png is dropped silently, webp is refused. Paste the image to check.
+      ⚠ UNPROVEN (measured 2026-10-20, VS Code 1.142). A blind test — a diagram
+      never described in the session — could not be read after ingestion on
+      either the gateway or the deepseek provider, and `view` on a png gave
+      nothing. A PASTED image does reach the model. Treat a tool image as
+      possibly invisible and say so rather than guessing.
 
 
 ═══════════════════════════════════════════════════════════════

@@ -3,12 +3,12 @@
 Image generation via the LLM Gateway with automatic variant rendering into
 MCP storage. Added 2026-09-25.
 
-> **`image.ingest` works — depending on the model provider extension.** Measured
-> 2026-10-20 in VS Code 1.142: the block reaches the model with
-> `vizards.deepseek-v4-for-copilot`, and is dropped with
-> `herrbasan.llm-gateway-copilot` 0.3.0 (PNG silently, WebP refused). Pasted
-> images work on both. See `vision.md` for the A/B and the upstream issues; when
-> the channel is dead, have the tool look and return text instead.
+> **`image.ingest` is unproven: no tool-returned image has been verified to reach
+> the model.** Measured 2026-10-20 in VS Code 1.142 — a blind test (a diagram never
+> described in the session) could not be read after ingestion on either the
+> gateway or the deepseek provider, and `view` on a PNG gave nothing. A **pasted**
+> image does reach the model. See `vision.md`. Keep this tool only while it is
+> being tested; if the crop/magnify path never proves useful, remove it.
 
 ## Methods
 

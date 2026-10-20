@@ -4,34 +4,40 @@ Reference documentation for iterative image analysis. Last verified
 2026-09-22 against `src/agents/vision/index.js`, `fleeting-memory.js`,
 `media-client.js`.
 
-## Can a model see a tool's image? It depends on the provider extension
+## Can a model see a tool's image? Measured 2026-10-20 — no, on both providers
 
-Measured 2026-10-20, VS Code 1.142, same session, same MCP server, same tool call:
+VS Code 1.142, one session, one MCP server, one tool call:
 
-| Model provider | Tool-returned image | Pasted image |
-|---|---|---|
-| `vizards.deepseek-v4-for-copilot` | **arrives** | arrives |
-| `herrbasan.llm-gateway-copilot` 0.3.0 | **dropped** (png silent, webp refused) | arrives |
+| Channel | Result |
+|---|---|
+| Pasted / attached image | **arrives** — verified blind on a file-tree screenshot |
+| `image.ingest` PNG block, gateway provider | **nothing** |
+| `image.ingest` PNG block, `vizards.deepseek-v4-for-copilot` | **nothing** |
+| `view` on a PNG | **nothing** |
+| Browser screenshot | **nothing** |
 
-The gateway provider is not obviously at fault: the gateway advertises
-`vision: true` for `deepseek-flash-chat`, and `provider.js` maps that to
-`capabilities.imageInput`. What differs is the mechanism — the gateway extension
-registers through `registerLanguageModelChatProvider` (the newer
-`LanguageModelChatProvider` API), and VS Code's tool-result forwarding drops images
-on that path while the attachment path is serialised unconditionally. Upstream and
-open: `microsoft/vscode#339600`, `microsoft/vscode#326276`.
+The decisive test: `tree-latency.svg` was rasterized through `media.process` and
+ingested — a diagram never described in the session — and none of its labels
+("Prefill", "Decode", "Tokenising", "Attention", "Weights", "Context") could be
+read. Ground truth afterwards from the SVG. Earlier "it works" readings in this
+session were contaminated: the images had already been described by the vision
+agent, so the description was memory, not sight.
 
-So `image.ingest` and `chart.hybrid`'s inline preview are **provider-conditional**.
-Two consequences:
+**Only a user paste is verified to reach the model.** Everything else must assume
+it did not.
+
+That also weakens the first version of this note, which blamed the gateway
+extension specifically: `herrbasan/llm-gateway-copilot#2` was filed on an A/B where
+the deepseek column was never verified blind. The upstream issues are real
+(`microsoft/vscode#339600`, `#326276`), but the attribution to one extension is not
+established.
+
+Consequence for tool design:
 
 - A tool that reports a picture must never claim it was seen. The text block from
   `image.ingest` says so explicitly.
-- For work that must happen unattended, have the tool look and return text.
-  `chart.hybrid` does that with `check: true`.
-
-Filed against our own extension: `herrbasan/llm-gateway-copilot#2` — with the A/B,
-the four causes ruled out, and a probe request for the part types arriving at
-`provideLanguageModelChatResponse`.
+- For unattended work, the tool looks and returns text. `chart.hybrid` does that
+  with `check: true`, and that is the only channel demonstrated to work here.
 
 ## What it is
 
