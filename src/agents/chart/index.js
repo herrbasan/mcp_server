@@ -22,6 +22,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { getLogger } from '../../utils/logger.js';
 import { render, audit, check, CONTRACT, variantSvg, geometryBase } from '../../nCharts/src/index.js';
+import { sketchify } from './sketch.js';
 
 const logger = getLogger();
 
@@ -508,15 +509,25 @@ export async function chart_render(args) {
         };
     }
 
-    const svg = render(spec);
+    // style: 'sketch' redraws the shapes as hand-drawn ones. Applied before the
+    // hybrid handoff so a textless base is sketchy too. Unknown values are refused
+    // rather than ignored — a silently flat diagram is the failure mode here.
+    const style = args?.style ?? 'flat';
+    if (style !== 'flat' && style !== 'sketch') {
+        throw new Error(`chart_render: style must be "flat" or "sketch", got "${style}"`);
+    }
+    const rendered = render(spec);
 
     // Static rules over the emitted markup. These are renderer bugs, not caller
     // mistakes — an undefined class paints black — so they fail loudly rather than
-    // quietly shipping a file.
-    const staticReport = check(svg);
+    // quietly shipping a file. Run against the renderer's own output: a restyle is
+    // not the renderer, and its weights are deliberately not the system's.
+    const staticReport = check(rendered);
     if (!staticReport.ok) {
         throw new Error(`chart_render: the renderer emitted invalid SVG — ${staticReport.errors.join('; ')}`);
     }
+
+    const svg = style === 'sketch' ? sketchify(rendered) : rendered;
 
     const base = uniqueBase(slugify(args?.name ?? spec.title ?? 'chart'));
     const dir = path.join(storageRoot, chartDir);

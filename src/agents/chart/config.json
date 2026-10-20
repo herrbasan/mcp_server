@@ -22,6 +22,7 @@
                     "specPath": { "type": "string", "description": "Storage path of an earlier spec sidecar (charts/<base>.json). Loaded and rendered; `spec` wins if both are given." },
                     "name": { "type": "string", "description": "Optional slug for the file base name. Defaults to the spec title, else 'chart'." },
                     "theme": { "type": "string", "enum": ["dark", "light"], "description": "Theme for the preview raster only. The SVG itself always carries both themes. Defaults to dark." },
+      "style": { "type": "string", "enum": ["flat", "sketch"], "description": "Drawing style. 'flat' is the vector look; 'sketch' redraws every shape as a hand-drawn one (wobbled geometry, a faint retrace, 1.8 weight). Defaults to flat." },
                     "text": { "type": "boolean", "description": "Set false to write the textless geometry base (no type, weighted strokes, page colour) — the handoff chart_hybrid uses. The spec sidecar is still written so the text layer can be re-rendered. Defaults to true." },
                     "strength": { "type": "number", "description": "Stroke weight for the textless base, in canvas units. Defaults to 2.5 for nCharts documents." },
                     "preview": { "type": "boolean", "description": "Render a preview raster (webp) alongside the SVG. Default true; set false when only the vector is wanted." }
