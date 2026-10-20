@@ -754,9 +754,9 @@ model returning mixed candidates gets both treatments.
 
       ⚠ UNPROVEN (measured 2026-10-20, VS Code 1.142). A blind test — a diagram
       never described in the session — could not be read after ingestion on
-      either the gateway or the deepseek provider, and `view` on a png gave
-      nothing. A PASTED image does reach the model. Treat a tool image as
-      possibly invisible and say so rather than guessing.
+      either the gateway or the deepseek provider, and the file-read tool gave
+      nothing on a png. A PASTED image does reach the model. Treat a tool image
+      as possibly invisible and say so rather than guessing.
 
 
 ═══════════════════════════════════════════════════════════════
