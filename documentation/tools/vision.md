@@ -29,6 +29,10 @@ Two consequences:
 - For work that must happen unattended, have the tool look and return text.
   `chart.hybrid` does that with `check: true`.
 
+Filed against our own extension: `herrbasan/llm-gateway-copilot#2` — with the A/B,
+the four causes ruled out, and a probe request for the part types arriving at
+`provideLanguageModelChatResponse`.
+
 ## What it is
 
 Multi-pass image analysis: load an image once into a session, then ask

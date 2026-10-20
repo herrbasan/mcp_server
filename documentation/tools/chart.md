@@ -108,6 +108,22 @@ each time. The surface you approved stops changing under you, and the local GPU 
 touched once instead of per edit. The result is a new artifact with its own base
 name; the source backdrop is copied in, never mutated.
 
+#### `check` — the tool looks at what it made
+
+With `check: true` (the default) the finished raster goes through a vision call and
+the verdict comes back as text ahead of the file list: hues and which shape carries
+each, whether every label sits inside or in a gap, whether icons are legible, any
+defects, then the readable text. A failed check is reported, never fatal — the
+artifacts are already written.
+
+This exists because a hybrid can lose a fill, drop a label plate or drift a box and
+still read as a plausible file. Measured: an earlier build scored **0.97** on the
+ink-correlation metric while the accent box had gone from `RGB(238,244,253)` to
+`RGB(238,233,226)` — a number that cannot see colour cannot certify a picture.
+
+Whether the caller can also see the inline preview depends on the model provider
+extension; see `vision.md`.
+
 #### Drift score — informational
 
 The type is placed from the original geometry, so a restyle that moves the boxes
