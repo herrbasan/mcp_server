@@ -739,6 +739,17 @@ model returning mixed candidates gets both treatments.
       an inline preview (largest derived variant, or the vector preview).
       Takes 1-2 minutes — the tool waits internally.
 
+  image.ingest — { source* | sources*, max_dimension?, format?, quality?,
+                   region?, upscale?, label? }
+      An existing image as an image block, so a model can LOOK at it.
+      source: a storage path, an absolute path inside the allowed roots, or
+      an http(s) URL; sources takes up to four. region {x,y,w,h} crops in
+      source pixels before any resize — that is how a chart is verified, one
+      label band at a time — and upscale enlarges small type. Returns the
+      image first, then metadata (sizes, bytes, what nMedia did). The text
+      ends with the sentence that matters: if no image arrived, the host
+      dropped it, and the caller must say so rather than guess.
+
 
 ═══════════════════════════════════════════════════════════════
 CHART — Diagrams as SVG (nCharts)
@@ -1266,7 +1277,7 @@ IMPORTANT RULES
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
 
-        "image.generate": "image_generate",
+        "image.generate": "image_generate", "image.ingest": "image_ingest",
 
         "chart.guide": "chart_guide", "chart.render": "chart_render", "chart.hybrid": "chart_hybrid",
 
