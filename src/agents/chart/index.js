@@ -383,12 +383,12 @@ function storageFile(tool, filePath) {
 // Local first, cloud only when the local model refuses — the chain is config, not
 // code. No size and no aspect_ratio: with an init image the reference defines the
 // frame, and sending a size makes some upstreams treat it as authoritative.
-async function restyle(reference, { prompt, denoise, steps }) {
+async function restyle(reference, { prompt, denoise, steps, chain }) {
     if (!gatewayKey) {
         throw new Error('chart_hybrid: config gateway.accessKey is missing — the image route needs it (chart.guide and chart.render do not)');
     }
     const failures = [];
-    for (const model of hybridModels) {
+    for (const model of chain) {
         const body = { model, prompt, input_references: [reference] };
         if (/krea/i.test(model)) body.extra_body = { denoise, steps };
         const started = Date.now();
@@ -621,6 +621,15 @@ export async function chart_hybrid(args) {
     const steps = args?.steps ?? preset.steps ?? 20;
     const theme = args?.theme === 'dark' ? 'dark' : 'light';
 
+    // Per-call model override: a single id, or a chain to try in order. The
+    // configured chain is the default, so testing a new restyler does not need a
+    // config edit and a restart.
+    const chain = Array.isArray(args?.models) && args.models.length
+        ? args.models
+        : typeof args?.model === 'string' && args.model.trim()
+            ? [args.model.trim()]
+            : hybridModels;
+
     const { svg, spec } = resolveSvg(args);
     const base = uniqueBase(slugify(args?.name ?? spec?.title ?? 'hybrid'));
     const dir = path.join(storageRoot, chartDir);
@@ -646,7 +655,7 @@ export async function chart_hybrid(args) {
         const abs = storageFile('chart_hybrid', args.backdropPath);
         surface = { buf: fs.readFileSync(abs), model: 'saved backdrop', seconds: 0, usage: null, reused: args.backdropPath };
     } else {
-        surface = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps });
+        surface = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps, chain });
     }
 
     // The composite needs a PNG to read the paper colour from; a saved WebP is

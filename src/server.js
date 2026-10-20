@@ -791,8 +791,8 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       (the handoff hybrid uses) and still writes the spec sidecar.
 
   chart.hybrid — { spec* | specPath* | svg* | svgPath*, name?, preset?, prompt?,
-                   denoise?, steps?, theme?, strength?, backdropPath?,
-                   preview? }
+                   denoise?, steps?, model?, models?, theme?, strength?,
+                   backdropPath?, preview?, check? }
       A restyled surface with exact vector type on top. The SVG's
       <text> elements are lifted, the drawing is rasterized, restyled
       by an image model, and the words are composited back over a WebP
@@ -800,7 +800,9 @@ The spec format is NOT guessable. Call chart.guide before writing one.
       stays true and selectable. preset picks the look (handdrawn);
       prompt overrides its wording; denoise controls how far the model
       may depart. The model chain is local krea2 first, cloud only if
-      the local worker refuses, so the common case is free. Writes
+            the local worker refuses, so the common case is free. model / models
+            override that chain for one call — A/B a new restyler without a config
+            edit and a restart. Writes
       <base>.svg, the backdrop, the base, a sidecar and a preview, and
       returns a PNG of the result inline so the caller can see it. A
       hybrid is single-theme — the backdrop is one fixed image.

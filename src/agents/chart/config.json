@@ -48,6 +48,8 @@
                     "strength": { "type": "number", "description": "Stroke weight in the rasterized base. Defaults to 2.5 for nCharts documents; omit to leave other SVGs as authored." },
                     "preview": { "type": "boolean", "description": "Rasterize the finished hybrid to PNG for inline display (WebP on disk). Default true." },
                     "check": { "type": "boolean", "description": "After composing, run a vision pass over the raster and return its verdict as text — colour present, labels fitting, defects. Costs a few seconds, and worth it: a model cannot confirm what it did not look at. Default true; set false to skip." },
+                    "model": { "type": "string", "description": "Restyle model id, overriding the configured chain for this call (e.g. 'coolkid-moss-image', 'coolkid-krea2'). Useful for A/B testing a new restyler without a config edit." },
+                    "models": { "type": "array", "items": { "type": "string" }, "description": "A chain to try in order, overriding agents.chart.hybridModels. Local first by convention." },
                     "backdropPath": { "type": "string", "description": "Re-composite instead of generating: a stored backdrop (charts/<base>-backdrop.png) from an earlier run. Skips the image model entirely — ~200 ms — so text edits do not cost a generation or change the surface. The drift audit still runs." }
                 },
                 "required": []
