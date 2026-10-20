@@ -208,6 +208,12 @@ restyle where wires are not the point. Untested lever: its notes advertise
 "JSON layout prompts with bboxes", so a bbox-per-shape prompt may handle connectors
 better than the prose prompt used here.
 
+**Full experimental record:** [`docs/chart-hybrid-experiments.md`](../../docs/chart-hybrid-experiments.md)
+— the model A/B, moss as a full renderer with text in the prompt (hand-lettering
+appears only at denoise 0.85, which is also where strings start failing), why the
+background came out dark (transparent reference, not the prompt), the "whiteboard"
+wording trap, and the perception-channel measurements.
+
 `charts` is in `agents.vdb.ignore`: chart output is transient, and a spec sidecar
 per render would otherwise become searchable documents.
 
