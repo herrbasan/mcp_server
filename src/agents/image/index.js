@@ -482,6 +482,20 @@ export async function image_ingest(args) {
             }
         }
 
+        // A requested format is a promise. Without this, asking for png on an image
+        // that needs no resize returned the original webp bytes labelled webp —
+        // which is how a host that rejects webp rejected a call that asked for png.
+        if (current.mime !== `image/${format}`) {
+            try {
+                const native = Math.max(current.width ?? 0, current.height ?? 0) || cap || 1024;
+                const fitted = await nmediaFit(current.base64, { format, maxDimension: Math.round(native), qualityValue });
+                current = { ...fitted, mime: `image/${format}` };
+                resizedBy = 'nmedia';
+            } catch (err) {
+                logger.warn(`[image] ingest format conversion failed for ${source}: ${err.message}`, null, 'Image');
+            }
+        }
+
         if (region) {
             try {
                 // The region is in SOURCE pixels, so the fractions are computed from
