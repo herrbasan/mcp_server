@@ -742,21 +742,12 @@ model returning mixed candidates gets both treatments.
       an inline preview (largest derived variant, or the vector preview).
       Takes 1-2 minutes — the tool waits internally.
 
-  image.ingest — { source* | sources*, max_dimension?, format?, quality?,
-                   region?, upscale?, label? }
-      An existing image as an image block, so a model can LOOK at it.
-      source: a storage path, an absolute path inside the allowed roots, or
-      an http(s) URL; sources takes up to four. region {x,y,w,h} crops in
-      source pixels before any resize — that is how a chart is verified, one
-      label band at a time — and upscale enlarges small type. Returns the
-      image first, then metadata (sizes, bytes, what nMedia did). The text
-      ends with the sentence that matters: if no image arrived, the host
-      dropped it, and the caller must say so rather than guess.
-
-      ⚠ MEASURED 2026-10-20 in VS Code: the client VALIDATES a png block and
-      the model still receives nothing (webp is refused outright). So this
-      does NOT give a model sight here — use a vision check instead. It is
-      kept for hosts that do deliver tool images (the chat app renders them).
+      There is no image.ingest. Measured 2026-10-20: a tool that returns an
+      image block produces bytes the VS Code client validates and then does
+      not deliver to the model — a png block passes silently, a webp one is
+      refused outright. Images the user PASTES do reach the model, so this is
+      the host's handling of tool results, not something a tool can fix. For
+      visual verification, have the tool look and return text (see chart.*).
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1285,7 +1276,7 @@ IMPORTANT RULES
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
 
-        "image.generate": "image_generate", "image.ingest": "image_ingest",
+        "image.generate": "image_generate",
 
         "chart.guide": "chart_guide", "chart.render": "chart_render", "chart.hybrid": "chart_hybrid",
 
