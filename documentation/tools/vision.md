@@ -4,29 +4,30 @@ Reference documentation for iterative image analysis. Last verified
 2026-09-22 against `src/agents/vision/index.js`, `fleeting-memory.js`,
 `media-client.js`.
 
-## Why tools must look for themselves
+## Can a model see a tool's image? It depends on the provider extension
 
-Measured 2026-10-20 in VS Code 1.142 with the `llm-gateway` provider
-(`herrbasan.llm-gateway-copilot` 0.3.0, model `deepseek-flash-chat`, which
-declares `vision: true`):
+Measured 2026-10-20, VS Code 1.142, same session, same MCP server, same tool call:
 
-- A **pasted/attached** image reaches the model. Verified blind.
-- An image returned by an **MCP tool** does not. A PNG block produces no warning
-  at all; a WebP block is refused with *"MCP image omitted — data invalid or MIME
-  type unsupported"*. Nothing arrives either way.
-- `view` on an image file and a browser screenshot also deliver nothing.
+| Model provider | Tool-returned image | Pasted image |
+|---|---|---|
+| `vizards.deepseek-v4-for-copilot` | **arrives** | arrives |
+| `herrbasan.llm-gateway-copilot` 0.3.0 | **dropped** (png silent, webp refused) | arrives |
 
-This is an upstream defect, not ours: Copilot's tool-result path serialises images
-differently from the attachment path, and for custom/BYOK providers it drops them
-(silent empty content) or sends image parts without the required `text` field
-(hard 400). See `microsoft/vscode#339600` and `microsoft/vscode#326276`, both open
-as of 2026-10-20. Our provider already forwards `LanguageModelDataPart` images
-(`convert.js`), so the loss happens before it is called.
+The gateway provider is not obviously at fault: the gateway advertises
+`vision: true` for `deepseek-flash-chat`, and `provider.js` maps that to
+`capabilities.imageInput`. What differs is the mechanism — the gateway extension
+registers through `registerLanguageModelChatProvider` (the newer
+`LanguageModelChatProvider` API), and VS Code's tool-result forwarding drops images
+on that path while the attachment path is serialised unconditionally. Upstream and
+open: `microsoft/vscode#339600`, `microsoft/vscode#326276`.
 
-Consequence, and the reason this project has a vision agent at all: **the tool
-must do the looking and return text.** `chart.hybrid` runs that check on its own
-output. A caller must never assume a tool-returned image was seen — and a tool
-must not claim it was.
+So `image.ingest` and `chart.hybrid`'s inline preview are **provider-conditional**.
+Two consequences:
+
+- A tool that reports a picture must never claim it was seen. The text block from
+  `image.ingest` says so explicitly.
+- For work that must happen unattended, have the tool look and return text.
+  `chart.hybrid` does that with `check: true`.
 
 ## What it is
 

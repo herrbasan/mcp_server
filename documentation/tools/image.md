@@ -3,15 +3,34 @@
 Image generation via the LLM Gateway with automatic variant rendering into
 MCP storage. Added 2026-09-25.
 
-> **Why there is no `image.ingest`.** It was built and measured on 2026-10-20:
-> the block is valid, the VS Code MCP client validates a PNG one and prints no
-> warning, and the model still receives nothing (WebP is refused outright). User
-> pastes do reach the model, so the gap is the host's handling of tool results —
-> not something a tool can fix. Visual verification therefore lives inside the
-> tool that needs it: look with a vision call, return text. `chart.hybrid` does
-> exactly that.
+> **`image.ingest` works — depending on the model provider extension.** Measured
+> 2026-10-20 in VS Code 1.142: the block reaches the model with
+> `vizards.deepseek-v4-for-copilot`, and is dropped with
+> `herrbasan.llm-gateway-copilot` 0.3.0 (PNG silently, WebP refused). Pasted
+> images work on both. See `vision.md` for the A/B and the upstream issues; when
+> the channel is dead, have the tool look and return text instead.
 
 ## Methods
+
+### `image.ingest`
+
+`{ source* | sources*, max_dimension?, format?, quality?, region?, upscale?, label? }`
+
+Returns an existing image as an MCP image block so a caller can look at it.
+Bounded: ≤4 sources, 24 MB per source, ≤4 MB of base64 per block (halved again
+rather than truncated), and paths resolved against the storage root plus
+`agents.image.ingestRoots` — without that, it is an arbitrary-file-read tool.
+
+`region {x,y,w,h}` crops in **source pixels**, before any resize; it is for
+reading one label band of a chart at a time. `upscale` is honoured for SVG (nMedia
+re-renders it larger) and refused for bitmaps, which the metadata says out loud.
+`format` defaults to **png**, the block format the client accepts most reliably.
+
+nMedia's limits shape the order of operations: `max_dimension` is a target for an
+SVG but only a cap for a bitmap, crop and resize do not combine in one call, and
+`region` is fractional internally — so an SVG is rendered at the working size
+first, the region is cut from that raster, a bitmap is only ever shrunk, and the
+fractions are computed from the source size.
 
 ### `image.generate`
 

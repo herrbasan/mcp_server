@@ -742,12 +742,20 @@ model returning mixed candidates gets both treatments.
       an inline preview (largest derived variant, or the vector preview).
       Takes 1-2 minutes — the tool waits internally.
 
-      There is no image.ingest. Measured 2026-10-20: a tool that returns an
-      image block produces bytes the VS Code client validates and then does
-      not deliver to the model — a png block passes silently, a webp one is
-      refused outright. Images the user PASTES do reach the model, so this is
-      the host's handling of tool results, not something a tool can fix. For
-      visual verification, have the tool look and return text (see chart.*).
+  image.ingest — { source* | sources*, max_dimension?, format?, quality?,
+                   region?, upscale?, label? }
+      An existing image as an image block, so a model can LOOK at it.
+      source: a storage path, an absolute path inside the allowed roots, or
+      an http(s) URL; sources takes up to four. region {x,y,w,h} crops in
+      source pixels before any resize — that is how a chart is verified, one
+      label band at a time — and upscale enlarges small type. Returns the
+      image first, then metadata. The text ends with the sentence that
+      matters: if no image arrived, say so rather than guess.
+
+      ⚠ WHETHER YOU SEE IT DEPENDS ON THE PROVIDER EXTENSION (measured
+      2026-10-20, VS Code 1.142). With vizards.deepseek-v4-for-copilot the
+      block arrives. With herrbasan.llm-gateway-copilot 0.3.0 it does not:
+      png is dropped silently, webp is refused. Paste the image to check.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1276,7 +1284,7 @@ IMPORTANT RULES
         "vision.session_get": "vision_get_session", "vision.session_close": "vision_close_session",
         "vision.analyze": "vision_analyze",
 
-        "image.generate": "image_generate",
+        "image.generate": "image_generate", "image.ingest": "image_ingest",
 
         "chart.guide": "chart_guide", "chart.render": "chart_render", "chart.hybrid": "chart_hybrid",
 

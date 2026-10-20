@@ -43,7 +43,7 @@ nesting level.
 | **llm** | `llm.query`, `llm.session_create/query/close` | One-shot clean-context queries + in-memory pinned sessions. | [llm.md](llm.md) |
 | **github** | `git.read/tree/log/commit/diff/branches/repo_info`, `git.search_repos/code/issues`, `git.issue_*`, `git.pr_list/get` (17) | GitHub REST relay (read-heavy; issue writes). Needs `GIT_TOKEN`. | [github.md](github.md) |
 | **vision** | `vision.session_create/analyze/get/list/close` | Multi-pass image analysis with region/grid focus, preprocessed via nMedia. | [vision.md](vision.md) |
-| **image** | `image.generate` | Image generation via gateway, rendered to webp size variants + lossless PNG original + JSON sidecar in storage; inline thumbnail in the result. | [image.md](image.md) |
+| **image** | `image.generate`, `image.ingest` | Generation via the gateway (webp sizes + PNG original + sidecar), and `image.ingest`: an existing image returned as an image block. Whether the caller actually sees it depends on the model provider extension — see [vision.md](vision.md). | [image.md](image.md) |
 | **media** | `media.process` | nMedia proxy: storage path in → rasterize/transcode → storage path out (SVG→PNG, thumbnails, m4a→mp3, video→keyframe). Blank-render guard. Bytes never enter a context. | [media.md](media.md) |
 | **chart** | `chart.guide`, `chart.render`, `chart.hybrid` | Deterministic SVG diagrams from a semantic spec (nCharts, vendored submodule), plus a hybrid surface: image-model restyle with the words kept vector. No geometry keys; audits before writing; the spec sidecar is the diagram's source. | [chart.md](chart.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |

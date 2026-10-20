@@ -19,6 +19,32 @@
                 },
                 "required": ["prompt"]
             }
+        },
+        {
+            "name": "image_ingest",
+            "description": "Return an existing image as an MCP image block so the calling model can look at it — the counterpart to image_generate. Resizing is not the point; it exists only to keep the block cheap. Accepts a storage path, an absolute path inside the allowed roots, or an http(s) URL. Supports a pixel crop (read one label band at a time) and an upscale for small type. Returns the image first and a metadata block second, ending with a line that tells the caller what it means if no image arrived: some hosts drop image blocks, and then the model must say so instead of guessing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "Storage path (images/foo.png), absolute path inside the allowed roots, or http(s) URL." },
+                    "sources": { "type": "array", "items": { "type": "string" }, "description": "Up to 4 sources in one call. Prefer one image and crop it — a tool that accepts twenty will quietly fill the context." },
+                    "max_dimension": { "type": "integer", "description": "Longest edge after resizing. Default 1600. 0 = never resize (the source passes through untouched, and may then exceed the block ceiling)." },
+                    "format": { "type": "string", "enum": ["webp", "jpeg", "png"], "description": "Output format. Default png — measured: the VS Code MCP client rejects webp image blocks outright and accepts png. Use webp only for a host you know accepts it; it is several times smaller." },
+                    "quality": { "type": "integer", "description": "1-100, default 82." },
+                    "region": {
+                        "type": "object",
+                        "description": "Crop in SOURCE pixels, applied before any resize. This is how charts get verified: read one label band at a time.",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" },
+                            "w": { "type": "number" },
+                            "h": { "type": "number" }
+                        }
+                    },
+                    "upscale": { "type": "number", "description": "1.0-3.0, default 1.0. Small type reads better enlarged; applies after crop, as the resize target." },
+                    "label": { "type": "string", "description": "One-line caption placed at the top of the metadata block (e.g. 'variant B: prose + inventory')." }
+                }
+            }
         }
     ]
 }
