@@ -1,77 +1,79 @@
 // Smoke test the chart agent outside the server: init against a temp storage root,
-// render, the textless base, and — with CHART_HYBRID=1 — a real hybrid through the
-// Gateway (local krea2 first) and nMedia.
+// render a spec, render it into a slide box, render it chrome-free and sketch, and
+// prove the guards still refuse what they refuse.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { init, chart_guide, chart_render, chart_hybrid } from '../src/agents/chart/index.js';
-
-const env = {};
-for (const line of fs.readFileSync(new URL('../.env', import.meta.url), 'utf8').split(/\r?\n/)) {
-    const i = line.indexOf('=');
-    if (i > 0 && !line.trim().startsWith('#')) env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
-}
+import { init, chart_guide, chart_render } from '../src/agents/chart/index.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chart-agent-'));
-const context = {
-    config: {
-        agents: {
-            storage: { root },
-            chart: {
-                previewSize: 1200,
-                hybridSize: 1280,
-                hybridModels: ['coolkid-krea2', 'qwen-image'],
-                defaultPreset: 'handdrawn',
-                presets: {
-                    handdrawn: {
-                        denoise: 0.45,
-                        steps: 20,
-                        prompt:
-                            'Redraw the boxes and arrows of this diagram by hand in dark ink on warm off-white paper: ' +
-                            'fine pen outlines, slightly wobbly hand-drawn edges, no colour fills. ' +
-                            'Keep every shape exactly where it is. Draw no lettering at all.'
-                    }
-                }
-            }
-        },
-        nMediaUrl: process.env.NMEDIA ?? 'http://192.168.0.100:3500',
-        gateway: { httpUrl: 'http://127.0.0.1:3400', accessKey: env.GATEWAY_ACCESS_KEY }
-    }
+const chartDir = path.join(root, 'charts');
+const failures = [];
+
+const expect = (name, ok, detail = '') => {
+    console.log(`${ok ? 'pass' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+    if (!ok) failures.push(name);
 };
 
-const chartDir = path.join(root, 'charts');
+const context = (nMediaUrl = process.env.NMEDIA ?? 'http://192.168.0.100:3500') => ({
+    config: {
+        agents: { storage: { root }, chart: { previewSize: 1200 } },
+        nMediaUrl
+    }
+});
 
-console.log('init:', JSON.stringify(await init(context)));
+console.log('init:', JSON.stringify(await init(context())));
 
 const guide = await chart_guide({});
-console.log('guide chars:', guide.content[0].text.length, '| examples listed:', guide.content[0].text.includes('flow-gateway'));
+expect('guide lists examples', guide.content[0].text.includes('flow-gateway'));
+expect('contract documents frame', guide.content[0].text.includes('frame'));
 
 const spec = JSON.parse((await chart_guide({ example: 'flow-gateway' })).content[0].text);
+
 const out = await chart_render({ spec });
-console.log('--- render ---');
 console.log(out.content[0].text);
-console.log('parts:', out.content.map((c) => c.type).join(','));
+expect('render writes svg + spec + preview', /svg\s+charts\/\S+\.svg/.test(out.content[0].text) && /preview\s+charts\/\S+_preview\.webp/.test(out.content[0].text));
+expect('render attaches a preview raster', out.content.some((c) => c.type === 'image'));
 
-// text:false is the hybrid handoff: no type, weighted strokes, a page colour.
-const baseOut = await chart_render({ spec, text: false });
-console.log('--- textless base ---');
-console.log(baseOut.content[0].text);
-const baseRel = baseOut.content[0].text.match(/base\s+(charts\/\S+-base\.svg)/)[1];
-const baseSvg = fs.readFileSync(path.join(root, baseRel), 'utf8');
-console.log('base has text elements:', /<text\b/.test(baseSvg), '| has a page colour:', /nc-bg|fill="#ffffff"/.test(baseSvg));
+const readSvg = (text) => {
+    const rel = text.match(/svg\s+(charts\/\S+\.svg)/)[1];
+    return { rel, svg: fs.readFileSync(path.join(root, rel), 'utf8') };
+};
+const readSpec = (text) => {
+    const rel = text.match(/spec\s+(charts\/\S+\.json)/)[1];
+    return JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
+};
+const size = (svg) => {
+    const m = /<svg[^>]*width="([\d.]+)"[^>]*height="([\d.]+)"/.exec(svg);
+    return { width: Number(m[1]), height: Number(m[2]) };
+};
 
-// A base has no words, and the words cannot be recovered from it — hybrid refuses.
-let refused = false;
-try {
-    await chart_hybrid({ svgPath: baseRel });
-} catch (err) {
-    refused = /no <text> elements/.test(err.message);
+// A frame: the canvas takes the box's aspect, and the sidecar records what the
+// renderer resolved so a re-render reproduces the file.
+for (const [frame, aspect] of [['16:9', 16 / 9], ['8:9', 8 / 9], ['1:1', 1]]) {
+    const framed = await chart_render({ spec: { ...spec, frame }, preview: false });
+    const { svg } = readSvg(framed.content[0].text);
+    const { width, height } = size(svg);
+    expect(`${frame} canvas has the box aspect`, Math.abs(width / height - aspect) < 0.01, `${width}x${height}`);
+    expect(`${frame} reports the variant`, /frame\s+\S+ · .+ · scale [\d.]+x/.test(framed.content[0].text));
+    const sidecar = readSpec(framed.content[0].text);
+    expect(`${frame} sidecar keeps the frame`, sidecar.frame === frame, JSON.stringify(sidecar.frame));
+    const again = await chart_render({ specPath: framed.content[0].text.match(/spec\s+(charts\/\S+\.json)/)[1], preview: false });
+    const rerendered = size(readSvg(again.content[0].text).svg);
+    expect(`${frame} sidecar re-renders to the same canvas`, rerendered.width === width && rerendered.height === height, `${rerendered.width}x${rerendered.height}`);
 }
-console.log('textless base refused by hybrid:', refused);
 
-// A spec the audit must refuse: three tones in a structure diagram, where colour is
-// emphasis rather than a category key. The caller gets the reason and the fields,
-// and no file is written.
+// Chrome is optional: a slide renders its own header and footer.
+const bare = await chart_render({ spec: { ...spec, title: undefined, caption: undefined }, frame: '16:9', preview: false });
+const bareSvg = readSvg(bare.content[0].text).svg;
+expect('a chrome-free render carries no title or caption', !/class="t-title|class="t-caption/.test(bareSvg));
+
+// The hand-drawn style is a vector pass, not a model call.
+const sketch = await chart_render({ spec, style: 'sketch', preview: false });
+const sketchSvg = readSvg(sketch.content[0].text).svg;
+expect('sketch style injects the ink filters', /id="sk-ink"/.test(sketchSvg) && /<text/.test(sketchSvg));
+
+// A spec the audit must refuse: three tones where colour is emphasis, not a key.
 const threeTones = {
     type: 'flow',
     nodes: [
@@ -82,66 +84,34 @@ const threeTones = {
     edges: [{ from: 'a', to: 'b' }]
 };
 const bad = await chart_render({ spec: threeTones });
-console.log('--- rejected spec ---');
-console.log('isError:', bad.isError, '|', bad.content[0].text.split('\n')[0]);
+expect('three tones are refused with no file written', bad.isError === true && /aton?e|tones/.test(bad.content[0].text));
+console.log(bad.content[0].text.split('\n')[0]);
 
-// Geometry is not the caller's business — supplying it must throw, not render.
+// Geometry is not the caller's business.
 try {
     await chart_render({ spec: { type: 'flow', nodes: [{ label: 'A', x: 10 }] } });
-    console.log('--- geometry key: NOT REJECTED (bug) ---');
+    expect('geometry key is rejected', false);
 } catch (err) {
-    console.log('--- geometry key rejected:', err.message.split('\n')[0]);
+    expect('geometry key is rejected', /geometry|x/i.test(err.message), err.message.split('\n')[0]);
 }
 
-if (process.env.CHART_HYBRID === '1') {
-    console.log('--- hybrid (real model call) ---');
-    const hybrid = await chart_hybrid({ spec });
-    console.log(hybrid.content[0].text);
-    console.log('parts:', hybrid.content.map((c) => c.type).join(','));
-    const hybridRel = hybrid.content[0].text.match(/svg\s+(charts\/\S+\.svg)/)[1];
-    const backdropRel = hybrid.content[0].text.match(/backdropPath "([^"]+)"/)[1];
-    const hybridSvg = fs.readFileSync(path.join(root, hybridRel), 'utf8');
-    const driftScore = Number(hybrid.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
-    const chipCount = (hybridSvg.match(/class="nc-chip"/g) ?? []).length;
-    const imagePart = hybrid.content.find((c) => c.type === 'image');
-    console.log(
-        'hybrid has text:', /<text\b/.test(hybridSvg),
-        '| webp backdrop:', /<image href="data:image\/webp;base64,/.test(hybridSvg),
-        '| label chips kept:', chipCount,
-        '| inline raster:', imagePart ? imagePart.mimeType : 'none',
-        '| drift:', driftScore
-    );
-
-    // Same surface, edited words: no model call, so it must be fast and the text
-    // must actually change.
-    const edited = structuredClone(spec);
-    edited.nodes.find((n) => n.id === 'gw').label = 'Gateway';
-    const started = Date.now();
-    const recomposed = await chart_hybrid({ spec: edited, backdropPath: backdropRel, preview: false });
-    const recomposedSvg = fs.readFileSync(path.join(root, recomposed.content[0].text.match(/svg\s+(charts\/\S+\.svg)/)[1]), 'utf8');
-    console.log(
-        '--- re-composite ---',
-        Date.now() - started, 'ms',
-        '| saved backdrop:', recomposed.content[0].text.includes('saved backdrop'),
-        '| label swapped:', /Gateway/.test(recomposedSvg) && !/LLM Gateway/.test(recomposedSvg),
-        '| isError:', recomposed.isError
-    );
-
-    // A restyle that departs far is still returned — drift is information, not a
-    // gate. The score is what tells a caller it went wrong.
-    const drifted = await chart_hybrid({ spec, denoise: 0.85, steps: 20, preview: false });
-    console.log('--- far departure ---', 'isError:', drifted.isError, '| drift:', drifted.content[0].text.match(/drift\s+(-?[\d.]+)/)[1]);
-} else {
-    console.log('--- hybrid skipped (set CHART_HYBRID=1 to run the real model call) ---');
+// An unknown frame is named, not ignored.
+try {
+    await chart_render({ spec: { ...spec, frame: '21:9' } });
+    expect('unknown frame is rejected', false);
+} catch (err) {
+    expect('unknown frame is rejected', /frame/.test(err.message), err.message.split('\n')[0]);
 }
 
 console.log('files:', fs.readdirSync(chartDir).sort().join(', '));
 
 // nMedia down: the render must still land, and say so.
-await init({ config: { ...context.config, nMediaUrl: 'http://127.0.0.1:1' } });
+await init(context('http://127.0.0.1:1'));
 const noPreview = await chart_render({ spec });
-console.log('--- nMedia unreachable ---');
 console.log(noPreview.content[0].text.split('\n').filter((l) => l.includes('preview')).join(' | '));
-console.log('isError:', noPreview.isError, '| parts:', noPreview.content.map((c) => c.type).join(','));
+expect('a dead rasterizer still yields the svg', noPreview.isError === false && noPreview.content.length === 1);
 
 fs.rmSync(root, { recursive: true, force: true });
+
+console.log(failures.length ? `\n${failures.length} FAILED: ${failures.join(', ')}` : '\nall checks passed');
+process.exit(failures.length ? 1 : 0);

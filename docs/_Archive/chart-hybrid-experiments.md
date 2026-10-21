@@ -1,5 +1,12 @@
 # Chart hybrid — experiments log
 
+> **ARCHIVED 2026-10-21 — the hybrid flow was retired.** `chart.hybrid` was removed
+> from the MCP surface; `chart.render` with `style: "sketch"` produces the
+> hand-drawn look as pure vector, deterministically and in both themes. This file is
+> the evidence behind that decision, kept because the measurements (what diffusion
+> does to lettering, which models hold a layout) are still true and still useful.
+> Current reference: `documentation/tools/chart.md`.
+
 Working document. What was tried, measured, and concluded. Curated reference lives
 in `documentation/tools/chart.md`; this is the evidence behind it.
 

@@ -73,11 +73,12 @@ diagram without a second call. The written SVG is still refused by `image_attach
 for the reason above — re-attach the preview, or `media.process` it to a raster
 first.
 
-**Hybrid surface (2026-10-19).** `chart.hybrid` takes the same spec and returns a
-diagram whose shapes are an image-model restyle (hand-drawn ink on paper by
-default) with the words still vector on top. It composes the whole chain — base,
-raster, model, composite — and returns a preview too, so the model sees the styled
-result in one call. Single-theme by nature: the backdrop is one fixed image.
+**Hand-drawn diagrams (since 2026-10-21).** `chart.render` with
+`style: "sketch"` returns the hand-drawn look as pure vector — no image model, no
+composite, both themes in one file. The older `chart.hybrid` surface (raster
+restyle with vector type on top) was retired the same day: it needed a model call
+per render and could silently drop a fill or a label chip, for a surface the sketch
+pass now matches closely enough.
 
 ## Pathway 2 — describe ≠ see
 

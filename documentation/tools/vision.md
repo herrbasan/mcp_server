@@ -36,8 +36,10 @@ Consequence for tool design:
 
 - A tool that reports a picture must never claim it was seen. The text block from
   `image.ingest` says so explicitly.
-- For unattended work, the tool looks and returns text. `chart.hybrid` does that
-  with `check: true`, and that is the only channel demonstrated to work here.
+- For unattended work, the tool looks and returns text. `image.ingest` is the tool
+  for that, with the caveat in its own description (a tool image may not reach the
+  model). The retired `chart.hybrid` used the same channel with `check: true`; the
+  sketch style needs no such check, because no model draws.
 
 ## What it is
 

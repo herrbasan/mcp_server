@@ -2,26 +2,24 @@
 // (src/nCharts) and imported directly — it is zero-dependency ESM with no build
 // step, so there is nothing to install and no version to drift.
 //
-// Three tools, one idea: the caller supplies meaning, nCharts supplies geometry.
+// Two tools, one idea: the caller supplies meaning, nCharts supplies geometry.
 //   chart_guide  — the spec contract, so a caller never guesses a field name
-//   chart_render — spec -> SVG; with text:false, the textless base
-//   chart_hybrid — SVG -> base -> image model restyle -> vector text on top
-//
-// The hybrid exists because diffusion cannot preserve lettering: it generates
-// glyph-shaped marks (measured, see src/nCharts/docs/HYBRID.md). The words stay
-// vector; the model only touches the surface.
+//   chart_render — spec -> SVG, spec sidecar, preview raster
 //
 // Two rules shape the agent:
 //   1. The spec travels as an object, not as a file. The chat hemisphere has no
 //      filesystem, so a path-based signature would be unusable there.
 //   2. The response names files, it does not carry them. A diagram is ~20 KB of
 //      markup; the preview raster is what a reader actually needs to see.
+//
+// The spec sidecar holds the spec the renderer RESOLVED, not the one the caller
+// sent: a frame picks a layout variant and a canvas width, and a sidecar that kept
+// the authored shape would re-render to a different file.
 
 import fs from 'fs';
 import path from 'path';
-import zlib from 'zlib';
 import { getLogger } from '../../utils/logger.js';
-import { render, audit, check, CONTRACT, variantSvg, geometryBase } from '../../nCharts/src/index.js';
+import { audit, check, CONTRACT, variantSvg, resolve } from '../../nCharts/src/index.js';
 import { sketchify } from './sketch.js';
 
 const logger = getLogger();
@@ -29,15 +27,7 @@ const logger = getLogger();
 let storageRoot;
 let chartDir;
 let nMediaUrl;
-let gatewayHttp;
-let gatewayKey;
-let gatewayClient;
 let previewSize;
-let hybridSize;
-let hybridTimeoutMs;
-let presets;
-let hybridModels;
-let defaultPreset;
 
 export async function init(context) {
     storageRoot = context.config.agents?.storage?.root;
@@ -47,31 +37,9 @@ export async function init(context) {
     const conf = context.config.agents?.chart ?? {};
     chartDir = conf.folder ?? 'charts';
     previewSize = conf.previewSize ?? 1600;
-    hybridSize = conf.hybridSize ?? 1920;
-    hybridTimeoutMs = conf.hybridTimeoutMs ?? 180000;
-
-    gatewayHttp = context.config.gateway?.httpUrl ?? 'http://localhost:3400';
-    gatewayKey = context.config.gateway?.accessKey ?? null;
-    gatewayClient = context.gateway ?? null;
-
-    presets = conf.presets ?? {};
-    defaultPreset = conf.defaultPreset ?? 'handdrawn';
-    if (!presets[defaultPreset]) {
-        throw new Error(`[chart] agents.chart.presets.${defaultPreset} is required — it is the default preset`);
-    }
-    for (const [name, preset] of Object.entries(presets)) {
-        if (typeof preset?.prompt !== 'string' || preset.prompt.length === 0) {
-            throw new Error(`[chart] agents.chart.presets.${name}.prompt must be a non-empty string`);
-        }
-    }
-
-    hybridModels = conf.hybridModels ?? [];
-    if (!Array.isArray(hybridModels) || hybridModels.length === 0) {
-        throw new Error('[chart] agents.chart.hybridModels must list at least one image model, local first');
-    }
 
     fs.mkdirSync(path.join(storageRoot, chartDir), { recursive: true });
-    return { status: 'initialized', chartDir, previewSize, defaultPreset, hybridModels };
+    return { status: 'initialized', chartDir, previewSize };
 }
 
 const EXAMPLES = new URL('../../nCharts/examples/', import.meta.url);
@@ -100,24 +68,17 @@ function uniqueBase(slug) {
     const stamp = localTimestamp();
     let candidate = `${stamp}_${slug}`;
     let i = 2;
-    // Both sidecars count: a render writes <base>.json, a hybrid writes
-    // <base>-hybrid.json. Checking one lets two hybrids in the same minute
-    // overwrite each other.
-    const taken = (name) => fs.existsSync(path.join(dir, `${name}.json`)) || fs.existsSync(path.join(dir, `${name}-hybrid.json`));
-    while (taken(candidate)) candidate = `${stamp}_${slug}-${i++}`;
+    while (fs.existsSync(path.join(dir, `${candidate}.json`))) candidate = `${stamp}_${slug}-${i++}`;
     return candidate;
 }
-
-const TEXT_ELEMENT = /<text\b[^>]*>[\s\S]*?<\/text>/g;
-const SHAPE_ELEMENT = /<(?:rect|circle|ellipse|line|polygon|polyline|path|image|use)\b[^>]*\/?>(?:<\/image>)?/g;
 
 function stripDataUri(value) {
     const m = /^data:[^;]+;base64,(.*)$/s.exec(value);
     return m ? m[1] : value;
 }
 
-// nMedia's base64 route. One endpoint for both jobs: hand it an SVG and it
-// rasterizes through Chrome; hand it a raster and it transcodes.
+// nMedia's base64 route: hand it an SVG and it rasterizes through Chrome, hand it a
+// raster and it transcodes. One endpoint, both jobs.
 async function nmediaProcess(base64, { format, maxDimension, quality } = {}) {
     const res = await fetch(`${nMediaUrl}/v1/process/image`, {
         method: 'POST',
@@ -136,325 +97,6 @@ async function nmediaProcess(base64, { format, maxDimension, quality } = {}) {
     const payload = json.data ?? json;
     if (!payload.base64) throw new Error('nMedia returned no image');
     return { buf: Buffer.from(stripDataUri(payload.base64), 'base64'), width: payload.width, height: payload.height };
-}
-
-function canvasSize(svg) {
-    const m = /<svg\b[^>]*\bwidth="([\d.]+)"[^>]*\bheight="([\d.]+)"/.exec(svg);
-    if (!m) throw new Error('chart: the SVG needs width and height attributes — the backdrop is placed against them');
-    return { width: Number(m[1]), height: Number(m[2]) };
-}
-
-// What the image model is given: the drawing without its type, on a page colour
-// (an SVG with no background rasterizes to transparency and the model invents a
-// ground for it) and, for nCharts documents, with uniformly weighted strokes (at
-// stroke 1 a downscaled base reads as scratches, so the model loses the shape).
-//
-// Type AND icons are removed. Both are content the model must not imitate: it
-// redraws a Material glyph as a letter-shaped blob, and the hybrid puts the real
-// vector glyph back on top.
-function prepareBase(svg, strength) {
-    const drawing = svg.replace(ICON_GROUP, '').replace(TEXT_ELEMENT, '');
-    if (/<svg\b[^>]*class="nc"/.test(svg)) return geometryBase(drawing, strength ?? 2.5);
-
-    const { width, height } = canvasSize(svg);
-    const ground = `<rect x="0" y="0" width="${width}" height="${height}" fill="#ffffff"/>`;
-    const weighted = strength ? `<style>[stroke]{stroke-width:${strength}}</style>` : '';
-    return drawing.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${ground}${weighted}`);
-}
-
-// Icons are a <g transform="translate(…) scale(…)"> wrapping the glyph path. They
-// carry no distinguishing class — nCharts gives them only the ink class — so the
-// scalable transform is the tell: nothing else in an nCharts document is scaled.
-// They are lifted with the text: the template owns them, the model owns the surface.
-const ICON_GROUP = /<g class="[^"]*" transform="translate\([^)]*\) scale\([^)]*\)">[\s\S]*?<\/g>/g;
-
-// Vector type over a raster surface. Every drawing element goes — the backdrop
-// takes its place — and the image is inserted before the body so the text paints
-// on top of it. `slice` crops the sampler's 64-pixel rounding instead of
-// stretching it, which would slide the shapes out from under the words.
-//
-// The edge-label chips are the exception. A chip is a background rect whose only
-// job is to read as a gap in the wire behind a word — it belongs to the text
-// layer, not to the drawing. Stripped, every label sits straight on the
-// hand-drawn line; at denoise 0.3 the model reproduced the chips itself so the
-// gap survived by luck, and at 0.45 it stopped. They are put back under the text.
-const NC_CHIP = /<rect\b[^>]*class="nc-chip"[^>]*\/>/g;
-
-function compositeHybrid(svg, href, paper) {
-    const { width, height } = canvasSize(svg);
-    const chips = svg.match(NC_CHIP) ?? [];
-    const icons = svg.match(ICON_GROUP) ?? [];
-    const image = `<image href="${href}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid slice"/>`;
-    // The chip's own fill comes from the design token (the document background).
-    // On a hybrid the page is the model's paper, so the plate is re-filled with
-    // the sampled paper colour; a later rule with equal specificity wins.
-    const plate = `<style>.nc-chip{fill:rgb(${paper.r},${paper.g},${paper.b})}</style>`;
-    let out = svg.replace(ICON_GROUP, '').replace(SHAPE_ELEMENT, '');
-    out = out.replace('</defs>', () => `</defs>\n${image}\n${plate}`);
-
-    // nCharts wraps the body in <g transform="translate(x y)">, so chips and icons
-    // are in body coordinates. Inserted at the root they are offset by that
-    // translate — which is how icons ended up floating at the canvas edge and
-    // plates landed beside their wires instead of over them. They go back inside
-    // the wrapper, after the image, so they paint above the surface and below the
-    // type.
-    const stack = [...chips, ...icons].join('\n');
-    const body = /<g transform="translate\([^)]*\)">/.exec(out);
-    if (body) {
-        const at = out.indexOf(body[0]) + body[0].length;
-        return `${out.slice(0, at)}\n${stack}${out.slice(at)}`;
-    }
-    return out.replace(/<svg\b[^>]*>/, (tag) => `${tag}\n${stack}`);
-}
-
-// ── PNG decode ──────────────────────────────────────────────────────────────
-// Used for two things, both of which need pixels: the paper colour a label chip
-// must be filled with (a white plate on warm paper reads as a punched hole), and
-// an informational drift score. A minimal reader: 8-bit, non-interlaced, which is
-// what Chrome and the image models emit. Anything else is refused by name.
-function decodePng(buf) {
-    if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) throw new Error('chart audit: not a PNG');
-    let pos = 8;
-    let width = 0;
-    let height = 0;
-    let depth = 0;
-    let colorType = 0;
-    let interlace = 0;
-    let palette = null;
-    const idat = [];
-
-    while (pos + 8 <= buf.length) {
-        const len = buf.readUInt32BE(pos);
-        const type = buf.toString('ascii', pos + 4, pos + 8);
-        const data = buf.subarray(pos + 8, pos + 8 + len);
-        if (type === 'IHDR') {
-            width = data.readUInt32BE(0);
-            height = data.readUInt32BE(4);
-            depth = data[8];
-            colorType = data[9];
-            interlace = data[12];
-        } else if (type === 'PLTE') palette = data;
-        else if (type === 'IDAT') idat.push(data);
-        else if (type === 'IEND') break;
-        pos += 12 + len;
-    }
-    if (depth !== 8) throw new Error(`chart audit: PNG bit depth ${depth} — 8 expected`);
-    if (interlace !== 0) throw new Error('chart audit: interlaced PNG is not supported');
-    const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
-    if (!channels) throw new Error(`chart audit: PNG colour type ${colorType} is not supported`);
-    if (colorType === 3 && !palette) throw new Error('chart audit: palette PNG without PLTE');
-
-    const raw = zlib.inflateSync(Buffer.concat(idat));
-    const stride = width * channels;
-    const pixels = Buffer.alloc(stride * height);
-    let prev = Buffer.alloc(stride);
-    let p = 0;
-
-    for (let y = 0; y < height; y += 1) {
-        const filter = raw[p];
-        p += 1;
-        const cur = Buffer.from(raw.subarray(p, p + stride));
-        p += stride;
-        for (let i = 0; i < stride; i += 1) {
-            const a = i >= channels ? cur[i - channels] : 0;
-            const b = prev[i];
-            const c = i >= channels ? prev[i - channels] : 0;
-            let v = cur[i];
-            if (filter === 1) v = (v + a) & 255;
-            else if (filter === 2) v = (v + b) & 255;
-            else if (filter === 3) v = (v + ((a + b) >> 1)) & 255;
-            else if (filter === 4) {
-                const pa = Math.abs(b - c);
-                const pb = Math.abs(a - c);
-                const pc = Math.abs(a + b - 2 * c);
-                v = (v + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255;
-            } else if (filter !== 0) throw new Error(`chart audit: PNG filter ${filter} is not supported`);
-            cur[i] = v;
-        }
-        cur.copy(pixels, y * stride);
-        prev = cur;
-    }
-
-    let paperR = 0;
-    let paperG = 0;
-    let paperB = 0;
-    let paperCount = 0;
-    const ink = new Float32Array(width * height);
-    for (let i = 0; i < width * height; i += 1) {
-        const o = i * channels;
-        let r;
-        let g;
-        let b;
-        if (colorType === 3) {
-            const idx = pixels[o] * 3;
-            r = palette[idx];
-            g = palette[idx + 1];
-            b = palette[idx + 2];
-        } else if (colorType === 0 || colorType === 4) {
-            r = g = b = pixels[o];
-        } else {
-            r = pixels[o];
-            g = pixels[o + 1];
-            b = pixels[o + 2];
-        }
-        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        ink[i] = 1 - luminance / 255;
-        // The paper is the bright majority.
-        if (luminance > 200) {
-            paperR += r;
-            paperG += g;
-            paperB += b;
-            paperCount += 1;
-        }
-    }
-    const paper = paperCount > 0
-        ? { r: Math.round(paperR / paperCount), g: Math.round(paperG / paperCount), b: Math.round(paperB / paperCount) }
-        : { r: 255, g: 255, b: 255 };
-    return { width, height, ink, paper };
-}
-
-// Ink coverage per cell, on a grid whose aspect matches the image. Coarse on
-// purpose: a hand-drawn line wanders a few pixels, and the question the score
-// answers is only whether the boxes are still where the layout put them.
-function inkGrid({ width, height, ink }, cols = 16) {
-    const rows = Math.max(1, Math.round((cols * height) / width));
-    const cell = new Float32Array(cols * rows);
-    const cellW = width / cols;
-    const cellH = height / rows;
-    for (let y = 0; y < height; y += 1) {
-        const gy = Math.min(rows - 1, Math.floor(y / cellH));
-        for (let x = 0; x < width; x += 1) {
-            const gx = Math.min(cols - 1, Math.floor(x / cellW));
-            cell[gy * cols + gx] += ink[y * width + x];
-        }
-    }
-    for (let i = 0; i < cell.length; i += 1) cell[i] /= cellW * cellH;
-    return { cols, rows, cell };
-}
-
-// Informational, never a gate: Pearson correlation of where the ink is. It says
-// nothing about colour, legibility or whether the result looks right — those are
-// for the eye. Reported so a human has a number to compare runs by.
-function driftReport(base, surface) {
-    const a = inkGrid(base);
-    const b = inkGrid(surface);
-    const n = a.cell.length;
-    let sumA = 0;
-    let sumB = 0;
-    for (let i = 0; i < n; i += 1) {
-        sumA += a.cell[i];
-        sumB += b.cell[i];
-    }
-    const meanA = sumA / n;
-    const meanB = sumB / n;
-    let covariance = 0;
-    let varianceA = 0;
-    let varianceB = 0;
-    const cells = [];
-    for (let i = 0; i < n; i += 1) {
-        const x = a.cell[i] - meanA;
-        const y = b.cell[i] - meanB;
-        covariance += x * y;
-        varianceA += x * x;
-        varianceB += y * y;
-        cells.push({ i, diff: Math.abs((sumA > 0 ? a.cell[i] / sumA : 0) - (sumB > 0 ? b.cell[i] / sumB : 0)) });
-    }
-    const score = varianceA > 0 && varianceB > 0 ? covariance / Math.sqrt(varianceA * varianceB) : 0;
-    return {
-        score: Math.round(score * 100) / 100,
-        grid: `${a.cols}x${a.rows}`,
-        inkBase: Math.round(sumA * 100) / 100,
-        inkSurface: Math.round(sumB * 100) / 100,
-        worst: cells
-            .sort((x, y) => y.diff - x.diff)
-            .slice(0, 5)
-            .map((c) => ({ x: c.i % a.cols, y: Math.floor(c.i / a.cols), diff: Math.round(c.diff * 1000) / 1000 }))
-    };
-}
-
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-function storageFile(tool, filePath) {
-    const abs = path.join(storageRoot, filePath);
-    if (!abs.startsWith(path.resolve(storageRoot))) throw new Error(`${tool}: path escapes the storage root: ${filePath}`);
-    if (!fs.existsSync(abs)) throw new Error(`${tool}: no such file: ${filePath}`);
-    return abs;
-}
-
-// Local first, cloud only when the local model refuses — the chain is config, not
-// code. No size and no aspect_ratio: with an init image the reference defines the
-// frame, and sending a size makes some upstreams treat it as authoritative.
-async function restyle(reference, { prompt, denoise, steps, chain }) {
-    if (!gatewayKey) {
-        throw new Error('chart_hybrid: config gateway.accessKey is missing — the image route needs it (chart.guide and chart.render do not)');
-    }
-    const failures = [];
-    for (const model of chain) {
-        const body = { model, prompt, input_references: [reference] };
-        // Denoise/steps are sampler controls: krea's and moss's local backends take
-        // them; cloud adapters do not, and a 1.0 default would discard the input.
-        if (/krea|moss/i.test(model)) body.extra_body = { denoise, steps };
-        const started = Date.now();
-        try {
-            const res = await fetch(`${gatewayHttp}/v1/images/generations`, {
-                method: 'POST',
-                headers: {
-                    'content-type': 'application/json',
-                    ...(gatewayKey ? { authorization: `Bearer ${gatewayKey}` } : {})
-                },
-                body: JSON.stringify(body),
-                signal: AbortSignal.timeout(hybridTimeoutMs)
-            });
-            const text = await res.text();
-            if (!res.ok) {
-                failures.push(`${model}: ${res.status} ${text.slice(0, 200)}`);
-                logger.warn(`[chart] ${model} refused the restyle (${res.status})`, null, 'Chart');
-                continue;
-            }
-            const json = JSON.parse(text);
-            const b64 = json.data?.[0]?.b64_json;
-            if (!b64) {
-                failures.push(`${model}: response carried no image`);
-                logger.warn(`[chart] ${model} returned no image`, null, 'Chart');
-                continue;
-            }
-            const seconds = Math.round((Date.now() - started) / 100) / 10;
-            logger.info(`[chart] restyled through ${model} in ${seconds}s`, null, 'Chart');
-            return { buf: Buffer.from(stripDataUri(b64), 'base64'), model, seconds, usage: json.usage ?? null };
-        } catch (err) {
-            failures.push(`${model}: ${err.message}`);
-            logger.warn(`[chart] ${model} failed: ${err.message}`, null, 'Chart');
-        }
-    }
-    throw new Error(`chart_hybrid: no image model accepted the restyle —\n  ${failures.join('\n  ')}`);
-}
-
-// The tool is brittle: a restyle can drop a hue, forget a chip, drift the boxes —
-// and a text summary will not say so. So the agent looks at its own output and
-// reports what it sees, in words a text-only caller can read. Best effort: a
-// failed check is reported, never fatal, because the artifact is already written.
-async function selfCheck(gateway, png) {
-    const response = await gateway.chat({
-        task: 'vision',
-        systemPrompt: 'You are a precise visual QA assistant for technical diagrams. No preamble, no praise.',
-        messages: [{
-            role: 'user',
-            content: [
-                {
-                    type: 'text',
-                    text: 'Check this generated diagram. Answer in at most five short lines:\n' +
-                        '1. COLOUR: list the hues present and which shape carries each; say "none" if it is monochrome.\n' +
-                        '2. TEXT FIT: does every label sit inside or on its shape, and do the arrow labels sit in a clean gap (no line crossing the letters)?\n' +
-                        '3. ICONS: if any card has an icon, name what each depicts. Say "blob" where you cannot tell.\n' +
-                        '4. DEFECTS: ghost lettering, doubled lines, missing or extra shapes — or "none".\n' +
-                        '5. TEXT: the labels you can read, comma-separated.\n' +
-                        'Do not describe the layout beyond what these five questions ask.'
-                },
-                { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } }
-            ]
-        }]
-    });
-    return String(response?.content ?? '').trim();
 }
 
 export async function chart_guide(args) {
@@ -509,47 +151,44 @@ export async function chart_render(args) {
         };
     }
 
-    // style: 'sketch' redraws the shapes as hand-drawn ones. Applied before the
-    // hybrid handoff so a textless base is sketchy too. Unknown values are refused
-    // rather than ignored — a silently flat diagram is the failure mode here.
+    // style: 'sketch' redraws the shapes as hand-drawn ones. Unknown values are
+    // refused rather than ignored — a silently flat diagram is the failure mode.
     const style = args?.style ?? 'flat';
     if (style !== 'flat' && style !== 'sketch') {
         throw new Error(`chart_render: style must be "flat" or "sketch", got "${style}"`);
     }
-    const rendered = render(spec);
+
+    // The resolution the audit judged: frame variant, canvas size, scale.
+    const resolved = resolve(spec);
 
     // Static rules over the emitted markup. These are renderer bugs, not caller
     // mistakes — an undefined class paints black — so they fail loudly rather than
     // quietly shipping a file. Run against the renderer's own output: a restyle is
     // not the renderer, and its weights are deliberately not the system's.
-    const staticReport = check(rendered);
+    const staticReport = check(resolved.svg);
     if (!staticReport.ok) {
         throw new Error(`chart_render: the renderer emitted invalid SVG — ${staticReport.errors.join('; ')}`);
     }
 
-    const svg = style === 'sketch' ? sketchify(rendered) : rendered;
+    const svg = style === 'sketch' ? sketchify(resolved.svg) : resolved.svg;
 
     const base = uniqueBase(slugify(args?.name ?? spec.title ?? 'chart'));
     const dir = path.join(storageRoot, chartDir);
-    const withText = args?.text !== false;
-    const svgPath = path.join(dir, withText ? `${base}.svg` : `${base}-base.svg`);
+    const svgPath = path.join(dir, `${base}.svg`);
     const specPath = path.join(dir, `${base}.json`);
 
-    // text:false is the hybrid handoff — the drawing without its type, weighted
-    // and pinned to a page colour. geometryBase only *hides* the type (CSS), so it
-    // is removed here: a base that still carries text looks like a text layer to
-    // chart_hybrid, and the composite would come out wordless. The spec sidecar is
-    // still written, because the text layer can only be recovered by re-rendering.
-    const svgOut = withText ? svg : geometryBase(svg, args?.strength).replace(TEXT_ELEMENT, '');
-    fs.writeFileSync(svgPath, svgOut, 'utf8');
-    fs.writeFileSync(specPath, JSON.stringify(spec, null, 2), 'utf8');
+    fs.writeFileSync(svgPath, svg, 'utf8');
+    fs.writeFileSync(specPath, JSON.stringify(resolved.spec, null, 2), 'utf8');
 
     const rel = (p) => path.relative(storageRoot, p).split(path.sep).join('/');
     const lines = [
         `${base}`,
-        `  ${withText ? 'svg ' : 'base'}     ${rel(svgPath)}`,
+        `  svg      ${rel(svgPath)}`,
         `  spec     ${rel(specPath)}`
     ];
+    if (report.frame) {
+        lines.push(`  frame    ${report.frame} · ${report.variant} · scale ${report.scale.toFixed(2)}x`);
+    }
 
     let previewPng = null;
     if (args?.preview !== false) {
@@ -557,7 +196,7 @@ export async function chart_render(args) {
         // preview failure is reported in the result rather than thrown, so a
         // caller does not lose a good render because a rasterizer was down.
         try {
-            const raster = await nmediaProcess(Buffer.from(variantSvg(svgOut, withText ? args?.theme : 'light'), 'utf8').toString('base64'), {
+            const raster = await nmediaProcess(Buffer.from(variantSvg(svg, args?.theme), 'utf8').toString('base64'), {
                 format: 'png',
                 maxDimension: previewSize
             });
@@ -567,7 +206,7 @@ export async function chart_render(args) {
                 maxDimension: previewSize,
                 quality: 90
             });
-            const previewPath = path.join(dir, `${base}${withText ? '' : '-base'}_preview.webp`);
+            const previewPath = path.join(dir, `${base}_preview.webp`);
             fs.writeFileSync(previewPath, previewWebp.buf);
             lines.push(`  preview  ${rel(previewPath)}`);
         } catch (err) {
@@ -581,197 +220,11 @@ export async function chart_render(args) {
         for (const w of report.warnings) lines.push(`  - ${w}`);
     }
 
-    lines.push(
-        '',
-        withText
-            ? `The spec sidecar is the diagram's source: edit it and call chart_render with specPath to re-render.`
-            : `This is the textless base. chart_hybrid with specPath "${rel(specPath)}" re-renders the text layer and puts it on a restyled surface.`
-    );
+    lines.push('', `The spec sidecar is the diagram's source — it holds the layout the renderer resolved. Edit it and call chart_render with specPath to re-render.`);
 
     const content = [{ type: 'text', text: lines.join('\n') }];
     if (previewPng) content.push({ type: 'image', data: previewPng.toString('base64'), mimeType: 'image/png' });
 
-    logger.info(`[chart] Wrote ${base}${withText ? '' : ' (textless base)'}${previewPng ? ' + preview' : ''}`, null, 'Chart');
-    return { content, isError: false };
-}
-
-// Resolve the SVG a hybrid starts from: a spec (rendered here), an SVG string, or
-// a storage path. A base written by chart_render has no text, so it is refused —
-// the text layer has to come from a full render.
-function resolveSvg(args) {
-    let spec = args?.spec;
-    if (!spec && args?.specPath) {
-        spec = JSON.parse(fs.readFileSync(storageFile('chart_hybrid', args.specPath), 'utf8'));
-    }
-    if (spec) {
-        const report = audit(spec);
-        if (!report.ok) {
-            throw new Error(`chart_hybrid: the spec does not pass the geometry audit:\n  ${report.errors.join('\n  ')}`);
-        }
-        return { svg: render(spec), spec };
-    }
-    let svg = args?.svg;
-    if (!svg && args?.svgPath) {
-        svg = fs.readFileSync(storageFile('chart_hybrid', args.svgPath), 'utf8');
-    }
-    if (typeof svg !== 'string' || !/<svg[\s>]/i.test(svg)) {
-        throw new Error('chart_hybrid: "spec", "specPath", "svg" or "svgPath" is required');
-    }
-    if (!/<text\b/.test(svg)) {
-        throw new Error('chart_hybrid: this SVG has no <text> elements — it is a textless base, so the words would be lost. Pass the spec (or its sidecar) instead: the text layer is re-rendered from it.');
-    }
-    return { svg, spec: null };
-}
-
-export async function chart_hybrid(args) {
-    const presetName = args?.preset ?? defaultPreset;
-    const preset = presets[presetName];
-    if (!preset) {
-        throw new Error(`chart_hybrid: unknown preset "${presetName}". Available: ${Object.keys(presets).join(', ')}`);
-    }
-    const prompt = typeof args?.prompt === 'string' && args.prompt.length > 0 ? args.prompt : preset.prompt;
-    const denoise = args?.denoise ?? preset.denoise ?? 0.45;
-    const steps = args?.steps ?? preset.steps ?? 20;
-    const theme = args?.theme === 'dark' ? 'dark' : 'light';
-
-    // Per-call model override: a single id, or a chain to try in order. The
-    // configured chain is the default, so testing a new restyler does not need a
-    // config edit and a restart.
-    const chain = Array.isArray(args?.models) && args.models.length
-        ? args.models
-        : typeof args?.model === 'string' && args.model.trim()
-            ? [args.model.trim()]
-            : hybridModels;
-
-    const { svg, spec } = resolveSvg(args);
-    const base = uniqueBase(slugify(args?.name ?? spec?.title ?? 'hybrid'));
-    const dir = path.join(storageRoot, chartDir);
-    const rel = (p) => path.relative(storageRoot, p).split(path.sep).join('/');
-
-    // 1. Textless, weighted base — this is what the model sees.
-    const baseSvg = prepareBase(svg, args?.strength);
-    const baseSvgPath = path.join(dir, `${base}-base.svg`);
-    fs.writeFileSync(baseSvgPath, baseSvg, 'utf8');
-
-    const raster = await nmediaProcess(Buffer.from(baseSvg, 'utf8').toString('base64'), {
-        format: 'png',
-        maxDimension: hybridSize
-    });
-    const basePngPath = path.join(dir, `${base}-base.png`);
-    fs.writeFileSync(basePngPath, raster.buf);
-
-    // 2. The surface: restyled now, or a backdrop kept from an earlier run. Reuse
-    // is the cheap path — text edits stop costing a generation, and the picture
-    // you approved stops changing under you.
-    let surface;
-    if (args?.backdropPath) {
-        const abs = storageFile('chart_hybrid', args.backdropPath);
-        surface = { buf: fs.readFileSync(abs), model: 'saved backdrop', seconds: 0, usage: null, reused: args.backdropPath };
-    } else {
-        surface = await restyle(`data:image/png;base64,${raster.buf.toString('base64')}`, { prompt, denoise, steps, chain });
-    }
-
-    // The composite needs a PNG to read the paper colour from; a saved WebP is
-    // normalised first, and the PNG on disk is then always what was measured.
-    let surfacePng = surface.buf;
-    if (!surfacePng.subarray(0, 8).equals(PNG_SIGNATURE)) {
-        surfacePng = (await nmediaProcess(surfacePng.toString('base64'), { format: 'png', maxDimension: hybridSize })).buf;
-    }
-    const backdropPath = path.join(dir, `${base}-backdrop.png`);
-    fs.writeFileSync(backdropPath, surfacePng);
-
-    // 3. Embed it as WebP (a photo-like surface: PNG would be several megabytes of
-    // base64 in the SVG) and put the vector type back on top.
-    const webp = await nmediaProcess(surfacePng.toString('base64'), { format: 'webp', maxDimension: hybridSize, quality: 92 });
-    const backdropWebpPath = path.join(dir, `${base}-backdrop.webp`);
-    fs.writeFileSync(backdropWebpPath, webp.buf);
-
-    const surfaceDecoded = decodePng(surfacePng);
-    const hybridSvg = compositeHybrid(variantSvg(svg, theme), `data:image/webp;base64,${webp.buf.toString('base64')}`, surfaceDecoded.paper);
-    const hybridPath = path.join(dir, `${base}.svg`);
-    fs.writeFileSync(hybridPath, hybridSvg, 'utf8');
-
-    // Informational only: how faithfully the surface kept the ink where the
-    // layout put it. Not a gate — colour, legibility and taste are not in it.
-    const drift = driftReport(decodePng(raster.buf), surfaceDecoded);
-
-    const sidecar = {
-        kind: 'hybrid',
-        created: new Date().toISOString(),
-        preset: presetName,
-        prompt,
-        denoise,
-        steps,
-        theme,
-        model: surface.model,
-        reused: surface.reused ?? null,
-        usage: surface.usage,
-        seconds: surface.seconds,
-        drift,
-        spec: spec ?? null,
-        files: {
-            hybrid: rel(hybridPath),
-            preview: rel(path.join(dir, `${base}_preview.webp`)),
-            backdrop: rel(backdropWebpPath),
-            backdropSource: rel(backdropPath),
-            baseSvg: rel(baseSvgPath),
-            basePng: rel(basePngPath)
-        }
-    };
-    fs.writeFileSync(path.join(dir, `${base}-hybrid.json`), JSON.stringify(sidecar, null, 2), 'utf8');
-
-    const lines = [
-        `${base}  (hybrid, ${presetName}, ${surface.model})`,
-        `  svg       ${rel(hybridPath)}`,
-        `  backdrop  ${rel(backdropWebpPath)}  (${webp.width}x${webp.height}, from ${surface.model})`,
-        `  base      ${rel(baseSvgPath)}`,
-        `  meta      ${rel(path.join(dir, `${base}-hybrid.json`))}`,
-        `  knobs     preset=${presetName} denoise=${denoise} steps=${steps} — lower denoise for fidelity, raise it for character`,
-        `  drift     ${drift.score}  (informational: where the ink is, not how it looks)`,
-        '',
-        `The type is vector and pinned to ${theme}; the surface is one raster.`,
-        `Re-composite without another model call: pass backdropPath "${rel(backdropPath)}".`
-    ];
-
-    let previewPng = null;
-    if (args?.preview !== false) {
-        try {
-            // PNG for the caller: an MCP image part is what a model can actually
-            // look at. WebP for the file — same picture, a tenth of the bytes.
-            const raster = await nmediaProcess(Buffer.from(hybridSvg, 'utf8').toString('base64'), {
-                format: 'png',
-                maxDimension: previewSize
-            });
-            previewPng = raster.buf;
-            const previewWebp = await nmediaProcess(previewPng.toString('base64'), {
-                format: 'webp',
-                maxDimension: previewSize,
-                quality: 90
-            });
-            const previewPath = path.join(dir, `${base}_preview.webp`);
-            fs.writeFileSync(previewPath, previewWebp.buf);
-            lines.push(`  preview   ${rel(previewPath)}`);
-        } catch (err) {
-            logger.warn(`[chart] hybrid preview failed for ${base}: ${err.message}`, null, 'Chart');
-            lines.push(`  preview   FAILED — ${err.message}`);
-        }
-    }
-
-    const content = [{ type: 'text', text: lines.join('\n') }];
-    if (previewPng) content.push({ type: 'image', data: previewPng.toString('base64'), mimeType: 'image/png' });
-
-    // Look at it. The caller may be text-only; this is what tells it whether the
-    // colour survived and the labels still sit on their shapes.
-    if (previewPng && args?.check !== false && gatewayClient?.chat) {
-        try {
-            const verdict = await selfCheck(gatewayClient, previewPng);
-            content.unshift({ type: 'text', text: `check (vision, on the raster in this result):\n${verdict}` });
-        } catch (err) {
-            logger.warn(`[chart] self-check failed for ${base}: ${err.message}`, null, 'Chart');
-            content.unshift({ type: 'text', text: `check FAILED — ${err.message}. The files above are still the result; look at the preview.` });
-        }
-    }
-
-    logger.info(`[chart] Wrote hybrid ${base} via ${surface.model}`, null, 'Chart');
+    logger.info(`[chart] Wrote ${base}${previewPng ? ' + preview' : ''}`, null, 'Chart');
     return { content, isError: false };
 }
