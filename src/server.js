@@ -760,6 +760,60 @@ model returning mixed candidates gets both treatments.
 
 
 ═══════════════════════════════════════════════════════════════
+NCONVERT — Universal document → Markdown (Rust core)
+═══════════════════════════════════════════════════════════════
+
+Converts any document into a clean MD-Blocks Markdown file inside a
+self-contained ingest folder under storage converted/: original.<ext>
+(the provenance copy), document.md (the conversion), meta.json
+(detection verdict, stats, ALL warnings), assets/ (extracted images,
+audio, video, attachments when the format carries them). The folder
+relocates as a unit — everything the source knew is in it.
+
+Detection is by magic bytes; the extension only breaks ties. Unknown
+formats, corrupt containers and limit breaches are hard errors that
+name what was probed and why it was refused. Partial conversions
+succeed WITH warnings — read them, they mark every absorbed variance.
+
+  nconvert.convert — { path*, depth?, assets?, keepOriginal?, ocr?, name? }
+      Convert one file (storage path or absolute). depth 'mechanical'
+      (default) is deterministic text + embedded-image extraction; depth
+      'deep' (PDF) additionally renders every page with PDFium and has a
+      vision model reconstruct STRUCTURE — headings, tables, figure
+      placement, reading order — over the mechanically extracted text,
+      which stays authoritative. Deep writes pages/page-NNN.png and keeps
+      document.mechanical.md beside the result; every chunk is validated
+      for text coverage (default 98%) and falls back loudly if the model
+      loses content. Live formats: txt/csv/tsv/md/json/yaml/toml/xml (M1)
+      and pdf (M4) with text, embedded images and AES-256/R6 decryption.
+      html (M2), office formats, e-books, mail (M3), OCR providers (M5)
+      are detected and reported with their milestone. md input is a
+      VALIDATED COPY — existing MD-Blocks directives survive verbatim.
+
+  nconvert.capabilities — {}
+      Live format matrix with phases, limits in force, converter
+      version. Call it before throwing an exotic file at convert.
+
+  nconvert.items — { limit? }
+      The artefact registry, newest first: id, source, format, depth,
+      section/page counts, which layers the item carries.
+
+  nconvert.fetch — { item*, layer?, section?, page?, asset?, maxChars? }
+      Read ONE layer of an ingested item — progressive disclosure:
+        summary   (L0) retrieval summary; start here
+        document  (L1) full MD-Blocks text, or one section via section:N
+        mechanical     deterministic conversion, for comparison
+        page      (L2) rasterized page image: returns path + URL
+        asset     (L2) extracted image/attachment: returns path + URL
+        original  (L3) byte-exact source: returns path + URL
+      Binary layers return a path, not bytes — open, attach or ingest it
+      with the reader's own tool. Nothing is lost: every layer stays
+      addressable.
+
+Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
+napi bindings, nDB pattern; own repo at spin-out).
+
+═══════════════════════════════════════════════════════════════
 CHART — Diagrams as SVG (nCharts)
 ═══════════════════════════════════════════════════════════════
 
@@ -1283,6 +1337,9 @@ IMPORTANT RULES
         "image.generate": "image_generate", "image.ingest": "image_ingest",
 
         "chart.guide": "chart_guide", "chart.render": "chart_render",
+
+        "nconvert.convert": "nconvert_convert", "nconvert.capabilities": "nconvert_capabilities",
+        "nconvert.items": "nconvert_items", "nconvert.fetch": "nconvert_fetch",
 
         "media.process": "media_process",
 

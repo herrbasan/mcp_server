@@ -45,6 +45,21 @@
       "folder": "charts",
       "previewSize": 1600
     },
+    "nconvert": {
+      "folder": "ingest",
+      "maxInputMb": 100,
+      "maxExpandedMb": 500,
+      "maxOutputMb": 64,
+      "maxTableRows": 10000,
+      "assets": true,
+      "keepOriginal": true,
+      "pdfiumPath": "nConvert/napi/pdfium/bin",
+      "pageWidth": 1240,
+      "chunkPages": 8,
+      "coverageThreshold": 0.98,
+      "maxDeepPages": 200,
+      "summary": true
+    },
     "media": {
       "timeoutMs": 120000,
       "pollIntervalMs": 400

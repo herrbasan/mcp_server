@@ -1,0 +1,56 @@
+{
+    "agent": "nconvert",
+    "description": "Universal document ingest into a layered MD-Blocks artefact (nConvert, Rust core). Converts anything thrown at it into a self-contained item under storage 'ingest/': summary.md (L0, retrieval summary), document.md (L1, structured text), assets/ and pages/ (L2, visuals), original file (L3, byte-exact), and item.json (the manifest with identity, provenance, layers). Optional depth:'deep' renders every PDF page with PDFium and has a vision model reconstruct structure over the mechanically extracted text. Magic-byte detection is authoritative; unknown or corrupt input fails loudly with a diagnosis. Phase M1 formats: txt, csv, tsv, md (validated passthrough), json, yaml, toml, xml. PDF is live; html, office formats, e-books, mail, OCR follow.",
+    "tools": [
+        {
+            "name": "nconvert_convert",
+            "description": "Ingest one file into a layered artefact under storage 'ingest/'. Produces original.<ext> (provenance copy), summary.md (L0 retrieval summary), document.md (L1 MD-Blocks + conversion frontmatter), meta.json (detection verdict, stats, all warnings), item.json (manifest), and assets/ when the format carries binaries. With depth 'deep' (PDF) it additionally renders every page to pages/ with PDFium and has a vision model reconstruct structure — headings, tables, figure placement — over the mechanically extracted text, keeping document.mechanical.md beside the result and validating text coverage per chunk. Detection is by magic bytes; the extension only breaks ties. Unknown formats, corrupt containers and limit breaches are hard errors carrying the diagnosis. Read the warnings in the response: they mark every absorbed variance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Storage-relative path (or absolute path) of the file to ingest." },
+                    "depth": { "type": "string", "enum": ["mechanical", "deep"], "description": "mechanical (default): deterministic text + embedded-image extraction. deep (PDF only): renders every page with PDFium and has a vision model reconstruct structure over the mechanically extracted text. Deep keeps document.mechanical.md beside the result and reports per-chunk text coverage." },
+                    "assets": { "type": "boolean", "description": "Extract binary assets (images, audio, video, attachments) into assets/. Default true." },
+                    "keepOriginal": { "type": "boolean", "description": "Copy the source file into the item as original.<ext> (layer L3). Default true." },
+                    "ocr": { "type": "string", "description": "OCR provider name for scans/photos (capability contract in §11 D1 of the spec). Providers land in M5; the default will be gateway vision." },
+                    "name": { "type": "string", "description": "Slug for the item folder base name. Defaults to the source filename." }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "nconvert_capabilities",
+            "description": "Live format matrix: which formats convert now, which are detected-but-pending (with their milestone phase), the limits in force, the converter version, and deep-conversion status. Call this before throwing an exotic file at nconvert_convert.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "name": "nconvert_items",
+            "description": "List ingested items (the artefact registry), newest first: id, source, format, depth, section/page counts and which layers each item carries. This is the discovery entry point for the ingested corpus.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "description": "Maximum items to list (default 20, cap 100)." }
+                }
+            }
+        },
+        {
+            "name": "nconvert_fetch",
+            "description": "Read one layer of an ingested item. Layers, cheapest first: 'summary' (L0 retrieval summary — start here), 'document' (L1 full MD-Blocks text, or a single section with section:N), 'mechanical' (deterministic conversion for comparison), 'page' (L2 rasterized page image path, page:N), 'asset' (L2 extracted image/attachment path, asset:\"name\"), 'original' (L3 byte-exact source path). Text layers return content; binary layers return a storage path and URL for the caller to open, attach, or ingest.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item": { "type": "string", "description": "Item id (the folder name from nconvert_items)." },
+                    "layer": { "type": "string", "enum": ["summary", "document", "mechanical", "page", "asset", "original"], "description": "Which layer to read. Defaults to summary." },
+                    "section": { "type": "integer", "description": "For layer=document: 0-based section index (MD-Blocks sections; for PDFs one per page)." },
+                    "page": { "type": "integer", "description": "For layer=page: 1-based page number." },
+                    "asset": { "type": "string", "description": "For layer=asset: asset filename inside assets/." },
+                    "maxChars": { "type": "integer", "description": "For layer=document: truncate long documents and point at section fetching." }
+                },
+                "required": ["item"]
+            }
+        }
+    ]
+}

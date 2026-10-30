@@ -1,0 +1,95 @@
+# nConvert — Universal Document Ingest
+
+One engine turns any document into a **layered artefact** in a fixed store:
+`storage/ingest/`. Rust core (`nConvert/` at the repo root, nDB pattern:
+workspace + napi bindings, own repo at spin-out), thin JS agent
+(`src/agents/nconvert/`). Spec of record: `docs/nconvert-spec.md` (v2.2).
+
+## Tools
+
+| Method | Args | What it does |
+|---|---|---|
+| `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page and has a vision model reconstruct structure. |
+| `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
+| `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
+| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `page` · `asset` · `original`. |
+
+## The artefact is a layered object (spec §2.6)
+
+*Nothing lost — layers added for discovery.* A reader answers from the cheapest
+sufficient layer and digs only when it must:
+
+| Layer | File | Use |
+|---|---|---|
+| **L0** | `summary.md` | what this is, who for, what it covers — feeds the registry and embeddings |
+| **L1** | `document.md` | structured text; sections addressable via `nconvert.fetch { section: N }` |
+| **L1b** | `document.mechanical.md` | deterministic conversion (deep only) — comparison and fallback |
+| **L2** | `assets/`, `pages/` | extracted images, rasterized pages — visual understanding |
+| **L3** | `original.<ext>` | byte-exact source, last resort |
+| **index** | `item.json` | manifest: `sha256`, provenance, lineage, layer inventory, stats, warnings, privacy |
+
+- **Sufficiency:** re-summarise, re-chunk or re-embed from the artefact alone — the
+  original is never needed twice.
+- **Reachability:** the `assets/…` and `pages/…` references inside `document.md` are
+  served by `nconvert.fetch`, so no layer is mentioned but unreachable.
+- **Discovery:** `nconvert.items` lists; VDB indexes the store for semantic search;
+  `nconvert.fetch` returns the layer a hit points at.
+- Summary generation is default-on (`agents.nconvert.summary: false` to skip) and is
+  reported in the tool response when unavailable.
+
+## Deep conversion (spec §2.5) — structure from the drawing
+
+Mechanical conversion reads what a file *declares*. Technical documents keep much of
+their meaning in the drawing: the ASUS corpus manual holds **295,482 vector path
+segments against 23 raster images** — every diagram is Bézier curves in the content
+stream, unreachable by any image extractor. `depth: "deep"` recovers that.
+
+**Pipeline:** mechanical pass first (its text is the *content authority* — the model
+never retypes the document) → PDFium renders every page at 1240 px → pages chunked to
+`chunkPages` (default 8) → each chunk sends page images + its authoritative text to the
+vision model, which decides only structure → **text-coverage validation** (default
+98 %) → assembled MD-Blocks.
+
+- The model **never writes MD-Blocks directives**; it emits
+  `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
+  cannot inject syntax.
+- **Coverage** is measured on the authoritative *vocabulary*: unique words, hyphenation
+  joined, running headers excluded, concatenation artifacts reassembled.
+- **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
+- Coverage or provider failure falls back per chunk — loudly, never silently.
+- **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
+  fetched by `node nConvert/napi/fetch-pdfium.js`; path in `agents.nconvert.pdfiumPath`.
+
+Measured on the corpus: 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
+149 headings, 61 figure blocks, 89 table rows — including a specifications table
+reconstructed from the drawing that mechanical conversion could only emit as prose.
+
+## Detection and failure philosophy
+
+- Magic bytes are authoritative; the extension breaks ties. Unknown input = hard error
+  listing what was probed.
+- Live: **txt, csv, tsv, md, json, yaml, toml, xml** (M1) and **pdf** (M4) with text,
+  embedded images (JPX→PNG, DCT→jpg, flate→PNG) and AES-256/R6 auto-decryption.
+- Detected-but-pending fail with their milestone: html (M2), docx/pptx/xlsx/ods/odt/
+  epub/eml (M3), images (M5), rtf/cfb (M6).
+- Limits (`agents.nconvert`): `maxInputMb` 100, `maxExpandedMb` 500 (ZIP budget),
+  `maxOutputMb` 64, `maxTableRows` 10000 — breaches are hard errors.
+
+## Building
+
+The engine is a **git submodule** (`nConvert/`, repo `herrbasan/nConvert`,
+MIT). After a fresh clone of this repo:
+
+```
+git submodule update --init nConvert   # fetch the engine
+node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
+npm run build:nconvert                 # Rust workspace + staged napi binary
+npm run test:nconvert                  # 34 core tests + agent smoke test
+```
+
+Binaries are staged version-stamped; the loader picks the newest, so a rebuild
+never fights a running server. After a server restart, **reconnect clients** — a
+session connected before the restart answers "Unknown method" for new tools.
+
+The engine's own tests (`cargo test`, `nConvert/napi/test/bindings.mjs`) live in
+the submodule; `tests/nconvert-agent-smoke.mjs` here covers the host wiring.

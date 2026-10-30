@@ -15,3 +15,7 @@
 	path = src/nCharts
 	url = https://github.com/herrbasan/nCharts.git
 	branch = main
+[submodule "nConvert"]
+	path = nConvert
+	url = https://github.com/herrbasan/nConvert.git
+	branch = main
