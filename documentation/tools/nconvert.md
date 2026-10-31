@@ -54,7 +54,10 @@ vision model, which decides only structure → **text-coverage validation** (def
   `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
   cannot inject syntax.
 - **Coverage** is measured on the authoritative *vocabulary*: unique words, hyphenation
-  joined, running headers excluded, concatenation artifacts reassembled.
+  joined, running headers excluded, concatenation artifacts reassembled. A chunk below
+  threshold is **retried once with its missing words listed back to the model** — the
+  guard is never lowered, the omission is named. Measured: 9/11 → **10/11 chunks
+  structured**, specification and package-contents tables recovered (89 → 200 table rows).
 - **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
 - Coverage or provider failure falls back per chunk — loudly, never silently.
 - **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)

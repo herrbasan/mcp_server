@@ -174,7 +174,17 @@ function pageNumberFrom(reference) {
     return m ? Number(m[1]) : null;
 }
 
-function chunkPrompt(fromPage, toPage, authoritativeText) {
+function chunkPrompt(fromPage, toPage, authoritativeText, missingWords = null) {
+    const correction = missingWords && missingWords.length
+        ? [
+            '',
+            'CORRECTION — your previous attempt omitted words that ARE in the authoritative text.',
+            'Include this material verbatim, without dropping anything:',
+            missingWords.slice(0, 40).join(', '),
+            'Reproduce the complete authoritative text for these pages.'
+        ].join('\n')
+        : '';
+
     return [
         `You are reconstructing pages ${fromPage}-${toPage} of a document as Markdown.`,
         '',
@@ -186,6 +196,7 @@ function chunkPrompt(fromPage, toPage, authoritativeText) {
         '<<<TEXT',
         authoritativeText,
         'TEXT>>>',
+        correction,
         '',
         'Use the IMAGES only to judge STRUCTURE: what is a heading (and its level),',
         'where tables begin and end, which blocks belong together, and where figures',
@@ -200,7 +211,7 @@ function chunkPrompt(fromPage, toPage, authoritativeText) {
         '  [[FIGURE:page-NNN.png|caption text]]  — page-NNN is the page the figure is on.',
         '- Do not emit HTML comments, mb: directives, frontmatter, or commentary.',
         '- Do not invent content that is not in the text or clearly visible in the image.'
-    ].join('\n');
+    ].filter((line) => line !== undefined).join('\n');
 }
 
 // Translate [[FIGURE:page-NNN.png|caption]] into a proper MD-Blocks image block.
@@ -270,24 +281,45 @@ async function deepConvert({ bytes, env, folder }) {
 
         let markdown;
         try {
-            const response = await gateway.chat({
-                task: 'vision',
-                messages: [{ role: 'user', content }],
-                systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
-                maxTokens: 8000
-            });
-            markdown = stripDirectiveSyntax(String(response.content || '').trim());
-            if (!markdown) throw new Error('model returned no content');
+            // One corrective retry when the model drops text: list the missing
+            // vocabulary back to it rather than lowering the guard.
+            let coverage = null;
+            let missing = [];
+            let attempt = 0;
+            const maxAttempts = conf.coverageRetry === false ? 1 : 2;
 
-            const { ratio: coverage, missing } = textCoverage(chunkPageTexts, markdown);
+            while (attempt < maxAttempts) {
+                const response = await gateway.chat({
+                    task: 'vision',
+                    messages: [{
+                        role: 'user',
+                        content: [
+                            ...content.slice(0, -1),
+                            { type: 'text', text: chunkPrompt(from, to, chunkText, attempt === 0 ? null : missing) }
+                        ]
+                    }],
+                    systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
+                    maxTokens: 8000
+                });
+                const candidate = stripDirectiveSyntax(String(response.content || '').trim());
+                if (!candidate) throw new Error('model returned no content');
+
+                const measured = textCoverage(chunkPageTexts, candidate);
+                coverage = measured.ratio;
+                missing = measured.missing;
+                markdown = candidate;
+                attempt++;
+                if (coverage >= conf.coverageThreshold) break;
+            }
+
             if (coverage < conf.coverageThreshold) {
                 const sample = missing.slice(0, 8).join(', ');
                 warnings.push({
                     code: 'deep-low-coverage',
-                    message: `pages ${from}-${to}: model covered ${(coverage * 100).toFixed(1)}% of the authoritative vocabulary (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing e.g.: ${sample}${missing.length > 8 ? ` (+${missing.length - 8} more)` : ''}`
+                    message: `pages ${from}-${to}: model covered ${(coverage * 100).toFixed(1)}% of the authoritative vocabulary after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing e.g.: ${sample}${missing.length > 8 ? ` (+${missing.length - 8} more)` : ''}`
                 });
                 markdown = chunkText;
-                chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-low-coverage' });
+                chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-low-coverage', attempts: attempt });
             } else {
                 const applied = applyFigureMarkers(markdown, renderedIndices);
                 markdown = applied.markdown;
@@ -297,7 +329,12 @@ async function deepConvert({ bytes, env, folder }) {
                         message: `pages ${from}-${to}: ${applied.rejected} figure marker(s) referenced pages that were not rendered`
                     });
                 }
-                chunkReports.push({ pages: `${from}-${to}`, verdict: 'structured', coverage: Number(coverage.toFixed(4)) });
+                chunkReports.push({
+                    pages: `${from}-${to}`,
+                    verdict: attempt > 1 ? 'structured-after-retry' : 'structured',
+                    coverage: Number(coverage.toFixed(4)),
+                    attempts: attempt
+                });
             }
         } catch (e) {
             warnings.push({
@@ -337,32 +374,44 @@ function sectionsOf(markdown) {
 }
 
 // L0: the layer that answers "what is this?" without reading the document.
+// Task routing is provider-dependent; if a router hands the call to a model
+// that streams reasoning and no answer, fall back across tasks before giving up
+// — and record why, so a missing summary is never a mystery.
+const SUMMARY_TASKS = ['query', 'synthesis', 'analysis'];
+
 async function makeSummary(documentMd, filename) {
     if (!gateway) return { text: null, reason: 'no gateway available' };
-    try {
-        const body = documentMd.replace(/^---\n[\s\S]*?\n---\n/, '');
-        const response = await gateway.chat({
-            task: 'query',
-            messages: [{
-                role: 'user',
-                content: [
-                    'Summarise this document for a retrieval index, in 150-250 words.',
-                    'Say what it is, who it is for, what it covers (the main sections), and any specifics a searcher would want to match on.',
-                    'Base it ONLY on the text below. No marketing language. No speculation about content that is not there.',
-                    '',
-                    `--- DOCUMENT: ${filename} ---`,
-                    body.slice(0, 60000)
-                ].join('\n')
-            }],
-            systemPrompt: 'You write precise retrieval summaries. You never invent content.',
-            maxTokens: 700
-        });
-        const text = String(response.content || '').trim();
-        if (!text) return { text: null, reason: 'model returned no content' };
-        return { text, model: response.model ?? null };
-    } catch (e) {
-        return { text: null, reason: e.message };
+    const body = documentMd.replace(/^---\n[\s\S]*?\n---\n/, '');
+    const prompt = [
+        'Summarise this document for a retrieval index, in 150-250 words.',
+        'Say what it is, who it is for, what it covers (the main sections), and any specifics a searcher would want to match on.',
+        'Base it ONLY on the text below. No marketing language. No speculation about content that is not there.',
+        '',
+        `--- DOCUMENT: ${filename} ---`,
+        body.slice(0, 60000)
+    ].join('\n');
+
+    const failures = [];
+    for (const task of SUMMARY_TASKS) {
+        try {
+            const response = await gateway.chat({
+                task,
+                messages: [{ role: 'user', content: prompt }],
+                systemPrompt: 'You write precise retrieval summaries. You never invent content.',
+                maxTokens: 700,
+                enableThinking: false
+            });
+            const text = String(response.content || '').trim();
+            if (!text) {
+                failures.push(`${task}: empty response`);
+                continue;
+            }
+            return { text, model: response.model ?? null, task };
+        } catch (e) {
+            failures.push(`${task}: ${e.message}`);
+        }
     }
+    return { text: null, reason: failures.join(' | ') };
 }
 
 async function writeManifest({ folder, absolute, filename, env, depth, deep, keepOriginal, sourceSha }) {
@@ -427,6 +476,25 @@ function readManifest(itemDir) {
     const file = path.join(itemDir, 'item.json');
     if (!fs.existsSync(file)) throw new Error(`not an nconvert item: ${file} missing`);
     return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+// Repair path: an item ingested while the summary provider was unavailable
+// gains its L0 layer without re-converting the document.
+export async function regenerateSummary(itemId) {
+    const itemDir = path.join(ingestDir, path.basename(String(itemId)));
+    if (!fs.existsSync(itemDir)) throw new Error(`no such item: ${itemId}`);
+    const manifest = readManifest(itemDir);
+    const documentMd = fs.readFileSync(path.join(itemDir, manifest.layers.document), 'utf8');
+    const result = await makeSummary(documentMd, manifest.source);
+    if (!result.text) throw new Error(`summary generation failed: ${result.reason}`);
+
+    const header = `> Retrieval summary of **${manifest.source}** (nconvert ${manifest.depth} conversion).\n\n`;
+    fs.writeFileSync(path.join(itemDir, 'summary.md'), header + result.text + '\n', 'utf8');
+
+    manifest.layers.summary = 'summary.md';
+    manifest.summary = { model: result.model ?? null, task: result.task ?? null, generated: new Date().toISOString() };
+    fs.writeFileSync(path.join(itemDir, 'item.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    return { content: [{ type: 'text', text: `summary.md written for ${manifest.id} (${result.text.length} chars, task ${result.task})` }], isError: false };
 }
 
 // ─── handlers ────────────────────────────────────────────────────────────

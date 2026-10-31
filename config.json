@@ -57,6 +57,7 @@
       "pageWidth": 1240,
       "chunkPages": 8,
       "coverageThreshold": 0.98,
+      "coverageRetry": true,
       "maxDeepPages": 200,
       "summary": true
     },
