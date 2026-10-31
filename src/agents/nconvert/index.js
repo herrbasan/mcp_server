@@ -458,7 +458,9 @@ async function writeManifest({ folder, absolute, filename, env, depth, deep, kee
             original: keepOriginal ? `original${path.extname(filename) || '.' + env.format}` : null
         },
         stats: {
-            words: env.stats?.words ?? null,
+            // Measured from the document that ships, not inherited from the
+            // mechanical envelope — a deep run writes different text.
+            words: (documentMd.match(/\S+/g) || []).length,
             headings: countIn(documentMd, /^#{1,6} /gm),
             rows: countIn(documentMd, /^\|.*\|$/gm),
             figures: countIn(documentMd, /mb:block preset=image/g)
