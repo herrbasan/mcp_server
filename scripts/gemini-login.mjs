@@ -1,19 +1,21 @@
 // Sign in to AI Studio as the account that owns the Gemini API project, in a
-// VISIBLE Chrome window on the shared workshop profile. Google decides what it
+// VISIBLE Chrome window on the monitor's own profile. Google decides what it
 // will accept from an automated session; a human at the keyboard is the only
 // path that always works (2FA, device prompts, bot checks all stop there).
 //
+// The monitor owns this profile (data/chrome-profile-usage) outright, including
+// every other provider session; the browser agent's shared profile is a
+// different cookie jar and is never touched from here.
+//
 // Opens Google's AddSession entry on purpose: the plain sign-in URL redirects
 // to myaccount.google.com when another account already holds the session, so
-// there is nothing to type. AddSession shows the account chooser, which lists
-// david@raum.com as remembered-but-signed-out — click it, enter the password,
-// and Google continues to the AI Studio rate-limit page.
+// there is nothing to type. AddSession shows the account chooser.
 //
-// The session lands in data/chrome-profile, so the usage-monitor picks it up on
-// its next cycle with no further action. This script only WATCHES the window —
-// it never navigates it, which would yank the page out from under a sign-in in
-// progress — and closes it once AI Studio shows the account with a rate-limit
-// table (or after 5 minutes).
+// The session lands in data/chrome-profile-usage, so the usage-monitor picks
+// it up on its next cycle with no further action. This script only WATCHES the
+// window — it never navigates it, which would yank the page out from under a
+// sign-in in progress — and closes it once AI Studio shows the account with a
+// rate-limit table (or after GEMINI_LOGIN_TIMEOUT_MIN, default 5).
 //
 //   node scripts/gemini-login.mjs [email]
 //
@@ -22,38 +24,40 @@ import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { PROFILES } from '../src/agents/usage-monitor/profiles.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const PROFILE = path.join(root, 'data', 'chrome-profile');
+const { dir: PROFILE, port: PORT, chromeProfile } = PROFILES.usage;
 const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8'));
 const account = process.argv[2] || config.agents?.['usage-monitor']?.geminiAccount;
 if (!account) throw new Error('no account: pass one as an argument or set agents.usage-monitor.geminiAccount in config.json');
 
 const POLL_MS = 2000;
-const DEADLINE_MS = 5 * 60 * 1000;
+const DEADLINE_MS = (Number(process.env.GEMINI_LOGIN_TIMEOUT_MIN) || 5) * 60 * 1000;
 const AISTUDIO = 'https://aistudio.google.com/u/0/rate-limit';
 
-console.log(`Opening Chrome to sign in as ${account}.`);
-console.log('In the window: click that account, enter the password, let it reach AI Studio.');
+console.log(`Opening the monitor's usage Chrome profile to sign in as ${account}.`);
+console.log('In the window: enter the account, the password, and any verification Google asks for.');
 console.log('This script watches (never navigates) and closes the window when done.\n');
 
 let browser;
-// The profile is shared with the usage-monitor, which launches its own Chrome
-// for ~2 minutes every 10 — a launch that loses that race is normal, not an
-// error worth handing to the user.
+// The gemini profile is the monitor's alone, but a cycle may hold it for ~2
+// minutes — a launch that loses that race is normal, not an error worth
+// handing to the user.
 for (let attempt = 1; ; attempt++) {
     try {
         browser = await puppeteer.launch({
             headless: false,
-            // Same debug port as the agent: the usage-monitor then attaches to
-            // this window instead of launching a second Chrome on the same
-            // profile and failing its cycle while you sign in.
-            args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--remote-debugging-port=9222', `--user-data-dir=${PROFILE}`],
+            // Same debug port as the monitor: it then attaches to this window
+            // instead of launching a second Chrome on the same profile and
+            // failing its cycle while you sign in.
+            args: ['--no-sandbox', '--disable-blink-features=AutomationControlled',
+                   `--profile-directory=${chromeProfile}`, `--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE}`],
         });
         break;
     } catch (err) {
-        if (attempt >= 6) throw new Error(`could not open Chrome on the shared profile after ${attempt} attempts (${err.message})`);
+        if (attempt >= 6) throw new Error(`could not open Chrome on the gemini profile after ${attempt} attempts (${err.message})`);
         console.log(`  … profile busy (the usage-monitor's cycle holds it for ~2 min) — retrying in 20s (${attempt}/6)`);
         await new Promise(r => setTimeout(r, 20000));
     }

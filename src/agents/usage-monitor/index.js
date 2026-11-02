@@ -7,8 +7,8 @@
 // Extraction routes (see documentation/tools/usage-monitor.md):
 //   z.ai      page-context fetch, Bearer from localStorage
 //   gemini    DOM scrape (rate-limit table w/ range forced to 1 Day + spend page).
-//             Needs the profile signed in as an account that has an AI Studio
-//             project — the table renders per project, not per account.
+//             Needs an account that has an AI Studio project — the table renders
+//             per project, not per account (david@raum.com).
 //   kimi      page-context RPC, Bearer from localStorage
 //   minimax   page-context fetch, cookies
 //   openai    DOM scrape (span matching "$X / $Y")
@@ -16,100 +16,129 @@
 //   deepseek  direct API with gateway-config key
 //   openrouter direct API with gateway-config key
 //
-// Browser work reuses the shared workshop Chrome profile (data/chrome-profile)
-// via CDP attach-or-launch, exactly like the browser agent, so the logins
-// Dave established in the visible session persist.
+// Browser work runs on the monitor's OWN Chrome profile (data/chrome-profile-usage,
+// port 9223) — never the browser agent's shared one. It attaches to a running
+// Chrome on that port, else launches headless, so the logins Dave established in
+// a visible session persist. Profiles live in ./profiles.js.
 
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
+import { PROFILES } from './profiles.js';
 
 const logger = getLogger();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-const DEBUGGING_PORT = 9222;
-const CHROME_PROFILE_DIR = path.join(PROJECT_ROOT, 'data', 'chrome-profile');
 const OUT_PATH = path.join(PROJECT_ROOT, 'data', 'usage-limits.json');
 
 const DEFAULT_INTERVAL_MIN = 10;
 const GATEWAY_CONFIG = 'D:\\DEV\\LLM Gateway\\config.json';
 
 let scheduler = null;
-let browser = null;
 let running = false;
 let lastRun = null;
 let lastDurationMs = null;
 let nextRunAt = null;
 const providerHealth = new Map(); // name -> { lastOk, lastError, okCount, errCount }
 
-// ── shared browser ──────────────────────────────────────────────────────
+// ── browsers, one per profile ───────────────────────────────────────────
+// The monitor owns the `usage` profile outright: every provider session and the
+// AI Studio account live there. The browser agent's `shared` profile is never
+// opened from here — sharing one cookie jar is what let a scrape and an
+// interactive session log each other out (2026-11-02: the shared profile's
+// Google account had no AI Studio project, so Gemini could only recover by
+// replacing the session the other tools depended on).
+const browsers = new Map(); // profile key -> { browser, launchedByUs }
 
-let launchedByUs = false;
-
-async function getBrowser() {
-    if (browser) return browser;
+async function getBrowser(key) {
+    const live = browsers.get(key);
+    if (live) return live.browser;
+    const profile = PROFILES[key];
+    if (!profile) throw new Error(`usage-monitor: unknown browser profile "${key}"`);
+    let candidate;
+    let launchedByUs = false;
     try {
-        // browserURL, NOT browserWSEndpoint: a bare `ws://localhost:9222` is
+        // browserURL, NOT browserWSEndpoint: a bare `ws://localhost:PORT` is
         // not a CDP endpoint (answers 404), so that branch never succeeded —
         // every cycle fell through to launch and died on the profile lock
-        // whenever the workshop Chrome already held data/chrome-profile
-        // (same bug the browser agent fixed; see its initBrowser comment).
-        browser = await puppeteer.connect({ browserURL: `http://localhost:${DEBUGGING_PORT}`, timeout: 3000 });
-        launchedByUs = false;
-        logger.info('[UsageMonitor] Attached to running Chrome via CDP', null, 'Usage');
-        return browser;
+        // whenever a Chrome already held the profile (same bug the browser
+        // agent fixed; see its initBrowser comment).
+        candidate = await puppeteer.connect({ browserURL: `http://localhost:${profile.port}`, timeout: 3000 });
+        logger.info(`[UsageMonitor] attached to the running ${key} Chrome on ${profile.port}`, null, 'Usage');
     } catch {
-        // fall through to launch
+        // HEADLESS. All extraction routes verified working headless 2026-09-27;
+        // openai's Cloudflare passes once the UA override in runCycle strips the
+        // 'Headless' marker. The old headed off-screen launch was dropped because
+        // Chrome clamps restored window bounds back on-screen before the CDP move
+        // lands — a visible window flash every cycle.
+        candidate = await puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                // Pin the Chrome profile directory: without it Chrome may open
+                // whichever profile was used last, which is how a window and a
+                // headless cycle can end up looking at different cookie jars
+                // (2026-11-02: Profile 1 appeared beside Default).
+                `--profile-directory=${profile.chromeProfile}`,
+                `--remote-debugging-port=${profile.port}`,
+                `--user-data-dir=${profile.dir}`
+            ]
+        });
+        launchedByUs = true;
     }
-    // HEADLESS. All extraction routes verified working headless 2026-09-27;
-    // openai's Cloudflare passes once the UA override in runCycle strips the
-    // 'Headless' marker. The old headed off-screen launch was dropped because
-    // Chrome clamps restored window bounds back on-screen before the CDP move
-    // lands — a visible window flash every cycle.
-    browser = await puppeteer.launch({
-        headless: true,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            `--remote-debugging-port=${DEBUGGING_PORT}`,
-            `--user-data-dir=${CHROME_PROFILE_DIR}`
-        ]
-    });
-    launchedByUs = true;
-    browser.on('disconnected', () => { browser = null; launchedByUs = false; });
-    // The shared profile accumulates tabs, and a browser we launched owns all of
-    // them — nothing else can be using it (the profile lock guarantees that). The
-    // browser agent sweeps only its own visible launches, so a pile restored from
-    // the profile's session state rode along on every headless cycle: 62 tabs,
-    // 53 of them about:blank, on 2026-10-14. Only sweep what we launched; an
-    // attached browser may be Dave's, or may be running a live scraper page.
-    const pages = await browser.pages();
+    const entry = { browser: candidate, launchedByUs };
+    browsers.set(key, entry);
+    candidate.on('disconnected', () => { if (browsers.get(key) === entry) browsers.delete(key); });
+    if (!launchedByUs) return candidate;
+    // A profile accumulates tabs, and a browser we launched owns all of them —
+    // nothing else can be using it (the profile lock guarantees that). The
+    // browser agent sweeps only its own visible launches, so a pile restored
+    // from the profile's session state rode along on every headless cycle: 62
+    // tabs, 53 of them about:blank, on 2026-10-14. Only sweep what we launched;
+    // an attached browser may be Dave's, or may be running a live scraper page.
+    const pages = await candidate.pages();
     const keeper = pages.find(p => p.url() === 'about:blank') || pages[0];
     let closed = 0;
     for (const page of pages) {
         if (page === keeper) continue;
         try { await page.close(); closed++; } catch { /* already gone */ }
     }
-    if (closed) logger.info(`[UsageMonitor] swept ${closed} leftover tab(s) restored on the shared profile`, null, 'Usage');
-    logger.info('[UsageMonitor] Launched headless Chrome on shared profile', null, 'Usage');
-    return browser;
+    if (closed) logger.info(`[UsageMonitor] swept ${closed} leftover tab(s) restored on the ${key} profile`, null, 'Usage');
+    logger.info(`[UsageMonitor] launched headless Chrome on the ${key} profile`, null, 'Usage');
+    return candidate;
 }
 
-async function releaseBrowser() {
-    if (!browser) return;
-    try {
-        // Only a browser WE launched may be closed. An attached one (e.g.
-        // Dave's visible session, or the browser agent's shared instance)
-        // must keep running — disconnect leaves it untouched.
-        if (launchedByUs) await browser.close();
-        else await browser.disconnect();
-    } catch { /* already gone */ }
-    browser = null;
-    launchedByUs = false;
+// A close/disconnect that never resolves would keep runCycle's `running` guard
+// set forever — the scheduler would then skip every later cycle, silently, with
+// nothing in the log after the failure (measured 2026-11-02: cycles stopped at
+// 11:12 and the state file aged for an hour).
+function withTimeout(promise, ms, label) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms); })
+    ]).finally(() => clearTimeout(timer));
+}
+
+async function releaseBrowsers() {
+    for (const key of [...browsers.keys()]) {
+        const entry = browsers.get(key);
+        browsers.delete(key);
+        try {
+            // Only a browser WE launched may be closed. An attached one (e.g.
+            // Dave's visible session, or the browser agent's shared instance)
+            // must keep running — disconnect leaves it untouched.
+            if (entry.launchedByUs) await withTimeout(entry.browser.close(), 20000, 'browser.close');
+            else await withTimeout(entry.browser.disconnect(), 5000, 'browser.disconnect');
+        } catch (err) {
+            logger.warn(`[UsageMonitor] ${key}: browser release failed — ${err.message}`, null, 'Usage');
+        }
+    }
 }
 
 // page.evaluate treats a string as an expression; our extractors are async
@@ -221,7 +250,18 @@ async function geminiProbe(page, index) {
 async function findGeminiAccount(page, seen) {
     const remembered = new Set();
     for (const index of GEMINI_INDEXES) {
-        const probe = await geminiProbe(page, index);
+        let probe;
+        try {
+            probe = await geminiProbe(page, index);
+        } catch (err) {
+            // One index can be broken while another works (measured 2026-11-02:
+            // /u/1 answered ERR_TOO_MANY_REDIRECTS while /u/0 rendered as
+            // herrbasan@googlemail.com). That is a fact about the index, not
+            // about the account — letting it throw aborted the whole gemini
+            // extraction and hid /u/0's state for four days.
+            seen.push(`/u/${index}: navigation failed (${String(err.message).replace(/^net::/, '').slice(0, 90)})`);
+            continue;
+        }
         seen.push(probe.state === 'ok' ? `/u/${index}: ${probe.account || 'no account'}`
             : probe.state === 'chooser' ? `/u/${index}: account chooser (${(probe.accounts || []).join(', ') || 'no accounts'})`
             : `/u/${index}: signed out`);
@@ -314,7 +354,7 @@ async function geminiSession(page) {
             : signInAttempted
                 ? 'the credential sign-in already ran this process — the visible path is scripts/gemini-login.mjs'
                 : 'sign in once via scripts/gemini-login.mjs, or set USAGE_MONITOR_GEMINI_PASSWORD in .env for the automated path';
-    throw new Error(`gemini: ${geminiAccount || 'the configured account'} is not signed in in the shared profile (${seen.join('; ')}) — ${remedy}`);
+    throw new Error(`gemini: ${geminiAccount || 'the configured account'} is not signed in in the gemini profile (${seen.join('; ')}) — ${remedy}`);
 }
 
 async function extractGemini(page) {
@@ -630,14 +670,14 @@ async function extractOpenrouter() {
 // reorders the dashboard. Execution order follows too — providers are
 // independent, interleaving browser/direct is harmless.
 const PROVIDERS = [
-    { name: 'kimi', browser: true, fn: extractKimi },
-    { name: 'zai', browser: true, fn: extractZai },
-    { name: 'minimax', browser: true, fn: extractMinimax },
+    { name: 'kimi', browser: 'usage', fn: extractKimi },
+    { name: 'zai', browser: 'usage', fn: extractZai },
+    { name: 'minimax', browser: 'usage', fn: extractMinimax },
     { name: 'deepseek', browser: false, fn: extractDeepseek },
-    { name: 'gemini', browser: true, fn: extractGemini },
+    { name: 'gemini', browser: 'usage', fn: extractGemini },
     { name: 'openrouter', browser: false, fn: extractOpenrouter },
-    { name: 'openai', browser: true, fn: extractOpenai },
-    { name: 'anthropic', browser: true, fn: extractAnthropic }
+    { name: 'openai', browser: 'usage', fn: extractOpenai },
+    { name: 'anthropic', browser: 'usage', fn: extractAnthropic }
 ];
 
 async function runCycle() {
@@ -651,20 +691,22 @@ async function runCycle() {
     // ERROR lines in localweb2's health view) once per breakage episode.
     const ESCALATE_AFTER = 3;
 
-    let page = null;
+    const pages = new Map(); // profile key -> page
     try {
         for (const p of PROVIDERS) {
             try {
                 let result;
                 if (p.browser) {
+                    let page = pages.get(p.browser);
                     if (!page) {
-                        const b = await getBrowser();
+                        const b = await getBrowser(p.browser);
                         page = await b.newPage();
                         // New headless still advertises 'HeadlessChrome' in the
                         // UA — OpenAI's Cloudflare gates on it. Stripping the
                         // marker passes (verified 2026-09-27). On a normal UA
                         // the replace is a no-op, so attach mode is unaffected.
                         await page.setUserAgent((await b.userAgent()).replace('Headless', ''));
+                        pages.set(p.browser, page);
                     }
                     result = await p.fn(page);
                 } else {
@@ -681,7 +723,8 @@ async function runCycle() {
                 providerHealth.set(p.name, { lastOk: prevHealth.lastOk || null, lastError: err.message, consecutiveFailures: consecutive,
                     okCount: prevHealth.okCount || 0, errCount: (prevHealth.errCount || 0) + 1 });
                 logger.warn(`[UsageMonitor] ${p.name}: FAILED (${consecutive}x consecutive) — ${err.message} (keeping last-good)`, null, 'Usage');
-                if (p.browser && page) await debugCapture(page, p.name, err);
+                const failedPage = p.browser ? pages.get(p.browser) : null;
+                if (failedPage) await debugCapture(failedPage, p.name, err);
                 if (consecutive === ESCALATE_AFTER) {
                     // Once per episode (exactly on the 3rd), not every cycle.
                     // Debug captures for every failure sit in data/usage-monitor-debug/.
@@ -696,15 +739,18 @@ async function runCycle() {
             }
         }
     } finally {
-        if (page) { try { await page.close(); } catch { /* closed */ } }
-        await releaseBrowser();
+        for (const page of pages.values()) { try { await withTimeout(page.close(), 10000, 'page.close'); } catch { /* closed */ } }
+        await releaseBrowsers();
+        // Reset the guard HERE, not after writeState: anything that escapes the
+        // try would otherwise leave `running` true forever, and the scheduler
+        // would skip every following cycle with nothing in the log (2026-11-02).
+        running = false;
     }
 
     const state = { updatedAt: new Date().toISOString(), providers, stale };
     writeState(state);
     lastRun = state.updatedAt;
     lastDurationMs = Date.now() - started;
-    running = false;
     return state;
 }
 
@@ -737,8 +783,12 @@ export async function init(context) {
 
 export async function shutdown() {
     if (scheduler) clearInterval(scheduler);
-    await releaseBrowser();
+    await releaseBrowsers();
 }
+
+// Exported for scripts/probe-usage.mjs — the pre-restart gate runs providers
+// one by one, without the scheduler and without touching the state file.
+export { PROVIDERS };
 
 export async function usage_scan(args, context) {
     const state = await runCycle();
