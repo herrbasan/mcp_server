@@ -774,12 +774,14 @@ const FORMAT_MATRIX = [
     { format: 'pdf', phase: 'M4 · live', note: 'per-page text + embedded images as assets (JPX→PNG, DCT→jpg, flate→PNG); AES-256/R6 auto-decrypts; PDFium rasterization for deep conversion' },
     { format: 'image', phase: 'M5', note: 'OCR provider hand-off (multi-page); needs_ocr returned today' },
     { format: 'rtf', phase: 'M6', note: 'hand parser for supported control words' },
-    { format: 'cfb', phase: 'M6', note: 'legacy .doc/.msg container' }
-];
+    { format: 'doc', phase: 'M6 · live (pulled forward)', note: 'Word 97-2003 binary: piece-table text (cp1252 + UTF-16 pieces), fields → result text, page breaks → ***, photos carved from the Data stream (JPEG/PNG); tables/footnotes/headers warned not converted; Word 6/95 + encrypted refused loudly' },
+    { format: 'xls', phase: 'M6', note: 'Excel 97-2003 (BIFF, CFB) — detected by Workbook stream shape' },
+    { format: 'cfb', phase: 'M6', note: 'other CFB containers (Outlook .msg via __substg streams)' }
+]
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.5.0',
+        converter: 'nconvert 0.6.0',
         spec: 'docs/nconvert-spec.md v2.1',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {

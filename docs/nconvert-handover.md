@@ -11,10 +11,10 @@ cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
 cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
 ```
 Then `nconvert.items` — expect 3+ items. **The running server still loads
-engine 0.4.1** (started before the docx build); docx goes live for clients
-after the next restart — David's call, not the agent's.
+engine 0.5.0** (restarted 19:42 before the .doc build); `.doc` goes live for
+clients after the next restart — David's call, not the agent's.
 
-State at handover: host clean, engine clean, submodule pinned, engine **0.5.0
+State at handover: host clean, engine clean, submodule pinned, engine **0.6.0
 staged** (`napi/setup.js` ran; plain name replaced while unlocked).
 
 ## What is live
@@ -26,6 +26,7 @@ staged** (`napi/setup.js` ran; plain name replaced while unlocked).
 | PDFium rasterization + deep vision conversion + corrective retry | M4.2 |
 | Layered artefact + `items`/`fetch` reader | M4.5 |
 | **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
+| **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.0): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream (JPEG/PNG ≥1 KB); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
 
 Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 `nconvert.fetch`. Store: `storage/ingest/<YYYYMMDD_HHMM>_<slug>/`.
@@ -34,6 +35,12 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 
 - Engine: **40/40 tests** (6 new docx tests: end-to-end, determinism, budget
   hard error, missing-part, page-break split, field hyperlink).
+- Engine 0.6.0: **47/47 tests** (+7 doc tests incl. a real-file corpus test
+  on `Finanzamt Pfaffenhofen_Miete_Darlegung.doc`: umlaut text + 6 carved
+  JPEGs — 3 photos × (full + 160px thumbnail)).
+- Real corpus `.doc` #2: `Zeitsprung_V2.3.doc` (Word 97, 19 203 CPs) —
+  2 606 words clean German (AV storyboard), picture anchors present but images
+  are metafiles → 0 carved, honestly warned (`doc-picture-chars`).
 - Bindings: ALL PASS incl. PDFium corpus rasterization. Agent smoke: ALL PASS.
 - Real-world DOCX (no Materna file on this machine): trustainable manuscript
   (226 KB, German) — 172 blocks, 27 list lines, 45 bold, 2 images, captions —
@@ -49,16 +56,27 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
   every real ZIP failed detection with "central directory unreadable".
   Invisible until now because docx was Unsupported — an error either way.
   Fixed, plus the backward EOCD scan (≤64 KB comments) now actually scans.
+- **Self-consistent fixture trap (doc FIB offsets)**: first implementation put
+  rgLw97@62 and rgFcLcb97@120 — wrong by 2/34 bytes, but the hand-built fixture
+  encoded the same wrong offsets, so all tests passed. Only the REAL Finanzamt
+  file exposed it (lcbClx read as 0). Correct: rgLw97@64, rgFcLcb97@154,
+  fcClx@418. Lesson recorded: a format parser needs at least one real-world
+  fixture in its tests, generated fixtures alone prove nothing about offsets.
 
-## Next: M3 continued (order suggested)
+## Next: M3 + M6 continued (order suggested)
 
 1. **pptx** — one section per slide, speaker notes → narration blocks. The
    zip/budget plumbing in `src/docx.rs` generalizes; extract shared helpers
    into a container module when the second OOXML format lands.
-2. **xlsx** via calamine — sheet per section.
-3. **DOCX charts** — cached series → data table (the one spec'd docx item
+2. **.msg** (Outlook, CFB `__substg` streams) and **.xls** (BIFF) — the CFB
+   container layer landed with `doc`; both are container work only now.
+3. **rtf** (text-based spec, hand parser).
+4. **DOCX charts** — cached series → data table (the one spec'd docx item
    still pending).
-4. odt / epub / eml.
+5. **doc refinements**: WMF/EMF metafile rasters, footnote/header text (CCP
+   ranges already parsed), Escher walk for exact image provenance vs carving,
+   thumbnail/full-pair dedupe.
+6. odt / epub / eml.
 
 ## Known limits (all deliberate, all recorded)
 
@@ -104,8 +122,8 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 
 ## Open questions for David
 
-- **Restart the MCP server** when convenient to load nconvert 0.5.0 (docx live
-  for connected clients; reconnect after restart).
+- **Restart the MCP server** when convenient to load nconvert 0.6.0 (doc +
+  docx live for connected clients; reconnect after restart).
 - **A real Materna DOCX** for the golden validation.
 - Deep conversion for **office formats**: rasterize via LibreOffice, or keep deep
   PDF-only and accept mechanical DOCX? (Blocks a real feature decision.)

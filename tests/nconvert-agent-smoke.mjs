@@ -145,11 +145,18 @@ if (fs.existsSync(CORPUS)) {
             check('corpus: motherboard JPX diagrams as PNG', pngs.length >= 1, `${pngs.length} png`);
         }
     }
+    // Word 97-2003 .doc converts since engine 0.6.0 (piece table + Data carving)
     try {
-        await agent.nconvert_convert({ path: `${CORPUS}/Zeitsprung_V2.3.doc`, keepOriginal: false });
-        check('corpus: legacy doc refuses', false);
+        const r = await agent.nconvert_convert({ path: `${CORPUS}/Zeitsprung_V2.3.doc`, keepOriginal: false });
+        check('corpus: legacy doc converts', !r.isError, JSON.stringify(r).slice(0, 200));
+        const m = /→ (ingest\/\S+)\//.exec(r.content[0].text);
+        const dir = path.join(tmp, m[1]);
+        const item = JSON.parse(fs.readFileSync(path.join(dir, 'item.json'), 'utf8'));
+        check('corpus: doc has text stats', item.stats.words > 100 && item.stats.figures >= 0, JSON.stringify(item.stats));
+        const md = fs.readFileSync(path.join(dir, 'document.md'), 'utf8');
+        check('corpus: doc text extracted', md.length > 2000, `${md.length} chars`);
     } catch (e) {
-        check('corpus: legacy doc refuses with M6', /M6/.test(e.message), e.message.slice(0, 150));
+        check('corpus: legacy doc converts', false, e.message.slice(0, 150));
     }
 } else {
     console.log('  skip external corpus (H:\\Ingest_TestFiles absent)');

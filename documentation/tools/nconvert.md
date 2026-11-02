@@ -72,12 +72,16 @@ reconstructed from the drawing that mechanical conversion could only emit as pro
 - Magic bytes are authoritative; the extension breaks ties. Unknown input = hard error
   listing what was probed.
 - Live: **txt, csv, tsv, md, json, yaml, toml, xml** (M1), **pdf** (M4) with text,
-  embedded images (JPX→PNG, DCT→jpg, flate→PNG) and AES-256/R6 auto-decryption, and
+  embedded images (JPX→PNG, DCT→jpg, flate→PNG) and AES-256/R6 auto-decryption,
   **docx** (M3): styles → headings, `numPr` → nested lists, `gridSpan`/`vMerge` tables
   resolved into a rectangular grid, `word/media/*` → assets, footnotes → GFM, hyperlink
-  fields resolved, OMML math flattened to text (warned), page breaks → `***`.
+  fields resolved, OMML math flattened to text (warned), page breaks → `***`,
+  and **doc** (M6, pulled forward): Word 97-2003 binary via the [MS-DOC] piece
+  table (cp1252 + UTF-16 pieces), field results kept, page breaks → `***`,
+  photos carved from the CFB `Data` stream (JPEG/PNG); tables/footnotes/headers
+  flattened or warned; Word 6/95 and encrypted files refused loudly.
 - Detected-but-pending fail with their milestone: html (M2), pptx/xlsx/ods/odt/
-  epub/eml (M3), images (M5), rtf/cfb (M6). DOCX charts as data tables: pending.
+  epub/eml (M3), images (M5), rtf/xls/msg (M6). DOCX charts as data tables: pending.
 - Limits (`agents.nconvert`): `maxInputMb` 100, `maxExpandedMb` 500 (ZIP budget,
   enforced per entry and in total), `maxOutputMb` 64, `maxTableRows` 10000 — breaches
   are hard errors.
@@ -91,7 +95,7 @@ MIT). After a fresh clone of this repo:
 git submodule update --init nConvert   # fetch the engine
 node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
 npm run build:nconvert                 # Rust workspace + staged napi binary
-npm run test:nconvert                  # 40 core tests + agent smoke test
+npm run test:nconvert                  # 47 core tests + agent smoke test
 ```
 
 Binaries are staged version-stamped; the loader picks the newest, so a rebuild
