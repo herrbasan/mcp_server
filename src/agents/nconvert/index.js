@@ -513,6 +513,7 @@ export async function nconvert_convert(args) {
     const optionsJson = JSON.stringify({
         max_input_bytes: maxInputBytes,
         max_output_bytes: conf.maxOutputMb * 1024 * 1024,
+        max_expanded_bytes: conf.maxExpandedMb * 1024 * 1024,
         max_table_rows: conf.maxTableRows,
         max_cells: 1000000
     });
@@ -763,7 +764,7 @@ const FORMAT_MATRIX = [
     { format: 'toml', phase: 'M1', note: 'fenced verbatim, syntax unchecked' },
     { format: 'xml', phase: 'M1', note: 'fenced verbatim, syntax unchecked' },
     { format: 'html', phase: 'M2', note: 'html5ever port of the JS serialization mapping' },
-    { format: 'docx', phase: 'M3', note: 'OOXML walk; charts as data tables' },
+    { format: 'docx', phase: 'M3 · live', note: 'styles → headings, numPr → nested lists, gridSpan/vMerge tables, images → assets, footnotes → GFM; expansion budget enforced; charts as data tables pending' },
     { format: 'pptx', phase: 'M3', note: 'one section per slide; speaker notes → narration blocks' },
     { format: 'xlsx', phase: 'M3', note: 'calamine; sheet per section' },
     { format: 'ods', phase: 'M3', note: 'ODF spreadsheet' },
@@ -778,7 +779,7 @@ const FORMAT_MATRIX = [
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.4.1',
+        converter: 'nconvert 0.5.0',
         spec: 'docs/nconvert-spec.md v2.1',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
