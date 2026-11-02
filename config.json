@@ -116,7 +116,7 @@
       "maxRetries": 1,
       "batchDelayMs": 100,
       "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
-      "ignore": ["forge", "temp", "_trash", ".backups", "charts"],
+      "ignore": ["forge", "temp", "_trash", ".backups", "charts", "item.json", "meta.json"],
       "contextEnhancement": {
         "enabled": true,
         "task": "local",
