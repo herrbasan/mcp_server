@@ -11,10 +11,12 @@ cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
 cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
 ```
 Then `nconvert.items` — expect 3+ items. **The running server still loads
-engine 0.5.0** (restarted 19:42 before the .doc build); `.doc` goes live for
-clients after the next restart — David's call, not the agent's.
+engine 0.6.0** (restarted 20:25 before the carver fix); the fixed carving goes
+live after the next restart — David's call, not the agent's. The
+`20261102_2025_finanzamt…` item ingested under 0.6.0 has **corrupt assets**
+(carved EXIF fragments); delete it and re-ingest after the restart.
 
-State at handover: host clean, engine clean, submodule pinned, engine **0.6.0
+State at handover: host clean, engine clean, submodule pinned, engine **0.6.1
 staged** (`napi/setup.js` ran; plain name replaced while unlocked).
 
 ## What is live
@@ -26,7 +28,7 @@ staged** (`napi/setup.js` ran; plain name replaced while unlocked).
 | PDFium rasterization + deep vision conversion + corrective retry | M4.2 |
 | Layered artefact + `items`/`fetch` reader | M4.5 |
 | **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
-| **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.0): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream (JPEG/PNG ≥1 KB); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
+| **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.1): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream **structure-aware** (`jpeg_bounds`: segments + entropy walk — EXIF-embedded thumbnails no longer truncate the host image); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
 
 Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 `nconvert.fetch`. Store: `storage/ingest/<YYYYMMDD_HHMM>_<slug>/`.
@@ -62,6 +64,15 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
   file exposed it (lcbClx read as 0). Correct: rgLw97@64, rgFcLcb97@154,
   fcClx@418. Lesson recorded: a format parser needs at least one real-world
   fixture in its tests, generated fixtures alone prove nothing about offsets.
+- **JPEG signature carving truncated full-size photos (0.6.0 → 0.6.1)**: the
+  Finanzamt photos carry EXIF APP1 segments with embedded thumbnail JPEGs;
+  cutting at the first FFD9 produced "SOI + EXIF + thumb-EOI" blobs (thumbs
+  readable, fulls corrupt). The carver now walks JPEG structure (segments +
+  entropy stuffing rules, `jpeg_bounds`) and jumps past each carved image;
+  PNG end is IEND + CRC. Verified: all 3 real photos (714×1116, 644×1078,
+  706×972) fully decode via PIL. Second lesson from the same file: **validate
+  carved images by decoding, not by finding magic bytes** — the corrupt blobs
+  had perfect signatures.
 
 ## Next: M3 + M6 continued (order suggested)
 

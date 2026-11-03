@@ -781,7 +781,7 @@ const FORMAT_MATRIX = [
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.6.0',
+        converter: 'nconvert 0.6.1',
         spec: 'docs/nconvert-spec.md v2.1',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
