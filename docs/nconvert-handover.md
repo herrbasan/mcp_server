@@ -1,8 +1,8 @@
-# nConvert — Session Handover (2026-11-02, evening)
+# nConvert — Session Handover (2026-11-03, evening)
 
-Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md` (v2.3).
-Operator doc: `documentation/tools/nconvert.md`. Engine repo: `herrbasan/nConvert`
-(private, MIT), consumed as a submodule.
+Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md`.
+Operator doc: `documentation/tools/nconvert.md` (includes the queue section).
+Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
 
 ## Verify first (30 seconds)
 
@@ -34,6 +34,7 @@ State at handover: host clean, engine clean, submodule pinned at engine
 | **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
 | **PPTX mechanical** | **M3 · live** (engine 0.7.0): one section per slide (order from sldIdLst via rels — never filename sort), title/body placeholders → heading/paragraphs, buChar/buAutoNum + lvl → nested lists, DrawingML tables → shared span grid, media → assets (SVG preferred over PNG fallback), speaker notes → `preset=narration` blocks, charts/SmartArt warned pending. Shared OOXML machinery extracted to `src/ooxml.rs` (ZipParts, budget, grid, run model) |
 | **XLSX mechanical** | **M3 · live** (engine 0.8.0): calamine; one section per sheet, first row as header, merged cells fill from origin, styled serials → ISO dates (Lotus-bug-aware), integral floats without `.0`, row cap + maxCells, empty sheets warned-skip, expansion budget pre-charged from the ZIP central directory |
+| **Ingest queue + progress** | **Live** (2026-11-03, host-only): fast lane (mechanical inline) + one heavy job (deep / >25 MB) at a time; step-model progress with i/n and coverage; jobs persist across restarts (running → re-queued); sha256 dedup; cooperative cancel at checkpoints; MCP `nconvert.enqueue/jobs/job/cancel` + REST `/nconvert/jobs*` + SSE `/nconvert/events`; retention 200. Verified live: deep DKV pdf queued → rendered 1 page → vision 98.8 % after retry (own step) → summarizing → done, with cancel tested mid-summary |
 | **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.1): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream **structure-aware** (`jpeg_bounds`: segments + entropy walk — EXIF-embedded thumbnails no longer truncate the host image); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
 
 Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,

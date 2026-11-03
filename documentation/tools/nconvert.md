@@ -37,6 +37,25 @@ sufficient layer and digs only when it must:
 - Summary generation is default-on (`agents.nconvert.summary: false` to skip) and is
   reported in the tool response when unavailable.
 
+## The ingest queue (fast lane + one heavy job at a time)
+
+Mechanical conversions run inline in the caller (ms-fast, CPU-only). Deep
+conversions and inputs over ~25 MB (`agents.nconvert.heavyMb`) serialize
+through a single worker — gateway tokens, PDFium and disk are never contended.
+Submitting the same file twice while queued/running deduplicates to the same job.
+
+| Surface | Call |
+|---|---|
+| MCP | `nconvert.enqueue { path, depth?… }` (alias of `nconvert.convert` — same routing), `nconvert.jobs { state?, limit? }`, `nconvert.job { id }`, `nconvert.cancel { id }` |
+| REST | `GET /nconvert/jobs`, `GET /nconvert/jobs/:id`, `POST /nconvert/jobs { path, depth?… }`, `POST /nconvert/jobs/:id/cancel` |
+| Events | `GET /nconvert/events` — SSE: `queue.snapshot` on connect, then `job.queued` / `job.started` / `job.update` / `job.done` / `job.failed` / `job.cancelled` frames |
+
+Progress is a **step model, not a percentage**: `converting → rendering →
+vision i/n (+ coverage) → retry → summarizing`. Jobs survive restarts
+(`data/nconvert/jobs.json`; interrupted `running` jobs re-queue). Cancel is
+cooperative — queued jobs immediately, running jobs at the next checkpoint
+(between steps or page chunks). History retention: newest 200 finished jobs.
+
 ## Deep conversion (spec §2.5) — structure from the drawing
 
 Mechanical conversion reads what a file *declares*. Technical documents keep much of

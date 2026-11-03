@@ -24,6 +24,7 @@ import {
     contextAdd as notepadContextAdd, contexts as notepadContexts,
     contextRename as notepadContextRename, contextRemove as notepadContextRemove,
 } from './agents/notepad/index.js';
+import { getQueue as nconvertGetQueue, submitIngest as nconvertSubmit } from './agents/nconvert/index.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = {
@@ -306,6 +307,65 @@ async function start() {
         } catch (e) {
             res.status(404).json({ error: `file not found: ${req.params.fileRef}` });
         }
+    });
+
+    // ── nConvert ingest queue: REST + SSE ──
+    // One writer (the agent's job store at data/nconvert/jobs.json), three
+    // transports: MCP tools, REST for the admin dashboard, SSE for live
+    // progress. LAN-trust posture, same as /notepad/ and /storage/.
+    const nconvertReady = (req, res, next) => {
+        try { nconvertGetQueue(); next(); } catch { res.status(503).json({ error: 'nconvert agent not initialized' }); }
+    };
+    const nconvertQueueRoute = (fn) => (req, res) => {
+        try { res.json(fn(req)); } catch (e) { res.status(400).json({ error: e.message }); }
+    };
+
+    app.get('/nconvert/jobs', nconvertReady, nconvertQueueRoute((req) => {
+        const q = nconvertGetQueue();
+        return { jobs: q.list({ state: req.query.state ?? null, limit: Math.min(Number(req.query.limit ?? 50), 200) }) };
+    }));
+    app.get('/nconvert/jobs/:id', nconvertReady, nconvertQueueRoute((req) => {
+        const job = nconvertGetQueue().get(req.params.id);
+        if (!job) throw new Error(`no such job: ${req.params.id}`);
+        return { job: nconvertGetQueue().publicJob(job) };
+    }));
+    app.post('/nconvert/jobs', nconvertReady, express.json({ limit: '64kb' }), async (req, res) => {
+        try {
+            res.json(await nconvertSubmit(req.body ?? {}));
+        } catch (e) {
+            res.status(400).json({ error: e.message });
+        }
+    });
+    app.post('/nconvert/jobs/:id/cancel', nconvertReady, nconvertQueueRoute((req) => {
+        return { job: nconvertGetQueue().cancel(req.params.id) };
+    }));
+
+    // Live progress: SSE stream of job events (job.queued / job.started /
+    // job.update / job.done / job.failed / job.cancelled). Dashboards attach
+    // with EventSource and render the step model directly.
+    app.get('/nconvert/events', nconvertReady, (req, res) => {
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        res.write(': connected\n\n');
+        const q = nconvertGetQueue();
+        // snapshot first, so a late subscriber sees the current queue state
+        res.write(`event: queue.snapshot\ndata: ${JSON.stringify({ jobs: q.list({ limit: 100 }) })}\n\n`);
+        const unsubscribe = q.subscribe((evt) => {
+            try {
+                res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
+            } catch { /* connection already gone; unsubscribe below */ }
+        });
+        const heartbeat = setInterval(() => {
+            try { res.write(': heartbeat\n\n'); } catch { /* noop */ }
+        }, 25000);
+        req.on('close', () => {
+            clearInterval(heartbeat);
+            unsubscribe();
+        });
     });
 
     // PATCH /api/config - deep-merge update config (persists to config.json)
@@ -789,6 +849,27 @@ succeed WITH warnings — read them, they mark every absorbed variance.
       html (M2), office formats, e-books, mail (M3), OCR providers (M5)
       are detected and reported with their milestone. md input is a
       VALIDATED COPY — existing MD-Blocks directives survive verbatim.
+      Fast-lane queue: mechanical converts inline; depth 'deep' (or inputs
+      over ~25 MB) are QUEUED — one heavy job at a time — and convert
+      returns a job handle. Track with nconvert.job/jobs/events.
+
+  nconvert.enqueue — { path*, depth?, assets?, keepOriginal?, name? }
+      Submit an ingest job. Identical routing to nconvert.convert (named
+      for clients expressing async intent): mechanical runs inline and
+      returns the full artefact report; deep/oversized input is queued and
+      returns { jobId, position }.
+
+  nconvert.jobs — { state?, limit? }
+      The ingest queue + recent history, newest first. Running jobs show
+      their active step (rendering 4/82, vision 2/11 with coverage).
+
+  nconvert.job — { id* }
+      One job in detail: full step list with i/n progress, result or
+      error, cancellation state.
+
+  nconvert.cancel — { id* }
+      Cancel a queued job immediately, or a running job at its next
+      checkpoint (between steps or page chunks).
 
   nconvert.capabilities — {}
       Live format matrix with phases, limits in force, converter
@@ -1340,6 +1421,8 @@ IMPORTANT RULES
 
         "nconvert.convert": "nconvert_convert", "nconvert.capabilities": "nconvert_capabilities",
         "nconvert.items": "nconvert_items", "nconvert.fetch": "nconvert_fetch",
+        "nconvert.enqueue": "nconvert_enqueue", "nconvert.jobs": "nconvert_jobs",
+        "nconvert.job": "nconvert_job", "nconvert.cancel": "nconvert_cancel",
 
         "media.process": "media_process",
 

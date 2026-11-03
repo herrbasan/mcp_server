@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { getLogger } from '../../utils/logger.js';
+import { IngestQueue } from './queue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -24,6 +25,7 @@ let ingestDir;
 let conf;
 let native;
 let gateway;
+let queue;
 
 export async function init(context) {
     storageRoot = context.config.agents?.storage?.root;
@@ -45,6 +47,10 @@ export async function init(context) {
         coverageThreshold: 0.98,
         maxDeepPages: 200,
         summary: true,
+        // fast-lane queue (2026-11-03): mechanical converts inline; deep or
+        // oversized inputs serialize through one heavy worker
+        heavyMb: 25,
+        queueMaxHistory: 200,
         ...(context.config.agents?.nconvert ?? {})
     };
 
@@ -53,7 +59,16 @@ export async function init(context) {
 
     native = require('../../../nConvert/napi/index.js');
 
+    const queueFile = path.resolve(__dirname, '..', '..', '..', 'data', 'nconvert', 'jobs.json');
+    queue = new IngestQueue({ file: queueFile, executor: runIngestion, maxHistory: conf.queueMaxHistory });
+
     return { status: 'initialized', folder: conf.folder };
+}
+
+// Exposed for the REST/SSE routes in server.js.
+export function getQueue() {
+    if (!queue) throw new Error('[nconvert] agent not initialized');
+    return queue;
 }
 
 // ─── small helpers ───────────────────────────────────────────────────────
@@ -244,7 +259,12 @@ function stripDirectiveSyntax(markdown) {
         .replace(/^\s*---\s*$/gm, '');
 }
 
-async function deepConvert({ bytes, env, folder }) {
+async function deepConvert({ bytes, env, folder, progress = null }) {
+    const step = async (id, opts) => { if (progress) await progress.step(id, opts); };
+    const finishStep = (id, opts) => { if (progress) progress.finishStep(id, opts); };
+    const checkCancelled = () => { if (progress) progress.checkCancelled(); };
+
+    await step('rendering', { detail: `rendering at ${conf.pageWidth}px` });
     const pages = await renderPages(bytes);
     if (pages.length === 0) throw new Error('deep conversion: renderer returned no pages');
 
@@ -255,6 +275,7 @@ async function deepConvert({ bytes, env, folder }) {
             Buffer.from(p.pngBase64, 'base64')
         );
     }
+    finishStep('rendering', { detail: `${pages.length} page(s) rendered` });
     const renderedIndices = new Set(pages.map((p) => p.index + 1));
 
     const texts = env.page_texts || [];
@@ -268,9 +289,12 @@ async function deepConvert({ bytes, env, folder }) {
     const parts = [];
     const chunkReports = [];
 
-    for (const chunk of chunks) {
+    for (let ci = 0; ci < chunks.length; ci++) {
+        checkCancelled();
+        const chunk = chunks[ci];
         const from = chunk.start + 1;
         const to = chunk.end + 1;
+        await step('vision', { i: ci + 1, n: chunks.length });
         const chunkPageTexts = texts.slice(chunk.start, chunk.end + 1);
         const chunkText = chunkPageTexts.join('\n\n');
 
@@ -289,6 +313,13 @@ async function deepConvert({ bytes, env, folder }) {
             const maxAttempts = conf.coverageRetry === false ? 1 : 2;
 
             while (attempt < maxAttempts) {
+                if (attempt > 0) {
+                    await step('retry', {
+                        i: ci + 1,
+                        n: chunks.length,
+                        detail: `${missing.length} word(s) missing — corrective retry`
+                    });
+                }
                 const response = await gateway.chat({
                     task: 'vision',
                     messages: [{
@@ -309,6 +340,11 @@ async function deepConvert({ bytes, env, folder }) {
                 missing = measured.missing;
                 markdown = candidate;
                 attempt++;
+                await step('vision', {
+                    i: ci + 1,
+                    n: chunks.length,
+                    detail: `coverage ${(coverage * 100).toFixed(1)}%${attempt > 1 ? ' (after retry)' : ''}`
+                });
                 if (coverage >= conf.coverageThreshold) break;
             }
 
@@ -501,13 +537,47 @@ export async function regenerateSummary(itemId) {
 
 // ─── handlers ────────────────────────────────────────────────────────────
 
-export async function nconvert_convert(args) {
-    const { absolute, size } = resolveInput(args?.path);
+// Fast-lane classification (2026-11-03): deep conversions (vision chunks,
+// gateway tokens) and oversized inputs serialize through one heavy worker;
+// mechanical conversions run inline — they are ms-fast and CPU-only.
+function isHeavy(depth, size) {
+    return depth === 'deep' || size > conf.heavyMb * 1024 * 1024;
+}
+
+function stepsFor(depth) {
+    return depth === 'deep'
+        ? ['converting', 'rendering', 'vision', 'summarizing']
+        : ['converting', 'summarizing'];
+}
+
+function queueText(job, { deduped = false } = {}) {
+    const pos = job.state === 'queued'
+        ? `position ${queue.list({ state: 'queued' }).findIndex((j) => j.id === job.id) + 1} in queue`
+        : job.state;
+    const head = deduped
+        ? `Already queued: ${path.basename(job.source)} (job ${job.id}, ${pos}) — same file, deduplicated.`
+        : `Queued ${path.basename(job.source)} (${job.args?.depth ?? 'mechanical'}) → job ${job.id} (${pos}).`;
+    return [
+        head,
+        '  Track: nconvert.job { id } · list: nconvert.jobs · events: GET /nconvert/events (SSE)',
+        '  Cancel: nconvert.cancel { id }'
+    ].join('\n');
+}
+
+// The single ingestion pipeline — inline for mechanical (fast lane), in the
+// heavy worker for deep. progress is null-safe (tests call it directly).
+async function runIngestion(job, progress = null) {
+    const step = async (id, opts) => { if (progress) await progress.step(id, opts); };
+    const finishStep = (id, opts) => { if (progress) progress.finishStep(id, opts); };
+    const args = job.args ?? {};
+    const absolute = job.source;
+    const size = fs.statSync(absolute).size;
     const maxInputBytes = conf.maxInputMb * 1024 * 1024;
     if (size > maxInputBytes) {
-        throw new Error(`nconvert.convert: input too large: ${toMb(size)} exceeds maxInputMb=${conf.maxInputMb}`);
+        throw new Error(`input too large: ${toMb(size)} exceeds maxInputMb=${conf.maxInputMb}`);
     }
 
+    await step('converting');
     const bytes = fs.readFileSync(absolute);
     const filename = path.basename(absolute);
     const optionsJson = JSON.stringify({
@@ -522,22 +592,22 @@ export async function nconvert_convert(args) {
 
     if (env.status === 'needs_ocr') {
         throw new Error(
-            `nconvert.convert: '${filename}' detected as ${env.format} and needs OCR — the provider hand-off lands in M5 (spec §9). ${env.pages.length} page image(s) prepared.`
+            `'${filename}' detected as ${env.format} and needs OCR — the provider hand-off lands in M5 (spec §9). ${env.pages.length} page image(s) prepared.`
         );
     }
 
-    const depth = args?.depth ?? 'mechanical';
+    const depth = args.depth ?? 'mechanical';
     if (depth !== 'mechanical' && depth !== 'deep') {
-        throw new Error(`nconvert.convert: depth must be "mechanical" or "deep", got "${depth}"`);
+        throw new Error(`depth must be "mechanical" or "deep", got "${depth}"`);
     }
     if (depth === 'deep' && env.format !== 'pdf') {
-        throw new Error(`nconvert.convert: deep conversion is PDF-only for now (got ${env.format}) — the rasterizer is the gate (spec §2.5)`);
+        throw new Error(`deep conversion is PDF-only for now (got ${env.format}) — the rasterizer is the gate (spec §2.5)`);
     }
 
-    const keepOriginal = args?.keepOriginal ?? conf.keepOriginal;
-    const extractAssets = args?.assets ?? conf.assets;
+    const keepOriginal = args.keepOriginal ?? conf.keepOriginal;
+    const extractAssets = args.assets ?? conf.assets;
 
-    const slug = slugify(args?.name || path.basename(filename, path.extname(filename)));
+    const slug = slugify(args.name || path.basename(filename, path.extname(filename)));
     const folder = uniqueFolder(`${localTimestamp()}_${slug}`);
     fs.mkdirSync(folder, { recursive: true });
 
@@ -557,6 +627,7 @@ export async function nconvert_convert(args) {
             assetsWritten++;
         }
     }
+    finishStep('converting', { detail: `${env.format}, ${env.stats.blocks} blocks` });
 
     const meta = JSON.parse(env.meta_json);
     let documentBytes = env.document_md.length;
@@ -568,7 +639,7 @@ export async function nconvert_convert(args) {
         // deep one, so a bad model run is inspectable and re-runnable.
         fs.writeFileSync(path.join(folder, 'document.mechanical.md'), env.document_md, 'utf8');
 
-        const deep = await deepConvert({ bytes, env, folder });
+        const deep = await deepConvert({ bytes, env, folder, progress });
         for (const w of deep.warnings) meta.warnings.push(w);
 
         const coverageValues = deep.chunkReports.filter((c) => c.coverage != null).map((c) => c.coverage);
@@ -634,10 +705,12 @@ export async function nconvert_convert(args) {
 
     // The artefact becomes a layered object: manifest + summary make it
     // discoverable and navigable.
+    await step('summarizing');
     const sourceSha = sha256File(absolute);
     const { manifest, summaryReason } = await writeManifest({
         folder, absolute, filename, env, depth, deep: deepResult, keepOriginal, sourceSha
     });
+    finishStep('summarizing');
     lines.push(`  manifest: item.json · sha256 ${sourceSha.slice(0, 12)}…`);
     if (manifest.layers.summary) {
         lines.push('  summary.md — L0 retrieval summary; dig deeper with nconvert.fetch');
@@ -646,7 +719,124 @@ export async function nconvert_convert(args) {
     }
 
     logger.info(`nconvert: ${filename} (${env.format}${depth === 'deep' ? ', deep' : ''}) → ${relToStorage(folder)}`, null, 'nconvert');
+    return {
+        responseText: lines.join('\n'),
+        item: relToStorage(folder),
+        format: env.format,
+        depth,
+        words: manifest.stats?.words ?? env.stats?.words ?? null,
+        warnings: meta.warnings?.length ?? 0
+    };
+}
+
+// ── tool surface ──────────────────────────────────────────────────────────
+// convert and enqueue share one implementation: mechanical runs inline and
+// returns the full artefact report; deep (or oversized) input is queued and
+// returns the job handle instead of blocking for minutes.
+
+async function convertImpl(args, { toolName = 'nconvert.convert' } = {}) {
+    const { absolute, size } = resolveInput(args?.path);
+    const depth = args?.depth ?? 'mechanical';
+    if (depth !== 'mechanical' && depth !== 'deep') {
+        throw new Error(`${toolName}: depth must be "mechanical" or "deep", got "${depth}"`);
+    }
+
+    const heavy = isHeavy(depth, size);
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+
+    if (!heavy) {
+        const job = await queue.runInline({
+            source: absolute,
+            args,
+            sha,
+            steps: stepsFor(depth)
+        });
+        if (job.state === 'failed') throw new Error(job.error);
+        return { content: [{ type: 'text', text: job.result.responseText }], isError: false };
+    }
+
+    const { job, deduped } = queue.enqueue({
+        source: absolute,
+        args,
+        sha,
+        heavy: true,
+        steps: stepsFor(depth)
+    });
+    return { content: [{ type: 'text', text: queueText(job, { deduped }) }], isError: false };
+}
+
+// JSON-shaped submit for the REST surface (dashboard) — same routing.
+export async function submitIngest(args) {
+    const { absolute, size } = resolveInput(args?.path);
+    const depth = args?.depth ?? 'mechanical';
+    if (depth !== 'mechanical' && depth !== 'deep') {
+        throw new Error(`depth must be "mechanical" or "deep", got "${depth}"`);
+    }
+    const heavy = isHeavy(depth, size);
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+    if (!heavy) {
+        const job = await queue.runInline({ source: absolute, args, sha, steps: stepsFor(depth) });
+        return { queued: false, job: queue.publicJob(job) };
+    }
+    const { job, deduped } = queue.enqueue({ source: absolute, args, sha, heavy: true, steps: stepsFor(depth) });
+    return { queued: true, deduped, job: queue.list().find((j) => j.id === job.id) ?? queue.publicJob(job) };
+}
+
+export async function nconvert_convert(args) {
+    return convertImpl(args);
+}
+
+export async function nconvert_enqueue(args) {
+    return convertImpl(args, { toolName: 'nconvert.enqueue' });
+}
+
+export async function nconvert_jobs(args) {
+    const state = args?.state ?? null;
+    const limit = Math.min(Number(args?.limit ?? 20), 100);
+    const jobs = queue.list({ state, limit });
+    if (jobs.length === 0) {
+        return { content: [{ type: 'text', text: 'No jobs.' }], isError: false };
+    }
+    const lines = jobs.map((j) => {
+        const active = j.steps.find((s) => s.status === 'active');
+        const where = active
+            ? `${active.label}${active.n ? ` ${active.i ?? '?'}/${active.n}` : ''}${active.detail ? ` — ${active.detail}` : ''}`
+            : j.state;
+        const pos = j.state === 'queued' && j.heavy ? ` · position ${j.position}` : '';
+        return `${j.id}  ${j.state.toUpperCase().padEnd(9)} ${path.basename(j.source)}  ${where}${pos}`;
+    });
     return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
+}
+
+export async function nconvert_job(args) {
+    if (!args?.id) throw new Error('nconvert.job: "id" is required');
+    const job = queue.get(args.id);
+    if (!job) throw new Error(`nconvert.job: no such job: ${args.id}`);
+    const j = queue.publicJob(job);
+    const lines = [
+        `${j.id} — ${j.state}${j.heavy ? ' (queued work)' : ' (inline)'} — ${j.source}`,
+        `  submitted ${new Date(j.createdAt).toISOString()}${j.startedAt ? `, started ${new Date(j.startedAt).toISOString()}` : ''}${j.finishedAt ? `, finished ${new Date(j.finishedAt).toISOString()}` : ''}`
+    ];
+    for (const s of j.steps) {
+        const n = s.n ? ` ${s.i ?? '—'}/${s.n}` : '';
+        lines.push(`  ${s.status.padEnd(7)} ${s.label}${n}${s.detail ? ` — ${s.detail}` : ''}`);
+    }
+    if (j.result) {
+        lines.push(`  result: ${j.result.item} (${j.result.format}${j.result.depth === 'deep' ? ', deep' : ''}, ${j.result.words} words)`);
+    }
+    if (j.error) lines.push(`  error: ${j.error}`);
+    if (j.cancelRequested) lines.push('  cancellation requested — stops at the next checkpoint');
+    if (j.requeued) lines.push('  re-queued after server restart');
+    return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
+}
+
+export async function nconvert_cancel(args) {
+    if (!args?.id) throw new Error('nconvert.cancel: "id" is required');
+    const job = queue.cancel(args.id);
+    const text = job.state === 'cancelled'
+        ? `Cancelled ${job.id} (${path.basename(job.source)}).`
+        : `Cancellation requested for running job ${job.id} — it stops at the next checkpoint (between steps or page chunks).`;
+    return { content: [{ type: 'text', text }], isError: false };
 }
 
 export async function nconvert_items(args) {

@@ -19,6 +19,54 @@
             }
         },
         {
+            "name": "nconvert_enqueue",
+            "description": "Submit an ingest job — identical routing to nconvert.convert (mechanical converts inline and returns the full artefact report; deep or oversized input is QUEUED and returns a job handle instead of blocking for minutes). Alias of nconvert.convert, named for clients that want to express async intent.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Storage-relative path (or absolute path) of the file to ingest." },
+                    "depth": { "type": "string", "enum": ["mechanical", "deep"], "description": "mechanical (default): inline. deep (PDF): queued — one heavy job runs at a time." },
+                    "assets": { "type": "boolean" },
+                    "keepOriginal": { "type": "boolean" },
+                    "name": { "type": "string" }
+                },
+                "required": ["path"]
+            }
+        },
+        {
+            "name": "nconvert_jobs",
+            "description": "List ingest jobs: the queue (queued/running, with live positions) and recent history, newest first. Running jobs show their active step (rendering 4/82, vision 2/11 with coverage).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "state": { "type": "string", "enum": ["queued", "running", "done", "failed", "cancelled"], "description": "Filter by state. Default: all." },
+                    "limit": { "type": "integer", "description": "Maximum jobs (default 20, cap 100)." }
+                }
+            }
+        },
+        {
+            "name": "nconvert_job",
+            "description": "One job in detail: full step list with statuses and per-step i/n progress, result item or error, cancellation state.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Job id from nconvert.convert/enqueue or nconvert.jobs." }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "nconvert_cancel",
+            "description": "Cancel a queued or running job. Queued jobs cancel immediately; running jobs stop at the next checkpoint (between steps or page chunks) — deep chunks are the natural boundaries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Job id." }
+                },
+                "required": ["id"]
+            }
+        },
+        {
             "name": "nconvert_capabilities",
             "description": "Live format matrix: which formats convert now, which are detected-but-pending (with their milestone phase), the limits in force, the converter version, and deep-conversion status. Call this before throwing an exotic file at nconvert_convert.",
             "inputSchema": {
