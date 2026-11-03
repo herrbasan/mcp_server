@@ -3,7 +3,7 @@
 One engine turns any document into a **layered artefact** in a fixed store:
 `storage/ingest/`. Rust core (`nConvert/` at the repo root, nDB pattern:
 workspace + napi bindings, own repo at spin-out), thin JS agent
-(`src/agents/nconvert/`). Spec of record: `docs/nconvert-spec.md` (v2.2).
+(`src/agents/nconvert/`). Spec of record: `nConvert/docs/SPEC.md`.
 
 ## Tools
 

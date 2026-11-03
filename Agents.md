@@ -80,6 +80,30 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `data/chat/sessions/` — persistent headless chat sessions (one pretty-printed JSON per session, owned by the `chat` agent).
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
 - `nConvert/` — nConvert submodule (herrbasan/nConvert) — document → layered Markdown ingest engine (Rust + napi-rs). Spec: `nConvert/docs/SPEC.md`. Agent: `src/agents/nconvert/`; artefacts land in storage `ingest/`.
+
+### nConvert (universal document ingest)
+
+Live formats: txt/csv/tsv/md (validated passthrough)/json/yaml/toml/xml, pdf
+(text + deep vision conversion), docx, doc (Word 97-2003), pptx, xlsx.
+Detected-but-pending formats fail loudly with their milestone.
+
+- **MCP tools**: `nconvert.convert` (mechanical inline; deep or >25 MB →
+  queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,
+  `nconvert.job`, `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
+  `nconvert.fetch`.
+- **Ingest queue** (`src/agents/nconvert/queue.js`): fast lane — mechanical
+  runs inline; ONE heavy job (deep / >heavyMb) at a time, FIFO, sha256 dedup,
+  restart-safe (`data/nconvert/jobs.json`; interrupted jobs re-queue),
+  cooperative cancel at step/chunk checkpoints, step-model progress
+  (converting → rendering → vision i/n + coverage → retry → summarizing).
+- **REST + SSE** (dashboard surface): `GET/POST /nconvert/jobs`,
+  `GET /nconvert/jobs/:id`, `POST /nconvert/jobs/:id/cancel`, and
+  `GET /nconvert/events` (SSE: `queue.snapshot` on connect, then `job.*`).
+- Operator doc: `documentation/tools/nconvert.md`; handover:
+  `docs/nconvert-handover.md`. The MCP server is nPM service
+  `agent_orchestrator` — restart via
+  `POST http://192.168.0.100:9333/api/services/agent_orchestrator/restart`
+  (permitted for this project).
 - `tests/` — benchmarks and quick tests.
 - `_Archive/` — archived modules and old plans.
 
