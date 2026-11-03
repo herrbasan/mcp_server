@@ -11,12 +11,13 @@ cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
 cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
 ```
 Then `nconvert.items` — expect 3+ items. Server live on engine **0.6.1**
-(restarted 2026-11-03 09:32). The Finanzamt letter is ingested clean:
+(restarted 2026-11-03 09:32) — **0.7.0 (pptx) staged, needs the next
+restart**. The Finanzamt letter is ingested clean:
 `20261103_0933_finanzamt-pfaffenhofenmietedarlegung` — 3 full photos
 (PIL-verified decode), the corrupt 0.6.0 item was deleted.
 
 State at handover: host clean, engine clean, submodule pinned at engine
-0.6.1.
+0.7.0 staged.
 
 ## What is live
 
@@ -27,6 +28,7 @@ State at handover: host clean, engine clean, submodule pinned at engine
 | PDFium rasterization + deep vision conversion + corrective retry | M4.2 |
 | Layered artefact + `items`/`fetch` reader | M4.5 |
 | **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
+| **PPTX mechanical** | **M3 · live** (engine 0.7.0): one section per slide (order from sldIdLst via rels — never filename sort), title/body placeholders → heading/paragraphs, buChar/buAutoNum + lvl → nested lists, DrawingML tables → shared span grid, media → assets (SVG preferred over PNG fallback), speaker notes → `preset=narration` blocks, charts/SmartArt warned pending. Shared OOXML machinery extracted to `src/ooxml.rs` (ZipParts, budget, grid, run model) |
 | **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.1): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream **structure-aware** (`jpeg_bounds`: segments + entropy walk — EXIF-embedded thumbnails no longer truncate the host image); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
 
 Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
@@ -42,6 +44,12 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 - Real corpus `.doc` #2: `Zeitsprung_V2.3.doc` (Word 97, 19 203 CPs) —
   2 606 words clean German (AV storyboard), picture anchors present but images
   are metafiles → 0 carved, honestly warned (`doc-picture-chars`).
+- PPTX real decks (engine 0.7.0, 2026-11-03): ZOLL KickOff (17 slides,
+  PptxGenJS, plain textboxes) → 1 914 words, 5 tables in 12 ms;
+  `Erläuterung zur Nutzung des Folienmasters` (109 slides, 50 notes, 226
+  media / 19.2 MB incl. 163 SVG) → 1 471 blocks, 8 headings, 4 tables,
+  **215 figure refs**, 226 assets, **43 narration blocks**, 132 KB md,
+  266 ms. Chart + EMF warnings honest. 54/54 engine tests.
 - Bindings: ALL PASS incl. PDFium corpus rasterization. Agent smoke: ALL PASS.
 - Real-world DOCX (no Materna file on this machine): trustainable manuscript
   (226 KB, German) — 172 blocks, 27 list lines, 45 bold, 2 images, captions —
@@ -63,7 +71,11 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
   file exposed it (lcbClx read as 0). Correct: rgLw97@64, rgFcLcb97@154,
   fcClx@418. Lesson recorded: a format parser needs at least one real-world
   fixture in its tests, generated fixtures alone prove nothing about offsets.
-- **JPEG signature carving truncated full-size photos (0.6.0 → 0.6.1)**: the
+- **quick-xml 0.39 splits text at entities** (`Event::GeneralRef`): a
+  catch-all arm silently deleted `&amp;` → "GEO  AEO" on the ZOLL corpus;
+  affected docx too (latent — no fixture had entities). Fixed in all text
+  consumers via `ooxml::entity_text`; regression asserts in both fixtures.
+- **JPEG signature carving truncated full-size photos (0.6.0 → 0.6.1)**:
   Finanzamt photos carry EXIF APP1 segments with embedded thumbnail JPEGs;
   cutting at the first FFD9 produced "SOI + EXIF + thumb-EOI" blobs (thumbs
   readable, fulls corrupt). The carver now walks JPEG structure (segments +
@@ -75,18 +87,15 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
 
 ## Next: M3 + M6 continued (order suggested)
 
-1. **pptx** — one section per slide, speaker notes → narration blocks. The
-   zip/budget plumbing in `src/docx.rs` generalizes; extract shared helpers
-   into a container module when the second OOXML format lands.
-2. **.msg** (Outlook, CFB `__substg` streams) and **.xls** (BIFF) — the CFB
-   container layer landed with `doc`; both are container work only now.
+1. **.msg** (Outlook, CFB `__substg` streams) and **.eml** (MIME,
+   `mail-parser`) — mail ingest; the CFB layer is done.
+2. **xlsx** via calamine — sheet per section.
 3. **rtf** (text-based spec, hand parser).
-4. **DOCX charts** — cached series → data table (the one spec'd docx item
-   still pending).
+4. **DOCX/PPTX charts** — cached series → data table.
 5. **doc refinements**: WMF/EMF metafile rasters, footnote/header text (CCP
    ranges already parsed), Escher walk for exact image provenance vs carving,
    thumbnail/full-pair dedupe.
-6. odt / epub / eml.
+6. odt / epub.
 
 ## Known limits (all deliberate, all recorded)
 

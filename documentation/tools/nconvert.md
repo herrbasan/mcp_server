@@ -79,9 +79,15 @@ reconstructed from the drawing that mechanical conversion could only emit as pro
   and **doc** (M6, pulled forward): Word 97-2003 binary via the [MS-DOC] piece
   table (cp1252 + UTF-16 pieces), field results kept, page breaks → `***`,
   photos carved from the CFB `Data` stream (JPEG/PNG); tables/footnotes/headers
-  flattened or warned; Word 6/95 and encrypted files refused loudly.
-- Detected-but-pending fail with their milestone: html (M2), pptx/xlsx/ods/odt/
-  epub/eml (M3), images (M5), rtf/xls/msg (M6). DOCX charts as data tables: pending.
+  flattened or warned; Word 6/95 and encrypted files refused loudly,
+  and **pptx** (M3): one MD-Blocks section per slide (order from sldIdLst via
+  rels), title/body placeholders → headings/paragraphs, bullet paragraphs with
+  levels → nested lists, DrawingML tables → the span grid, media → assets
+  (SVG preferred over PNG fallback), speaker notes → `mb:block preset=narration`;
+  charts/SmartArt warned pending.
+- Detected-but-pending fail with their milestone: html (M2), xlsx/ods/odt/
+  epub/eml (M3), images (M5), rtf/xls/msg (M6). DOCX/PPTX charts as data
+  tables: pending.
 - Limits (`agents.nconvert`): `maxInputMb` 100, `maxExpandedMb` 500 (ZIP budget,
   enforced per entry and in total), `maxOutputMb` 64, `maxTableRows` 10000 — breaches
   are hard errors.
@@ -95,7 +101,7 @@ MIT). After a fresh clone of this repo:
 git submodule update --init nConvert   # fetch the engine
 node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
 npm run build:nconvert                 # Rust workspace + staged napi binary
-npm run test:nconvert                  # 47 core tests + agent smoke test
+npm run test:nconvert                  # 54 core tests + agent smoke test
 ```
 
 Binaries are staged version-stamped; the loader picks the newest, so a rebuild

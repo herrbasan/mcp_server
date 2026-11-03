@@ -101,7 +101,7 @@ check('collision counter works', folders.some(f => /-\d+$/.test(f)), folders.joi
 // ── capabilities ──
 r = await agent.nconvert_capabilities();
 const caps = JSON.parse(r.content[0].text);
-check('capabilities matrix', caps.formats.length === 20 && caps.limits.maxInputMb === 100);
+check('capabilities matrix', caps.formats.length === 22 && caps.limits.maxInputMb === 100, `${caps.formats.length} formats`);
 
 // ── external difficult-documents corpus (H:\Ingest_TestFiles) ──
 // Real files, never committed (privacy: medical/financial content).
@@ -157,6 +157,20 @@ if (fs.existsSync(CORPUS)) {
         check('corpus: doc text extracted', md.length > 2000, `${md.length} chars`);
     } catch (e) {
         check('corpus: legacy doc converts', false, e.message.slice(0, 150));
+    }
+    // PPTX: deck structure through the real agent
+    try {
+        const pptx = fs.readdirSync(CORPUS).find((f) => f.toLowerCase().endsWith('.pptx'));
+        if (pptx) {
+            const r = await agent.nconvert_convert({ path: `${CORPUS}/${pptx}`, keepOriginal: false });
+            check('corpus: pptx converts', !r.isError, JSON.stringify(r).slice(0, 200));
+            const m = /→ (ingest\/\S+)\//.exec(r.content[0].text);
+            const md = fs.readFileSync(path.join(tmp, m[1], 'document.md'), 'utf8');
+            const sections = md.split('\n').filter((l) => l === '---').length - 2;
+            check('corpus: pptx sectioned per slide', sections > 0, `${sections} sections`);
+        }
+    } catch (e) {
+        check('corpus: pptx converts', false, e.message.slice(0, 150));
     }
 } else {
     console.log('  skip external corpus (H:\\Ingest_TestFiles absent)');
