@@ -10,14 +10,18 @@ Operator doc: `documentation/tools/nconvert.md`. Engine repo: `herrbasan/nConver
 cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
 cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
 ```
-Then `nconvert.items` — expect 3+ items. Server live on engine **0.6.1**
-(restarted 2026-11-03 09:32) — **0.7.0 (pptx) staged, needs the next
-restart**. The Finanzamt letter is ingested clean:
+Then `nconvert.items` — expect 4+ items. Server live on engine **0.7.0**
+(pptx live). **Restarting the server is agent-executable for this project**
+(David's permission, 2026-11-03): `POST
+http://192.168.0.100:9333/api/services/agent_orchestrator/restart` — then
+verify with a workshop call; clients must reconnect to see new tools.
+The Finanzamt letter is ingested clean:
 `20261103_0933_finanzamt-pfaffenhofenmietedarlegung` — 3 full photos
-(PIL-verified decode), the corrupt 0.6.0 item was deleted.
+(PIL-verified decode), the corrupt 0.6.0 item was deleted. ZOLL deck
+ingested at `20261103_1610_20260923zollkickoff-workshop`.
 
 State at handover: host clean, engine clean, submodule pinned at engine
-0.7.0 staged.
+0.7.0, all committed (engine 24d1c92, host f1b445d).
 
 ## What is live
 
