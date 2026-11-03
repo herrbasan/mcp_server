@@ -10,14 +10,13 @@ Operator doc: `documentation/tools/nconvert.md`. Engine repo: `herrbasan/nConver
 cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
 cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
 ```
-Then `nconvert.items` — expect 3+ items. **The running server still loads
-engine 0.6.0** (restarted 20:25 before the carver fix); the fixed carving goes
-live after the next restart — David's call, not the agent's. The
-`20261102_2025_finanzamt…` item ingested under 0.6.0 has **corrupt assets**
-(carved EXIF fragments); delete it and re-ingest after the restart.
+Then `nconvert.items` — expect 3+ items. Server live on engine **0.6.1**
+(restarted 2026-11-03 09:32). The Finanzamt letter is ingested clean:
+`20261103_0933_finanzamt-pfaffenhofenmietedarlegung` — 3 full photos
+(PIL-verified decode), the corrupt 0.6.0 item was deleted.
 
-State at handover: host clean, engine clean, submodule pinned, engine **0.6.1
-staged** (`napi/setup.js` ran; plain name replaced while unlocked).
+State at handover: host clean, engine clean, submodule pinned at engine
+0.6.1.
 
 ## What is live
 
