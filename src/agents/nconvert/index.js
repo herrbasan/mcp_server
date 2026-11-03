@@ -766,7 +766,7 @@ const FORMAT_MATRIX = [
     { format: 'html', phase: 'M2', note: 'html5ever port of the JS serialization mapping' },
     { format: 'docx', phase: 'M3 · live', note: 'styles → headings, numPr → nested lists, gridSpan/vMerge tables, images → assets, footnotes → GFM; expansion budget enforced; charts as data tables pending' },
     { format: 'pptx', phase: 'M3 · live', note: 'one section per slide (sldIdLst order via rels); title/body placeholders → headings/paragraphs; buChar/buAutoNum + lvl → nested lists; DrawingML tables onto the span grid; media → assets (SVG preferred over PNG fallback); speaker notes → narration blocks; charts/SmartArt warned pending' },
-    { format: 'xlsx', phase: 'M3', note: 'calamine; sheet per section' },
+    { format: 'xlsx', phase: 'M3 · live', note: 'sheet per section, first row as header; merged cells fill their rectangle from the origin; dates render ISO (serial + style format); integral floats without .0; row cap + maxCells; expansion budget pre-charged from the ZIP directory' },
     { format: 'ods', phase: 'M3', note: 'ODF spreadsheet' },
     { format: 'odt', phase: 'M3', note: 'ODF text' },
     { format: 'epub', phase: 'M3', note: 'spine order, one section per chapter' },
@@ -781,7 +781,7 @@ const FORMAT_MATRIX = [
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.7.0',
+        converter: 'nconvert 0.8.0',
         spec: 'docs/nconvert-spec.md v2.1',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {

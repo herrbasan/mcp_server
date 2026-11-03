@@ -33,6 +33,7 @@ State at handover: host clean, engine clean, submodule pinned at engine
 | Layered artefact + `items`/`fetch` reader | M4.5 |
 | **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
 | **PPTX mechanical** | **M3 · live** (engine 0.7.0): one section per slide (order from sldIdLst via rels — never filename sort), title/body placeholders → heading/paragraphs, buChar/buAutoNum + lvl → nested lists, DrawingML tables → shared span grid, media → assets (SVG preferred over PNG fallback), speaker notes → `preset=narration` blocks, charts/SmartArt warned pending. Shared OOXML machinery extracted to `src/ooxml.rs` (ZipParts, budget, grid, run model) |
+| **XLSX mechanical** | **M3 · live** (engine 0.8.0): calamine; one section per sheet, first row as header, merged cells fill from origin, styled serials → ISO dates (Lotus-bug-aware), integral floats without `.0`, row cap + maxCells, empty sheets warned-skip, expansion budget pre-charged from the ZIP central directory |
 | **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.1): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream **structure-aware** (`jpeg_bounds`: segments + entropy walk — EXIF-embedded thumbnails no longer truncate the host image); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
 
 Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
@@ -89,16 +90,23 @@ Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
   carved images by decoding, not by finding magic bytes** — the corrupt blobs
   had perfect signatures.
 
-## Next: M3 + M6 continued (order suggested)
+## Next: queue + progress (M7 pulled forward), then formats
 
-1. **.msg** (Outlook, CFB `__substg` streams) and **.eml** (MIME,
-   `mail-parser`) — mail ingest; the CFB layer is done.
-2. **xlsx** via calamine — sheet per section.
-3. **rtf** (text-based spec, hand parser).
-4. **DOCX/PPTX charts** — cached series → data table.
-5. **doc refinements**: WMF/EMF metafile rasters, footnote/header text (CCP
-   ranges already parsed), Escher walk for exact image provenance vs carving,
-   thumbnail/full-pair dedupe.
+**Design proposed 2026-11-03, awaiting David's call on two forks:**
+1. Fast lane (mechanical inline + one heavy job at a time) vs strict FIFO
+2. SSE (`GET /nconvert/events`) as the event transport (recommended)
+
+Core design: job store `data/nconvert/jobs.json` (atomic, survives restarts),
+`queued → running → done/failed/cancelled`, FIFO, sha256 dedup, step-model
+progress (detecting → converting → rendering i/N → vision i/N + coverage →
+retry → summarizing → indexing), MCP tools `nconvert.enqueue/jobs/job/cancel`,
+REST for the admin dashboard, cooperative cancel between chunks.
+
+1. **.msg/.eml** — needs a real export from David (none on the machine).
+2. **rtf** (text-based spec, hand parser).
+3. **DOCX/PPTX charts** — cached series → data table.
+4. **xls (BIFF)** — real fixture in corpus (`2011_Staubsauger-Typensuche_final.xls`).
+5. **doc refinements**: WMF/EMF rasters, footnote/header text, Escher provenance.
 6. odt / epub.
 
 ## Known limits (all deliberate, all recorded)

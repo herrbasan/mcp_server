@@ -84,8 +84,12 @@ reconstructed from the drawing that mechanical conversion could only emit as pro
   rels), title/body placeholders → headings/paragraphs, bullet paragraphs with
   levels → nested lists, DrawingML tables → the span grid, media → assets
   (SVG preferred over PNG fallback), speaker notes → `mb:block preset=narration`;
-  charts/SmartArt warned pending.
-- Detected-but-pending fail with their milestone: html (M2), xlsx/ods/odt/
+  charts/SmartArt warned pending,
+  and **xlsx** (M3): one section per sheet, first row as header, merged cells
+  fill their rectangle from the origin value, dates render ISO (styled serials),
+  integral numbers without trailing `.0`, row cap + maxCells, empty sheets
+  skipped with a warning, expansion budget pre-charged from the ZIP directory.
+- Detected-but-pending fail with their milestone: html (M2), ods/odt/
   epub/eml (M3), images (M5), rtf/xls/msg (M6). DOCX/PPTX charts as data
   tables: pending.
 - Limits (`agents.nconvert`): `maxInputMb` 100, `maxExpandedMb` 500 (ZIP budget,
@@ -101,7 +105,7 @@ MIT). After a fresh clone of this repo:
 git submodule update --init nConvert   # fetch the engine
 node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
 npm run build:nconvert                 # Rust workspace + staged napi binary
-npm run test:nconvert                  # 54 core tests + agent smoke test
+npm run test:nconvert                  # 60 core tests + agent smoke test
 ```
 
 Binaries are staged version-stamped; the loader picks the newest, so a rebuild
