@@ -1,7 +1,7 @@
 # Tool Catalog — Overview
 
 Index of every agent and tool in the MCP server, with links to the detailed
-reference docs. Last verified 2026-09-22.
+reference docs. Last verified 2026-11-05.
 
 Detailed docs live in this folder, one file per system. Shared infrastructure is
 documented alongside: `documentation/fileops.md` (root-confined file operations)
@@ -47,6 +47,7 @@ nesting level.
 | **media** | `media.process` | nMedia proxy: storage path in → rasterize/transcode → storage path out (SVG→PNG, thumbnails, m4a→mp3, video→keyframe). Blank-render guard. Bytes never enter a context. | [media.md](media.md) |
 | **chart** | `chart.guide`, `chart.render` | Deterministic SVG diagrams from a semantic spec (nCharts, vendored submodule). A `frame` composes the drawing into a slide box (16:9 full, 8:9 half); `style: "sketch"` draws it hand-drawn as pure vector. No geometry keys; audits before writing; the spec sidecar is the diagram's source. | [chart.md](chart.md) |
 | **nconvert** | `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`, `nconvert.fetch` | Universal document → MD-Blocks (Rust core, nDB pattern) with an optional deep vision pass. Self-contained layered artefact per item under `storage/ingest`: `summary.md` (L0) + `document.md` (L1) + `assets/`/`pages/` (L2) + `original` (L3) + `item.json` manifest; `fetch` reads any layer. Magic-byte detection, loud failures, warnings on every absorbed variance. M1: txt/csv/tsv/md/json/yaml/toml/xml; PDF live (text + images + AES-256/R6 + PDFium rasterization + vision structuring). | [nconvert.md](nconvert.md) |
+| **print** | `print.render`, `print.preview` | MD-Blocks → PDF through canonical nui_wc2 + Chromium. Semantic `breakBefore`/`breakAfter`, source page-break presets, section pages and repeated chrome. PDFium rasters of the actual PDF for model-reviewed pagination. | [print.md](print.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 | **notepad** | `notepad.add/list/get/update/complete/remove/promote/attach/snapshot` | Deliberate state — ideas, tasks with step checklists, dates, contacts, bucket attachments. `snapshot` = Today view; REST at `/notepad/*` for manual edits and dashboard components. | [notepad.md](notepad.md) |

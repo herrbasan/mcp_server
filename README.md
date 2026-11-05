@@ -102,6 +102,7 @@ Client (VS Code / CLI)
 | `inspector`| `inspect_code` | LLM-based code review with file loading |
 | `llm`      | `query_model` | Direct LLM queries via Gateway |
 | `memory`   | `memory_store`, `memory_recall`, `memory_get`, `memory_forget`, `memory_list`, `memory_update`, `memory_overview` | Semantic vector memory |
+| `print`    | `print_render`, `print_preview` | MD-Blocks → PDF via nui_wc2, semantic page breaks, exact PDF page previews |
 | `research` | `research_topic` | Multi-phase web research pipeline |
 | `vision`   | `vision_create_session`, `vision_analyze`, `vision_list_sessions`, `vision_get_session`, `vision_close_session` | Iterative image analysis with drill-down |
 

@@ -45,6 +45,17 @@
       "folder": "charts",
       "previewSize": 1600
     },
+    "print": {
+      "folder": "prints",
+      "maxPages": 100,
+      "inlinePreviewLimit": 8,
+      "previewWidth": 1240,
+      "previewTimeoutMs": 120000,
+      "chromeGapMm": 8,
+      "chromeInsetMm": 5,
+      "maxChromeFraction": 0.35,
+      "pdfiumPath": "nConvert/napi/pdfium/bin"
+    },
     "nconvert": {
       "folder": "ingest",
       "maxInputMb": 100,
@@ -116,7 +127,7 @@
       "maxRetries": 1,
       "batchDelayMs": 100,
       "textExtensions": [".md", ".txt", ".json", ".js", ".mjs", ".css", ".html", ".htm", ".log", ".yaml", ".yml", ".xml", ".csv", ".tsv", ".sql"],
-      "ignore": ["forge", "temp", "_trash", ".backups", "charts", "item.json", "meta.json"],
+      "ignore": ["forge", "temp", "_trash", ".backups", "charts", "prints", "item.json", "meta.json"],
       "contextEnhancement": {
         "enabled": true,
         "task": "local",

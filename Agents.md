@@ -12,7 +12,7 @@
 - **Entry point**: `src/server.js` — HTTP server on port 3100.
 - **Transport**: Per-session SSE mapped by `sessionId`.
 - **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
-- **Agents**: `src/agents/` — browser, chart, chat, dreaming, forge, github, harvest, image, inspector, llm, memory, nconvert, research, storage, telemetry, vision.
+- **Agents**: `src/agents/` — browser, chart, chat, dreaming, forge, github, harvest, image, inspector, llm, memory, nconvert, print, research, storage, telemetry, vision.
 - **Loader**: `src/agent-loader.js` — loads agents and registers tools.
 - **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 
@@ -79,6 +79,8 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).
 - `data/chat/sessions/` — persistent headless chat sessions (one pretty-printed JSON per session, owned by the `chat` agent).
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
+- `src/nCharts` — nCharts submodule (SVG diagrams).
+- `src/nui_wc2` — nui_wc2 submodule, canonical MD-Blocks renderer used by the print agent.
 - `nConvert/` — nConvert submodule (herrbasan/nConvert) — document → layered Markdown ingest engine (Rust + napi-rs). Spec: `nConvert/docs/SPEC.md`. Agent: `src/agents/nconvert/`; artefacts land in storage `ingest/`.
 
 ### nConvert (universal document ingest)
@@ -106,6 +108,18 @@ Detected-but-pending formats fail loudly with their milestone.
   (permitted for this project).
 - `tests/` — benchmarks and quick tests.
 - `_Archive/` — archived modules and old plans.
+
+### Print (MD-Blocks → PDF)
+
+- **MCP tools**: `print.render` (NUI → Chromium PDF + exact PDFium page previews)
+  and `print.preview` (rasterize selected pages of an existing PDF).
+- Canonical renderer: `src/nui_wc2` submodule (`nui.util.markdownToHtml`), not a
+  second Markdown implementation. Semantic `breakBefore`/`breakAfter` IDs,
+  source `preset=page-break`, and section-per-page are supported.
+- Editorial/minimal/classic profiles; larger type gets lighter. Full four-edge
+  bleed chrome with automatic inset/gap sizing and native `{{page}}`/`{{pages}}`.
+- Full contract and examples: `documentation/tools/print.md`.
+  Validation: `npm run test:print`.
 
 ## Memory System (nDB + nVDB)
 

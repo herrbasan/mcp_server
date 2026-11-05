@@ -1,0 +1,49 @@
+{
+    "agent": "print",
+    "description": "MD-Blocks to paginated PDF using the canonical nui_wc2 renderer. Supports semantic page-break controls, repeated document chrome, and exact PDF page rasters for visual review.",
+    "tools": [
+        {
+            "name": "print_render",
+            "description": "Render an MD-Blocks Markdown document through nui_wc2 to PDF in MCP storage. Use breakBefore/breakAfter with MD-Blocks IDs to adjust pagination without editing the source; preset=page-break and frontmatter print.sectionPages are also honoured. With preview enabled (default), rasterizes the finished PDF through PDFium, writes every page PNG, and attaches selected pages so the model can inspect actual break points. Returns a render.json sidecar and the available break-target IDs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Markdown source: storage-relative or absolute path. Required unless markdown is given." },
+                    "markdown": { "type": "string", "description": "Inline MD-Blocks Markdown. Mutually exclusive with path." },
+                    "basePath": { "type": "string", "description": "Base directory for relative media when markdown is inline. Storage-relative or absolute; defaults to the storage root." },
+                    "name": { "type": "string", "description": "Optional output folder slug." },
+                    "style": { "type": "string", "enum": ["editorial", "minimal", "classic"], "description": "Unshaded print design: editorial (Segoe UI/navy), minimal (compact black-and-white), or classic (serif/traditional). Default editorial." },
+                    "format": { "type": "string", "enum": ["A4", "A5", "Letter", "Legal"], "description": "Page format. Overrides frontmatter print.format; default A4." },
+                    "orientation": { "type": "string", "enum": ["portrait", "landscape"], "description": "Page orientation. Overrides frontmatter print.orientation; default portrait." },
+                    "margin": {
+                        "description": "CSS page margin: one mm/cm/in/px value for all sides, or an object with top/right/bottom/left. Overrides frontmatter print.margin.",
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "object", "properties": { "top": { "type": "string" }, "right": { "type": "string" }, "bottom": { "type": "string" }, "left": { "type": "string" } } }
+                        ]
+                    },
+                    "breakBefore": { "type": "array", "items": { "type": "string" }, "description": "MD-Blocks IDs that must start a new page. Unknown or duplicate targets fail loudly." },
+                    "breakAfter": { "type": "array", "items": { "type": "string" }, "description": "MD-Blocks IDs after which a page break is forced." },
+                    "sectionPages": { "type": "boolean", "description": "Start every MD-Blocks section on a new page. Overrides frontmatter print.sectionPages." },
+                    "preview": { "type": "boolean", "description": "Rasterize PDF pages and attach previews. Default true." },
+                    "pages": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "1-based page numbers to attach inline. All pages are still written to pages/ when preview is enabled; defaults to the first 8." },
+                    "width": { "type": "integer", "minimum": 320, "maximum": 3000, "description": "Preview raster width in pixels; default 1240." }
+                }
+            }
+        },
+        {
+            "name": "print_preview",
+            "description": "Rasterize selected pages of an existing PDF through PDFium and attach the exact page images for visual inspection. Writes PNGs under storage/prints and returns their paths. Pages are 1-based.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "PDF path: storage-relative or absolute." },
+                    "pages": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "1-based page numbers to preview; default [1]." },
+                    "width": { "type": "integer", "minimum": 320, "maximum": 3000, "description": "Preview raster width in pixels; default 1240." },
+                    "name": { "type": "string", "description": "Optional preview output folder slug." }
+                },
+                "required": ["path"]
+            }
+        }
+    ]
+}

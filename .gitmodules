@@ -19,3 +19,7 @@
 	path = nConvert
 	url = https://github.com/herrbasan/nConvert.git
 	branch = main
+[submodule "src/nui_wc2"]
+	path = src/nui_wc2
+	url = https://github.com/herrbasan/nui_wc2.git
+	branch = main

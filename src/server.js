@@ -895,6 +895,28 @@ Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
 napi bindings, nDB pattern; own repo at spin-out).
 
 ═══════════════════════════════════════════════════════════════
+PRINT — MD-Blocks → PDF + exact page review
+═══════════════════════════════════════════════════════════════
+
+Render MD-Blocks through the canonical nui_wc2 renderer, paginate with
+Chromium, and rasterize the FINISHED PDF with PDFium for visual review.
+The caller can iterate on page breaks without editing the source.
+
+  print.render — { path* | markdown*, basePath?, name?, format?, orientation?,
+                   margin?, style?, breakBefore?, breakAfter?, sectionPages?,
+                   preview?, pages?, width? }
+      Write document.pdf + render.json under storage/prints. breakBefore
+      and breakAfter target MD-Blocks IDs; unknown or duplicate targets
+      fail. preset=page-break and frontmatter print.sectionPages work too.
+      preview defaults true: every page is written as PNG and selected
+      pages are attached inline. The result lists valid break-target IDs.
+      Relative media resolve against the source file (or basePath).
+
+  print.preview — { path*, pages?, width?, name? }
+      Rasterize selected 1-based pages of an existing PDF and attach the
+      exact page images. Use this to inspect another break iteration.
+
+═══════════════════════════════════════════════════════════════
 CHART — Diagrams as SVG (nCharts)
 ═══════════════════════════════════════════════════════════════
 
@@ -1418,6 +1440,7 @@ IMPORTANT RULES
         "image.generate": "image_generate", "image.ingest": "image_ingest",
 
         "chart.guide": "chart_guide", "chart.render": "chart_render",
+        "print.render": "print_render", "print.preview": "print_preview",
 
         "nconvert.convert": "nconvert_convert", "nconvert.capabilities": "nconvert_capabilities",
         "nconvert.items": "nconvert_items", "nconvert.fetch": "nconvert_fetch",
