@@ -86,8 +86,8 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 ### nConvert (universal document ingest)
 
 Live formats: txt/csv/tsv/md (validated passthrough)/json/yaml/toml/xml, pdf
-(text + deep vision conversion), docx, doc (Word 97-2003), pptx, xlsx.
-Detected-but-pending formats fail loudly with their milestone.
+(text + deep vision conversion), docx/doc, pptx, xlsx/xlsb/xls, odt/odp/ods,
+epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 
 - **MCP tools**: `nconvert.convert` (mechanical inline; deep or >25 MB →
   queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,

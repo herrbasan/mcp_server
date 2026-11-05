@@ -1,8 +1,39 @@
-# nConvert — Session Handover (2026-11-03, evening)
+# nConvert — Session Handover (2026-11-05)
 
 Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md`.
 Operator doc: `documentation/tools/nconvert.md` (includes the queue section).
 Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
+
+## Current state — M3 complete (engine 0.9.0)
+
+- New live converters: **odt/odp/ods, epub, eml/mbox, xls (BIFF), xlsb**.
+- Detection fixes: IDML/iBooks no longer misdetected as ODF; xlsb no longer
+  routed into the XML xlsx reader; ODF presentation gets its own verdict;
+  mail shapes detected instead of degrading to txt.
+- Committed public corpus: **79 Apache Tika fixtures** under
+  `nConvert/corpus/tika/` (Apache-2.0). `node nConvert/napi/test/corpus.mjs`
+  gives every file an explicit outcome: **39 converted, 40 correctly refused,
+  0 failures**. Full `npm run test:nconvert`: **79 Rust tests + agent smoke +
+  corpus contract, all green**.
+- Known honest limitation: Tika's `testEXCEL.xlsb` trips calamine's
+  BrtBundleSh reader; the engine catches the third-party panic and refuses
+  with a diagnosis. Normal xlsb files use the shared spreadsheet path.
+- Encrypted ODT, IDML and iBooks have named refusals. Next milestone: **M5
+  OCR**, then rtf/msg (M6) or the research roadmap's long tail.
+
+Verify with:
+
+```powershell
+cd D:\DEV\mcp_server
+npm run build:nconvert
+npm run test:nconvert
+```
+
+The staged native binary is 0.9.0. A running server keeps its already-loaded
+engine until restart; **server restart + client reconnect is the human's
+step**. The previous handover below is retained as history.
+
+## Previous handover (2026-11-03, evening)
 
 ## Verify first (30 seconds)
 

@@ -101,7 +101,7 @@ check('collision counter works', folders.some(f => /-\d+$/.test(f)), folders.joi
 // ── capabilities ──
 r = await agent.nconvert_capabilities();
 const caps = JSON.parse(r.content[0].text);
-check('capabilities matrix', caps.formats.length === 22 && caps.limits.maxInputMb === 100, `${caps.formats.length} formats`);
+check('capabilities matrix', caps.formats.length === 25 && caps.limits.maxInputMb === 100, `${caps.formats.length} formats`);
 
 // ── external difficult-documents corpus (H:\Ingest_TestFiles) ──
 // Real files, never committed (privacy: medical/financial content).

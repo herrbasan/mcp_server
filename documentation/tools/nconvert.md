@@ -108,9 +108,20 @@ reconstructed from the drawing that mechanical conversion could only emit as pro
   fill their rectangle from the origin value, dates render ISO (styled serials),
   integral numbers without trailing `.0`, row cap + maxCells, empty sheets
   skipped with a warning, expansion budget pre-charged from the ZIP directory.
-- Detected-but-pending fail with their milestone: html (M2), ods/odt/
-  epub/eml (M3), images (M5), rtf/xls/msg (M6). DOCX/PPTX charts as data
-  tables: pending.
+  The same calamine path covers **xlsb** and legacy **xls**, and **ods**.
+- **odt/odp** (M3): ODF headings, styled spans, lists, repeated/covered table
+  cells, Pictures → assets, footnotes; presentations get one section per page,
+  title placeholders → H2 and notes → narration. StarOffice 6 accepted;
+  encrypted ODF refused loudly.
+- **epub** (M3): OPF metadata → frontmatter, spine order → sections, scoped
+  XHTML headings/paragraphs/lists/tables/links/images; manifest images → assets.
+- **eml/mbox** (M3): `mail-parser` 0.11 handles MIME trees, encoded headers and
+  charsets; plain text preferred, HTML-only bodies flattened with warning;
+  attachments and inline parts → assets plus an inventory. mbox: section per message.
+- Detected-but-pending fail with their milestone: html (M2), images (M5),
+  rtf/msg (M6). IDML and iBooks are recognized and refused by name. The Tika
+  xlsb fixture trips a calamine BrtBundleSh reader gap and fails loudly rather
+  than panicking. DOCX/PPTX charts as data tables: pending.
 - Limits (`agents.nconvert`): `maxInputMb` 100, `maxExpandedMb` 500 (ZIP budget,
   enforced per entry and in total), `maxOutputMb` 64, `maxTableRows` 10000 — breaches
   are hard errors.
@@ -124,7 +135,7 @@ MIT). After a fresh clone of this repo:
 git submodule update --init nConvert   # fetch the engine
 node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
 npm run build:nconvert                 # Rust workspace + staged napi binary
-npm run test:nconvert                  # 60 core tests + agent smoke test
+npm run test:nconvert                  # 79 core tests + agent smoke + 79-file corpus contract
 ```
 
 Binaries are staged version-stamped; the loader picks the newest, so a rebuild

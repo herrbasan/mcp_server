@@ -957,22 +957,25 @@ const FORMAT_MATRIX = [
     { format: 'docx', phase: 'M3 · live', note: 'styles → headings, numPr → nested lists, gridSpan/vMerge tables, images → assets, footnotes → GFM; expansion budget enforced; charts as data tables pending' },
     { format: 'pptx', phase: 'M3 · live', note: 'one section per slide (sldIdLst order via rels); title/body placeholders → headings/paragraphs; buChar/buAutoNum + lvl → nested lists; DrawingML tables onto the span grid; media → assets (SVG preferred over PNG fallback); speaker notes → narration blocks; charts/SmartArt warned pending' },
     { format: 'xlsx', phase: 'M3 · live', note: 'sheet per section, first row as header; merged cells fill their rectangle from the origin; dates render ISO (serial + style format); integral floats without .0; row cap + maxCells; expansion budget pre-charged from the ZIP directory' },
-    { format: 'ods', phase: 'M3', note: 'ODF spreadsheet' },
-    { format: 'odt', phase: 'M3', note: 'ODF text' },
-    { format: 'epub', phase: 'M3', note: 'spine order, one section per chapter' },
-    { format: 'eml', phase: 'M3', note: 'mail-parser; MIME trees, attachments as assets' },
+    { format: 'xlsb', phase: 'M3 · live', note: 'binary OOXML workbook via calamine; unsupported BrtBundleSh variants refuse loudly (calamine panic boundary)' },
+    { format: 'ods', phase: 'M3 · live', note: 'ODF spreadsheet via calamine; sheet per section, first row header' },
+    { format: 'odt', phase: 'M3 · live', note: 'ODF text: headings, styled spans, lists, repeated/covered table cells, Pictures → assets, footnotes; encrypted packages refused' },
+    { format: 'odp', phase: 'M3 · live', note: 'ODF presentation: section per draw:page, title placeholders → H2, speaker notes → narration' },
+    { format: 'epub', phase: 'M3 · live', note: 'OPF metadata → frontmatter; spine order sections; scoped XHTML headings/lists/tables/links/images' },
+    { format: 'eml', phase: 'M3 · live', note: 'mail-parser 0.11; MIME + encoded headers, plain/HTML body, attachments as assets with inventory' },
+    { format: 'mbox', phase: 'M3 · live', note: 'mbox message splitting via mail-parser; section per message, attachments as assets' },
     { format: 'pdf', phase: 'M4 · live', note: 'per-page text + embedded images as assets (JPX→PNG, DCT→jpg, flate→PNG); AES-256/R6 auto-decrypts; PDFium rasterization for deep conversion' },
     { format: 'image', phase: 'M5', note: 'OCR provider hand-off (multi-page); needs_ocr returned today' },
     { format: 'rtf', phase: 'M6', note: 'hand parser for supported control words' },
     { format: 'doc', phase: 'M6 · live (pulled forward)', note: 'Word 97-2003 binary: piece-table text (cp1252 + UTF-16 pieces), fields → result text, page breaks → ***, photos carved from the Data stream (JPEG/PNG); tables/footnotes/headers warned not converted; Word 6/95 + encrypted refused loudly' },
-    { format: 'xls', phase: 'M6', note: 'Excel 97-2003 (BIFF, CFB) — detected by Workbook stream shape' },
+    { format: 'xls', phase: 'M6 · live (pulled forward)', note: 'Excel 97-2003 BIFF via calamine; sheet per section, merges and ISO dates' },
     { format: 'cfb', phase: 'M6', note: 'other CFB containers (Outlook .msg via __substg streams)' }
 ]
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.8.0',
-        spec: 'docs/nconvert-spec.md v2.1',
+        converter: 'nconvert 0.9.0',
+        spec: 'nConvert/docs/SPEC.md v2.4',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
             maxInputMb: conf.maxInputMb,
