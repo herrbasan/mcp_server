@@ -152,6 +152,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
 }
 .preview-title strong { display: block; font-weight: 600; }
 .preview-title span { display: block; margin-top: 2px; color: var(--text-color-dim); }
+.preview-tools { display: flex; align-items: center; gap: var(--nui-space); flex: 0 0 auto; }
 .preview-heading nui-select { width: auto; flex: 0 0 auto; }
 .pages {
     --paper-width: 760px;
@@ -205,6 +206,18 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
 .break-spot:hover,
 .break-spot:focus-visible,
 .break-spot.active { opacity: 1; }
+/* "Show all spots": every position visible at once, for review and screenshots. */
+.pages.show-all .break-spot { opacity: 1; }
+.break-kind { display: none; }
+.pages.show-all .break-kind {
+    display: inline;
+    margin-right: 5px;
+    padding-right: 5px;
+    border-right: 1px solid rgba(255, 255, 255, .45);
+}
+/* Reviewing every spot at once: sit the label above its line so it does not
+   cover the text the line points at. */
+.pages.show-all .break-handle { transform: translateY(-100%); margin-top: -2px; }
 .break-spot:disabled { cursor: wait; }
 .break-rule {
     position: absolute;

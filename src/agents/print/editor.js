@@ -6,7 +6,7 @@ const ui = {
     name: $('document-name'), pathLabel: $('document-path'), style: $('style'), format: $('format'), orientation: $('orientation'),
     styleSelect: $('style-select'), formatSelect: $('format-select'), orientationSelect: $('orientation-select'),
     sectionPages: $('section-pages'), save: $('save'), dirty: $('dirty-state'), pdf: $('download-pdf'), notice: $('notice'),
-    thumbnails: $('thumbnails'), pages: $('pages'), zoom: $('zoom'), zoomSelect: $('zoom-select')
+    thumbnails: $('thumbnails'), pages: $('pages'),     zoom: $('zoom'), zoomSelect: $('zoom-select'), showAll: $('show-all')
 };
 
 const state = {
@@ -183,7 +183,11 @@ function breakSpot(spot) {
     control.setAttribute('aria-label', control.title);
     control.setAttribute('aria-pressed', String(active));
     const handle = element('span', 'break-handle');
-    handle.append(element('span', 'break-arrow'), element('span', 'break-label', active ? 'Page break' : 'Break here'));
+    handle.append(
+        element('span', 'break-arrow'),
+        element('span', 'break-kind', spot.kind),
+        element('span', 'break-label', active ? 'Page break' : 'Break here')
+    );
     control.append(element('span', 'break-rule'), handle);
     control.addEventListener('click', () => clickSpot(spot));
     return control;
@@ -357,6 +361,7 @@ ui.sectionPages.addEventListener('change', () => {
     render();
 });
 ui.zoom.addEventListener('change', () => ui.pages.style.setProperty('--paper-width', `${ui.zoom.value}px`));
+ui.showAll.addEventListener('change', () => ui.pages.classList.toggle('show-all', ui.showAll.checked));
 ui.pdf.addEventListener('click', () => {
     const href = ui.pdf.dataset.href;
     if (href) window.open(href, '_blank', 'noopener');

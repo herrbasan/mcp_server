@@ -80,14 +80,20 @@
                 <strong>Printed pages</strong>
                 <span>Hover a page to reveal its break spots. Click a line to place the break there, or to remove it.</span>
             </div>
-            <nui-select id="zoom-select" label="Zoom">
-                <select id="zoom">
-                    <option value="620">Compact</option>
-                    <option value="760" selected>Fit</option>
-                    <option value="900">Large</option>
-                    <option value="1100">Actual pixels</option>
-                </select>
-            </nui-select>
+            <div class="preview-tools">
+                <nui-checkbox class="show-all">
+                    <input id="show-all" type="checkbox">
+                    <label for="show-all">Show all spots</label>
+                </nui-checkbox>
+                <nui-select id="zoom-select" label="Zoom">
+                    <select id="zoom">
+                        <option value="620">Compact</option>
+                        <option value="760" selected>Fit</option>
+                        <option value="900">Large</option>
+                        <option value="1100">Actual pixels</option>
+                    </select>
+                </nui-select>
+            </div>
         </div>
         <div id="pages" class="pages"></div>
     </section>
