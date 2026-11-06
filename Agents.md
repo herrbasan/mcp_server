@@ -93,11 +93,16 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
   queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,
   `nconvert.job`, `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
   `nconvert.fetch`.
-- **Ingest queue** (`src/agents/nconvert/queue.js`): fast lane — mechanical
-  runs inline; ONE heavy job (deep / >heavyMb) at a time, FIFO, sha256 dedup,
-  restart-safe (`data/nconvert/jobs.json`; interrupted jobs re-queue),
-  cooperative cancel at step/chunk checkpoints, step-model progress
-  (converting → rendering → vision i/n + coverage → retry → summarizing).
+- **Ingest queue** (`src/agents/nconvert/queue.js`): bounded lanes — up to 16
+  small mechanical jobs, one deep/large job, and four cloud summary calls by
+  default. Summaries and deep vision use DeepSeek Flash with MiniMax M3.1 Flash
+  fallback. Native conversion and PDFium rendering use a lazy persistent process
+  pool (`nativeProcesses: 16`); deep chunks fan out pages across independent
+  PDFium processes and write PNGs directly to artefact storage. Fast lane —
+  mechanical calls await their result; deep/large jobs return a queued handle.
+  Step-model progress (converting → rendering → vision i/n + coverage → retry →
+  summarizing), restart-safe FIFO (`data/nconvert/jobs.json`), sha256 dedup,
+  cooperative cancel, REST + SSE.
 - **REST + SSE** (dashboard surface): `GET/POST /nconvert/jobs`,
   `GET /nconvert/jobs/:id`, `POST /nconvert/jobs/:id/cancel`, and
   `GET /nconvert/events` (SSE: `queue.snapshot` on connect, then `job.*`).
@@ -113,9 +118,20 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 
 - **MCP tools**: `print.render` (NUI → Chromium PDF + exact PDFium page previews)
   and `print.preview` (rasterize selected pages of an existing PDF).
+- **Visual page editor**: `/print?path=vita/vita_ai_change_manager_v4.md` shows
+  exact PDF pages and breaks them on the paper itself — hovering a page reveals a
+  line and handle at each semantic target's real vertical position; clicking sets
+  that break and clears any other within 6% of a page height. Break-only changes
+  reuse the session's loaded Chromium page (~1 s); style/format/orientation/
+  section-per-page reload it (~2.5 s). Changes rerender
+  non-destructively; Save writes `print.breakBefore`/`print.breakAfter` plus the
+  visible design options to frontmatter. Target geometry comes from nConvert
+  `searchText` reading absolute-positioned marker spans out of the PDF text
+  layer (page **and** y), not from DOM guesses.
 - Canonical renderer: `src/nui_wc2` submodule (`nui.util.markdownToHtml`), not a
-  second Markdown implementation. Semantic `breakBefore`/`breakAfter` IDs,
-  source `preset=page-break`, and section-per-page are supported.
+  second Markdown implementation. Semantic `breakBefore`/`breakAfter` IDs
+  (caller or frontmatter), source `preset=page-break`, and section-per-page are
+  supported.
 - Editorial/minimal/classic profiles; larger type gets lighter. Full four-edge
   bleed chrome with automatic inset/gap sizing and native `{{page}}`/`{{pages}}`.
 - Full contract and examples: `documentation/tools/print.md`.
@@ -164,6 +180,15 @@ The `vdb` agent indexes text files from the storage root (`agents.storage.root`,
 - **Directory-level**: any watched directory may contain a `.nvdb_ignore` file with one pattern per line (`name`, `*`, or simple globs like `*.tmp`). Patterns apply to entries in that directory only.
 
 Current default ignores: `forge` (transient forge tool output), `temp` (fleeting user temp files).
+
+**Scans must not block the event loop.** Enumeration is `fs.promises.readdir` (a
+recursive `readdirSync` over ~9.7k files stalled every HTTP request for ~20 s),
+and the hash/read path yields every `scanYieldBudgetMs` (50 ms). Compaction of the
+segment files runs **only when a scan produced tombstones** (`removed`/`updated`
+> 0), tracked by `data/nvdb/compaction-pending` so it survives a restart — an
+unconditional compact rewrote the 104 MB segment every five minutes for no
+change. Measured after both fixes: steady-state scan <1 s, and p95 latency 2 ms
+while a scan runs (previously 13–20 s).
 
 ## Running
 
