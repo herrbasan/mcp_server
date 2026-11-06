@@ -11,20 +11,19 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { createRequire } from 'module';
 import { getLogger } from '../../utils/logger.js';
 import { IngestQueue } from './queue.js';
+import { NativeProcessPool } from './native-process-pool.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 const logger = getLogger();
 
 let storageRoot;
 let storagePublicUrl;
 let ingestDir;
 let conf;
-let native;
 let gateway;
+let nativePool;
 let queue;
 
 export async function init(context) {
@@ -32,6 +31,8 @@ export async function init(context) {
     if (!storageRoot) throw new Error('[nconvert] config agents.storage.root is required');
     storagePublicUrl = (context.config.agents?.storage?.publicUrl || '').replace(/\/+$/, '');
     gateway = context.gateway;
+    summaryActive = 0;
+    summaryWaiters.length = 0;
 
     conf = {
         folder: 'ingest',
@@ -47,9 +48,16 @@ export async function init(context) {
         coverageThreshold: 0.98,
         maxDeepPages: 200,
         summary: true,
-        // fast-lane queue (2026-11-03): mechanical converts inline; deep or
-        // oversized inputs serialize through one heavy worker
+        // Native work runs in a bounded process pool. Small mechanical jobs
+        // scale across cores; deep/large jobs stay limited independently.
         heavyMb: 25,
+        nativeProcesses: 16,
+        maxConcurrentJobs: 16,
+        maxHeavyJobs: 1,
+        maxSummaryJobs: 4,
+        summaryModels: ['deepseek-flash-chat', 'minimax-m31-flash-chat'],
+        visionModel: 'deepseek-flash-chat',
+        visionFallbackModels: ['minimax-m31-flash-chat'],
         queueMaxHistory: 200,
         ...(context.config.agents?.nconvert ?? {})
     };
@@ -57,10 +65,33 @@ export async function init(context) {
     ingestDir = path.join(storageRoot, conf.folder);
     fs.mkdirSync(ingestDir, { recursive: true });
 
-    native = require('../../../nConvert/napi/index.js');
+    if (!Number.isInteger(conf.maxSummaryJobs) || conf.maxSummaryJobs < 1) {
+        throw new Error('[nconvert] config agents.nconvert.maxSummaryJobs must be a positive integer');
+    }
+    if (!Array.isArray(conf.summaryModels) || conf.summaryModels.length === 0 || conf.summaryModels.some((model) => typeof model !== 'string' || !model)) {
+        throw new Error('[nconvert] config agents.nconvert.summaryModels must be a non-empty string array');
+    }
+    if (typeof conf.visionModel !== 'string' || !conf.visionModel) {
+        throw new Error('[nconvert] config agents.nconvert.visionModel must be a non-empty string');
+    }
+    if (!Array.isArray(conf.visionFallbackModels) || conf.visionFallbackModels.some((model) => typeof model !== 'string' || !model)) {
+        throw new Error('[nconvert] config agents.nconvert.visionFallbackModels must be a string array');
+    }
+
+    nativePool = new NativeProcessPool({
+        size: conf.nativeProcesses,
+        workerFile: path.join(__dirname, 'native-worker.js'),
+        tmpDir: path.resolve(__dirname, '..', '..', '..', 'data', 'nconvert', 'native-results')
+    });
 
     const queueFile = path.resolve(__dirname, '..', '..', '..', 'data', 'nconvert', 'jobs.json');
-    queue = new IngestQueue({ file: queueFile, executor: runIngestion, maxHistory: conf.queueMaxHistory });
+    queue = new IngestQueue({
+        file: queueFile,
+        executor: runIngestion,
+        maxHistory: conf.queueMaxHistory,
+        concurrency: conf.maxConcurrentJobs,
+        heavyConcurrency: conf.maxHeavyJobs
+    });
 
     return { status: 'initialized', folder: conf.folder };
 }
@@ -69,6 +100,11 @@ export async function init(context) {
 export function getQueue() {
     if (!queue) throw new Error('[nconvert] agent not initialized');
     return queue;
+}
+
+export async function shutdown() {
+    if (nativePool) await nativePool.close();
+    nativePool = null;
 }
 
 // ─── small helpers ───────────────────────────────────────────────────────
@@ -131,9 +167,20 @@ function pdfiumDir() {
         : path.resolve(__dirname, '..', '..', '..', conf.pdfiumPath);
 }
 
-async function renderPages(bytes) {
-    const envelope = await native.renderPages(bytes, pdfiumDir(), conf.pageWidth, conf.maxDeepPages, []);
-    return JSON.parse(envelope).pages;
+async function renderPages(source, onlyPages, folder) {
+    // A chunk fans out by page. Each worker owns an independent PDFium
+    // instance; the global pool bounds how many parse/render operations run.
+    const groups = onlyPages.length > 0 ? onlyPages.map((page) => [page]) : [[]];
+    const results = await Promise.all(groups.map((pages) => nativePool.run({
+        op: 'render',
+        source,
+        dllDir: pdfiumDir(),
+        targetWidth: conf.pageWidth,
+        maxPages: conf.maxDeepPages,
+        onlyPages: pages,
+        folder
+    })));
+    return results.flatMap((result) => result.pages).sort((a, b) => a.index - b.index);
 }
 
 // Mechanical PDF text concatenates adjacent runs ("installationchapter") where
@@ -259,30 +306,41 @@ function stripDirectiveSyntax(markdown) {
         .replace(/^\s*---\s*$/gm, '');
 }
 
-async function deepConvert({ bytes, env, folder, progress = null }) {
+async function requestVision(content) {
+    const failures = [];
+    for (const model of [conf.visionModel, ...conf.visionFallbackModels]) {
+        try {
+            const response = await gateway.chat({
+                model,
+                messages: [{ role: 'user', content }],
+                systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
+                maxTokens: 8000
+            });
+            const text = String(response.content || '').trim();
+            if (!text) throw new Error('model returned no content');
+            return { content: text, model };
+        } catch (error) {
+            failures.push(`${model}: ${error.message}`);
+        }
+    }
+    throw new Error(failures.join(' | '));
+}
+
+async function deepConvert({ source, env, folder, progress = null }) {
     const step = async (id, opts) => { if (progress) await progress.step(id, opts); };
     const finishStep = (id, opts) => { if (progress) progress.finishStep(id, opts); };
     const checkCancelled = () => { if (progress) progress.checkCancelled(); };
 
-    await step('rendering', { detail: `rendering at ${conf.pageWidth}px` });
-    const pages = await renderPages(bytes);
-    if (pages.length === 0) throw new Error('deep conversion: renderer returned no pages');
-
-    fs.mkdirSync(path.join(folder, 'pages'), { recursive: true });
-    for (const p of pages) {
-        fs.writeFileSync(
-            path.join(folder, 'pages', `page-${String(p.index + 1).padStart(3, '0')}.png`),
-            Buffer.from(p.pngBase64, 'base64')
-        );
-    }
-    finishStep('rendering', { detail: `${pages.length} page(s) rendered` });
-    const renderedIndices = new Set(pages.map((p) => p.index + 1));
-
     const texts = env.page_texts || [];
+    const totalPages = Math.min(texts.length, conf.maxDeepPages);
+    if (totalPages === 0) throw new Error('deep conversion: mechanical pass reported no pages');
+    fs.mkdirSync(path.join(folder, 'pages'), { recursive: true });
+    const renderedIndices = new Set();
+
     const chunkSize = Math.max(1, conf.chunkPages);
     const chunks = [];
-    for (let start = 0; start < pages.length; start += chunkSize) {
-        chunks.push({ start, end: Math.min(start + chunkSize - 1, pages.length - 1) });
+    for (let start = 0; start < totalPages; start += chunkSize) {
+        chunks.push({ start, end: Math.min(start + chunkSize - 1, totalPages - 1) });
     }
 
     const warnings = [];
@@ -294,16 +352,35 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
         const chunk = chunks[ci];
         const from = chunk.start + 1;
         const to = chunk.end + 1;
-        await step('vision', { i: ci + 1, n: chunks.length });
         const chunkPageTexts = texts.slice(chunk.start, chunk.end + 1);
         const chunkText = chunkPageTexts.join('\n\n');
 
-        const content = pages
-            .slice(chunk.start, chunk.end + 1)
-            .map((p) => ({ type: 'image_url', image_url: { url: `data:image/png;base64,${p.pngBase64}` } }));
+        // Render only this chunk, then let the native call return before the
+        // provider call. Memory stays O(chunkPages), cancellation checkpoints
+        // are real, and the event loop breathes between native operations.
+        await step('rendering', {
+            i: ci + 1,
+            n: chunks.length,
+            detail: `pages ${from}-${to} at ${conf.pageWidth}px`
+        });
+        const onlyPages = Array.from({ length: to - from + 1 }, (_, i) => chunk.start + i);
+        const pages = await renderPages(source, onlyPages, path.join(folder, 'pages'));
+        if (pages.length !== onlyPages.length) {
+            throw new Error(`deep conversion: renderer returned ${pages.length}/${onlyPages.length} pages for ${from}-${to}`);
+        }
+        for (const p of pages) renderedIndices.add(p.index + 1);
+        finishStep('rendering', { detail: `pages ${from}-${to} rendered` });
+        checkCancelled();
+        await step('vision', { i: ci + 1, n: chunks.length });
+
+        const content = await Promise.all(pages.map(async (p) => ({
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${(await fs.promises.readFile(p.file)).toString('base64')}` }
+        })));
         content.push({ type: 'text', text: chunkPrompt(from, to, chunkText) });
 
         let markdown;
+        let provider = null;
         try {
             // One corrective retry when the model drops text: list the missing
             // vocabulary back to it rather than lowering the guard.
@@ -320,19 +397,12 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
                         detail: `${missing.length} word(s) missing — corrective retry`
                     });
                 }
-                const response = await gateway.chat({
-                    task: 'vision',
-                    messages: [{
-                        role: 'user',
-                        content: [
-                            ...content.slice(0, -1),
-                            { type: 'text', text: chunkPrompt(from, to, chunkText, attempt === 0 ? null : missing) }
-                        ]
-                    }],
-                    systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
-                    maxTokens: 8000
-                });
-                const candidate = stripDirectiveSyntax(String(response.content || '').trim());
+                const response = await requestVision([
+                    ...content.slice(0, -1),
+                    { type: 'text', text: chunkPrompt(from, to, chunkText, attempt === 0 ? null : missing) }
+                ]);
+                provider = response.model;
+                const candidate = stripDirectiveSyntax(response.content);
                 if (!candidate) throw new Error('model returned no content');
 
                 const measured = textCoverage(chunkPageTexts, candidate);
@@ -355,7 +425,7 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
                     message: `pages ${from}-${to}: model covered ${(coverage * 100).toFixed(1)}% of the authoritative vocabulary after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing e.g.: ${sample}${missing.length > 8 ? ` (+${missing.length - 8} more)` : ''}`
                 });
                 markdown = chunkText;
-                chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-low-coverage', attempts: attempt });
+                chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-low-coverage', model: provider, attempts: attempt });
             } else {
                 const applied = applyFigureMarkers(markdown, renderedIndices);
                 markdown = applied.markdown;
@@ -368,6 +438,7 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
                 chunkReports.push({
                     pages: `${from}-${to}`,
                     verdict: attempt > 1 ? 'structured-after-retry' : 'structured',
+                    model: provider,
                     coverage: Number(coverage.toFixed(4)),
                     attempts: attempt
                 });
@@ -387,7 +458,7 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
 
     return {
         markdown: parts.join('\n\n') + '\n',
-        pages: pages.length,
+        pages: totalPages,
         chunkReports,
         warnings
     };
@@ -395,8 +466,10 @@ async function deepConvert({ bytes, env, folder, progress = null }) {
 
 // ─── the artefact: manifest, summary, layered retrieval ──────────────────
 
-function sha256File(file) {
-    return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+async function sha256File(file) {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+    return hash.digest('hex');
 }
 
 function countIn(text, re) {
@@ -410,12 +483,13 @@ function sectionsOf(markdown) {
 }
 
 // L0: the layer that answers "what is this?" without reading the document.
-// Task routing is provider-dependent; if a router hands the call to a model
-// that streams reasoning and no answer, fall back across tasks before giving up
-// — and record why, so a missing summary is never a mystery.
-const SUMMARY_TASKS = ['query', 'synthesis', 'analysis'];
+// Summary generation tries cloud models in configured order. Task routing is
+// deliberately bypassed: an explicit model keeps this background load off the
+// local provider and makes fallback behavior deterministic.
+let summaryActive = 0;
+const summaryWaiters = [];
 
-async function makeSummary(documentMd, filename) {
+async function generateSummary(documentMd, filename) {
     if (!gateway) return { text: null, reason: 'no gateway available' };
     const body = documentMd.replace(/^---\n[\s\S]*?\n---\n/, '');
     const prompt = [
@@ -428,10 +502,10 @@ async function makeSummary(documentMd, filename) {
     ].join('\n');
 
     const failures = [];
-    for (const task of SUMMARY_TASKS) {
+    for (const model of conf.summaryModels) {
         try {
             const response = await gateway.chat({
-                task,
+                model,
                 messages: [{ role: 'user', content: prompt }],
                 systemPrompt: 'You write precise retrieval summaries. You never invent content.',
                 maxTokens: 700,
@@ -439,15 +513,29 @@ async function makeSummary(documentMd, filename) {
             });
             const text = String(response.content || '').trim();
             if (!text) {
-                failures.push(`${task}: empty response`);
+                failures.push(`${model}: empty response`);
                 continue;
             }
-            return { text, model: response.model ?? null, task };
+            return { text, model: response.model ?? model };
         } catch (e) {
-            failures.push(`${task}: ${e.message}`);
+            failures.push(`${model}: ${e.message}`);
         }
     }
     return { text: null, reason: failures.join(' | ') };
+}
+
+async function makeSummary(documentMd, filename) {
+    if (summaryActive >= conf.maxSummaryJobs) {
+        await new Promise((resolve) => summaryWaiters.push(resolve));
+    }
+    summaryActive++;
+    try {
+        return await generateSummary(documentMd, filename);
+    } finally {
+        summaryActive--;
+        const next = summaryWaiters.shift();
+        if (next) next();
+    }
 }
 
 async function writeManifest({ folder, absolute, filename, env, depth, deep, keepOriginal, sourceSha }) {
@@ -530,16 +618,15 @@ export async function regenerateSummary(itemId) {
     fs.writeFileSync(path.join(itemDir, 'summary.md'), header + result.text + '\n', 'utf8');
 
     manifest.layers.summary = 'summary.md';
-    manifest.summary = { model: result.model ?? null, task: result.task ?? null, generated: new Date().toISOString() };
+    manifest.summary = { model: result.model ?? null, generated: new Date().toISOString() };
     fs.writeFileSync(path.join(itemDir, 'item.json'), JSON.stringify(manifest, null, 2), 'utf8');
-    return { content: [{ type: 'text', text: `summary.md written for ${manifest.id} (${result.text.length} chars, task ${result.task})` }], isError: false };
+    return { content: [{ type: 'text', text: `summary.md written for ${manifest.id} (${result.text.length} chars, model ${result.model})` }], isError: false };
 }
 
 // ─── handlers ────────────────────────────────────────────────────────────
 
-// Fast-lane classification (2026-11-03): deep conversions (vision chunks,
-// gateway tokens) and oversized inputs serialize through one heavy worker;
-// mechanical conversions run inline — they are ms-fast and CPU-only.
+// Small mechanical jobs share a bounded concurrent lane; deep and oversized
+// inputs use the independently bounded heavy lane.
 function isHeavy(depth, size) {
     return depth === 'deep' || size > conf.heavyMb * 1024 * 1024;
 }
@@ -551,9 +638,10 @@ function stepsFor(depth) {
 }
 
 function queueText(job, { deduped = false } = {}) {
-    const pos = job.state === 'queued'
-        ? `position ${queue.list({ state: 'queued' }).findIndex((j) => j.id === job.id) + 1} in queue`
-        : job.state;
+    const queued = job.state === 'queued'
+        ? queue.list({ state: 'queued' }).find((j) => j.id === job.id)
+        : null;
+    const pos = queued ? `position ${queued.position} in queue` : job.state;
     const head = deduped
         ? `Already queued: ${path.basename(job.source)} (job ${job.id}, ${pos}) — same file, deduplicated.`
         : `Queued ${path.basename(job.source)} (${job.args?.depth ?? 'mechanical'}) → job ${job.id} (${pos}).`;
@@ -564,8 +652,8 @@ function queueText(job, { deduped = false } = {}) {
     ].join('\n');
 }
 
-// The single ingestion pipeline — inline for mechanical (fast lane), in the
-// heavy worker for deep. progress is null-safe (tests call it directly).
+// The single ingestion pipeline, executed through the bounded scheduler.
+// progress is null-safe (tests call it directly).
 async function runIngestion(job, progress = null) {
     const step = async (id, opts) => { if (progress) await progress.step(id, opts); };
     const finishStep = (id, opts) => { if (progress) progress.finishStep(id, opts); };
@@ -578,7 +666,6 @@ async function runIngestion(job, progress = null) {
     }
 
     await step('converting');
-    const bytes = fs.readFileSync(absolute);
     const filename = path.basename(absolute);
     const optionsJson = JSON.stringify({
         max_input_bytes: maxInputBytes,
@@ -588,7 +675,8 @@ async function runIngestion(job, progress = null) {
         max_cells: 1000000
     });
 
-    const env = JSON.parse(await native.convert(bytes, filename, optionsJson));
+    const envelope = await nativePool.run({ op: 'convert', source: absolute, filename, optionsJson });
+    const env = JSON.parse(envelope);
 
     if (env.status === 'needs_ocr') {
         throw new Error(
@@ -639,7 +727,7 @@ async function runIngestion(job, progress = null) {
         // deep one, so a bad model run is inspectable and re-runnable.
         fs.writeFileSync(path.join(folder, 'document.mechanical.md'), env.document_md, 'utf8');
 
-        const deep = await deepConvert({ bytes, env, folder, progress });
+        const deep = await deepConvert({ source: absolute, env, folder, progress });
         for (const w of deep.warnings) meta.warnings.push(w);
 
         const coverageValues = deep.chunkReports.filter((c) => c.coverage != null).map((c) => c.coverage);
@@ -706,7 +794,7 @@ async function runIngestion(job, progress = null) {
     // The artefact becomes a layered object: manifest + summary make it
     // discoverable and navigable.
     await step('summarizing');
-    const sourceSha = sha256File(absolute);
+    const sourceSha = await sha256File(absolute);
     const { manifest, summaryReason } = await writeManifest({
         folder, absolute, filename, env, depth, deep: deepResult, keepOriginal, sourceSha
     });
@@ -730,9 +818,9 @@ async function runIngestion(job, progress = null) {
 }
 
 // ── tool surface ──────────────────────────────────────────────────────────
-// convert and enqueue share one implementation: mechanical runs inline and
-// returns the full artefact report; deep (or oversized) input is queued and
-// returns the job handle instead of blocking for minutes.
+// convert and enqueue share one implementation: mechanical callers await the
+// scheduled result; deep (or oversized) input returns a job handle instead of
+// blocking for minutes.
 
 async function convertImpl(args, { toolName = 'nconvert.convert' } = {}) {
     const { absolute, size } = resolveInput(args?.path);
@@ -742,7 +830,7 @@ async function convertImpl(args, { toolName = 'nconvert.convert' } = {}) {
     }
 
     const heavy = isHeavy(depth, size);
-    const sha = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+    const sha = await sha256File(absolute);
 
     if (!heavy) {
         const job = await queue.runInline({
@@ -773,7 +861,7 @@ export async function submitIngest(args) {
         throw new Error(`depth must be "mechanical" or "deep", got "${depth}"`);
     }
     const heavy = isHeavy(depth, size);
-    const sha = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+    const sha = await sha256File(absolute);
     if (!heavy) {
         const job = await queue.runInline({ source: absolute, args, sha, steps: stepsFor(depth) });
         return { queued: false, job: queue.publicJob(job) };
@@ -802,7 +890,7 @@ export async function nconvert_jobs(args) {
         const where = active
             ? `${active.label}${active.n ? ` ${active.i ?? '?'}/${active.n}` : ''}${active.detail ? ` — ${active.detail}` : ''}`
             : j.state;
-        const pos = j.state === 'queued' && j.heavy ? ` · position ${j.position}` : '';
+        const pos = j.state === 'queued' ? ` · position ${j.position}` : '';
         return `${j.id}  ${j.state.toUpperCase().padEnd(9)} ${path.basename(j.source)}  ${where}${pos}`;
     });
     return { content: [{ type: 'text', text: lines.join('\n') }], isError: false };
@@ -974,8 +1062,8 @@ const FORMAT_MATRIX = [
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.9.0',
-        spec: 'nConvert/docs/SPEC.md v2.4',
+        converter: 'nconvert 0.9.1',
+        spec: 'nConvert/docs/SPEC.md v2.5',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
             maxInputMb: conf.maxInputMb,
@@ -987,13 +1075,21 @@ export async function nconvert_capabilities() {
             available: true,
             scope: 'pdf',
             renderer: `PDFium @ ${conf.pdfiumPath}`,
+            visionModel: conf.visionModel,
+            visionFallbackModels: conf.visionFallbackModels,
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
             maxDeepPages: conf.maxDeepPages,
             note: 'depth:"deep" renders pages and has a vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
         },
-        summary: { enabled: Boolean(conf.summary), layer: 'summary.md' },
+        execution: {
+            nativeProcesses: conf.nativeProcesses,
+            maxConcurrentJobs: conf.maxConcurrentJobs,
+            maxHeavyJobs: conf.maxHeavyJobs,
+            maxSummaryJobs: conf.maxSummaryJobs
+        },
+        summary: { enabled: Boolean(conf.summary), layer: 'summary.md', models: conf.summaryModels },
         formats: FORMAT_MATRIX
     };
     return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], isError: false };

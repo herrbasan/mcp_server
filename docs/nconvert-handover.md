@@ -4,7 +4,7 @@ Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md`.
 Operator doc: `documentation/tools/nconvert.md` (includes the queue section).
 Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
 
-## Current state — M3 complete (engine 0.9.0)
+## Current state — M3 complete + resource optimization (engine 0.9.1)
 
 - New live converters: **odt/odp/ods, epub, eml/mbox, xls (BIFF), xlsb**.
 - Detection fixes: IDML/iBooks no longer misdetected as ODF; xlsb no longer
@@ -21,6 +21,34 @@ Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
 - Encrypted ODT, IDML and iBooks have named refusals. Next milestone: **M5
   OCR**, then rtf/msg (M6) or the research roadmap's long tail.
 
+### Resource optimization (2026-11-05, currently uncommitted)
+
+- Native conversion and PDFium now use a lazy persistent process pool (default
+  16). Small mechanical jobs share 16 queue slots; deep/large jobs are limited
+  to 1 and summary-provider calls to 4. Summaries and deep vision explicitly
+  use cloud DeepSeek Flash (MiniMax M3.1 Flash fallback for summaries and deep
+  vision), keeping LLM
+  load off the host. PDF pages fan out per chunk and workers write PNGs directly
+  to artefact storage. File hashes stream instead of
+  blocking on whole-file reads.
+- Engine 0.9.1 fixes repeated PDFium renders: one binding is initialized and
+  reused per worker process. Same-process PDF threads are not a valid shortcut.
+- Benchmarks: 16 real PPTX conversions 2.86 s serial → 0.83 s through the
+  persistent 16-process pool; 64 PDF pages 1.02 s serial → 0.33 s with 8
+  processes. Process startup makes 16 processes slightly slower than 8 on this
+  render shape, but still ~3× faster than serial.
+- Full `npm run test:nconvert` green: 79 Rust tests, queue/pool/agent/deep/
+  summary tests, and 79-file corpus (39 converted / 40 refused / 0 failures).
+  Live gateway probes also passed for DeepSeek text + streaming vision and
+  MiniMax M3.1 Flash text. (DeepSeek's non-streaming image probe returned empty content;
+  nConvert uses the working streaming path.) The first live DKV deep run then
+  exposed a streaming zero-answer too, so MiniMax vision fallback was added and
+  its direct streaming-vision probe passed. nConvert retest is pending the next
+  restart.
+- The first slowdown coincided with an 80-job baseline plus live summaries; the
+  later typing freeze had no nConvert work active and showed hot VS Code /
+  Chromium processes. Do not attribute both events to nConvert.
+
 Verify with:
 
 ```powershell
@@ -29,7 +57,7 @@ npm run build:nconvert
 npm run test:nconvert
 ```
 
-The staged native binary is 0.9.0. A running server keeps its already-loaded
+The staged native binary is 0.9.1. A running server keeps its already-loaded
 engine until restart; **server restart + client reconnect is the human's
 step**. The previous handover below is retained as history.
 

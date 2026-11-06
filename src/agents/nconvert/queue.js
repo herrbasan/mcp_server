@@ -1,8 +1,9 @@
-// nConvert ingest queue — one heavy job at a time (fast-lane design,
-// 2026-11-03): mechanical conversions run inline in the caller; deep/large
-// jobs serialize through here so gateway tokens, PDFium and disk are never
-// contended. The job store is one JSON file (atomic tmp+rename) that
-// survives restarts; a restart re-queues interrupted running jobs.
+// nConvert ingest queue — bounded FIFO scheduling across both lanes.
+// Small mechanical jobs can run concurrently; deep/large jobs have their own
+// lower limit. Native work is further bounded by the process pool, so PDFium,
+// provider calls and disk cannot pile up on the host.
+// The job store is one JSON file (atomic tmp+rename) that survives restarts;
+// a restart re-queues interrupted running jobs.
 //
 // Progress is a STEP MODEL, not a percentage: jobs carry the full step list
 // with per-step status and real i/n where it exists. Every transition is
@@ -40,16 +41,21 @@ function newJobId() {
 }
 
 export class IngestQueue {
-    constructor({ file, executor, maxHistory = 200 }) {
+    constructor({ file, executor, maxHistory = 200, concurrency = 1, heavyConcurrency = 1 }) {
         if (typeof executor !== 'function') throw new Error('IngestQueue: executor (job, progress) => result is required');
+        if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('IngestQueue: concurrency must be a positive integer');
+        if (!Number.isInteger(heavyConcurrency) || heavyConcurrency < 1) throw new Error('IngestQueue: heavyConcurrency must be a positive integer');
         this.file = file;
         this.executor = executor;
         this.maxHistory = maxHistory;
+        this.concurrency = concurrency;
+        this.heavyConcurrency = heavyConcurrency;
         this.jobs = [];
-        this.busy = false;
+        this.active = 0;
+        this.activeHeavy = 0;
+        this.waiters = new Map(); // inline callers awaiting a queued job
         this.events = new EventEmitter();
         this.events.setMaxListeners(50);
-        this.progressCtx = null; // active job's ctx, for cancel flags
         this.load();
     }
 
@@ -121,29 +127,34 @@ export class IngestQueue {
         this.jobs.push(job);
         this.persist();
         this.emit(job, 'job.queued');
-        if (heavy) this.pumpSoon();
+        this.pumpSoon();
         return { job, deduped: false };
     }
 
-    // Mechanical fast lane: execute in the caller's turn, but record the job
-    // (complete) so the dashboard's history covers every ingest.
-    async runInline({ source, args, sha, steps }) {
-        const { job } = this.enqueue({ source, args, sha, heavy: false, steps });
-        const progress = this.makeProgress(job);
-        job.state = 'running';
-        job.startedAt = Date.now();
-        try {
-            job.result = await this.executor(job, progress);
-            job.state = 'done';
-        } catch (e) {
-            job.state = e instanceof CancelledError ? 'cancelled' : 'failed';
-            job.error = e.message;
-        }
-        job.finishedAt = Date.now();
-        this.closeActiveSteps(job);
-        this.persist();
-        this.emit(job, `job.${job.state}`);
-        return job;
+    // Mechanical fast lane: same scheduler and completion report, but the
+    // caller awaits completion instead of receiving a queued-job handle.
+    async runInline({ source, args, sha, heavy = false, steps }) {
+        const { job } = this.enqueue({ source, args, sha, heavy, steps });
+        return this.waitForCompletion(job.id);
+    }
+
+    waitForCompletion(id) {
+        return new Promise((resolve) => {
+            let resolvers = this.waiters.get(id);
+            if (!resolvers) {
+                resolvers = new Set();
+                this.waiters.set(id, resolvers);
+            }
+            resolvers.add(resolve);
+            this.pumpSoon();
+        });
+    }
+
+    settle(job) {
+        const resolvers = this.waiters.get(job.id);
+        if (!resolvers) return;
+        this.waiters.delete(job.id);
+        for (const resolve of resolvers) resolve(job);
     }
 
     // completion closes any still-active step (the last step has no successor)
@@ -151,25 +162,31 @@ export class IngestQueue {
         for (const s of job.steps) if (s.status === 'active') s.status = 'done';
     }
 
-    // ── worker (one heavy job at a time) ─────────────────────────────────
+    // ── workers (bounded concurrency, FIFO within each lane) ────────────
 
     pumpSoon() {
         setImmediate(() => this.pump());
     }
 
     pump() {
-        if (this.busy) return;
-        const next = this.jobs
-            .filter((j) => j.state === 'queued' && j.heavy)
-            .sort((a, b) => a.createdAt - b.createdAt)[0];
-        if (!next) return;
-        this.busy = true;
+        const queued = this.jobs
+            .filter((j) => j.state === 'queued')
+            .sort((a, b) => a.createdAt - b.createdAt);
+        for (const next of queued) {
+            if (this.active >= this.concurrency) return;
+            if (next.heavy && this.activeHeavy >= this.heavyConcurrency) continue;
+            this.start(next);
+        }
+    }
+
+    start(next) {
+        this.active++;
+        if (next.heavy) this.activeHeavy++;
         next.state = 'running';
         next.startedAt = Date.now();
         this.persist();
         this.emit(next, 'job.started'); // positions shift for the rest
         const progress = this.makeProgress(next);
-        this.progressCtx = progress;
         Promise.resolve()
             .then(() => this.executor(next, progress))
             .then((result) => {
@@ -185,10 +202,11 @@ export class IngestQueue {
                 if (next.state === 'running') next.state = 'failed'; // defensive: never stuck
                 if (!next.finishedAt) next.finishedAt = Date.now();
                 this.closeActiveSteps(next);
-                this.busy = false;
-                this.progressCtx = null;
+                this.active--;
+                if (next.heavy) this.activeHeavy--;
                 this.persist();
                 this.emit(next, `job.${next.state}`);
+                this.settle(next);
                 this.pump();
             });
     }
@@ -240,7 +258,7 @@ export class IngestQueue {
         let position = 0;
         const positions = new Map();
         for (const j of this.jobs) {
-            if (j.state === 'queued' && j.heavy) positions.set(j.id, ++position);
+            if (j.state === 'queued') positions.set(j.id, ++position);
         }
         let jobs = this.jobs.slice().sort((a, b) => b.createdAt - a.createdAt);
         if (state) jobs = jobs.filter((j) => j.state === state);
@@ -277,6 +295,7 @@ export class IngestQueue {
             job.finishedAt = Date.now();
             this.persist();
             this.emit(job, 'job.cancelled');
+            this.settle(job);
         } else {
             // running: cooperative — the executor checks between steps/chunks
             job.cancelRequested = true;

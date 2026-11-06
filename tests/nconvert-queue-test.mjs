@@ -90,10 +90,58 @@ await waitFor(q2, f.job.id, 'done');
 unsub();
 check('event stream saw lifecycle', seen.includes('job.queued') && seen.includes('job.done'), seen.join(','));
 
-// ── inline jobs record but never queue ──
+// ── inline callers await scheduled jobs ──
 const g = await q2.runInline({ source: 'H:/g.txt', args: { depth: 'mechanical' }, sha: 'gg', steps: ['converting', 'summarizing'] });
 check('inline job completes inline', g.state === 'done' && g.heavy === false);
 check('inline result recorded', g.result?.item === `ingest/fake_${g.id}`);
+
+// ── duplicate inline callers all settle on the same job ──
+const dedupGate = Promise.withResolvers();
+const qDedup = new IngestQueue({
+    file: path.join(tmp, 'dedup-jobs.json'),
+    executor: async (job) => {
+        await dedupGate.promise;
+        return { item: `ingest/fake_${job.id}` };
+    }
+});
+const wait1 = qDedup.runInline({ source: 'H:/same.txt', args: {}, sha: 'same', steps: ['converting'] });
+const wait2 = qDedup.runInline({ source: 'H:/same.txt', args: {}, sha: 'same', steps: ['converting'] });
+await tick(20);
+check('duplicate inline callers share one job', qDedup.jobs.length === 1, `${qDedup.jobs.length}`);
+dedupGate.resolve();
+const [dedup1, dedup2] = await Promise.all([wait1, wait2]);
+check('both duplicate callers resolve', dedup1.id === dedup2.id && dedup1.state === 'done' && dedup2.state === 'done');
+
+// ── bounded mechanical parallelism + independent heavy limit ──
+let active = 0;
+let activeHeavy = 0;
+let maxActive = 0;
+let maxHeavy = 0;
+const qConcurrent = new IngestQueue({
+    file: path.join(tmp, 'concurrent-jobs.json'),
+    concurrency: 4,
+    heavyConcurrency: 1,
+    executor: async (job) => {
+        active++;
+        if (job.heavy) activeHeavy++;
+        maxActive = Math.max(maxActive, active);
+        maxHeavy = Math.max(maxHeavy, activeHeavy);
+        await tick(25);
+        active--;
+        if (job.heavy) activeHeavy--;
+        return { item: `ingest/fake_${job.id}` };
+    }
+});
+const concurrent = [];
+concurrent.push(qConcurrent.runInline({ source: 'H:/heavy-a.pdf', args: {}, sha: 'ha', heavy: true, steps: ['converting'] }));
+concurrent.push(qConcurrent.runInline({ source: 'H:/heavy-b.pdf', args: {}, sha: 'hb', heavy: true, steps: ['converting'] }));
+for (let i = 0; i < 6; i++) {
+    concurrent.push(qConcurrent.runInline({ source: `H:/small-${i}.txt`, args: {}, sha: `small-${i}`, steps: ['converting'] }));
+}
+await Promise.all(concurrent);
+check('mechanical jobs run concurrently', maxActive > 1, `${maxActive}`);
+check('total concurrency stays bounded', maxActive <= 4, `${maxActive}`);
+check('heavy lane stays serial', maxHeavy === 1, `${maxHeavy}`);
 
 // ── retention pruning ──
 const q4 = new IngestQueue({ file: store, executor, maxHistory: 5 });

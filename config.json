@@ -70,6 +70,13 @@
       "coverageThreshold": 0.98,
       "coverageRetry": true,
       "maxDeepPages": 200,
+      "nativeProcesses": 16,
+      "maxConcurrentJobs": 16,
+      "maxHeavyJobs": 1,
+      "maxSummaryJobs": 4,
+      "summaryModels": ["deepseek-flash-chat", "minimax-m31-flash-chat"],
+      "visionModel": "deepseek-flash-chat",
+      "visionFallbackModels": ["minimax-m31-flash-chat"],
       "summary": true
     },
     "media": {

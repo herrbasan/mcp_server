@@ -102,6 +102,7 @@ check('collision counter works', folders.some(f => /-\d+$/.test(f)), folders.joi
 r = await agent.nconvert_capabilities();
 const caps = JSON.parse(r.content[0].text);
 check('capabilities matrix', caps.formats.length === 25 && caps.limits.maxInputMb === 100, `${caps.formats.length} formats`);
+check('capabilities expose cloud models and execution limits', caps.converter === 'nconvert 0.9.1' && caps.deep.visionModel === 'deepseek-flash-chat' && caps.deep.visionFallbackModels[0] === 'minimax-m31-flash-chat' && caps.execution.nativeProcesses === 16 && caps.summary.models[0] === 'deepseek-flash-chat');
 
 // ── external difficult-documents corpus (H:\Ingest_TestFiles) ──
 // Real files, never committed (privacy: medical/financial content).
@@ -176,6 +177,7 @@ if (fs.existsSync(CORPUS)) {
     console.log('  skip external corpus (H:\\Ingest_TestFiles absent)');
 }
 
+await agent.shutdown();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -35,14 +35,18 @@ sufficient layer and digs only when it must:
 - **Discovery:** `nconvert.items` lists; VDB indexes the store for semantic search;
   `nconvert.fetch` returns the layer a hit points at.
 - Summary generation is default-on (`agents.nconvert.summary: false` to skip) and is
-  reported in the tool response when unavailable.
+  reported in the tool response when unavailable. Provider calls use explicit cloud
+  models (`summaryModels`, default DeepSeek Flash then MiniMax M3.1 Flash) and are
+  independently bounded by `agents.nconvert.maxSummaryJobs` (default 4).
 
-## The ingest queue (fast lane + one heavy job at a time)
+## The ingest queue (bounded mechanical lane + one deep/large job)
 
-Mechanical conversions run inline in the caller (ms-fast, CPU-only). Deep
-conversions and inputs over ~25 MB (`agents.nconvert.heavyMb`) serialize
-through a single worker — gateway tokens, PDFium and disk are never contended.
-Submitting the same file twice while queued/running deduplicates to the same job.
+Small mechanical conversions share up to `agents.nconvert.maxConcurrentJobs`
+(default 16) scheduled slots. Deep conversions and inputs over ~25 MB
+(`agents.nconvert.heavyMb`) are limited by `maxHeavyJobs` (default 1).
+Mechanical callers await the scheduled result; deep/large callers receive a job
+handle. Submitting the same file twice while queued/running deduplicates to the
+same job, including multiple waiting callers.
 
 | Surface | Call |
 |---|---|
@@ -64,10 +68,13 @@ segments against 23 raster images** — every diagram is Bézier curves in the c
 stream, unreachable by any image extractor. `depth: "deep"` recovers that.
 
 **Pipeline:** mechanical pass first (its text is the *content authority* — the model
-never retypes the document) → PDFium renders every page at 1240 px → pages chunked to
-`chunkPages` (default 8) → each chunk sends page images + its authoritative text to the
-vision model, which decides only structure → **text-coverage validation** (default
-98 %) → assembled MD-Blocks.
+never retypes the document) → for each `chunkPages` chunk (default 8), PDFium renders
+only that chunk at 1240 px → the chunk sends page images + its authoritative text to
+the vision model (`visionModel`, default `deepseek-flash-chat`, with
+`visionFallbackModels`, default MiniMax M3.1 Flash), which decides only structure → **text-coverage validation** (default
+98 %) → assembled MD-Blocks. Pages within a chunk fan out across the native process
+pool; rendered PNGs go directly from worker to artefact storage, so parent memory is
+bounded by the chunk rather than the whole PDF.
 
 - The model **never writes MD-Blocks directives**; it emits
   `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
@@ -81,6 +88,8 @@ vision model, which decides only structure → **text-coverage validation** (def
 - Coverage or provider failure falls back per chunk — loudly, never silently.
 - **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
   fetched by `node nConvert/napi/fetch-pdfium.js`; path in `agents.nconvert.pdfiumPath`.
+  PDFium is process-parallel, not thread-parallel: `nativeProcesses` (default 16)
+  persistent workers are started lazily, each with its own reusable PDFium binding.
 
 Measured on the corpus: 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
 149 headings, 61 figure blocks, 89 table rows — including a specifications table
