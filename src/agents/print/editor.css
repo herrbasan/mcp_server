@@ -92,7 +92,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
 
 .workspace {
     display: grid;
-    grid-template-columns: 132px minmax(0, 1fr);
+    grid-template-columns: 180px minmax(0, 1fr);
     flex: 1;
     min-height: 0;
 }
@@ -100,7 +100,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: var(--nui-space) var(--nui-space-half) var(--nui-space-double);
+    padding: var(--nui-space);
     border-right: var(--border-thickness) solid var(--color-shade4);
     background: var(--color-shade2);
     scrollbar-width: thin;
@@ -127,7 +127,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
 .thumbnail {
     display: block;
     width: 100%;
-    padding: 4px;
+    padding: 8px;
     border: var(--border-thickness) solid transparent;
     border-radius: var(--border-radius1);
     background: transparent;
