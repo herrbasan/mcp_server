@@ -20,19 +20,14 @@ body {
 }
 [hidden] { display: none !important; }
 
-.app-header {
-    min-height: 64px;
+.open-form {
     display: flex;
     align-items: center;
-    gap: var(--nui-space-double);
-    padding: var(--nui-space-half) var(--nui-space);
-    background: var(--color-shade2);
-    border-bottom: var(--border-thickness) solid var(--color-shade4);
+    gap: var(--nui-space-half);
+    width: min(640px, 100%);
+    margin: var(--nui-space) auto 0;
+    text-align: left;
 }
-.brand { display: flex; align-items: baseline; gap: var(--nui-space-half); white-space: nowrap; }
-.brand strong { font-weight: 500; letter-spacing: -.03em; }
-.brand span { color: var(--text-color-dim); }
-.open-form { display: flex; align-items: center; gap: var(--nui-space-half); width: min(760px, 100%); }
 .open-form .path-field { flex: 1; min-width: 220px; }
 
 .document-bar {
@@ -69,24 +64,21 @@ body {
 /* nui-select ignores the inner select's disabled state; the host carries it. */
 nui-select[disabled] { pointer-events: none; opacity: .55; }
 
-.notice {
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    padding: var(--nui-space-half) var(--nui-space);
-    color: var(--text-color);
-    border-bottom: var(--border-thickness) solid var(--color-shade4);
-    background: var(--color-shade2);
-    
+.status-bar {
+    display: flex;
+    align-items: center;
+    min-height: var(--nui-form-row-height);
+    padding: 0 var(--nui-space);
+    color: var(--text-color-dim);
+    border-top: var(--border-thickness) solid var(--color-shade4);
+    background: var(--color-shade1);
 }
-.notice.error {
+.status-bar.error {
     color: light-dark(#7d2e25, #ffb4a8);
-    border-color: light-dark(#e1bcb6, #7d2e25);
     background: light-dark(#fbeceb, #3a1f1c);
 }
-.notice.warning {
+.status-bar.warning {
     color: light-dark(#72501c, #ffd9a0);
-    border-color: light-dark(#dfcda9, #5a4620);
     background: light-dark(#fbf4e5, #332a19);
 }
 

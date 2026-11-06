@@ -7,23 +7,6 @@
 <link rel="stylesheet" href="/print/editor.css">
 </head>
 <body>
-<header class="app-header">
-    <div class="brand">
-        <strong>Print</strong>
-        <span>MD-Blocks page editor</span>
-    </div>
-    <form id="open-form" class="open-form">
-        <nui-input class="path-field">
-            <input id="source-path" name="path" type="text" required autocomplete="off" spellcheck="false"
-                   aria-label="Markdown source path"
-                   placeholder="storage/path/document.md or D:\path\document.md">
-        </nui-input>
-        <nui-button variant="primary">
-            <button type="submit">Open document</button>
-        </nui-button>
-    </form>
-</header>
-
 <section id="document-bar" class="document-bar" hidden>
     <div class="document-identity">
         <strong id="document-name"></strong>
@@ -67,8 +50,6 @@
     </div>
 </section>
 
-<div id="notice" class="notice" role="status" hidden></div>
-
 <main id="workspace" class="workspace" hidden>
     <aside class="thumbnail-pane" aria-label="PDF pages">
         <div class="pane-label">Pages</div>
@@ -103,9 +84,25 @@
     <div>
         <p class="eyebrow">Direct page manipulation</p>
         <h1>See the paper. Change the break.</h1>
-        <p>Open an MD-Blocks document. Its exact PDF pages appear here, and hovering a page reveals the spots where it can break.</p>
+        <p>Open the editor with a document path in the URL, or enter one below.</p>
+        <form id="open-form" class="open-form">
+            <nui-input class="path-field">
+                <input id="source-path" name="path" type="text" required autocomplete="off" spellcheck="false"
+                       aria-label="Markdown source path"
+                       placeholder="storage/path/document.md or D:\path\document.md">
+            </nui-input>
+            <nui-button variant="primary">
+                <button type="submit">Open document</button>
+            </nui-button>
+        </form>
     </div>
 </section>
+
+<nui-app-footer>
+    <footer id="status-bar" class="status-bar">
+        <span id="notice" role="status" aria-live="polite"></span>
+    </footer>
+</nui-app-footer>
 
 <script type="module" src="/print/editor.js"></script>
 </body>

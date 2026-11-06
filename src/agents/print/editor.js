@@ -5,7 +5,7 @@ const ui = {
     form: $('open-form'), path: $('source-path'), bar: $('document-bar'), workspace: $('workspace'), empty: $('empty-state'),
     name: $('document-name'), pathLabel: $('document-path'), style: $('style'), format: $('format'), orientation: $('orientation'),
     styleSelect: $('style-select'), formatSelect: $('format-select'), orientationSelect: $('orientation-select'),
-    sectionPages: $('section-pages'), save: $('save'), dirty: $('dirty-state'), pdf: $('download-pdf'), notice: $('notice'),
+    sectionPages: $('section-pages'), save: $('save'), dirty: $('dirty-state'), pdf: $('download-pdf'), notice: $('notice'), status: $('status-bar'),
     thumbnails: $('thumbnails'), pages: $('pages'),     zoom: $('zoom'), zoomSelect: $('zoom-select'), showAll: $('show-all')
 };
 
@@ -58,8 +58,7 @@ function isDirty() {
 
 function showNotice(message, type = '') {
     ui.notice.textContent = message;
-    ui.notice.className = `notice${type ? ` ${type}` : ''}`;
-    ui.notice.hidden = !message;
+    ui.status.className = `status-bar${type ? ` ${type}` : ''}`;
 }
 
 function updateActions() {
