@@ -154,6 +154,18 @@ try {
         first.y < 0.2 && second.y < 0.2 && first.pageHeight > 700,
         JSON.stringify({ first: [first.page, first.y], second: [second.page, second.y], pageHeight: first.pageHeight })
     );
+    const paragraph = editor.targets.find((target) => target.kind === 'paragraph');
+    check(
+        'paragraphs are offered as break targets',
+        Boolean(paragraph) && paragraph.y >= 0 && typeof paragraph.text === 'string' && paragraph.text.length > 0,
+        JSON.stringify(paragraph ?? null)
+    );
+    const paragraphBreak = await post('render', { token: editor.token, breakBefore: [paragraph.id], breakAfter: [] });
+    check(
+        'breaking before a paragraph adds a real page',
+        paragraphBreak.pageCount === editor.pageCount + 1,
+        `${editor.pageCount} -> ${paragraphBreak.pageCount}`
+    );
     const changed = await post('render', { token: editor.token, breakBefore: ['second'], breakAfter: [] });
     check('editor break toggle rerenders real pagination', changed.pageCount === 3 && changed.targets.find((target) => target.id === 'second')?.page === 3);
     check(

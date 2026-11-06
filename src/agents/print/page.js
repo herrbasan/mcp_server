@@ -62,14 +62,78 @@ function applyBreaks(ids, className) {
     for (const id of ids) {
         const matches = [...output.querySelectorAll('[id]')].filter((el) => el.id === id);
         if (matches.length !== 1) {
-            throw new Error(`print.render: break target "${id}" resolves to ${matches.length} elements; expected exactly one MD-Blocks ID`);
+            throw new Error(`print.render: break target "${id}" resolves to ${matches.length} elements; expected exactly one element`);
         }
         matches[0].classList.add(className);
     }
 }
 
-function extractChrome() {
-    const chrome = { header: '', footer: '' };
+// Paragraphs can be broken at, but only where a break would not tear a box
+// apart: skip anything inside a container the stylesheet marks unbreakable
+// (break-inside: avoid) or that is visibly boxed (border on both edges or a
+// fill). That keeps presets like band/card whole without a hard-coded list.
+function insideUnbreakableBox(element) {
+    for (let node = element.parentElement; node && node !== output; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.breakInside === 'avoid' || style.breakInside === 'avoid-page') return true;
+        const borderTop = parseFloat(style.borderTopWidth) || 0;
+        const borderBottom = parseFloat(style.borderBottomWidth) || 0;
+        if (borderTop > 0 && borderBottom > 0) return true;
+        if (style.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent') return true;
+    }
+    return false;
+}
+
+// Content-addressed anchor: stable when other paragraphs move, and changed (so
+// the break is reported missing rather than silently landing elsewhere) when
+// the paragraph's own text is edited.
+function paragraphAnchor(text, taken) {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    const base = `p-${hash.toString(16).padStart(8, '0')}`;
+    if (!taken.has(base)) {
+        taken.add(base);
+        return base;
+    }
+    let suffix = 2;
+    while (taken.has(`${base}-${suffix}`)) suffix += 1;
+    const unique = `${base}-${suffix}`;
+    taken.add(unique);
+    return unique;
+}
+
+// nui emits a bare text node, not a <p>, when text sits tight against the
+// preceding block (no blank line). A text node cannot carry break-before or an
+// id, so promote it to a paragraph with a zero margin — the printed result is
+// unchanged, but the line becomes a break target like any other paragraph.
+function wrapLooseText() {
+    const containers = output.querySelectorAll('.nui-blocks-section, .nui-blocks-block, .nui-blocks-columns, .nui-blocks-main');
+    for (const container of containers) {
+        for (const node of [...container.childNodes]) {
+            if (node.nodeType !== Node.TEXT_NODE || !node.textContent.trim()) continue;
+            const paragraph = document.createElement('p');
+            paragraph.className = 'nui-print-loose';
+            node.replaceWith(paragraph);
+            paragraph.appendChild(node);
+        }
+    }
+}
+
+function anchorParagraphs() {
+    const taken = new Set([...output.querySelectorAll('[id]')].map((element) => element.id));
+    for (const paragraph of output.querySelectorAll('p')) {
+        if (paragraph.id) continue;
+        const text = paragraph.textContent.replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        if (insideUnbreakableBox(paragraph)) continue;
+        paragraph.id = paragraphAnchor(text, taken);
+    }
+}
+
+function extractChrome() {    const chrome = { header: '', footer: '' };
     for (const slot of Object.keys(chrome)) {
         const elements = [...output.querySelectorAll(`.nui-blocks-chrome-${slot}`)];
         const variants = [...new Set(elements.map((el) => el.innerHTML.trim()).filter(Boolean))];
@@ -103,6 +167,8 @@ async function main() {
     }
 
     const chrome = extractChrome();
+    wrapLooseText();
+    anchorParagraphs();
     applyBreaks(options.breakBefore, 'nui-print-break-before');
     applyBreaks(options.breakAfter, 'nui-print-break-after');
 
@@ -124,14 +190,16 @@ async function main() {
         kind: el.classList.contains('nui-blocks-section') ? 'section'
             : el.classList.contains('nui-blocks-block') ? 'block'
                 : el.classList.contains('nui-blocks-columns') ? 'columns'
-                    : el.classList.contains('nui-blocks-main') ? 'main' : 'element',
+                    : el.classList.contains('nui-blocks-main') ? 'main'
+                        : el.tagName === 'P' ? 'paragraph' : 'element',
         preset: [...el.classList].find((name) => name.startsWith('nui-preset-'))?.slice('nui-preset-'.length) ?? null,
-        heading: el.querySelector(':is(h1,h2,h3)')?.textContent.trim() ?? null
+        heading: el.querySelector(':is(h1,h2,h3)')?.textContent.trim() ?? null,
+        text: el.tagName === 'P' ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 80) : undefined
     }));
     if (job.options.mapTargets) {
         const origins = new Map();
         targets.forEach((target, index) => {
-            if (!['section', 'block', 'columns'].includes(target.kind) || target.preset === 'page-break') return;
+            if (!['section', 'block', 'columns', 'paragraph'].includes(target.kind) || target.preset === 'page-break') return;
             const element = targetElements[index];
             const rect = element.getBoundingClientRect();
             const origin = `${Math.round(rect.x)}:${Math.round(rect.y)}`;

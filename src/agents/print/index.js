@@ -426,7 +426,7 @@ async function applyBreaks(page, options) {
             for (const id of ids) {
                 const matches = [...document.querySelectorAll('[id]')].filter((element) => element.id === id);
                 if (matches.length !== 1) {
-                    throw new Error(`print.render: break target "${id}" resolves to ${matches.length} elements; expected exactly one MD-Blocks ID`);
+                    throw new Error(`print.render: break target "${id}" resolves to ${matches.length} elements; expected exactly one element`);
                 }
                 matches[0].classList.add(className);
             }

@@ -121,7 +121,9 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 - **Visual page editor**: `/print?path=vita/vita_ai_change_manager_v4.md` shows
   exact PDF pages and breaks them on the paper itself — hovering a page reveals a
   line and handle at each semantic target's real vertical position; clicking sets
-  that break and clears any other within 6% of a page height. Break-only changes
+  that break and clears any other within 2.5% of a page height. Targets are
+  sections, blocks, columns **and paragraphs** (content-addressed `p-<hash>`
+  IDs; boxed presets are excluded so a break cannot tear a card). Break-only changes
   reuse the session's loaded Chromium page (~1 s); style/format/orientation/
   section-per-page reload it (~2.5 s). Changes rerender
   non-destructively; Save writes `print.breakBefore`/`print.breakAfter` plus the

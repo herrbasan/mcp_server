@@ -93,7 +93,7 @@ async function renderSession(session, body = {}) {
             sourceSha256: session.sourceSha256,
             externallyChanged: manifest.sourceSha256 !== session.sourceSha256,
             options: manifest.options,
-            targets: manifest.targets.filter((target) => target.page && ['section', 'block', 'columns'].includes(target.kind)),
+            targets: manifest.targets.filter((target) => target.page && ['section', 'block', 'columns', 'paragraph'].includes(target.kind)),
             pageCount: manifest.pageCount,
             pages: manifest.previews.map((preview) => ({ page: preview.page, url: storageUrl(preview.path) })),
             pdfUrl: storageUrl(manifest.pdf),

@@ -48,6 +48,21 @@ Unknown, missing, or duplicate break targets fail the render. The result lists
 all available semantic IDs and their kind/preset/heading so the next call can
 adjust breaks without guessing CSS selectors.
 
+**Paragraphs are break targets too.** Besides sections, blocks and columns, every
+plain paragraph gets a content-addressed ID (`p-<fnv1a>`) so a break can land
+between paragraphs, not only at authored boundaries. The ID hashes the
+paragraph's normalized text: it survives other paragraphs moving, and if the
+paragraph itself is edited the ID disappears — the render then fails loudly with
+that ID rather than silently breaking somewhere else. `breakBefore` accepts these
+IDs exactly like authored ones.
+
+Two things are deliberately excluded, because a break there would tear a box
+apart: paragraphs inside a container the stylesheet marks `break-inside: avoid`,
+and paragraphs inside anything visibly boxed (border on both edges or a fill) —
+presets like `band` and `card` stay whole. Text that NUI emits as a bare node
+rather than a `<p>` (text sitting tight against the preceding block) is promoted
+to `p.nui-print-loose`, whose zero margin leaves the printed result unchanged.
+
 `repeat=header` and `repeat=footer` chrome is moved into Chromium's real PDF
 header/footer and repeats on every page. Chrome uses a light-gray full-bleed
 surface reaching all four paper edges. Negative margins offset Chromium's native
@@ -90,9 +105,10 @@ starts, positioned at that element's real vertical coordinate on the page.
 Clicking a spot makes it the page break; clicking the line of an existing break
 removes it.
 
-One break per stretch of paper — a click drops any other break within 6% of a
-page height of the spot, so a click never leaves two breaks fighting over the
-same region. Break-before on a target and break-after on the target above it
+One break per stretch of paper — a click drops any other break within 2.5% of a
+page height of the spot (roughly 7 mm on A4), so a click never leaves two breaks
+fighting over the same region. Break-before on a target and break-after on the
+target above it
 resolve to the same position, are drawn as one line, and are removed together.
 The document's first target gets no spot (nothing precedes it, so a break there
 would only produce an empty page).

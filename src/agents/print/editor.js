@@ -101,7 +101,7 @@ function applyRender(result, { initial = false } = {}) {
 }
 
 function targetName(target) {
-    return target.heading || target.id;
+    return target.heading || target.text || target.id;
 }
 
 // Phase marks are cumulative, so the largest is the server-side total.
@@ -115,7 +115,10 @@ function timingLabel(result) {
 // "start a new page at this target" and "page break after the target above it"
 // are the same number instead of two different vocabularies.
 const SAME_SPOT = 0.015;
-const BREAK_MARGIN = 0.06;
+// Paragraph spots sit close together, so the "close proximity" window that a
+// click clears is measured in paragraph steps (~7 mm on A4), not in the roughly
+// 17 mm that suited a section-only list.
+const BREAK_MARGIN = 0.025;
 
 function orderedTargets() {
     return [...state.targets].sort((a, b) => a.page - b.page || a.y - b.y);
@@ -147,10 +150,10 @@ function spotsFor(pageNumber, rules) {
         const pos = pageNumber + target.y;
         const twin = spots.find((spot) => Math.abs(spot.pos - pos) < SAME_SPOT);
         if (twin) {
-            if (twin.kind !== 'section' && target.kind === 'section') Object.assign(twin, { id: target.id, kind: target.kind, heading: target.heading });
+            if (twin.kind !== 'section' && target.kind === 'section') Object.assign(twin, { id: target.id, kind: target.kind, heading: target.heading, text: target.text });
             continue;
         }
-        spots.push({ id: target.id, kind: target.kind, heading: target.heading, page: pageNumber, y: target.y, pos });
+        spots.push({ id: target.id, kind: target.kind, heading: target.heading, text: target.text, page: pageNumber, y: target.y, pos });
     }
     for (const spot of spots) spot.rules = rules.filter((rule) => Math.abs(rule.pos - spot.pos) < SAME_SPOT);
     return spots;
