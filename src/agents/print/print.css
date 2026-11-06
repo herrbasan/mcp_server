@@ -241,6 +241,21 @@ hr {
     page-break-after: always !important;
 }
 
+.nui-print-target-marker {
+    position: absolute;
+    color: rgba(0, 0, 0, 0.01);
+    font-size: 1px;
+    line-height: 0;
+    white-space: nowrap;
+}
+
+/* The delivered PDF is printed with this class on <body>: display:none keeps
+   the probe markers out of the text layer without touching layout, so one
+   loaded page can serve both the measurement pass and the delivered file. */
+.print-deliver .nui-print-target-marker {
+    display: none !important;
+}
+
 .nui-blocks-media,
 .nui-blocks-columns,
 table,

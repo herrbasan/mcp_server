@@ -900,7 +900,9 @@ PRINT — MD-Blocks → PDF + exact page review
 
 Render MD-Blocks through the canonical nui_wc2 renderer, paginate with
 Chromium, and rasterize the FINISHED PDF with PDFium for visual review.
-The caller can iterate on page breaks without editing the source.
+The caller can iterate on page breaks without editing the source. Frontmatter
+print.breakBefore/print.breakAfter persist breaks; the direct visual page
+editor is available to humans at /print.
 
   print.render — { path* | markdown*, basePath?, name?, format?, orientation?,
                    margin?, style?, breakBefore?, breakAfter?, sectionPages?,

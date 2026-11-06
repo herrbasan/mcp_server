@@ -4,7 +4,7 @@
     "tools": [
         {
             "name": "print_render",
-            "description": "Render an MD-Blocks Markdown document through nui_wc2 to PDF in MCP storage. Use breakBefore/breakAfter with MD-Blocks IDs to adjust pagination without editing the source; preset=page-break and frontmatter print.sectionPages are also honoured. With preview enabled (default), rasterizes the finished PDF through PDFium, writes every page PNG, and attaches selected pages so the model can inspect actual break points. Returns a render.json sidecar and the available break-target IDs.",
+            "description": "Render an MD-Blocks Markdown document through nui_wc2 to PDF in MCP storage. Use breakBefore/breakAfter with MD-Blocks IDs to adjust pagination; caller arrays override frontmatter print.breakBefore/print.breakAfter. preset=page-break and frontmatter print.sectionPages are also honoured. With preview enabled (default), rasterizes the finished PDF through PDFium, writes every page PNG, and attaches selected pages so the model can inspect actual break points. Returns a render.json sidecar and the available break-target IDs. A human-facing direct page editor is available at /print.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

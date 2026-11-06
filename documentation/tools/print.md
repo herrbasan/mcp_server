@@ -34,8 +34,9 @@ Design and pagination controls:
   larger; heavy weights are reserved for small text.
 
 - `breakBefore: ["section-id", "block-id"]` — force a break before existing
-  MD-Blocks IDs.
-- `breakAfter: ["block-id"]` — force a break after existing IDs.
+  MD-Blocks IDs. Also read from frontmatter `print.breakBefore`.
+- `breakAfter: ["block-id"]` — force a break after existing IDs. Also read from
+  frontmatter `print.breakAfter`. Caller arrays override the authored arrays.
 - `sectionPages: true` — start every section on a fresh page. Also read from
   frontmatter `print.sectionPages`.
 - An empty source block with `preset=page-break` forces a break at that point.
@@ -79,6 +80,67 @@ Rasterizes selected 1-based pages of an existing PDF and attaches the exact PNG
 pages. Out-of-range pages fail. Use this for another look without rerendering
 the source.
 
+## Visual page-break editor
+
+Open `/print?path=vita/vita_ai_change_manager_v4.md` on the MCP server. The
+editor shows exact PDF pages with a thumbnail rail that scrolls on its own.
+**Breaking happens on the paper itself:** hovering a page reveals a dashed line
+with a "Break here" handle at every spot where a section, block, or column
+starts, positioned at that element's real vertical coordinate on the page.
+Clicking a spot makes it the page break; clicking the line of an existing break
+removes it.
+
+One break per stretch of paper — a click drops any other break within 6% of a
+page height of the spot, so a click never leaves two breaks fighting over the
+same region. Break-before on a target and break-after on the target above it
+resolve to the same position, are drawn as one line, and are removed together.
+The document's first target gets no spot (nothing precedes it, so a break there
+would only produce an empty page).
+
+Style, format, orientation, and section-per-page controls use the same render
+loop. There is deliberately no separate document-tree editor.
+
+Every change rerenders the real PDF without touching the source. Break-only
+changes reuse the session's loaded page (~1 s); changing style, format,
+orientation or section-per-page reloads it (~2.5 s), because those are resolved
+when the page loads. **Save to document** updates only the frontmatter,
+preserving the Markdown body and
+unrelated metadata:
+
+```yaml
+print:
+  style: editorial
+  format: A4
+  orientation: portrait
+  sectionPages: false
+  breakBefore:
+    - berufserfahrung
+  breakAfter: []
+```
+
+The PDF link downloads the current, possibly unsaved preview. Saves use the
+source SHA-256 as a conflict guard; an external edit must be reopened rather
+than overwritten. Remote clients must use storage-relative source paths.
+Absolute source paths are accepted only from loopback clients.
+
+The editor REST surface is `POST /print/api/open`, `/render`, `/save`, and
+`/close` under `/print/api/` (the listed names are the suffixes). Editor output
+lives under `prints/_editor/<session>/`; abandoned sessions expire after six
+hours of inactivity. Concurrent operations on one session fail with 409 instead
+of racing over the same PDF.
+
+For page mapping and geometry, the renderer inserts tiny absolute-positioned
+text markers at semantic targets. Because they are absolutely positioned they
+add no layout, so the marked PDF paginates identically to the delivered one.
+nConvert's `searchText` reads each marker's page **and** vertical position back
+out of the PDF text layer as character boxes (`searchText` matches
+character-by-character, skipping whitespace — PDFium reports 1px glyph runs
+space-separated, so contiguous string search finds nothing). The markers are
+then removed and the delivered PDF is generated again. A marked/final page-count
+mismatch fails loudly, and the final PDF contains no mapping markers. Set
+`PRINT_PROBE_PDF=<absolute path>` to keep the marked probe PDF when a target
+cannot be located.
+
 ## Output
 
 Each render creates a unique folder under `prints/`:
@@ -93,8 +155,35 @@ prints/<timestamp>_<name>/
 ```
 
 `render.json` records the source hash, resolved page options, explicit breaks,
-semantic targets, page count, preview paths, and renderer warnings. With
-`preview: false`, only the PDF and sidecar are written and `pageCount` is null.
+semantic targets, page count, preview paths, cumulative phase timings
+(`timings`, milliseconds since the render began) and renderer warnings. A cold
+render adds `launch` (Chromium start), `load` (render page delivered and parsed),
+`rendered` (NUI result ready) and `layout` (page ready to print, after chrome
+fitting); both paths then record `pdf`, `geometry`, `pdfFinal` and `raster`.
+With `preview: false`, only the PDF and sidecar are written and `pageCount` is
+null.
+
+**A render session keeps one Chromium page alive for one document.** Loading it
+— markdown parse, fonts, images — is the single largest cost (~1.3 s), so a
+break-only change reuses the loaded page, rewrites the break classes in place,
+and re-prints; a warm render reports `timings.layout: 0`. Anything that changes
+layout (source text on disk, `style`, `format`, `orientation`, `sectionPages`)
+reopens the page, because those are baked in at load. Measured on a 5-page
+document: ~1.5 s cold, ~0.9 s warm. The editor holds at most four warm sessions,
+evicting the oldest idle one, and closes the browser on `/print/api/close` or
+after six hours idle.
+
+Cold open, measured on the vita document: Chromium launch 0.21 s, render page
+delivered and parsed 0.24 s, chrome fit 0.14 s, first PDF 0.38 s, geometry
+0.03 s, second PDF 0.37 s, raster 0.18 s. Two things dominate and both are real
+work: the two PDF passes (the marked probe that yields geometry, then the clean
+delivered file) and the document parse. The render page is waited on with
+`domcontentloaded` plus the page's own `__PRINT_RESULT__` signal — the previous
+`networkidle0` added roughly a second of idle waiting for nothing.
+
+Page thumbnails reuse the same PNGs as the full pages at a CSS-scaled size, so
+they cost nothing extra; the pictures are only ~0.2 s of a render, pagination is
+the rest.
 
 Previews default to enabled. Every page is written to `pages/`; the first eight
 are attached inline unless `pages` selects others. `width` controls raster width
@@ -128,4 +217,7 @@ The smoke test renders real PDFs twice in one process, verifies source and
 caller breaks by page count, checks selected PNGs and sidecar settings, checks
 native page fields and bleed chrome, grows margins for a tall header, and
 exercises excessive-chrome, unknown-target, invalid-style, and out-of-range
-failures.
+failures. It also locates semantic targets to exact pages and vertical
+positions, verifies that mapping markers are absent from the delivered PDF, and
+exercises the editor HTTP loop: open, toggle/rerender, save frontmatter, and
+reopen persisted pagination.

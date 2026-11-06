@@ -8,6 +8,14 @@ const STYLES = new Set(['editorial', 'minimal', 'classic']);
 const ORIENTATIONS = new Set(['portrait', 'landscape']);
 const LENGTH = /^\d+(?:\.\d+)?(?:mm|cm|in|px)$/;
 
+function resolveBreakIds(value, name) {
+    if (!Array.isArray(value) || value.some((id) => typeof id !== 'string' || !id.trim())) {
+        throw new Error(`print.render: ${name} must be an array of non-empty MD-Blocks IDs`);
+    }
+    if (new Set(value).size !== value.length) throw new Error(`print.render: ${name} contains duplicate IDs`);
+    return value;
+}
+
 function resolveOptions(frontmatter) {
     const authored = frontmatter?.print && typeof frontmatter.print === 'object' ? frontmatter.print : {};
     const requested = job.options;
@@ -44,7 +52,9 @@ function resolveOptions(frontmatter) {
         format: normalizedFormat,
         orientation,
         margin,
-        sectionPages: Boolean(requested.sectionPages ?? authored.sectionPages ?? false)
+        sectionPages: Boolean(requested.sectionPages ?? authored.sectionPages ?? false),
+        breakBefore: resolveBreakIds(requested.breakBefore ?? authored.breakBefore ?? [], 'breakBefore'),
+        breakAfter: resolveBreakIds(requested.breakAfter ?? authored.breakAfter ?? [], 'breakAfter')
     };
 }
 
@@ -93,8 +103,8 @@ async function main() {
     }
 
     const chrome = extractChrome();
-    applyBreaks(job.options.breakBefore, 'nui-print-break-before');
-    applyBreaks(job.options.breakAfter, 'nui-print-break-after');
+    applyBreaks(options.breakBefore, 'nui-print-break-before');
+    applyBreaks(options.breakAfter, 'nui-print-break-after');
 
     for (const image of output.querySelectorAll('img')) image.loading = 'eager';
     await document.fonts.ready;
@@ -108,7 +118,8 @@ async function main() {
     const broken = images.filter((image) => image.naturalWidth === 0);
     if (broken.length) throw new Error(`print.render: image failed: ${broken.map((image) => image.src).join(', ')}`);
 
-    const targets = [...output.querySelectorAll('[id]')].map((el) => ({
+    const targetElements = [...output.querySelectorAll('[id]')];
+    const targets = targetElements.map((el) => ({
         id: el.id,
         kind: el.classList.contains('nui-blocks-section') ? 'section'
             : el.classList.contains('nui-blocks-block') ? 'block'
@@ -117,6 +128,23 @@ async function main() {
         preset: [...el.classList].find((name) => name.startsWith('nui-preset-'))?.slice('nui-preset-'.length) ?? null,
         heading: el.querySelector(':is(h1,h2,h3)')?.textContent.trim() ?? null
     }));
+    if (job.options.mapTargets) {
+        const origins = new Map();
+        targets.forEach((target, index) => {
+            if (!['section', 'block', 'columns'].includes(target.kind) || target.preset === 'page-break') return;
+            const element = targetElements[index];
+            const rect = element.getBoundingClientRect();
+            const origin = `${Math.round(rect.x)}:${Math.round(rect.y)}`;
+            const overlap = origins.get(origin) ?? 0;
+            origins.set(origin, overlap + 1);
+            target.marker = `MBTARGET_${job.token}_${index}`;
+            const marker = document.createElement('span');
+            marker.className = 'nui-print-target-marker';
+            marker.style.marginTop = `${(overlap + 1) * 2}px`;
+            marker.textContent = target.marker;
+            element.prepend(marker);
+        });
+    }
 
     window.__PRINT_RESULT__ = { options, chrome, targets };
 }

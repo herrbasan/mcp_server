@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MD-Blocks print editor</title>
+<link rel="stylesheet" href="/print/editor.css">
+</head>
+<body>
+<header class="app-header">
+    <div class="brand">
+        <strong>Print</strong>
+        <span>MD-Blocks page editor</span>
+    </div>
+    <form id="open-form" class="open-form">
+        <label class="sr-only" for="source-path">Markdown source path</label>
+        <input id="source-path" name="path" type="text" required autocomplete="off" spellcheck="false" placeholder="storage/path/document.md or D:\path\document.md">
+        <button type="submit" class="primary">Open document</button>
+    </form>
+</header>
+
+<section id="document-bar" class="document-bar" hidden>
+    <div class="document-identity">
+        <strong id="document-name"></strong>
+        <span id="document-path"></span>
+    </div>
+    <div class="print-options">
+        <label>Style
+            <select id="style">
+                <option value="editorial">Editorial</option>
+                <option value="minimal">Minimal</option>
+                <option value="classic">Classic</option>
+            </select>
+        </label>
+        <label>Format
+            <select id="format">
+                <option value="A4">A4</option>
+                <option value="A5">A5</option>
+                <option value="Letter">Letter</option>
+                <option value="Legal">Legal</option>
+            </select>
+        </label>
+        <label>Orientation
+            <select id="orientation">
+                <option value="portrait">Portrait</option>
+                <option value="landscape">Landscape</option>
+            </select>
+        </label>
+        <label class="check-option"><input id="section-pages" type="checkbox"> Section per page</label>
+    </div>
+    <div class="document-actions">
+        <span id="dirty-state" class="dirty-state"></span>
+        <a id="download-pdf" class="button" href="#" target="_blank" rel="noopener">PDF</a>
+        <button id="save" class="primary" type="button">Save to document</button>
+    </div>
+</section>
+
+<div id="notice" class="notice" role="status" hidden></div>
+
+<main id="workspace" class="workspace" hidden>
+    <aside class="thumbnail-pane" aria-label="PDF pages">
+        <div class="pane-label">Pages</div>
+        <div id="thumbnails" class="thumbnails"></div>
+    </aside>
+    <section class="preview-pane" aria-label="Page break editor">
+        <div class="preview-heading">
+            <div>
+                <strong>Printed pages</strong>
+                <span>Hover a page to reveal its break spots. Click a line to place the break there, or to remove it.</span>
+            </div>
+            <label class="zoom-control">Zoom
+                <select id="zoom">
+                    <option value="620">Compact</option>
+                    <option value="760" selected>Fit</option>
+                    <option value="900">Large</option>
+                    <option value="1100">Actual pixels</option>
+                </select>
+            </label>
+        </div>
+        <div id="pages" class="pages"></div>
+    </section>
+</main>
+
+<section id="empty-state" class="empty-state">
+    <div>
+        <p class="eyebrow">Direct page manipulation</p>
+        <h1>See the paper. Change the break.</h1>
+        <p>Open an MD-Blocks document. Its exact PDF pages appear here, and hovering a page reveals the spots where it can break.</p>
+    </div>
+</section>
+
+<script type="module" src="/print/editor.js"></script>
+</body>
+</html>

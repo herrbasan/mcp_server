@@ -4,7 +4,11 @@ import http from 'http';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { fork } from 'child_process';
+import { createRequire } from 'module';
 import puppeteer from 'puppeteer';
+import { initEditor, shutdownEditor } from './editor-api.js';
+
+const require = createRequire(import.meta.url);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -144,10 +148,12 @@ export async function init(context) {
         server.listen(0, '127.0.0.1', resolve);
     });
     serverPort = server.address().port;
+    initEditor(context, { renderDocument, createRenderSession, resolveExisting, storageRoot, outputRoot, nuiRoot: NUI_ROOT });
     return { status: 'initialized', folder: conf.folder };
 }
 
 export async function shutdown() {
+    await shutdownEditor();
     if (!server) return;
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     server = null;
@@ -351,6 +357,41 @@ function imageContent(previews) {
     }));
 }
 
+// Marker spans are absolutely positioned, so the probe PDF and the final PDF
+// paginate identically — which makes a text search on the probe a valid
+// geometry probe for the delivered pages, not just a page-number lookup.
+async function locateTargets(pdfBytes, targets) {
+    const marked = targets.filter((target) => target.marker);
+    if (!marked.length) return null;
+
+    const native = require('../../../nConvert/napi/index.js');
+    const found = JSON.parse(await native.searchText(
+        pdfBytes,
+        pdfiumDir(),
+        marked.map((target) => target.marker),
+        conf.maxPages + 1
+    ));
+    const boxes = new Map(found.pages.map((box) => [box.page, box]));
+    const hits = new Map(found.hits.map((hit) => [hit.query, hit]));
+
+    for (const target of marked) {
+        const hit = hits.get(target.marker);
+        if (!hit) continue;
+        const box = boxes.get(hit.page);
+        target.page = hit.page;
+        target.y = Math.round((hit.y / box.height) * 10000) / 10000;
+        target.pageWidth = Math.round(box.width * 100) / 100;
+        target.pageHeight = Math.round(box.height * 100) / 100;
+    }
+
+    const missing = marked.filter((target) => !target.page);
+    if (missing.length) {
+        if (process.env.PRINT_PROBE_PDF) fs.writeFileSync(process.env.PRINT_PROBE_PDF, pdfBytes);
+        throw new Error(`print.render: could not locate semantic target(s) in the PDF text layer: ${missing.map((target) => target.id).join(', ')}`);
+    }
+    return found.pages.length;
+}
+
 function targetLines(targets) {
     if (!targets.length) return ['Break targets: none (add id= to MD-Blocks directives to create semantic targets)'];
     return [
@@ -359,35 +400,57 @@ function targetLines(targets) {
     ];
 }
 
-export async function print_render(args = {}) {
-    if (Boolean(args.path) === Boolean(args.markdown)) throw new Error('print.render: provide exactly one of path or markdown');
-    const sourcePath = args.path ? resolveExisting(args.path, 'print.render') : null;
-    const source = sourcePath ? fs.readFileSync(sourcePath, 'utf8') : args.markdown;
-    if (typeof source !== 'string' || !source.trim()) throw new Error('print.render: source Markdown is empty');
-    const baseDir = sourcePath ? path.dirname(sourcePath) : resolveBase(args.basePath);
-    const preview = args.preview !== false;
-    const requestedPages = pageSelection(args.pages);
-    if (!preview && requestedPages) throw new Error('print.render: pages requires preview=true');
+const BREAK_CLASS = { breakBefore: 'nui-print-break-before', breakAfter: 'nui-print-break-after' };
 
-    const options = {
-        style: args.style,
-        format: args.format,
-        orientation: args.orientation,
-        margin: args.margin,
-        sectionPages: args.sectionPages,
-        breakBefore: stringArray(args.breakBefore, 'breakBefore'),
-        breakAfter: stringArray(args.breakAfter, 'breakAfter')
-    };
+async function printPdf(page, rendered) {
+    return page.pdf({
+        printBackground: true,
+        preferCSSPageSize: true,
+        displayHeaderFooter: Boolean(rendered.chrome.header || rendered.chrome.footer),
+        headerTemplate: chromeTemplate(rendered.chrome.header, 'header', rendered.options.margin, rendered.options.style),
+        footerTemplate: chromeTemplate(rendered.chrome.footer, 'footer', rendered.options.margin, rendered.options.style)
+    });
+}
+
+// Rewrites break classes in place. Reusing a loaded page is what makes a break
+// toggle cheap: the markdown parse, font loading and image decoding that cost
+// ~1.3 s happen once per document, not once per click. The checks mirror
+// page.js so an unknown ID fails the same way whether it arrives at load or
+// during a warm render.
+async function applyBreaks(page, options) {
+    await page.evaluate(({ breakBefore, breakAfter, breakClass }) => {
+        for (const element of document.querySelectorAll(`.${breakClass.breakBefore}, ${breakClass.breakAfter}`)) {
+            element.classList.remove(breakClass.breakBefore, breakClass.breakAfter);
+        }
+        for (const [ids, className] of [[breakBefore, breakClass.breakBefore], [breakAfter, breakClass.breakAfter]]) {
+            for (const id of ids) {
+                const matches = [...document.querySelectorAll('[id]')].filter((element) => element.id === id);
+                if (matches.length !== 1) {
+                    throw new Error(`print.render: break target "${id}" resolves to ${matches.length} elements; expected exactly one MD-Blocks ID`);
+                }
+                matches[0].classList.add(className);
+            }
+        }
+    }, {
+        breakBefore: options.breakBefore ?? [],
+        breakAfter: options.breakAfter ?? [],
+        breakClass: BREAK_CLASS
+    });
+}
+
+async function openPrintPage({ source, baseDir, options }) {
     const token = crypto.randomUUID();
     jobs.set(token, { token, source, options, baseDir });
-
+    const started = Date.now();
+    const marks = {};
+    const stamp = (name) => { marks[name] = Date.now() - started; };
     let browser;
-    let folder;
     try {
         browser = await puppeteer.launch({
             headless: true,
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
         });
+        stamp('chromeLaunch');
         const page = await browser.newPage();
         const warnings = [];
         page.on('console', (message) => {
@@ -396,74 +459,218 @@ export async function print_render(args = {}) {
         page.on('pageerror', (error) => warnings.push(`pageerror: ${error.message}`));
         await page.setViewport({ width: 1280, height: 960 });
         await page.emulateMediaType('print');
-        await page.goto(`http://127.0.0.1:${serverPort}/render/${token}?skip-init`, { waitUntil: 'networkidle0', timeout: 60000 });
+        // domcontentloaded, not networkidle0: the render page sets
+        // __PRINT_RESULT__ only after fonts and images are settled, so waiting
+        // for it is stricter — networkidle0 only added its 500 ms idle window.
+        await page.goto(`http://127.0.0.1:${serverPort}/render/${token}?skip-init`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        stamp('pageLoad');
         await page.waitForFunction(() => window.__PRINT_RESULT__ || window.__PRINT_ERROR__, { timeout: 60000 });
         const renderError = await page.evaluate(() => window.__PRINT_ERROR__);
         if (renderError) throw new Error(renderError);
         const rendered = await page.evaluate(() => window.__PRINT_RESULT__);
         if (!rendered) throw new Error('print.render: NUI renderer returned no result');
+        stamp('rendered');
 
-        const hasChrome = Boolean(rendered.chrome.header || rendered.chrome.footer);
-        if (hasChrome) await fitChrome(page, browser, rendered);
-        const pdfBytes = await page.pdf({
-            printBackground: true,
-            preferCSSPageSize: true,
-            displayHeaderFooter: hasChrome,
-            headerTemplate: chromeTemplate(rendered.chrome.header, 'header', rendered.options.margin, rendered.options.style),
-            footerTemplate: chromeTemplate(rendered.chrome.footer, 'footer', rendered.options.margin, rendered.options.style)
-        });
-
-        folder = uniqueFolder(slugify(args.name ?? (sourcePath ? path.basename(sourcePath, path.extname(sourcePath)) : 'document')));
-        const pdfPath = path.join(folder, 'document.pdf');
-        fs.mkdirSync(folder, { recursive: true });
-        fs.writeFileSync(pdfPath, pdfBytes);
-
-        let previews = [];
-        if (preview) previews = await rasterize(pdfPath, path.join(folder, 'pages'), null, previewWidth(args.width));
-        const pageCount = preview ? previews.length : null;
-        const selected = preview
-            ? (requestedPages ?? previews.slice(0, conf.inlinePreviewLimit).map((item) => item.page))
-            : [];
-        const missing = selected.filter((number) => !previews.some((item) => item.page === number));
-        if (missing.length) throw new Error(`print.render: requested preview page(s) out of range: ${missing.join(', ')}`);
-
-        const manifest = {
-            source: sourcePath ?? null,
-            sourceSha256: crypto.createHash('sha256').update(source).digest('hex'),
-            renderer: 'nui_wc2/NUI/nui.js',
-            createdAt: new Date().toISOString(),
-            pdf: storageRelative(pdfPath),
-            pageCount,
-            options: rendered.options,
-            chrome: rendered.chrome,
-            breakBefore: options.breakBefore,
-            breakAfter: options.breakAfter,
-            targets: rendered.targets,
-            previews: previews.map(({ page: number, path: previewPath }) => ({ page: number, path: previewPath })),
-            warnings
-        };
-        const manifestPath = path.join(folder, 'render.json');
-        fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-
-        const lines = [
-            `PDF       ${storageRelative(pdfPath)}`,
-            `manifest  ${storageRelative(manifestPath)}`,
-            `pages     ${pageCount ?? 'not rasterized (preview=false)'}`,
-            `format    ${rendered.options.format} ${rendered.options.orientation}`,
-            `style     ${rendered.options.style}`,
-            `margins   top=${rendered.options.margin.top} bottom=${rendered.options.margin.bottom} (auto-fitted to chrome)`,
-            `breaks    before=[${options.breakBefore.join(', ')}] after=[${options.breakAfter.join(', ')}] sectionPages=${rendered.options.sectionPages}`
-        ];
-        if (preview) lines.push(`previews  ${storageRelative(path.join(folder, 'pages'))} (inline: ${selected.join(', ')})`);
-        lines.push('', ...targetLines(rendered.targets));
-        if (warnings.length) lines.push('', 'Renderer warnings:', ...warnings.map((warning) => `  ${warning}`));
-
-        const inline = previews.filter((item) => selected.includes(item.page));
-        return { content: [{ type: 'text', text: lines.join('\n') }, ...imageContent(inline)], isError: false };
-    } finally {
+        if (rendered.chrome.header || rendered.chrome.footer) {
+            await fitChrome(page, browser, rendered);
+            stamp('chromeFit');
+        }
+        return { token, browser, page, rendered, warnings, marks, startedAt: started };
+    } catch (error) {
         jobs.delete(token);
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
+        throw error;
     }
+}
+
+async function paginate(runtime, source, options, { preview, requestedPages, width, outputFolder, name, sourcePath, warm }) {
+    const { page, rendered } = runtime;
+    const started = warm ? Date.now() : runtime.startedAt;
+    const timings = {};
+    const mark = (phase) => { timings[phase] = Date.now() - started; };
+    if (warm) {
+        timings.layout = 0;
+    } else {
+        timings.launch = runtime.marks.chromeLaunch;
+        timings.load = runtime.marks.pageLoad;
+        timings.rendered = runtime.marks.rendered;
+        timings.layout = runtime.marks.chromeFit ?? runtime.marks.rendered;
+    }
+    const warningStart = runtime.warnings.length;
+
+    // A page resolves its own breaks from frontmatter + the request when it
+    // loads; only an explicit array means "replace them now". Without this a
+    // warm render with no break arguments would wipe the authored breaks.
+    if (options.breakBefore !== undefined || options.breakAfter !== undefined) await applyBreaks(page, options);
+    const effective = {
+        ...rendered.options,
+        breakBefore: options.breakBefore ?? rendered.options.breakBefore,
+        breakAfter: options.breakAfter ?? rendered.options.breakAfter
+    };
+    let pdfBytes = await printPdf(page, rendered);
+    mark('pdf');
+    let mappedPageCount = null;
+    if (options.mapTargets) {
+        mappedPageCount = await locateTargets(pdfBytes, rendered.targets);
+        mark('geometry');
+        // display:none keeps the markers out of the text layer without touching
+        // layout, so the delivered PDF stays free of probe text.
+        await page.evaluate(() => document.body.classList.add('print-deliver'));
+        try {
+            pdfBytes = await printPdf(page, rendered);
+        } finally {
+            await page.evaluate(() => document.body.classList.remove('print-deliver'));
+        }
+        mark('pdfFinal');
+    }
+
+    const folder = outputFolder ? path.resolve(outputFolder) : uniqueFolder(slugify(name ?? (sourcePath ? path.basename(sourcePath, path.extname(sourcePath)) : 'document')));
+    const pdfPath = path.join(folder, 'document.pdf');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(pdfPath, pdfBytes);
+
+    let previews = [];
+    if (preview) {
+        if (outputFolder) fs.rmSync(path.join(folder, 'pages'), { recursive: true, force: true });
+        previews = await rasterize(pdfPath, path.join(folder, 'pages'), null, previewWidth(width));
+    }
+    mark('raster');
+    const pageCount = preview ? previews.length : null;
+    if (mappedPageCount !== null && preview && pageCount !== mappedPageCount) {
+        throw new Error(`print.render: target mapping changed pagination (${mappedPageCount} marked pages, ${pageCount} final pages)`);
+    }
+    const selected = preview
+        ? (requestedPages ?? previews.slice(0, conf.inlinePreviewLimit).map((item) => item.page))
+        : [];
+    const missing = selected.filter((number) => !previews.some((item) => item.page === number));
+    if (missing.length) throw new Error(`print.render: requested preview page(s) out of range: ${missing.join(', ')}`);
+
+    const manifest = {
+        source: sourcePath ?? null,
+        sourceSha256: crypto.createHash('sha256').update(source).digest('hex'),
+        renderer: 'nui_wc2/NUI/nui.js',
+        createdAt: new Date().toISOString(),
+        pdf: storageRelative(pdfPath),
+        pageCount,
+        options: effective,
+        chrome: rendered.chrome,
+        breakBefore: effective.breakBefore,
+        breakAfter: effective.breakAfter,
+        targets: rendered.targets.map(({ marker, ...target }) => target),
+        previews: previews.map(({ page: number, path: previewPath }) => ({ page: number, path: previewPath })),
+        timings,
+        warnings: runtime.warnings.slice(warningStart)
+    };
+    const manifestPath = path.join(folder, 'render.json');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
+    return { manifest, manifestPath, previews, selected };
+}
+
+// A render session owns one Chromium page for one document. Break-only changes
+// reuse that page; anything that alters layout (source text, style, format,
+// orientation, section-per-page) reloads it, because those are baked into the
+// page at load time.
+export async function createRenderSession(args = {}) {
+    if (Boolean(args.path) === Boolean(args.markdown)) throw new Error('print.render: provide exactly one of path or markdown');
+    const sourcePath = args.path ? resolveExisting(args.path, 'print.render') : null;
+    const baseDir = sourcePath ? path.dirname(sourcePath) : resolveBase(args.basePath);
+    const mapTargets = Boolean(args._mapTargets);
+    let runtime = null;
+    let signature = null;
+
+    const close = async () => {
+        if (!runtime) return;
+        const current = runtime;
+        runtime = null;
+        signature = null;
+        jobs.delete(current.token);
+        await current.browser.close().catch(() => {});
+    };
+
+    const ensure = async (options) => {
+        const source = sourcePath ? fs.readFileSync(sourcePath, 'utf8') : args.markdown;
+        if (typeof source !== 'string' || !source.trim()) throw new Error('print.render: source Markdown is empty');
+        const sha = crypto.createHash('sha256').update(source).digest('hex');
+        if (runtime && (runtime.page.isClosed() || runtime.browser.connected === false)) await close();
+        // Unspecified options mean "whatever this page already resolved", so an
+        // open that named no style and a later render that names the resolved
+        // one are the same page, not a reason to reload.
+        const resolved = runtime?.rendered.options;
+        const signatureFor = (style, format, orientation, sectionPages) => JSON.stringify([sha, style, format, orientation, sectionPages]);
+        const next = signatureFor(
+            options.style ?? resolved?.style,
+            options.format ?? resolved?.format,
+            options.orientation ?? resolved?.orientation,
+            options.sectionPages ?? resolved?.sectionPages
+        );
+        const warm = Boolean(runtime) && next === signature;
+        if (runtime && !warm) await close();
+        if (!runtime) {
+            runtime = await openPrintPage({ source, baseDir, options });
+            const pageOptions = runtime.rendered.options;
+            signature = signatureFor(pageOptions.style, pageOptions.format, pageOptions.orientation, pageOptions.sectionPages);
+        }
+        return { source, warm };
+    };
+
+    return {
+        async render(options, extra = {}) {
+            const merged = { ...options, mapTargets };
+            const { source, warm } = await ensure(merged);
+            return paginate(runtime, source, merged, { ...extra, sourcePath, warm });
+        },
+        close
+    };
+}
+
+export async function renderDocument(args = {}) {
+    const preview = args.preview !== false;
+    const requestedPages = pageSelection(args.pages);
+    if (!preview && requestedPages) throw new Error('print.render: pages requires preview=true');
+    const options = {
+        style: args.style,
+        format: args.format,
+        orientation: args.orientation,
+        margin: args.margin,
+        sectionPages: args.sectionPages,
+        breakBefore: args.breakBefore === undefined ? undefined : stringArray(args.breakBefore, 'breakBefore'),
+        breakAfter: args.breakAfter === undefined ? undefined : stringArray(args.breakAfter, 'breakAfter'),
+        mapTargets: Boolean(args._mapTargets)
+    };
+    const session = await createRenderSession(args);
+    try {
+        return await session.render(options, {
+            preview,
+            requestedPages,
+            width: args.width,
+            outputFolder: args._outputFolder,
+            name: args.name
+        });
+    } finally {
+        await session.close();
+    }
+}
+
+export async function print_render(args = {}) {
+    const { manifest, manifestPath, previews, selected } = await renderDocument(args);
+    const lines = [
+        `PDF       ${manifest.pdf}`,
+        `manifest  ${storageRelative(manifestPath)}`,
+        `pages     ${manifest.pageCount ?? 'not rasterized (preview=false)'}`,
+        `format    ${manifest.options.format} ${manifest.options.orientation}`,
+        `style     ${manifest.options.style}`,
+        `margins   top=${manifest.options.margin.top} bottom=${manifest.options.margin.bottom} (auto-fitted to chrome)`,
+        `breaks    before=[${manifest.breakBefore.join(', ')}] after=[${manifest.breakAfter.join(', ')}] sectionPages=${manifest.options.sectionPages}`
+    ];
+    if (manifest.pageCount !== null) {
+        const previewFolder = path.dirname(manifest.previews[0].path).replaceAll('\\', '/');
+        lines.push(`previews  ${previewFolder} (inline: ${selected.join(', ')})`);
+    }
+    lines.push('', ...targetLines(manifest.targets));
+    if (manifest.warnings.length) lines.push('', 'Renderer warnings:', ...manifest.warnings.map((warning) => `  ${warning}`));
+
+    const inline = previews.filter((item) => selected.includes(item.page));
+    return { content: [{ type: 'text', text: lines.join('\n') }, ...imageContent(inline)], isError: false };
 }
 
 export async function print_preview(args = {}) {
