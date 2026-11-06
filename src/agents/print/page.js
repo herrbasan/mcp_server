@@ -132,8 +132,14 @@ function wrapLooseText() {
 //          between a heading and the content it introduces (orphaned heading),
 //          directly after an explicit page-break (already broken),
 //          before the very first thing on page 1 (nothing to push down)
-const BREAKABLE_UNITS = 'blockquote, pre, table, ul, ol, figure';
-const BREAKABLE_ALL = `p, h1, h2, h3, h4, h5, h6, ${BREAKABLE_UNITS}`;
+// Candidates: anything that may start a page. Atomic structures (a quote, a
+// table, a code block, a figure) also forbid candidates *inside* them -
+// breaking there tears the structure. A list is different: its items are
+// independent units, so `li` is a candidate too. A plain MD-Blocks block is
+// only a candidate, never a barrier - text inside it stays ordinary flow unless
+// the block is visibly boxed (see insideUnbreakableBox).
+const STRUCTURED_UNITS = 'blockquote, pre, table, figure';
+const BREAKABLE_ALL = `p, h1, h2, h3, h4, h5, h6, li, .nui-blocks-block, blockquote, pre, table, ul, ol, figure`;
 const HEADINGS = 'h1, h2, h3, h4, h5, h6';
 
 function startsCleanly(element) {
@@ -160,15 +166,17 @@ function anchorBreakables() {
     const taken = new Set([...output.querySelectorAll('[id]')].map((element) => element.id));
     for (const element of output.querySelectorAll(BREAKABLE_ALL)) {
         if (element.id) continue;
-        const box = element.closest(BREAKABLE_UNITS);
+        const box = element.closest(STRUCTURED_UNITS);
         if (box && box !== element) continue;
         const text = element.textContent.replace(/\s+/g, ' ').trim();
         if (!text) continue;
         if (insideUnbreakableBox(element)) continue;
         if (!startsCleanly(element)) continue;
-        const kind = element.matches(HEADINGS) ? 'heading' : element.tagName === 'P' ? 'paragraph' : 'unit';
+        const kind = element.matches(HEADINGS) ? 'heading'
+            : element.tagName === 'P' ? 'paragraph'
+                : element.tagName === 'LI' ? 'item' : 'unit';
         element.dataset.breakAnchor = kind;
-        element.id = paragraphAnchor(text, taken, kind === 'heading' ? 'h' : kind === 'unit' ? 'u' : 'p');
+        element.id = paragraphAnchor(text, taken, kind === 'heading' ? 'h' : kind === 'paragraph' ? 'p' : kind === 'item' ? 'i' : 'u');
     }
 }
 
@@ -242,7 +250,7 @@ async function main() {
         // and inherit its measured geometry afterwards.
         const marked = [];
         targets.forEach((target, index) => {
-            if (!['section', 'block', 'columns', 'heading', 'paragraph', 'unit'].includes(target.kind) || target.preset === 'page-break') return;
+            if (!['section', 'block', 'columns', 'heading', 'paragraph', 'item', 'unit'].includes(target.kind) || target.preset === 'page-break') return;
             const element = targetElements[index];
             const rect = element.getBoundingClientRect();
             // Two markers within a line of each other are merged into one text
@@ -260,6 +268,9 @@ async function main() {
             const marker = document.createElement('span');
             marker.className = 'nui-print-target-marker';
             marker.textContent = target.marker;
+            // Inside the element, so it travels with it when a break pushes the
+            // element to another page. Inserting it before the element would
+            // leave the marker behind on the old page.
             element.prepend(marker);
         });
     }

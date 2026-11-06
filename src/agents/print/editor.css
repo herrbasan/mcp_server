@@ -220,8 +220,13 @@ select {
     position: absolute;
     left: 0;
     right: 0;
-    top: calc(var(--y) * 100% - 12px);
-    height: 24px;
+    /* The measured y is the first line's glyph top; the band is kept narrow and
+       biased upward so the line reads as sitting above the element, and so
+       neighbouring spots (roughly a line apart) do not overlap each other. */
+    top: calc(var(--y) * 100% - 15px);
+    height: 18px;
+    /* Global button styling sets min-height 34px and would inflate the band. */
+    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
@@ -229,6 +234,11 @@ select {
     pointer-events: auto;
     cursor: pointer;
     transition: opacity .12s ease;
+}
+.break-spot:hover,
+.break-spot:focus-visible {
+    /* Overrides the global button:hover fill; a hint, not a slab. */
+    background: rgba(240, 244, 246, 0.8);
 }
 .break-spot:hover,
 .break-spot:focus-visible,

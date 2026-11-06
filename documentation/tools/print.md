@@ -67,11 +67,13 @@ The renderer anchors exactly those units and skips everything else:
 | block / columns | authored `id` | a movable unit |
 | heading | `h-<fnv1a>` | starts a run of content |
 | paragraph | `p-<fnv1a>` | starts a thought |
+| list item | `i-<fnv1a>` | an independent entry |
 | quote, code block, table, figure, list | `u-<fnv1a>` | moves whole, cannot be torn |
 
 Skipped, because a break there is not reasonable:
 
-- **inside** any unit above — a split quote box, a torn table row;
+- **inside** an atomic structure — a quote, code block, table or figure. A list is
+  not atomic: its items are separate units, so breaking between them is allowed;
 - a block whose stylesheet says `break-inside: avoid`, and anything visibly boxed
   (border on both edges or a fill), so presets like `band` and `card` stay whole;
 - the content immediately after a heading — that break would orphan the heading
