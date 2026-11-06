@@ -134,14 +134,23 @@ try {
     }
     check('out-of-range preview page fails loudly', outOfRange);
 
-    const quotePath = path.join(root, 'quote.md');
-    fs.writeFileSync(quotePath, `<!-- mb:section id=q -->\n# Quote page\n\nIntro line before the box.\n\n> A quoted box that should be movable as a whole.\n`, 'utf8');
+    const quotePath = path.join(root, 'quote.md');    fs.writeFileSync(quotePath, `<!-- mb:section id=q -->\n# Quote page\n\nIntro line before the box.\n\n> A quoted box that should be movable as a whole.\n`, 'utf8');
     const quoted = await renderDocument({ path: quotePath, name: 'quote', _mapTargets: true });
     const unit = quoted.manifest.targets.find((target) => target.kind === 'unit');
     check(
         'a quote box is offered as a break target',
         Boolean(unit) && unit.page === 1 && typeof unit.text === 'string' && unit.text.startsWith('A quoted box'),
         JSON.stringify(unit ?? null)
+    );
+
+    // Every profile styles headings differently; the markers must survive the
+    // one that uppercases them (minimal), or geometry lookup fails.
+    const minimal = await renderDocument({ path: quotePath, name: 'quote-minimal', style: 'minimal', _mapTargets: true });
+    const minimalUnit = minimal.manifest.targets.find((target) => target.kind === 'unit');
+    check(
+        'target geometry survives a profile that uppercases headings',
+        minimal.manifest.options.style === 'minimal' && Boolean(minimalUnit) && minimalUnit.page === 1,
+        JSON.stringify({ style: minimal.manifest.options.style, page: minimalUnit?.page ?? null })
     );
 
     const apiBase = `http://127.0.0.1:${apiServer.address().port}`;

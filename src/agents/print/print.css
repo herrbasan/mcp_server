@@ -257,6 +257,14 @@ hr {
        (1px) line box keeps the marker one text run. */
     line-height: 1;
     white-space: nowrap;
+    /* Profiles style the elements they sit in (uppercase headings, letter
+       spacing). The marker must keep its own bytes: an uppercased uuid can
+       never be found by a query built from the original id. */
+    text-transform: none;
+    letter-spacing: normal;
+    word-spacing: normal;
+    font-variant: normal;
+    text-indent: 0;
 }
 
 /* The delivered PDF is printed with this class on <body>: display:none keeps

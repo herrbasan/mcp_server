@@ -13,9 +13,14 @@
         <span>MD-Blocks page editor</span>
     </div>
     <form id="open-form" class="open-form">
-        <label class="sr-only" for="source-path">Markdown source path</label>
-        <input id="source-path" name="path" type="text" required autocomplete="off" spellcheck="false" placeholder="storage/path/document.md or D:\path\document.md">
-        <button type="submit" class="primary">Open document</button>
+        <nui-input class="path-field">
+            <input id="source-path" name="path" type="text" required autocomplete="off" spellcheck="false"
+                   aria-label="Markdown source path"
+                   placeholder="storage/path/document.md or D:\path\document.md">
+        </nui-input>
+        <nui-button variant="primary">
+            <button type="submit">Open document</button>
+        </nui-button>
     </form>
 </header>
 
@@ -25,33 +30,40 @@
         <span id="document-path"></span>
     </div>
     <div class="print-options">
-        <label>Style
+        <nui-select id="style-select" label="Style">
             <select id="style">
                 <option value="editorial">Editorial</option>
                 <option value="minimal">Minimal</option>
                 <option value="classic">Classic</option>
             </select>
-        </label>
-        <label>Format
+        </nui-select>
+        <nui-select id="format-select" label="Format">
             <select id="format">
                 <option value="A4">A4</option>
                 <option value="A5">A5</option>
                 <option value="Letter">Letter</option>
                 <option value="Legal">Legal</option>
             </select>
-        </label>
-        <label>Orientation
+        </nui-select>
+        <nui-select id="orientation-select" label="Orientation">
             <select id="orientation">
                 <option value="portrait">Portrait</option>
                 <option value="landscape">Landscape</option>
             </select>
-        </label>
-        <label class="check-option"><input id="section-pages" type="checkbox"> Section per page</label>
+        </nui-select>
+        <nui-checkbox class="check-option">
+            <input id="section-pages" type="checkbox">
+            <label for="section-pages">Section per page</label>
+        </nui-checkbox>
     </div>
     <div class="document-actions">
         <span id="dirty-state" class="dirty-state"></span>
-        <a id="download-pdf" class="button" href="#" target="_blank" rel="noopener">PDF</a>
-        <button id="save" class="primary" type="button">Save to document</button>
+        <nui-button>
+            <button id="download-pdf" type="button">PDF</button>
+        </nui-button>
+        <nui-button variant="primary">
+            <button id="save" type="button">Save to document</button>
+        </nui-button>
     </div>
 </section>
 
@@ -68,14 +80,14 @@
                 <strong>Printed pages</strong>
                 <span>Hover a page to reveal its break spots. Click a line to place the break there, or to remove it.</span>
             </div>
-            <label class="zoom-control">Zoom
+            <nui-select id="zoom-select" label="Zoom">
                 <select id="zoom">
                     <option value="620">Compact</option>
                     <option value="760" selected>Fit</option>
                     <option value="900">Large</option>
                     <option value="1100">Actual pixels</option>
                 </select>
-            </label>
+            </nui-select>
         </div>
         <div id="pages" class="pages"></div>
     </section>

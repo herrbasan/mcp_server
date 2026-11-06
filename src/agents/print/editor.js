@@ -4,8 +4,9 @@ const $ = (id) => document.getElementById(id);
 const ui = {
     form: $('open-form'), path: $('source-path'), bar: $('document-bar'), workspace: $('workspace'), empty: $('empty-state'),
     name: $('document-name'), pathLabel: $('document-path'), style: $('style'), format: $('format'), orientation: $('orientation'),
+    styleSelect: $('style-select'), formatSelect: $('format-select'), orientationSelect: $('orientation-select'),
     sectionPages: $('section-pages'), save: $('save'), dirty: $('dirty-state'), pdf: $('download-pdf'), notice: $('notice'),
-    thumbnails: $('thumbnails'), pages: $('pages'), zoom: $('zoom')
+    thumbnails: $('thumbnails'), pages: $('pages'), zoom: $('zoom'), zoomSelect: $('zoom-select')
 };
 
 const state = {
@@ -66,6 +67,11 @@ function updateActions() {
     ui.dirty.textContent = state.externallyChanged ? 'File changed on disk' : dirty ? 'Unsaved changes' : '';
     ui.save.disabled = state.busy || !dirty || state.externallyChanged;
     for (const control of [ui.style, ui.format, ui.orientation, ui.sectionPages, ui.path]) control.disabled = state.busy;
+    // nui-select renders its own control button and ignores the inner select's
+    // disabled state, so the host carries it too.
+    for (const host of [ui.styleSelect, ui.formatSelect, ui.orientationSelect, ui.zoomSelect]) {
+        host.toggleAttribute('disabled', state.busy);
+    }
     for (const button of ui.pages.querySelectorAll('button')) button.disabled = state.busy;
 }
 
@@ -76,9 +82,15 @@ function setBusy(busy, message = '') {
 }
 
 function syncOptionControls() {
-    ui.style.value = state.options.style;
-    ui.format.value = state.options.format;
-    ui.orientation.value = state.options.orientation;
+    const assign = (host, select, value) => {
+        select.value = value;
+        // The visible control is NUI's; it only learns about a value change
+        // through its own setter.
+        host.setValue?.(value);
+    };
+    assign(ui.styleSelect, ui.style, state.options.style);
+    assign(ui.formatSelect, ui.format, state.options.format);
+    assign(ui.orientationSelect, ui.orientation, state.options.orientation);
     ui.sectionPages.checked = state.options.sectionPages;
 }
 
@@ -180,7 +192,8 @@ function buildPreview() {
     const activePage = Number(ui.thumbnails.querySelector('.thumbnail.active')?.dataset.page ?? 1);
     ui.thumbnails.replaceChildren();
     ui.pages.replaceChildren();
-    ui.pdf.href = `${state.pdfUrl}?v=${state.revision}`;
+    ui.pdf.disabled = !state.token;
+    ui.pdf.dataset.href = `${state.pdfUrl}?v=${state.revision}`;
 
     const rules = rulePositions();
     const spots = new Map(state.pages.map((page) => [page.page, spotsFor(page.page, rules)]));
@@ -342,6 +355,10 @@ ui.sectionPages.addEventListener('change', () => {
     render();
 });
 ui.zoom.addEventListener('change', () => ui.pages.style.setProperty('--paper-width', `${ui.zoom.value}px`));
+ui.pdf.addEventListener('click', () => {
+    const href = ui.pdf.dataset.href;
+    if (href) window.open(href, '_blank', 'noopener');
+});
 ui.save.addEventListener('click', save);
 window.addEventListener('pagehide', () => {
     if (!state.token) return;

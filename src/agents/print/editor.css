@@ -1,10 +1,10 @@
+/* The editor is built from nui_wc2 components and theme tokens. It must not
+   define --nui-space: that variable is NUI's opt-out signal, and defining it
+   would hand theming (light/dark) back to this file. */
 :root {
-    color-scheme: light;
-    --nui-space: 16px;
-    --nui-rem-base: 14px;
-    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    color: #202a33;
-    background: #e9edf0;
+    font-family: var(--system-ui);
+    color: var(--text-color);
+    background: var(--color-shade1);
     font-synthesis: none;
 }
 
@@ -16,80 +16,35 @@ body {
     margin: 0;
     overflow: hidden;
     min-width: 760px;
+    background: var(--color-shade1);
 }
 button, input, select { font: inherit; }
-button, .button, select { cursor: pointer; }
 button:disabled, select:disabled, input:disabled { cursor: wait; opacity: .55; }
-button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
-    outline: 2px solid #347398;
-    outline-offset: 2px;
-}
-.sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-}
 [hidden] { display: none !important; }
 
 .app-header {
     min-height: 64px;
     display: flex;
     align-items: center;
-    gap: 32px;
-    padding: 10px 22px;
-    color: #f7fafc;
-    background: #1e2c36;
-    border-bottom: 1px solid #101a21;
+    gap: var(--nui-space-double);
+    padding: var(--nui-space-half) var(--nui-space);
+    background: var(--color-shade2);
+    border-bottom: var(--border-thickness) solid var(--color-shade4);
 }
-.brand { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
-.brand strong { font-size: 22px; font-weight: 550; letter-spacing: -.03em; }
-.brand span { color: #aabac5; font-size: 12px; }
-.open-form { display: flex; gap: 8px; width: min(760px, 100%); }
-.open-form input {
-    min-width: 220px;
-    flex: 1;
-    height: 36px;
-    padding: 0 12px;
-    border: 1px solid #53636f;
-    border-radius: 4px;
-    color: #f4f7f9;
-    background: #14212a;
-    font-family: Consolas, "Courier New", monospace;
-    font-size: 12px;
-}
-.open-form input::placeholder { color: #82939f; }
-button, .button {
-    min-height: 34px;
-    padding: 7px 12px;
-    border: 1px solid #b8c4cc;
-    border-radius: 4px;
-    color: #2a3944;
-    background: #fff;
-    text-decoration: none;
-    line-height: 1.2;
-}
-button:hover, .button:hover { background: #f0f4f6; }
-button.primary {
-    color: #fff;
-    border-color: #2f6889;
-    background: #2f6889;
-}
-button.primary:hover { background: #275875; }
+.brand { display: flex; align-items: baseline; gap: var(--nui-space-half); white-space: nowrap; }
+.brand strong { font-size: var(--font-size-large); font-weight: 500; letter-spacing: -.03em; }
+.brand span { color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
+.open-form { display: flex; align-items: center; gap: var(--nui-space-half); width: min(760px, 100%); }
+.open-form .path-field { flex: 1; min-width: 220px; }
 
 .document-bar {
     display: flex;
     align-items: center;
-    gap: 22px;
+    gap: var(--nui-space-half);
     min-height: 62px;
-    padding: 9px 20px;
-    border-bottom: 1px solid #cbd4da;
-    background: #f8fafb;
+    padding: var(--nui-space-quarter) var(--nui-space);
+    border-bottom: var(--border-thickness) solid var(--color-shade4);
+    background: var(--color-shade1);
 }
 .document-identity { min-width: 160px; max-width: 270px; }
 .document-identity strong, .document-identity span {
@@ -98,36 +53,44 @@ button.primary:hover { background: #275875; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.document-identity strong { font-size: 14px; font-weight: 600; }
-.document-identity span { margin-top: 3px; color: #6a7882; font-size: 11px; font-family: Consolas, monospace; }
-.print-options { display: flex; align-items: center; gap: 10px; flex: 1; }
-.print-options label { display: flex; align-items: center; gap: 5px; color: #63717b; font-size: 11px; }
-select {
-    height: 31px;
-    padding: 0 24px 0 7px;
-    border: 1px solid #bdc8cf;
-    border-radius: 4px;
-    color: #2a3944;
-    background: #fff;
-    font-size: 12px;
+.document-identity strong { font-size: var(--font-size-small); font-weight: 600; }
+.document-identity span {
+    margin-top: 2px;
+    color: var(--text-color-dim);
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: var(--font-size-xsmall);
 }
-.print-options .check-option { gap: 6px; white-space: nowrap; color: #33424d; }
-.check-option input { accent-color: #2f6889; }
-.document-actions { display: flex; align-items: center; gap: 8px; }
-.dirty-state { min-width: 70px; color: #8b5a15; font-size: 11px; text-align: right; }
+.print-options { display: flex; align-items: center; gap: var(--nui-space-half); flex: 1; flex-wrap: wrap; }
+/* nui-select hosts are block-level and would take the whole row. */
+.print-options nui-select { flex: 0 0 auto; width: 148px; }
+.print-options nui-select#orientation-select { width: 168px; }
+.check-option { margin-left: var(--nui-space-quarter); white-space: nowrap; }
+.document-actions { display: flex; align-items: center; gap: var(--nui-space-half); }
+.dirty-state { min-width: 70px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); text-align: right; }
+
+/* nui-select ignores the inner select's disabled state; the host carries it. */
+nui-select[disabled] { pointer-events: none; opacity: .55; }
 
 .notice {
     position: sticky;
     top: 0;
     z-index: 20;
-    padding: 9px 20px;
-    color: #284b60;
-    border-bottom: 1px solid #b8d2e1;
-    background: #e8f3f9;
-    font-size: 12px;
+    padding: var(--nui-space-half) var(--nui-space);
+    color: var(--text-color);
+    border-bottom: var(--border-thickness) solid var(--color-shade4);
+    background: var(--color-shade2);
+    font-size: var(--font-size-xsmall);
 }
-.notice.error { color: #7d2e25; border-color: #e1bcb6; background: #fbeceb; }
-.notice.warning { color: #72501c; border-color: #dfcda9; background: #fbf4e5; }
+.notice.error {
+    color: light-dark(#7d2e25, #ffb4a8);
+    border-color: light-dark(#e1bcb6, #7d2e25);
+    background: light-dark(#fbeceb, #3a1f1c);
+}
+.notice.warning {
+    color: light-dark(#72501c, #ffd9a0);
+    border-color: light-dark(#dfcda9, #5a4620);
+    background: light-dark(#fbf4e5, #332a19);
+}
 
 .workspace {
     display: grid;
@@ -139,82 +102,85 @@ select {
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: 14px 10px 30px;
-    border-right: 1px solid #c5cfd6;
-    background: #dfe5e9;
+    padding: var(--nui-space-half) var(--nui-space-quarter) var(--nui-space-double);
+    border-right: var(--border-thickness) solid var(--color-shade4);
+    background: var(--color-shade2);
     scrollbar-width: thin;
-    scrollbar-color: #a8b6c0 transparent;
+    scrollbar-color: var(--color-shade4) transparent;
 }
 .thumbnail-pane::-webkit-scrollbar { width: 8px; }
 .thumbnail-pane::-webkit-scrollbar-track { background: transparent; }
 .thumbnail-pane::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 8px;
-    background: #a8b6c0;
+    background: var(--color-shade4);
     background-clip: content-box;
 }
-.thumbnail-pane::-webkit-scrollbar-thumb:hover { background: #8b9ba6; background-clip: content-box; }
+.thumbnail-pane::-webkit-scrollbar-thumb:hover { background: var(--color-shade6); background-clip: content-box; }
 .pane-label, .eyebrow {
-    margin-bottom: 10px;
-    color: #6c7982;
-    font-size: 10px;
+    margin-bottom: var(--nui-space-quarter);
+    color: var(--text-color-dim);
+    font-size: var(--font-size-xsmall);
     font-weight: 650;
     letter-spacing: .11em;
     text-transform: uppercase;
 }
-.thumbnails { display: grid; gap: 12px; }
+.thumbnails { display: grid; gap: var(--nui-space-half); }
 .thumbnail {
     display: block;
     width: 100%;
-    padding: 5px;
-    border: 1px solid transparent;
-    border-radius: 4px;
+    padding: 4px;
+    border: var(--border-thickness) solid transparent;
+    border-radius: var(--border-radius1);
     background: transparent;
     text-align: left;
+    cursor: pointer;
 }
-.thumbnail:hover { background: #f3f6f8; }
-.thumbnail.active { border-color: #477b99; background: #f7fafc; }
-.thumbnail img { display: block; width: 100%; background: #fff; box-shadow: 0 1px 4px #26364038; }
-.thumbnail span { display: block; margin-top: 5px; color: #55646f; font-size: 10px; text-align: center; }
+.thumbnail:hover { background: var(--color-shade3); }
+.thumbnail.active { border-color: var(--color-highlight); background: var(--color-shade3); }
+.thumbnail img { display: block; width: 100%; background: #fff; box-shadow: 0 1px 4px var(--shadow-color); }
+.thumbnail span { display: block; margin-top: 4px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); text-align: center; }
 
 .preview-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .preview-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 20px;
+    gap: var(--nui-space);
     min-height: 55px;
-    padding: 9px 22px;
-    border-bottom: 1px solid #ccd5db;
-    background: #f1f4f6;
+    padding: var(--nui-space-quarter) var(--nui-space);
+    border-bottom: var(--border-thickness) solid var(--color-shade4);
+    background: var(--color-shade1);
 }
-.preview-heading strong { display: block; font-size: 13px; font-weight: 600; }
-.preview-heading span { display: block; margin-top: 2px; color: #6b7881; font-size: 11px; }
-.zoom-control { display: flex; align-items: center; gap: 7px; color: #6b7881; font-size: 11px; }
+.preview-heading strong { display: block; font-size: var(--font-size-small); font-weight: 600; }
+.preview-heading span { display: block; margin-top: 2px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
+.preview-heading nui-select { flex: 0 0 auto; width: 160px; }
 .pages {
     --paper-width: 760px;
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 24px 30px 70px;
+    padding: var(--nui-space) var(--nui-space) 70px;
+    background: var(--color-shade2);
     scroll-behavior: smooth;
 }
-.print-page { max-width: var(--paper-width); margin: 0 auto 26px; }
-.page-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 7px 2px; }
-.page-heading strong { color: #46555f; font-size: 12px; font-weight: 600; }
-.page-heading span { color: #74818a; font-size: 10px; }
+.print-page { max-width: var(--paper-width); margin: 0 auto var(--nui-space); }
+.page-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 6px 2px; }
+.page-heading strong { color: var(--text-color); font-size: var(--font-size-xsmall); font-weight: 600; }
+.page-heading span { color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
 .page-stage { display: block; }
+/* The paper is the printed artefact: it stays white in both themes. */
 .paper {
     position: relative;
     width: 100%;
     background: #fff;
-    box-shadow: 0 2px 12px #25364035, 0 0 0 1px #aeb9c055;
+    box-shadow: 0 2px 12px var(--shadow-color), 0 0 0 1px var(--color-shade4);
 }
 .paper img { display: block; width: 100%; height: auto; }
 
-/* Break spots: a 24px band at the target's vertical position. The band is the
-   hit area; the line and handle only materialise on hover or focus, so the
-   printed page stays readable until the user looks for a break. */
+/* Break spots: a narrow band at the target's vertical position. The band is the
+   hit area; the line and handle appear on hover or focus, so the printed page
+   stays readable until asked. */
 .break-layer { position: absolute; inset: 0; pointer-events: none; }
 .break-spot {
     position: absolute;
@@ -225,7 +191,7 @@ select {
        neighbouring spots (roughly a line apart) do not overlap each other. */
     top: calc(var(--y) * 100% - 15px);
     height: 18px;
-    /* Global button styling sets min-height 34px and would inflate the band. */
+    /* Global button styling would otherwise inflate the band. */
     min-height: 0;
     padding: 0;
     border: 0;
@@ -237,7 +203,7 @@ select {
 }
 .break-spot:hover,
 .break-spot:focus-visible {
-    /* Overrides the global button:hover fill; a hint, not a slab. */
+    /* A hint, not a slab. */
     background: rgba(240, 244, 246, 0.8);
 }
 .break-spot:hover,
@@ -251,7 +217,7 @@ select {
     top: 50%;
     border-top: 1px dashed #c2412c;
 }
-.break-spot.active .break-rule { border-top-style: solid; border-top-color: #2f6889; }
+.break-spot.active .break-rule { border-top-style: solid; border-top-color: var(--color-highlight); }
 .break-handle {
     position: absolute;
     left: 7px;
@@ -264,14 +230,14 @@ select {
     border-radius: 11px;
     color: #fff;
     background: #c2412c;
-    font-size: 10px;
+    font-size: var(--font-size-xsmall);
     font-weight: 600;
     line-height: 1;
     white-space: nowrap;
     transform: translateY(-50%);
-    box-shadow: 0 1px 4px #1b273333;
+    box-shadow: 0 1px 4px var(--shadow-color);
 }
-.break-spot.active .break-handle { background: #2f6889; }
+.break-spot.active .break-handle { background: var(--color-highlight); }
 .break-arrow {
     width: 0;
     height: 0;
@@ -279,13 +245,20 @@ select {
     border-bottom: 4px solid transparent;
     border-left: 6px solid currentColor;
 }
-.empty-state { min-height: calc(100vh - 64px); display: grid; place-items: center; padding: 40px; }
+
+.empty-state { min-height: calc(100vh - 64px); display: grid; place-items: center; padding: var(--nui-space-double); }
 .empty-state > div { max-width: 560px; text-align: center; }
-.empty-state h1 { margin: 0 0 15px; color: #263945; font-size: 35px; font-weight: 400; letter-spacing: -.035em; }
-.empty-state p:not(.eyebrow) { color: #65747e; line-height: 1.6; }
+.empty-state h1 {
+    margin: 0 0 var(--nui-space-half);
+    color: var(--text-color);
+    font-size: 35px;
+    font-weight: 400;
+    letter-spacing: -.035em;
+}
+.empty-state p:not(.eyebrow) { color: var(--text-color-dim); line-height: 1.6; }
 
 @media (max-width: 1180px) {
-    .document-bar { flex-wrap: wrap; gap: 10px 18px; }
+    .document-bar { flex-wrap: wrap; gap: var(--nui-space-quarter) var(--nui-space-half); }
     .document-identity { max-width: 220px; }
-    .pages { --paper-width: 620px; padding-left: 20px; padding-right: 20px; }
+    .pages { --paper-width: 620px; padding-left: var(--nui-space-half); padding-right: var(--nui-space-half); }
 }
