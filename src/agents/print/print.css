@@ -252,7 +252,10 @@ hr {
     position: absolute;
     color: rgba(0, 0, 0, 0.01);
     font-size: 1px;
-    line-height: 0;
+    /* A zero-height line made Chromium place each glyph separately, and the
+       extracted text layer came back fragmented and unsearchable. A real
+       (1px) line box keeps the marker one text run. */
+    line-height: 1;
     white-space: nowrap;
 }
 

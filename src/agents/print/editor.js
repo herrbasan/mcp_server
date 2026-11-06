@@ -164,7 +164,8 @@ function breakSpot(spot) {
     const control = element('button', `break-spot${active ? ' active' : ''}`);
     control.type = 'button';
     control.style.setProperty('--y', String(spot.y));
-    control.title = `${active ? 'Remove this page break' : 'Start a new page here'} — ${targetName(spot)}`;
+    control.dataset.kind = spot.kind;
+    control.title = `${active ? 'Remove this page break' : 'Start a new page here'} — ${spot.kind}: ${targetName(spot)}`;
     control.setAttribute('aria-label', control.title);
     control.setAttribute('aria-pressed', String(active));
     const handle = element('span', 'break-handle');

@@ -56,12 +56,32 @@ paragraph itself is edited the ID disappears — the render then fails loudly wi
 that ID rather than silently breaking somewhere else. `breakBefore` accepts these
 IDs exactly like authored ones.
 
-Two things are deliberately excluded, because a break there would tear a box
-apart: paragraphs inside a container the stylesheet marks `break-inside: avoid`,
-and paragraphs inside anything visibly boxed (border on both edges or a fill) —
-presets like `band` and `card` stay whole. Text that NUI emits as a bare node
-rather than a `<p>` (text sitting tight against the preceding block) is promoted
-to `p.nui-print-loose`, whose zero margin leaves the printed result unchanged.
+### Where a break is reasonable
+
+A page break belongs at the start of a self-contained flow unit, never inside one.
+The renderer anchors exactly those units and skips everything else:
+
+| unit | anchor | why it qualifies |
+|---|---|---|
+| section | authored `id` | a topic boundary |
+| block / columns | authored `id` | a movable unit |
+| heading | `h-<fnv1a>` | starts a run of content |
+| paragraph | `p-<fnv1a>` | starts a thought |
+| quote, code block, table, figure, list | `u-<fnv1a>` | moves whole, cannot be torn |
+
+Skipped, because a break there is not reasonable:
+
+- **inside** any unit above — a split quote box, a torn table row;
+- a block whose stylesheet says `break-inside: avoid`, and anything visibly boxed
+  (border on both edges or a fill), so presets like `band` and `card` stay whole;
+- the content immediately after a heading — that break would orphan the heading
+  at the foot of the page (the heading itself is the spot for that position);
+- directly after an explicit `preset=page-break` block — already broken;
+- before the document's first element — there is nothing to push down.
+
+Text that NUI emits as a bare node rather than a `<p>` (text sitting tight
+against the preceding block) is promoted to `p.nui-print-loose`, whose zero
+margin leaves the printed result unchanged while making the line breakable.
 
 `repeat=header` and `repeat=footer` chrome is moved into Chromium's real PDF
 header/footer and repeats on every page. Chrome uses a light-gray full-bleed

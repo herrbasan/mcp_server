@@ -389,6 +389,16 @@ async function locateTargets(pdfBytes, targets) {
         if (process.env.PRINT_PROBE_PDF) fs.writeFileSync(process.env.PRINT_PROBE_PDF, pdfBytes);
         throw new Error(`print.render: could not locate semantic target(s) in the PDF text layer: ${missing.map((target) => target.id).join(', ')}`);
     }
+
+    // Targets that shared a marker inherit the geometry measured for it.
+    for (const target of targets) {
+        if (target.owner === undefined) continue;
+        const source = targets[target.owner];
+        target.page = source.page;
+        target.y = source.y;
+        target.pageWidth = source.pageWidth;
+        target.pageHeight = source.pageHeight;
+    }
     return found.pages.length;
 }
 

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { init, shutdown, print_render, print_preview, chromeTemplate } from '../src/agents/print/index.js';
+import { init, shutdown, print_render, print_preview, renderDocument, chromeTemplate } from '../src/agents/print/index.js';
 import express from 'express';
 
 const require = createRequire(import.meta.url);
@@ -28,6 +28,8 @@ Page {{page}} of {{pages}}
 <!-- mb:section id=first -->
 # First page
 A short fixture for real Chromium pagination.
+
+A second paragraph, which is a place a break may reasonably go.
 
 ![One pixel](pixel.png)
 
@@ -132,6 +134,16 @@ try {
     }
     check('out-of-range preview page fails loudly', outOfRange);
 
+    const quotePath = path.join(root, 'quote.md');
+    fs.writeFileSync(quotePath, `<!-- mb:section id=q -->\n# Quote page\n\nIntro line before the box.\n\n> A quoted box that should be movable as a whole.\n`, 'utf8');
+    const quoted = await renderDocument({ path: quotePath, name: 'quote', _mapTargets: true });
+    const unit = quoted.manifest.targets.find((target) => target.kind === 'unit');
+    check(
+        'a quote box is offered as a break target',
+        Boolean(unit) && unit.page === 1 && typeof unit.text === 'string' && unit.text.startsWith('A quoted box'),
+        JSON.stringify(unit ?? null)
+    );
+
     const apiBase = `http://127.0.0.1:${apiServer.address().port}`;
     const post = async (action, body) => {
         const response = await fetch(`${apiBase}/print/api/${action}`, {
@@ -143,8 +155,7 @@ try {
         if (!response.ok) throw new Error(result.error);
         return result;
     };
-    const editorPage = await fetch(`${apiBase}/print`);
-    check('print editor HTML is served', editorPage.ok && (await editorPage.text()).includes('See the paper. Change the break.'));
+    const editorPage = await fetch(`${apiBase}/print`);    check('print editor HTML is served', editorPage.ok && (await editorPage.text()).includes('See the paper. Change the break.'));
     const editor = await post('open', { path: sourcePath });
     check('editor opens exact pages and their targets', editor.pageCount === 2 && editor.targets.find((target) => target.id === 'second')?.page === 2);
     const second = editor.targets.find((target) => target.id === 'second');

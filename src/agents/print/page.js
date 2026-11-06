@@ -87,13 +87,13 @@ function insideUnbreakableBox(element) {
 // Content-addressed anchor: stable when other paragraphs move, and changed (so
 // the break is reported missing rather than silently landing elsewhere) when
 // the paragraph's own text is edited.
-function paragraphAnchor(text, taken) {
+function paragraphAnchor(text, taken, prefix = 'p') {
     let hash = 0x811c9dc5;
     for (let i = 0; i < text.length; i += 1) {
         hash ^= text.charCodeAt(i);
         hash = Math.imul(hash, 0x01000193) >>> 0;
     }
-    const base = `p-${hash.toString(16).padStart(8, '0')}`;
+    const base = `${prefix}-${hash.toString(16).padStart(8, '0')}`;
     if (!taken.has(base)) {
         taken.add(base);
         return base;
@@ -122,14 +122,53 @@ function wrapLooseText() {
     }
 }
 
-function anchorParagraphs() {
+// Where a page break is *reasonable*: at the start of a self-contained flow
+// unit, never inside one.
+//
+//   good   section, authored block/columns, heading, paragraph, quote box,
+//          table, code block, figure, list - each can move to the next page
+//          whole
+//   bad    inside any of those (a split box, a torn table row),
+//          between a heading and the content it introduces (orphaned heading),
+//          directly after an explicit page-break (already broken),
+//          before the very first thing on page 1 (nothing to push down)
+const BREAKABLE_UNITS = 'blockquote, pre, table, ul, ol, figure';
+const BREAKABLE_ALL = `p, h1, h2, h3, h4, h5, h6, ${BREAKABLE_UNITS}`;
+const HEADINGS = 'h1, h2, h3, h4, h5, h6';
+
+function startsCleanly(element) {
+    let previous = element.previousElementSibling;
+    while (previous && !previous.textContent.trim() && !previous.matches('img, hr, .nui-preset-page-break')) {
+        previous = previous.previousElementSibling;
+    }
+    if (!previous) return true;
+    // A break here would leave the heading alone at the bottom of the page.
+    if (previous.matches(HEADINGS)) return false;
+    // The source already forces a break at this point.
+    if (previous.classList.contains('nui-preset-page-break')) return false;
+    return true;
+}
+
+function labelOf(element) {
+    // innerText keeps line breaks between list items; textContent glues them
+    // together into an unreadable run.
+    const raw = (element.innerText ?? element.textContent) ?? '';
+    return raw.replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+function anchorBreakables() {
     const taken = new Set([...output.querySelectorAll('[id]')].map((element) => element.id));
-    for (const paragraph of output.querySelectorAll('p')) {
-        if (paragraph.id) continue;
-        const text = paragraph.textContent.replace(/\s+/g, ' ').trim();
+    for (const element of output.querySelectorAll(BREAKABLE_ALL)) {
+        if (element.id) continue;
+        const box = element.closest(BREAKABLE_UNITS);
+        if (box && box !== element) continue;
+        const text = element.textContent.replace(/\s+/g, ' ').trim();
         if (!text) continue;
-        if (insideUnbreakableBox(paragraph)) continue;
-        paragraph.id = paragraphAnchor(text, taken);
+        if (insideUnbreakableBox(element)) continue;
+        if (!startsCleanly(element)) continue;
+        const kind = element.matches(HEADINGS) ? 'heading' : element.tagName === 'P' ? 'paragraph' : 'unit';
+        element.dataset.breakAnchor = kind;
+        element.id = paragraphAnchor(text, taken, kind === 'heading' ? 'h' : kind === 'unit' ? 'u' : 'p');
     }
 }
 
@@ -168,7 +207,7 @@ async function main() {
 
     const chrome = extractChrome();
     wrapLooseText();
-    anchorParagraphs();
+    anchorBreakables();
     applyBreaks(options.breakBefore, 'nui-print-break-before');
     applyBreaks(options.breakAfter, 'nui-print-break-after');
 
@@ -187,28 +226,39 @@ async function main() {
     const targetElements = [...output.querySelectorAll('[id]')];
     const targets = targetElements.map((el) => ({
         id: el.id,
-        kind: el.classList.contains('nui-blocks-section') ? 'section'
-            : el.classList.contains('nui-blocks-block') ? 'block'
-                : el.classList.contains('nui-blocks-columns') ? 'columns'
-                    : el.classList.contains('nui-blocks-main') ? 'main'
-                        : el.tagName === 'P' ? 'paragraph' : 'element',
+        kind: el.dataset.breakAnchor
+            ?? (el.classList.contains('nui-blocks-section') ? 'section'
+                : el.classList.contains('nui-blocks-block') ? 'block'
+                    : el.classList.contains('nui-blocks-columns') ? 'columns'
+                        : el.classList.contains('nui-blocks-main') ? 'main' : 'element'),
         preset: [...el.classList].find((name) => name.startsWith('nui-preset-'))?.slice('nui-preset-'.length) ?? null,
         heading: el.querySelector(':is(h1,h2,h3)')?.textContent.trim() ?? null,
-        text: el.tagName === 'P' ? el.textContent.replace(/\s+/g, ' ').trim().slice(0, 80) : undefined
+        text: el.dataset.breakAnchor ? labelOf(el) : undefined
     }));
     if (job.options.mapTargets) {
-        const origins = new Map();
+        // One marker per position. Two markers a few pixels apart end up in the
+        // same text run in the PDF, interleaved, and no contiguous match can
+        // find either of them. Co-located targets share the first one's marker
+        // and inherit its measured geometry afterwards.
+        const marked = [];
         targets.forEach((target, index) => {
-            if (!['section', 'block', 'columns', 'paragraph'].includes(target.kind) || target.preset === 'page-break') return;
+            if (!['section', 'block', 'columns', 'heading', 'paragraph', 'unit'].includes(target.kind) || target.preset === 'page-break') return;
             const element = targetElements[index];
             const rect = element.getBoundingClientRect();
-            const origin = `${Math.round(rect.x)}:${Math.round(rect.y)}`;
-            const overlap = origins.get(origin) ?? 0;
-            origins.set(origin, overlap + 1);
+            // Two markers within a line of each other are merged into one text
+            // run by the PDF text layer, and the merged run loses characters -
+            // no query can match it. Anything inside one line therefore shares
+            // the first marker and inherits its measured geometry; they would
+            // collapse into a single break spot anyway.
+            const owner = marked.find((entry) => Math.abs(entry.x - rect.x) < 40 && Math.abs(entry.y - rect.y) < 24);
+            if (owner) {
+                target.owner = owner.index;
+                return;
+            }
+            marked.push({ index, x: rect.x, y: rect.y });
             target.marker = `MBTARGET_${job.token}_${index}`;
             const marker = document.createElement('span');
             marker.className = 'nui-print-target-marker';
-            marker.style.marginTop = `${(overlap + 1) * 2}px`;
             marker.textContent = target.marker;
             element.prepend(marker);
         });
