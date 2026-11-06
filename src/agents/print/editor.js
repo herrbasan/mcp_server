@@ -362,6 +362,10 @@ ui.sectionPages.addEventListener('change', () => {
 });
 ui.zoom.addEventListener('change', () => ui.pages.style.setProperty('--paper-width', `${ui.zoom.value}px`));
 ui.showAll.addEventListener('change', () => ui.pages.classList.toggle('show-all', ui.showAll.checked));
+// Off on load. Chromium restores form-control state across reloads, so the
+// markup default alone is not enough for a review-only toggle.
+ui.showAll.checked = false;
+ui.pages.classList.remove('show-all');
 ui.pdf.addEventListener('click', () => {
     const href = ui.pdf.dataset.href;
     if (href) window.open(href, '_blank', 'noopener');
