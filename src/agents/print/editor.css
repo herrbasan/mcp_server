@@ -18,8 +18,6 @@ body {
     min-width: 760px;
     background: var(--color-shade1);
 }
-button, input, select { font: inherit; }
-button:disabled, select:disabled, input:disabled { cursor: wait; opacity: .55; }
 [hidden] { display: none !important; }
 
 .app-header {
@@ -61,12 +59,20 @@ button:disabled, select:disabled, input:disabled { cursor: wait; opacity: .55; }
     font-size: var(--font-size-xsmall);
 }
 .print-options { display: flex; align-items: center; gap: var(--nui-space-half); flex: 1; flex-wrap: wrap; }
-/* nui-select hosts are block-level and would take the whole row. */
-.print-options nui-select { flex: 0 0 auto; width: 148px; }
-.print-options nui-select#orientation-select { width: 168px; }
+/* nui-select defaults to width: 100%; in a toolbar it should size to its own
+   content (its min-width still applies). */
+.print-options nui-select { width: auto; flex: 0 0 auto; }
 .check-option { margin-left: var(--nui-space-quarter); white-space: nowrap; }
 .document-actions { display: flex; align-items: center; gap: var(--nui-space-half); }
 .dirty-state { min-width: 70px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); text-align: right; }
+
+/* nui-button renders its label at --font-size-xsmall while nui-select, nui-input
+   and nui-checkbox render at --font-size-base, so a toolbar row reads as two
+   control families. Align the buttons up to the rest of the toolbar. */
+.open-form nui-button button,
+.document-actions nui-button button {
+    font-size: var(--font-size-base);
+}
 
 /* nui-select ignores the inner select's disabled state; the host carries it. */
 nui-select[disabled] { pointer-events: none; opacity: .55; }
@@ -102,7 +108,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding: var(--nui-space-half) var(--nui-space-quarter) var(--nui-space-double);
+    padding: var(--nui-space) var(--nui-space-half) var(--nui-space-double);
     border-right: var(--border-thickness) solid var(--color-shade4);
     background: var(--color-shade2);
     scrollbar-width: thin;
@@ -125,7 +131,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
     letter-spacing: .11em;
     text-transform: uppercase;
 }
-.thumbnails { display: grid; gap: var(--nui-space-half); }
+.thumbnails { display: grid; gap: var(--nui-space); }
 .thumbnail {
     display: block;
     width: 100%;
@@ -154,7 +160,7 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
 }
 .preview-heading strong { display: block; font-size: var(--font-size-small); font-weight: 600; }
 .preview-heading span { display: block; margin-top: 2px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
-.preview-heading nui-select { flex: 0 0 auto; width: 160px; }
+.preview-heading nui-select { width: auto; flex: 0 0 auto; }
 .pages {
     --paper-width: 760px;
     flex: 1;
@@ -191,8 +197,6 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
        neighbouring spots (roughly a line apart) do not overlap each other. */
     top: calc(var(--y) * 100% - 15px);
     height: 18px;
-    /* Global button styling would otherwise inflate the band. */
-    min-height: 0;
     padding: 0;
     border: 0;
     background: none;
