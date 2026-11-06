@@ -49,6 +49,31 @@ let GATEWAY = null;
 let STORAGE_ROOT = null;
 let CHUNKER = null;
 let CONTEXT_ENHANCER = null;
+// Set when a scan produces tombstones; cleared by a successful compaction. The
+// marker file makes that survive a restart, so a clean boot does not force a
+// 100 MB segment rewrite (which stalled unrelated requests for ~20 s).
+let compactionDirty = false;
+
+const COMPACTION_FLAG = () => path.resolve(PROJECT_ROOT, CONFIG?.dbPath || DEFAULTS.dbPath, 'compaction-pending');
+
+function markCompactionDirty() {
+    compactionDirty = true;
+    try {
+        fs.mkdirSync(path.dirname(COMPACTION_FLAG()), { recursive: true });
+        fs.writeFileSync(COMPACTION_FLAG(), new Date().toISOString(), 'utf8');
+    } catch (e) {
+        logger.warn(`[VDB] cannot write compaction marker: ${e.message}`, null, 'VDB');
+    }
+}
+
+function clearCompactionDirty() {
+    compactionDirty = false;
+    try {
+        fs.rmSync(COMPACTION_FLAG(), { force: true });
+    } catch (e) {
+        logger.warn(`[VDB] cannot clear compaction marker: ${e.message}`, null, 'VDB');
+    }
+}
 
 const INDEX_PATH = () => path.resolve(PROJECT_ROOT, CONFIG?.indexPath || path.join(CONFIG?.dbPath || DEFAULTS.dbPath, 'scan-index.json'));
 
@@ -509,7 +534,7 @@ function deleteFileFromIndex(docBaseId) {
     return true;
 }
 
-function listWatchedFiles(collectionName) {
+async function listWatchedFiles(collectionName) {
     const files = [];
     const collectionDefaults = CONFIG.ignore || [];
     if (collectionName === 'storage') {
@@ -522,20 +547,24 @@ function listWatchedFiles(collectionName) {
                     logger.warn(`[VDB] watchFolders entry not found: ${folderPath}`, null, 'VDB');
                     continue;
                 }
-                walk(folderPath, STORAGE_ROOT, files, { collection: 'storage', watchFolder: folder }, collectionDefaults);
+                await walk(folderPath, STORAGE_ROOT, files, { collection: 'storage', watchFolder: folder }, collectionDefaults);
             }
         } else {
-            walk(STORAGE_ROOT, STORAGE_ROOT, files, { collection: 'storage' }, collectionDefaults);
+            await walk(STORAGE_ROOT, STORAGE_ROOT, files, { collection: 'storage' }, collectionDefaults);
         }
     }
     return files;
 }
 
-function walk(dir, root, out, baseMeta, collectionDefaults) {
+// readdirSync here used to block the whole server: enumerating ~9.7k files took
+// ~20 s, and every HTTP request during it queued behind the scan (measured with
+// a 250 ms poll of a static file: p95 13 s, max 20 s). readdir is async, so the
+// walk yields between directories and requests keep moving.
+async function walk(dir, root, out, baseMeta, collectionDefaults) {
     const ignorePatterns = getIgnorePatternsForDir(dir, collectionDefaults);
     let entries;
     try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (e) {
         logger.warn(`[VDB] Cannot read directory ${dir}: ${e.message}`, null, 'VDB');
         return;
@@ -549,7 +578,7 @@ function walk(dir, root, out, baseMeta, collectionDefaults) {
             continue;
         }
         if (entry.isDirectory()) {
-            walk(full, root, out, baseMeta, collectionDefaults);
+            await walk(full, root, out, baseMeta, collectionDefaults);
         } else if (entry.isFile() && isTextFile(full)) {
             let metadata = { ...baseMeta };
             if (baseMeta.collection === 'storage') {
@@ -579,7 +608,7 @@ async function scanCollection(collectionName, onPhase = null) {
 
     onPhase?.(5, `Scanning ${collectionName}: listing files...`);
 
-    const watched = listWatchedFiles(collectionName);
+    const watched = await listWatchedFiles(collectionName);
     for (const { absolutePath, root, metadata } of watched) {
         const workStart = Date.now();
         const relPath = safeRel(root, absolutePath);
@@ -722,18 +751,30 @@ async function scanCollection(collectionName, onPhase = null) {
     // one. compact() then collects deleted IDs from the (now empty) memtable
     // and finds nothing to remove. The tombstones must be in the memtable
     // when compact() runs.
-    onPhase?.(95, `Scanning ${collectionName}: compacting...`);
-    try {
-        const before = coll.stats || {};
-        const compactResult = await coll.compact();
-        const after = coll.stats || {};
-        logger.info(`[VDB] ${collectionName}: compacted`, {
-            docsBefore: compactResult?.docsBefore ?? compactResult?.docs_before ?? before.totalSegmentDocs,
-            docsAfter: compactResult?.docsAfter ?? compactResult?.docs_after ?? after.totalSegmentDocs,
-            segmentsMerged: compactResult?.segmentsMerged ?? compactResult?.segments_merged ?? null
-        }, 'VDB');
-    } catch (e) {
-        logger.warn(`[VDB] ${collectionName}: compaction failed: ${e.message}`, null, 'VDB');
+    //
+    // Only run it when this scan actually produced tombstones. A no-op scan is
+    // the normal case every five minutes, and compacting anyway rewrote the
+    // 104 MB segment — enough disk saturation to stall unrelated HTTP requests
+    // for ~20 s. compactionDirty starts true so tombstones left behind by a
+    // failed compaction (or by a previous process) are collected once at boot.
+    if (stats.removed > 0 || stats.updated > 0) markCompactionDirty();
+    onPhase?.(95, `Scanning ${collectionName}: ${compactionDirty ? 'compacting...' : 'no compaction needed'}`);
+    if (compactionDirty) {
+        try {
+            const before = coll.stats || {};
+            const compactResult = await coll.compact();
+            const after = coll.stats || {};
+            clearCompactionDirty();
+            logger.info(`[VDB] ${collectionName}: compacted`, {
+                docsBefore: compactResult?.docsBefore ?? compactResult?.docs_before ?? before.totalSegmentDocs,
+                docsAfter: compactResult?.docsAfter ?? compactResult?.docs_after ?? after.totalSegmentDocs,
+                segmentsMerged: compactResult?.segmentsMerged ?? compactResult?.segments_merged ?? null
+            }, 'VDB');
+        } catch (e) {
+            logger.warn(`[VDB] ${collectionName}: compaction failed: ${e.message}`, null, 'VDB');
+        }
+    } else {
+        logger.debug(`[VDB] ${collectionName}: compaction skipped (no deletes or updates this scan)`, null, 'VDB');
     }
 
     onPhase?.(100, `Scanning ${collectionName}: +${stats.added} new, ~${stats.updated} updated, -${stats.removed} removed, ${stats.errors} errors`);
@@ -972,10 +1013,10 @@ function looksLikeFileQuery(query) {
 
 // Case-insensitive substring match over indexed storage file paths.
 // Basename-exact matches sort first.
-function findPathMatches(query) {
+async function findPathMatches(query) {
     const needle = query.trim().toLowerCase();
     const matches = [];
-    for (const { absolutePath, root, metadata } of listWatchedFiles('storage')) {
+    for (const { absolutePath, root, metadata } of await listWatchedFiles('storage')) {
         const rel = safeRel(root, absolutePath);
         const relLower = rel.toLowerCase();
         const isMatch = relLower === needle
@@ -1006,7 +1047,7 @@ export async function vdb_search(args, context) {
     // Filename-like queries bypass semantic search entirely — the embedding
     // of a filename carries no meaning, only noise.
     if (looksLikeFileQuery(args?.query)) {
-        const matches = findPathMatches(args.query).slice(0, FILE_MATCH_LIMIT);
+        const matches = (await findPathMatches(args.query)).slice(0, FILE_MATCH_LIMIT);
         if (matches.length > 0) {
             pr.done('Filename match');
             const lines = matches.map(m =>
@@ -1184,6 +1225,8 @@ export async function init(context) {
     const dbPath = path.resolve(PROJECT_ROOT, CONFIG.dbPath);
     fs.mkdirSync(dbPath, { recursive: true });
     DATABASE = new Database(dbPath);
+    compactionDirty = fs.existsSync(COMPACTION_FLAG());
+    if (compactionDirty) logger.info('[VDB] Tombstones pending from a previous run — the next scan will compact', null, 'VDB');
 
     // Pre-open configured collections so stats work
     for (const name of Object.keys(CONFIG.watch || {})) {
