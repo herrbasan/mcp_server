@@ -33,13 +33,12 @@ body {
 .document-bar {
     display: flex;
     align-items: center;
-    gap: var(--nui-space-half);
-    min-height: 62px;
+    gap: var(--nui-space);
     padding: var(--nui-space-quarter) var(--nui-space);
     border-bottom: var(--border-thickness) solid var(--color-shade4);
     background: var(--color-shade1);
 }
-.document-identity { min-width: 160px; max-width: 270px; }
+.document-identity { flex: 1; min-width: 0; }
 .document-identity strong, .document-identity span {
     display: block;
     overflow: hidden;
@@ -58,7 +57,7 @@ body {
    content (its min-width still applies). */
 .print-options nui-select { width: auto; flex: 0 0 auto; }
 .check-option { margin-left: var(--nui-space-quarter); white-space: nowrap; }
-.document-actions { display: flex; align-items: center; gap: var(--nui-space-half); }
+.document-actions { display: flex; align-items: center; gap: var(--nui-space-half); flex: 0 0 auto; }
 .dirty-state { min-width: 70px; color: var(--text-color-dim); text-align: right; }
 
 /* nui-select ignores the inner select's disabled state; the host carries it. */
@@ -136,14 +135,13 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--nui-space);
+    flex-wrap: wrap;
+    gap: var(--nui-space-half) var(--nui-space);
     min-height: 55px;
     padding: var(--nui-space-quarter) var(--nui-space);
     border-bottom: var(--border-thickness) solid var(--color-shade4);
     background: var(--color-shade1);
 }
-.preview-title strong { display: block; font-weight: 600; }
-.preview-title span { display: block; margin-top: 2px; color: var(--text-color-dim); }
 .preview-tools { display: flex; align-items: center; gap: var(--nui-space); flex: 0 0 auto; }
 .preview-heading nui-select { width: auto; flex: 0 0 auto; }
 .pages {
