@@ -66,12 +66,14 @@ body {
 .document-actions { display: flex; align-items: center; gap: var(--nui-space-half); }
 .dirty-state { min-width: 70px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); text-align: right; }
 
-/* nui-button renders its label at --font-size-xsmall while nui-select, nui-input
-   and nui-checkbox render at --font-size-base, so a toolbar row reads as two
-   control families. Align the buttons up to the rest of the toolbar. */
+/* nui-button renders its label at --font-size-xsmall in a --nui-space-double
+   (2rem) box, while nui-select and nui-input use --font-size-base in a
+   --nui-form-row-height (2.5rem) row. In a toolbar that reads as two control
+   families, so the buttons take the form-row rhythm. */
 .open-form nui-button button,
 .document-actions nui-button button {
     font-size: var(--font-size-base);
+    min-height: var(--nui-form-row-height);
 }
 
 /* nui-select ignores the inner select's disabled state; the host carries it. */
@@ -158,8 +160,8 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
     border-bottom: var(--border-thickness) solid var(--color-shade4);
     background: var(--color-shade1);
 }
-.preview-heading strong { display: block; font-size: var(--font-size-small); font-weight: 600; }
-.preview-heading span { display: block; margin-top: 2px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
+.preview-title strong { display: block; font-size: var(--font-size-small); font-weight: 600; }
+.preview-title span { display: block; margin-top: 2px; color: var(--text-color-dim); font-size: var(--font-size-xsmall); }
 .preview-heading nui-select { width: auto; flex: 0 0 auto; }
 .pages {
     --paper-width: 760px;
