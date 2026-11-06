@@ -154,12 +154,14 @@ function rulePositions() {
 function spotsFor(pageNumber, rules) {
     const ordered = orderedTargets();
     const spots = [];
+    // Nothing precedes the document's first target, so a break at that position
+    // only produces an empty page. Skip the position, not just that one target:
+    // its heading (and anything else co-located) sits at the same y.
+    const firstPos = ordered.length ? ordered[0].page + ordered[0].y : null;
     for (const target of ordered) {
         if (target.page !== pageNumber) continue;
-        // Nothing precedes the document's first target, so a break there only
-        // produces an empty page.
-        if (target === ordered[0]) continue;
         const pos = pageNumber + target.y;
+        if (firstPos !== null && Math.abs(pos - firstPos) < SAME_SPOT) continue;
         const twin = spots.find((spot) => Math.abs(spot.pos - pos) < SAME_SPOT);
         if (twin) {
             if (twin.kind !== 'section' && target.kind === 'section') Object.assign(twin, { id: target.id, kind: target.kind, heading: target.heading, text: target.text });

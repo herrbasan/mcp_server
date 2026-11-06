@@ -268,9 +268,14 @@ async function main() {
             const marker = document.createElement('span');
             marker.className = 'nui-print-target-marker';
             marker.textContent = target.marker;
-            // Inside the element, so it travels with it when a break pushes the
-            // element to another page. Inserting it before the element would
-            // leave the marker behind on the old page.
+            // Anchored to the element itself: it rides along when a break pushes
+            // the element to another page. Static position is not reliable (in a
+            // flex or grid box it is not the element's own top-left), and screen
+            // coordinates are meaningless in the print layout, so the element
+            // becomes the containing block instead.
+            if (getComputedStyle(element).position === 'static') element.style.position = 'relative';
+            marker.style.left = '0';
+            marker.style.top = '0';
             element.prepend(marker);
         });
     }

@@ -365,6 +365,7 @@ async function locateTargets(pdfBytes, targets) {
     if (!marked.length) return null;
 
     const native = require('../../../nConvert/napi/index.js');
+    if (process.env.PRINT_PROBE_PDF) fs.writeFileSync(process.env.PRINT_PROBE_PDF, pdfBytes);
     const found = JSON.parse(await native.searchText(
         pdfBytes,
         pdfiumDir(),
@@ -372,7 +373,14 @@ async function locateTargets(pdfBytes, targets) {
         conf.maxPages + 1
     ));
     const boxes = new Map(found.pages.map((box) => [box.page, box]));
-    const hits = new Map(found.hits.map((hit) => [hit.query, hit]));
+    // First match wins. Marker texts share their whole prefix and differ only
+    // in a trailing index, so "_1" also matches inside "_10".."_19"; taking the
+    // last hit let a later spurious match overwrite the real one and moved a
+    // target to an unrelated page.
+    const hits = new Map();
+    for (const hit of found.hits) {
+        if (!hits.has(hit.query)) hits.set(hit.query, hit);
+    }
 
     for (const target of marked) {
         const hit = hits.get(target.marker);
@@ -386,7 +394,6 @@ async function locateTargets(pdfBytes, targets) {
 
     const missing = marked.filter((target) => !target.page);
     if (missing.length) {
-        if (process.env.PRINT_PROBE_PDF) fs.writeFileSync(process.env.PRINT_PROBE_PDF, pdfBytes);
         throw new Error(`print.render: could not locate semantic target(s) in the PDF text layer: ${missing.map((target) => target.id).join(', ')}`);
     }
 
@@ -398,6 +405,11 @@ async function locateTargets(pdfBytes, targets) {
         target.y = source.y;
         target.pageWidth = source.pageWidth;
         target.pageHeight = source.pageHeight;
+    }
+    if (process.env.PRINT_DEBUG_MARKERS) {
+        console.log('[print] markers', JSON.stringify(targets
+            .filter((target) => target.marker || target.owner !== undefined)
+            .map((target) => `${target.id}|${target.marker ? 'marked' : `owner:${target.owner}`}|p${target.page}:${target.y}`)));
     }
     return found.pages.length;
 }
