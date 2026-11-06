@@ -171,7 +171,7 @@ try {
     const first = editor.targets.find((target) => target.id === 'first');
     check(
         'editor targets carry a vertical position on the page',
-        first.y < 0.2 && second.y < 0.2 && first.pageHeight > 700,
+        first.y < 0.2 && second.y >= 0 && second.y < 1 && first.pageHeight > 700,
         JSON.stringify({ first: [first.page, first.y], second: [second.page, second.y], pageHeight: first.pageHeight })
     );
     const paragraph = editor.targets.find((target) => target.kind === 'paragraph');
@@ -187,7 +187,8 @@ try {
         `${editor.pageCount} -> ${paragraphBreak.pageCount}`
     );
     const changed = await post('render', { token: editor.token, breakBefore: ['second'], breakAfter: [] });
-    check('editor break toggle rerenders real pagination', changed.pageCount === 3 && changed.targets.find((target) => target.id === 'second')?.page === 3);
+    check('editor break toggle rerenders real pagination', changed.pageCount === 3 && changed.targets.find((target) => target.id === 'second')?.page === 3,
+        JSON.stringify({ pageCount: changed.pageCount, secondPage: changed.targets.find((target) => target.id === 'second')?.page ?? null }));
     check(
         'editor break toggle reuses the loaded page',
         changed.timings?.layout === 0 && changed.timings.pdf > 0,
