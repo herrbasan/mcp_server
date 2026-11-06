@@ -72,7 +72,10 @@ function updateActions() {
     for (const host of [ui.styleSelect, ui.formatSelect, ui.orientationSelect, ui.zoomSelect]) {
         host.toggleAttribute('disabled', state.busy);
     }
-    for (const button of ui.pages.querySelectorAll('button')) button.disabled = state.busy;
+    // Break spots deliberately stay enabled: nui_wc2's theme gives disabled
+    // buttons opacity .4, which made every spot flash visible during a render.
+    // clickSpot already ignores clicks while busy.
+    ui.pages.classList.toggle('busy', state.busy);
 }
 
 function setBusy(busy, message = '') {

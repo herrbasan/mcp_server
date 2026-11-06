@@ -219,6 +219,10 @@ nui-select[disabled] { pointer-events: none; opacity: .55; }
    cover the text the line points at. */
 .pages.show-all .break-handle { transform: translateY(-100%); margin-top: -2px; }
 .break-spot:disabled { cursor: wait; }
+/* A disabled break spot must stay invisible: nui_wc2's theme paints disabled
+   buttons at opacity .4, which would reveal every spot at once. */
+.break-spot:disabled { opacity: 0; }
+.pages.busy .break-spot { cursor: wait; }
 .break-rule {
     position: absolute;
     left: 0;
