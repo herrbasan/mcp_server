@@ -93,6 +93,16 @@ zero provider calls.
 - **Reading order** follows columns: full-width blocks (titles, rules) keep their
   place, and the narrow blocks between them are read down one column, then the
   next.
+- **Tables** are read as grids by the geometry the page already carries: the
+  column starts are where the run's lines begin plus the wide gutters most lines
+  share, and rows are the lines further apart than the wrapped lines inside a
+  cell. Measured on the GSB table: rows sit 21.1 pt apart, wrapped cell lines
+  12.9 pt, so the smallest gap × 1.35 separates them. A cell that wraps joins its
+  own row and column; a caption (`Tabelle`/`Abbildung`/`Figure` + number) never
+  starts or joins a grid.
+- **Lists**: bullet and number markers (`•`, `-`, `1.`, `a)`) become list blocks,
+  with wrapped lines appended to the item they belong to. A section number
+  (`5.1.2 Cache`) is not a list marker.
 - **Word spaces are measured, not assumed.** Loose bounds already reach the
   advance on this corpus, so intra-word gaps sit at 0.00 em and space gaps at
   0.18–0.26 em; the threshold is 0.10 em (`probe_word_gap_distribution` records
@@ -100,10 +110,6 @@ zero provider calls.
 - **PDFium is required** for this pass. Without `agents.nconvert.pdfiumPath` the
   conversion falls back to flat plain-text extraction and says so with the
   `pdf-layout-unavailable` warning.
-- **Known gaps** (next increments): tables whose cells wrap across several lines
-  still ship as paragraphs — the aligned-cell fallback only reads one-line rows;
-  bullet lists are not yet list blocks; column detection is presence-tested but
-  not yet validated on a real multi-column layout.
 
 ## Deep conversion (spec §2.5) — structure from the drawing
 

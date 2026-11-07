@@ -139,13 +139,15 @@ Acceptance, measured on `H:\Ingest_TestFiles\GSB_11_Anwendungshandbuch_11.2.4.pd
 or more columns preserved in reading order, figures in order, **zero provider
 calls**, and total wall time < 60 s.
 
-> **In progress 2026-11-07 — first half landed** (`nConvert` 0.10.0,
-> `src/pdf_layout.rs`). Measured on the full 353-page handbook: 4.1 s wall, zero
-> provider calls, 367 headings with numbered hierarchy (1 / 5.1 / 5.1.1),
-> contents pages and running headers/footers removed, column reading order
-> implemented. Not yet met: **tables with correct cell ownership** (rows whose
-> cells wrap over several lines still ship as paragraphs), bullet lists, and a
-> validation pass on a real multi-column layout.
+> **Done 2026-11-07** (`nConvert` 0.10.x, `src/pdf_layout.rs`). Measured on the
+> full 353-page handbook: 3.8 s wall, zero provider calls, 265 headings with the
+> numbered hierarchy, contents pages and running headers/footers removed, 41
+> tables read as grids (column starts from line beginnings + shared gutters, rows
+> from the spacing difference between rows and wrapped cell lines), 787 lists.
+> Column reading order is covered by a geometry test
+> (`columns_are_read_down_then_across`) because the sample corpus holds no
+> multi-column document; the table grid is covered by
+> `wrapped_table_cells_keep_their_row_and_column`.
 
 **P2 — scans.** For `H:\Ingest_TestFiles\DKV_Bescheinigung für FA 2022.pdf`:
 page text from OCR, table cells correct, and the amount `325,50 EUR` present
