@@ -7,6 +7,37 @@ const FORMATS = new Set(['A4', 'A5', 'Letter', 'Legal']);
 const STYLES = new Set(['editorial', 'minimal', 'classic']);
 const ORIENTATIONS = new Set(['portrait', 'landscape']);
 const LENGTH = /^\d+(?:\.\d+)?(?:mm|cm|in|px)$/;
+const CHROME_DEFAULTS = { background: '#e2e6e9', color: '#58646c', secondary: '#737d84' };
+const CHROME_KEYS = new Set(['background', 'color']);
+
+function colorValue(value, name) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text || !CSS.supports('color', text)) {
+        throw new Error(`print.render: ${name} must be a valid CSS colour, got ${JSON.stringify(value)}`);
+    }
+    return text;
+}
+
+// print.chrome is document-defined. An authored `color` is the whole chrome's
+// text colour — primary header line, secondary header lines, footer labels and
+// page numbers — so it replaces the muted default rather than only the primary
+// one. Unknown keys fail loudly: a typo would otherwise restyle nothing.
+function resolveChrome(authored) {
+    if (authored === undefined) return { ...CHROME_DEFAULTS };
+    if (!authored || typeof authored !== 'object' || Array.isArray(authored)) {
+        throw new Error('print.render: print.chrome must be a map with background and/or color');
+    }
+    const unknown = Object.keys(authored).filter((key) => !CHROME_KEYS.has(key));
+    if (unknown.length) throw new Error(`print.render: print.chrome has unknown key(s): ${unknown.join(', ')}`);
+    const color = authored.color === undefined ? CHROME_DEFAULTS.color : colorValue(authored.color, 'print.chrome.color');
+    return {
+        background: authored.background === undefined
+            ? CHROME_DEFAULTS.background
+            : colorValue(authored.background, 'print.chrome.background'),
+        color,
+        secondary: authored.color === undefined ? CHROME_DEFAULTS.secondary : color
+    };
+}
 
 function resolveBreakIds(value, name) {
     if (!Array.isArray(value) || value.some((id) => typeof id !== 'string' || !id.trim())) {
@@ -52,6 +83,7 @@ function resolveOptions(frontmatter) {
         format: normalizedFormat,
         orientation,
         margin,
+        chrome: resolveChrome(authored.chrome),
         sectionPages: Boolean(requested.sectionPages ?? authored.sectionPages ?? false),
         breakBefore: resolveBreakIds(requested.breakBefore ?? authored.breakBefore ?? [], 'breakBefore'),
         breakAfter: resolveBreakIds(requested.breakAfter ?? authored.breakAfter ?? [], 'breakAfter')

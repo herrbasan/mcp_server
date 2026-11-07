@@ -98,6 +98,19 @@ footer paragraphs are laid out left/right. `{{page}}` and
 `{{pages}}` inside chrome become Chromium's native `pageNumber`/`totalPages`
 fields, so `Seite {{page}} von {{pages}}` is resolved while printing.
 
+Chrome colours are **document-defined**, never a render argument:
+frontmatter `print.chrome` takes `background` and `color` (any value
+`CSS.supports('color', …)` accepts; quote hex values in YAML, since `#` starts a
+comment). A configured `color` is the whole chrome's text colour — primary
+header line, secondary header lines, footer labels and page numbers — while the
+built-in defaults keep the muted `#737d84` for secondary lines. Documents
+without `print.chrome` render exactly as before (`#e2e6e9` surface, `#58646c`
+text, `#737d84` secondary). Borders, spacing, sizing and bleed are unaffected;
+the resolved triple (`background`, `color`, `secondary`) is recorded in
+`render.json` under `options.chrome`. An invalid colour, an unknown
+`print.chrome` key, or a `chrome` render argument fails the render loudly
+instead of emitting broken CSS.
+
 Chrome is measured at the actual page width before printing. Top/bottom margins
 are treated as minimums and grow to fit the chrome plus Chromium's native inset
 allowance (`chromeInsetMm`, default 5 mm) and the body gap (`chromeGapMm`,
@@ -155,6 +168,9 @@ print:
   style: editorial
   format: A4
   orientation: portrait
+  chrome:
+    background: "#f4f5f6"
+    color: "#000000"
   sectionPages: false
   breakBefore:
     - berufserfahrung

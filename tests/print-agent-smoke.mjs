@@ -70,11 +70,56 @@ try {
     const cleanPdf = JSON.parse(await native.convert(fs.readFileSync(path.join(root, manifest.pdf)), 'document.pdf', '{}'));
     check('mapping markers are absent from the final PDF', !cleanPdf.page_texts.some((text) => text.includes('MBTARGET')));
     check('preview PNGs are written', manifest.previews.every((preview) => fs.existsSync(path.join(root, preview.path))));
-    const footerTemplate = chromeTemplate(manifest.chrome.footer, 'footer', manifest.options.margin, manifest.options.style);
+    const footerTemplate = chromeTemplate(manifest.chrome.footer, 'footer', manifest.options.margin, manifest.options.style, manifest.options.chrome);
     check('page placeholders become Chromium native fields', footerTemplate.includes('class="pageNumber"') && footerTemplate.includes('class="totalPages"'));
     check('bleed chrome uses the light gray surface', footerTemplate.includes('background:#e2e6e9!important'));
-    const headerTemplate = chromeTemplate(manifest.chrome.header, 'header', manifest.options.margin, manifest.options.style);
+    const headerTemplate = chromeTemplate(manifest.chrome.header, 'header', manifest.options.margin, manifest.options.style, manifest.options.chrome);
     check('chrome bleed offsets the native inset', headerTemplate.includes('margin-top:-5mm') && footerTemplate.includes('margin-bottom:-5mm'));
+    check(
+        'unconfigured chrome resolves to the built-in colours',
+        manifest.options.chrome?.background === '#e2e6e9' && manifest.options.chrome?.color === '#58646c' && manifest.options.chrome?.secondary === '#737d84',
+        JSON.stringify(manifest.options.chrome ?? null)
+    );
+
+    const themedPath = path.join(root, 'themed-chrome.md');
+    fs.writeFileSync(themedPath, source.replace('title: Print fixture', 'title: Print fixture\nprint:\n  chrome:\n    background: "#f4f5f6"\n    color: "#000000"'), 'utf8');
+    const themed = await print_render({ path: themedPath, preview: false });
+    const themedManifestPath = themed.content[0].text.match(/manifest\s+(\S+)/)[1];
+    const themedManifest = JSON.parse(fs.readFileSync(path.join(root, themedManifestPath), 'utf8'));
+    check(
+        'document chrome colours are recorded in render.json',
+        themedManifest.options.chrome?.background === '#f4f5f6' && themedManifest.options.chrome?.color === '#000000' && themedManifest.options.chrome?.secondary === '#000000',
+        JSON.stringify(themedManifest.options.chrome ?? null)
+    );
+    const themedHeader = chromeTemplate(themedManifest.chrome.header, 'header', themedManifest.options.margin, themedManifest.options.style, themedManifest.options.chrome);
+    const themedFooter = chromeTemplate(themedManifest.chrome.footer, 'footer', themedManifest.options.margin, themedManifest.options.style, themedManifest.options.chrome);
+    check(
+        'configured chrome colours reach both header and footer',
+        themedHeader.includes('background:#f4f5f6!important') && themedHeader.includes('color:#000000') &&
+        themedFooter.includes('background:#f4f5f6!important') && themedFooter.includes('color:#000000')
+    );
+    check(
+        'configured chrome colour replaces the muted secondary text colour',
+        themedHeader.includes('p+p{margin-top:1mm;color:#000000;font-size:7.5px}') && !themedHeader.includes('#737d84')
+    );
+
+    const badColorPath = path.join(root, 'bad-chrome.md');
+    fs.writeFileSync(badColorPath, source.replace('title: Print fixture', 'title: Print fixture\nprint:\n  chrome:\n    color: "not-a-colour"'), 'utf8');
+    let badColor = false;
+    try {
+        await print_render({ path: badColorPath, preview: false });
+    } catch (error) {
+        badColor = /print\.chrome\.color/.test(error.message);
+    }
+    check('invalid chrome colour fails loudly', badColor);
+
+    let chromeArg = false;
+    try {
+        await print_render({ path: sourcePath, chrome: { color: '#000000' }, preview: false });
+    } catch (error) {
+        chromeArg = /document-defined/.test(error.message);
+    }
+    check('chrome cannot be overridden per render', chromeArg);
 
     const broken = await print_render({ path: sourcePath, name: 'fixture-break', breakBefore: ['second'], pages: [3] });
     const brokenManifestPath = broken.content[0].text.match(/manifest\s+(\S+)/)[1];

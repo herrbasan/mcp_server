@@ -274,8 +274,11 @@ async function rasterize(pdfPath, folder, pages, width) {
     });
 }
 
-export function chromeTemplate(html, slot, margin, style) {
+export function chromeTemplate(html, slot, margin, style, chrome) {
     if (!html) return '<div></div>';
+    if (!chrome?.background || !chrome?.color || !chrome?.secondary) {
+        throw new Error('print: resolved chrome colours (background, color, secondary) are required to build the header/footer template');
+    }
     // A background on the template's html/body paints the entire PDF page and
     // hides the document. Only the chrome containers may carry a background.
     const font = style === 'classic' ? 'Georgia,serif' : style === 'minimal' ? 'Arial,sans-serif' : '"Segoe UI",Arial,sans-serif';
@@ -283,12 +286,12 @@ export function chromeTemplate(html, slot, margin, style) {
         .replaceAll('{{pages}}', '<span class="totalPages"></span>')
         .replaceAll('{{page}}', '<span class="pageNumber"></span>');
     return `<!doctype html><html><head><style>
-html,body{margin:0;padding:0;background:transparent;font-family:${font};font-size:8px;color:#58646c;print-color-adjust:exact;-webkit-print-color-adjust:exact}
-.print-chrome{box-sizing:border-box;width:100%;line-height:1.25;letter-spacing:.025em;background:#e2e6e9!important}
+html,body{margin:0;padding:0;background:transparent;font-family:${font};font-size:8px;color:${chrome.color};print-color-adjust:exact;-webkit-print-color-adjust:exact}
+.print-chrome{box-sizing:border-box;width:100%;line-height:1.25;letter-spacing:.025em;background:${chrome.background}!important}
 .print-chrome *{box-sizing:border-box;margin:0;padding:0;border:0;font:inherit;color:inherit;background:transparent}
-.print-chrome .header,.print-chrome .footer{width:100%;padding:3mm ${margin.right} 3mm ${margin.left};background:#e2e6e9!important}
+.print-chrome .header,.print-chrome .footer{width:100%;padding:3mm ${margin.right} 3mm ${margin.left};background:${chrome.background}!important}
 .print-chrome .header{text-align:left;border-bottom:.6px solid #c4cfd6;margin-top:-${conf.chromeInsetMm}mm;padding-top:calc(3mm + ${conf.chromeInsetMm}mm)}
-.print-chrome .header p+p{margin-top:1mm;color:#737d84;font-size:7.5px}
+.print-chrome .header p+p{margin-top:1mm;color:${chrome.secondary};font-size:7.5px}
 .print-chrome .header p:first-child{font-size:9px;font-weight:600}
 .print-chrome .footer{display:flex;justify-content:space-between;gap:12px;text-align:left;border-top:.6px solid #d2d9de;margin-bottom:-${conf.chromeInsetMm}mm;padding-bottom:calc(3mm + ${conf.chromeInsetMm}mm)}
 .print-chrome .footer .nui-blocks-block{display:flex;justify-content:space-between;gap:12px;width:100%}
@@ -322,7 +325,7 @@ async function measureChrome(browser, html, slot, options) {
     const measure = await browser.newPage();
     try {
         await measure.setViewport({ width: Math.round(pageWidth * PX_PER_MM), height: 600 });
-        await measure.setContent(chromeTemplate(html, slot, options.margin, options.style), { waitUntil: 'load' });
+        await measure.setContent(chromeTemplate(html, slot, options.margin, options.style, options.chrome), { waitUntil: 'load' });
         const height = await measure.$eval('.print-chrome', (element) => element.getBoundingClientRect().height);
         // Negative margins extend the bleed visually but do not cancel the added
         // padding in getBoundingClientRect(); remove that padding for page fitting.
@@ -429,8 +432,8 @@ async function printPdf(page, rendered) {
         printBackground: true,
         preferCSSPageSize: true,
         displayHeaderFooter: Boolean(rendered.chrome.header || rendered.chrome.footer),
-        headerTemplate: chromeTemplate(rendered.chrome.header, 'header', rendered.options.margin, rendered.options.style),
-        footerTemplate: chromeTemplate(rendered.chrome.footer, 'footer', rendered.options.margin, rendered.options.style)
+        headerTemplate: chromeTemplate(rendered.chrome.header, 'header', rendered.options.margin, rendered.options.style, rendered.options.chrome),
+        footerTemplate: chromeTemplate(rendered.chrome.footer, 'footer', rendered.options.margin, rendered.options.style, rendered.options.chrome)
     });
 }
 
@@ -646,6 +649,9 @@ export async function createRenderSession(args = {}) {
 }
 
 export async function renderDocument(args = {}) {
+    if (args.chrome !== undefined) {
+        throw new Error('print.render: chrome is document-defined — set print.chrome in the document frontmatter, not as a render argument');
+    }
     const preview = args.preview !== false;
     const requestedPages = pageSelection(args.pages);
     if (!preview && requestedPages) throw new Error('print.render: pages requires preview=true');
@@ -681,6 +687,7 @@ export async function print_render(args = {}) {
         `pages     ${manifest.pageCount ?? 'not rasterized (preview=false)'}`,
         `format    ${manifest.options.format} ${manifest.options.orientation}`,
         `style     ${manifest.options.style}`,
+        `chrome    background=${manifest.options.chrome.background} color=${manifest.options.chrome.color}${manifest.options.chrome.secondary === manifest.options.chrome.color ? '' : ` secondary=${manifest.options.chrome.secondary}`}`,
         `margins   top=${manifest.options.margin.top} bottom=${manifest.options.margin.bottom} (auto-fitted to chrome)`,
         `breaks    before=[${manifest.breakBefore.join(', ')}] after=[${manifest.breakAfter.join(', ')}] sectionPages=${manifest.options.sectionPages}`
     ];
