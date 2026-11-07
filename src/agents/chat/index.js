@@ -116,6 +116,13 @@ function historyBytes(messages) {
     return Buffer.byteLength(JSON.stringify(messages), 'utf8');
 }
 
+// slice(-0) is slice(0): the whole array. `keep: 0` must empty the history, so
+// it needs its own branch — this is what made chat.compact "clear" (default
+// keep 0) report ok while leaving every message in place (#63).
+function keepLast(messages, count) {
+    return count === 0 ? [] : messages.slice(-count);
+}
+
 async function assertKnownModel(model) {
     const models = await GATEWAY.listModels('chat');
     if (!Array.isArray(models) || !models.some(m => m.id === model)) {
@@ -685,7 +692,7 @@ export async function chat_compact(args, ctx) {
     if (strategy === 'clear') {
         const keep = args.keep ?? 0;
         if (typeof keep !== 'number' || keep < 0) throw new Error('chat_compact: keep must be a non-negative number');
-        session.messages = session.messages.slice(-Math.floor(keep));
+        session.messages = keepLast(session.messages, Math.floor(keep));
         persist(session);
         return toMcp({ ok: true, name, strategy, messageCount: session.messages.length, historyBytes: historyBytes(session.messages) });
     }
@@ -694,7 +701,7 @@ export async function chat_compact(args, ctx) {
         if (typeof args.keep !== 'number' || args.keep < 0) {
             throw new Error('chat_compact: truncate requires keep (number of last messages to keep)');
         }
-        session.messages = session.messages.slice(-Math.floor(args.keep));
+        session.messages = keepLast(session.messages, Math.floor(args.keep));
         persist(session);
         return toMcp({ ok: true, name, strategy, messageCount: session.messages.length, historyBytes: historyBytes(session.messages) });
     }
