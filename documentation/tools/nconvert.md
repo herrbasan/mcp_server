@@ -70,6 +70,41 @@ vision i/n (+ coverage) → retry → summarizing`. Jobs survive restarts
 cooperative — queued jobs immediately, running jobs at the next checkpoint
 (between steps or page chunks). History retention: newest 200 finished jobs.
 
+## PDF structure is measured, not guessed (Tier 1)
+
+Born-digital PDFs carry their own layout. `depth: "mechanical"` reads it: PDFium
+hands over every glyph with its box, font size and weight, and `pdf_layout.rs`
+derives lines, blocks, heading levels, column reading order and — by the
+aligned-cell fallback, not by drawing inspection — tables. No model, no OCR, no
+network. Measured on the 353-page GSB handbook: **~4 s** total, 367 headings,
+zero provider calls.
+
+- **Headings** come from numbering first (`1` → H1, `5.1` → H2, `5.1.1` → H3) and
+  from the font-size ladder second (largest heading size = H1). A line longer
+  than 100 characters is never a heading.
+- **Contents pages** are recognised as a whole (two of five lines ending in a
+  page number) and their entries stay paragraphs: the leading number there is a
+  page reference, not a heading number. Dot leaders collapse to a space — the
+  page numbers survive.
+- **Running headers and footers** are removed: a line that repeats at the same
+  vertical band on 40 % of the pages, differing only in its digits, is furniture.
+  A page holding nothing else keeps its lines, so a divider never becomes a
+  phantom scan.
+- **Reading order** follows columns: full-width blocks (titles, rules) keep their
+  place, and the narrow blocks between them are read down one column, then the
+  next.
+- **Word spaces are measured, not assumed.** Loose bounds already reach the
+  advance on this corpus, so intra-word gaps sit at 0.00 em and space gaps at
+  0.18–0.26 em; the threshold is 0.10 em (`probe_word_gap_distribution` records
+  the histogram).
+- **PDFium is required** for this pass. Without `agents.nconvert.pdfiumPath` the
+  conversion falls back to flat plain-text extraction and says so with the
+  `pdf-layout-unavailable` warning.
+- **Known gaps** (next increments): tables whose cells wrap across several lines
+  still ship as paragraphs — the aligned-cell fallback only reads one-line rows;
+  bullet lists are not yet list blocks; column detection is presence-tested but
+  not yet validated on a real multi-column layout.
+
 ## Deep conversion (spec §2.5) — structure from the drawing
 
 Mechanical conversion reads what a file *declares*. Technical documents keep much of

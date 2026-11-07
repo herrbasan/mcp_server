@@ -139,6 +139,14 @@ Acceptance, measured on `H:\Ingest_TestFiles\GSB_11_Anwendungshandbuch_11.2.4.pd
 or more columns preserved in reading order, figures in order, **zero provider
 calls**, and total wall time < 60 s.
 
+> **In progress 2026-11-07 — first half landed** (`nConvert` 0.10.0,
+> `src/pdf_layout.rs`). Measured on the full 353-page handbook: 4.1 s wall, zero
+> provider calls, 367 headings with numbered hierarchy (1 / 5.1 / 5.1.1),
+> contents pages and running headers/footers removed, column reading order
+> implemented. Not yet met: **tables with correct cell ownership** (rows whose
+> cells wrap over several lines still ship as paragraphs), bullet lists, and a
+> validation pass on a real multi-column layout.
+
 **P2 — scans.** For `H:\Ingest_TestFiles\DKV_Bescheinigung für FA 2022.pdf`:
 page text from OCR, table cells correct, and the amount `325,50 EUR` present
 (it exists on the page; the current text layer lost it).

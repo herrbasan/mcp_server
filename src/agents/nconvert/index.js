@@ -996,7 +996,11 @@ async function runIngestion(job, progress = null) {
         max_output_bytes: conf.maxOutputMb * 1024 * 1024,
         max_expanded_bytes: conf.maxExpandedMb * 1024 * 1024,
         max_table_rows: conf.maxTableRows,
-        max_cells: 1000000
+        max_cells: 1000000,
+        // Born-digital PDF structure is measured from glyph geometry with
+        // PDFium (reassessment §5 Tier 1) — not guessed from plain text.
+        pdfium_path: pdfiumDir(),
+        max_layout_pages: conf.maxLayoutPages ?? 0
     });
 
     const envelope = await nativePool.run({ op: 'convert', source: absolute, filename, optionsJson });
