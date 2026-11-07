@@ -1,4 +1,32 @@
 import '/print/nui/nui.js';
+import { resolveHostedParent } from '/print/host-events.js';
+
+const hostConfig = await fetch('/print/host-config.json').then(response => response.json());
+const hostedParent = resolveHostedParent(location.search, hostConfig.parentOrigins);
+if (!hostedParent && (new URLSearchParams(location.search).has('hostInstanceId') || new URLSearchParams(location.search).has('parentOrigin'))) {
+    console.warn('[Print] hosted notifications disabled: invalid or unapproved host correlation');
+}
+
+function notifyHost(type, details = {}) {
+    if (!hostedParent || window.parent === window) return;
+    window.parent.postMessage({
+        source: 'workshop-app',
+        version: 1,
+        app: 'print',
+        instance: hostedParent.instance,
+        type,
+        ...details
+    }, hostedParent.parentOrigin);
+}
+
+window.addEventListener('message', (event) => {
+    if (!hostedParent || event.origin !== hostedParent.parentOrigin || event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.source !== 'chat-host' || data.version !== 1 || data.app !== 'print' || data.instance !== hostedParent.instance) return;
+    if (data.type === 'event-result' && data.eventType === 'saved' && data.accepted === false) {
+        showNotice(`Print settings saved, but chat notification failed: ${data.error || 'unknown host error'}`, 'error');
+    }
+});
 
 const $ = (id) => document.getElementById(id);
 const ui = {
@@ -20,7 +48,8 @@ const state = {
     pdfUrl: '#',
     revision: 0,
     busy: false,
-    externallyChanged: false
+    externallyChanged: false,
+    path: null
 };
 
 function element(tag, className, text) {
@@ -297,9 +326,17 @@ async function openDocument(path) {
         ui.workspace.hidden = false;
         ui.empty.hidden = true;
         ui.name.textContent = path.split(/[\\/]/).pop();
+        state.path = path;
         ui.pathLabel.textContent = path;
         ui.pathLabel.title = path;
-        history.replaceState(null, '', `/print?path=${encodeURIComponent(path)}`);
+        const nextUrl = new URL(location.href);
+        nextUrl.search = '';
+        nextUrl.searchParams.set('path', path);
+        if (hostedParent) {
+            nextUrl.searchParams.set('hostInstanceId', hostedParent.instance);
+            nextUrl.searchParams.set('parentOrigin', hostedParent.parentOrigin);
+        }
+        history.replaceState(null, '', nextUrl);
         showNotice(`Rendered ${result.pageCount} page${result.pageCount === 1 ? '' : 's'}${timingLabel(result)}. Hover a page and click a spot to place a break.`);
     } catch (error) {
         showNotice(error.message, 'error');
@@ -330,17 +367,27 @@ function markdownWithPrintOptions() {
 async function save() {
     if (state.busy || !isDirty()) return;
     setBusy(true, 'Saving print settings to the document…');
+    let saved = false;
     try {
         const markdown = markdownWithPrintOptions();
         const result = await api('save', { token: state.token, markdown, baseSha256: state.sourceSha256 });
         state.source = result.source;
         state.sourceSha256 = result.sourceSha256;
         state.savedOptions = editableOptions();
+        saved = true;
+
         const rendered = await api('render', { token: state.token, ...editableOptions() });
         applyRender(rendered);
         showNotice('Saved print settings to the document and verified the rendered pages.');
+        try {
+            notifyHost('saved', { path: state.path, sourceSha256: state.sourceSha256, pdfUrl: state.pdfUrl });
+        } catch (error) {
+            showNotice(`Print settings saved, but chat notification failed: ${error.message}`, 'error');
+        }
     } catch (error) {
-        showNotice(error.message, 'error');
+        showNotice(saved
+            ? `Print settings saved, but rendering failed; chat was not notified: ${error.message}`
+            : error.message, 'error');
     } finally {
         setBusy(false);
     }
@@ -378,6 +425,7 @@ window.addEventListener('pagehide', () => {
     navigator.sendBeacon('/print/api/close', new Blob([JSON.stringify({ token: state.token })], { type: 'application/json' }));
 });
 window.addEventListener('beforeunload', (event) => {
+    notifyHost('closed', { path: state.path || undefined });
     if (!isDirty()) return;
     event.preventDefault();
     event.returnValue = '';

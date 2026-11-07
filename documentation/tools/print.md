@@ -188,6 +188,38 @@ lives under `prints/_editor/<session>/`; abandoned sessions expire after six
 hours of inactivity. Concurrent operations on one session fail with 409 instead
 of racing over the same PDF.
 
+### Hosted-app lifecycle notifications
+
+A chat host may append `hostInstanceId` (opaque correlation only) and
+`parentOrigin` to the editor URL. The origin must exactly match an entry in
+`agents.print.parentOrigins`; otherwise host notifications stay off. The same
+origins are emitted as a route-scoped CSP `frame-ancestors` on `/print` only.
+
+After a successful source save **and** verification render, the editor sends:
+
+```json
+{
+  "source": "workshop-app",
+  "version": 1,
+  "app": "print",
+  "instance": "app_<opaque-host-id>",
+  "type": "saved",
+  "path": "vita/vita_ai_change_manager_v4.md",
+  "sourceSha256": "<new-source-sha>",
+  "pdfUrl": "/storage/prints/_editor/<session>/document.pdf"
+}
+```
+
+`beforeunload` sends `type: "closed"` with the same correlation and optional path,
+while the parent window is still reachable; `pagehide` continues to release the
+editor session through the existing beacon.
+Messages go only to the validated parent origin. The editor continues to call
+only its own `/print/api/*` routes and never learns the chat conversation ID.
+A failed parent/backend notification is reported separately from the successful
+document save; if the verification render fails, the UI says the source was
+saved but chat was not notified. Ordinary headless `print.render` calls create
+no editor sessions or lifecycle events.
+
 For page mapping and geometry, the renderer inserts tiny absolute-positioned
 text markers at semantic targets. Because they are absolutely positioned they
 add no layout, so the marked PDF paginates identically to the delivered one.

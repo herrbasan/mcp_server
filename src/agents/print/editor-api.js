@@ -201,7 +201,14 @@ export function initEditor(context, dependencies) {
     fs.mkdirSync(editorRoot, { recursive: true });
     const app = context.app;
     if (!app) return;
-    app.get('/print', (_req, res) => res.sendFile(path.join(__dirname, 'editor.html')));
+    app.get('/print', (req, res, next) => {
+        if (deps.parentOrigins?.length) {
+            res.setHeader('Content-Security-Policy', `frame-ancestors ${deps.parentOrigins.join(' ')}`);
+        }
+        next();
+    }, (_req, res) => res.sendFile(path.join(__dirname, 'editor.html')));
+    app.get('/print/host-config.json', (_req, res) => res.json({ parentOrigins: deps.parentOrigins ?? [] }));
+    app.get('/print/host-events.js', (_req, res) => res.sendFile(path.join(__dirname, 'host-events.js')));
     app.get('/print/editor.js', (_req, res) => res.sendFile(path.join(__dirname, 'editor.js')));
     app.get('/print/editor.css', (_req, res) => res.sendFile(path.join(__dirname, 'editor.css')));
     app.use('/print/nui', express.static(deps.nuiRoot, { fallthrough: false, index: false }));

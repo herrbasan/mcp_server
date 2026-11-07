@@ -54,7 +54,8 @@
       "chromeGapMm": 8,
       "chromeInsetMm": 5,
       "maxChromeFraction": 0.35,
-      "pdfiumPath": "nConvert/napi/pdfium/bin"
+      "pdfiumPath": "nConvert/napi/pdfium/bin",
+      "parentOrigins": ["http://localhost:8080", "http://192.168.0.100:8080"]
     },
     "nconvert": {
       "folder": "ingest",

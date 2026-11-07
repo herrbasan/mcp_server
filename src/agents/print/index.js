@@ -141,6 +141,13 @@ export async function init(context) {
     };
     outputRoot = path.join(storageRoot, conf.folder);
     fs.mkdirSync(outputRoot, { recursive: true });
+    const parentOrigins = (conf.parentOrigins ?? []).map((value) => {
+        const origin = new URL(value);
+        if ((origin.protocol !== 'http:' && origin.protocol !== 'https:') || origin.origin !== value) {
+            throw new Error(`[print] parentOrigins entries must be exact HTTP(S) origins: ${value}`);
+        }
+        return origin.origin;
+    });
 
     server = http.createServer(handleRequest);
     await new Promise((resolve, reject) => {
@@ -148,7 +155,7 @@ export async function init(context) {
         server.listen(0, '127.0.0.1', resolve);
     });
     serverPort = server.address().port;
-    initEditor(context, { renderDocument, createRenderSession, resolveExisting, storageRoot, outputRoot, nuiRoot: NUI_ROOT });
+    initEditor(context, { renderDocument, createRenderSession, resolveExisting, storageRoot, outputRoot, nuiRoot: NUI_ROOT, parentOrigins });
     return { status: 'initialized', folder: conf.folder };
 }
 

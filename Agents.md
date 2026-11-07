@@ -133,6 +133,15 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
   visible design options to frontmatter. Target geometry comes from nConvert
   `searchText` reading absolute-positioned marker spans out of the PDF text
   layer (page **and** y), not from DOM guesses.
+- **Hosted editor lifecycle events** (#74): the chat parent may append an opaque
+  `hostInstanceId` and exact `parentOrigin` to `/print`. When that origin is in
+  `agents.print.parentOrigins`, the editor posts `saved` and `closed`
+  `workshop-app` messages to that parent only. `saved` fires after the source
+  write and verification render, with path/new SHA/pdfUrl; save success never
+  depends on host notification, and notification failure is reported separately.
+  The editor never learns the chat conversation id or calls the chat backend.
+  `/print` sends a route-scoped CSP `frame-ancestors` for the same configured
+  origins; other routes are unchanged. Headless `print.render` has no events.
 - Canonical renderer: `src/nui_wc2` submodule (`nui.util.markdownToHtml`), not a
   second Markdown implementation. Semantic `breakBefore`/`breakAfter` IDs
   (caller or frontmatter), source `preset=page-break`, and section-per-page are
