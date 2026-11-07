@@ -59,6 +59,7 @@ try {
     const rendered = await print_render({ path: sourcePath, name: 'fixture', _mapTargets: true });
     console.log(rendered.content[0].text);
     check('render returns PDF page images', rendered.content.filter((item) => item.type === 'image').length === 2);
+    check('path render advertises the visual editor UI', rendered.ui?.mode === 'preview' && rendered.ui.url === '/print?path=fixture.md', JSON.stringify(rendered.ui ?? null));
     const manifestPath = rendered.content[0].text.match(/manifest\s+(\S+)/)[1];
     const manifest = JSON.parse(fs.readFileSync(path.join(root, manifestPath), 'utf8'));
     check('source page-break produces two PDF pages', manifest.pageCount === 2, `pages=${manifest.pageCount}`);

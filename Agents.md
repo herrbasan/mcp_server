@@ -118,8 +118,11 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 
 - **MCP tools**: `print.render` (NUI → Chromium PDF + exact PDFium page previews)
   and `print.preview` (rasterize selected pages of an existing PDF).
-- **Visual page editor**: `/print?path=vita/vita_ai_change_manager_v4.md` shows
-  exact PDF pages and breaks them on the paper itself — hovering a page reveals a
+- **Visual page editor**: path-based `print.render` results advertise a structured
+  `ui` action (`Edit page breaks`, `/print?path=…`, `mode: preview`) so chat can
+  open the editor from the tool bubble; inline-markdown renders omit it. At
+  `/print?path=vita/vita_ai_change_manager_v4.md`, the editor shows exact PDF
+  pages and breaks them on the paper itself — hovering a page reveals a
   line and handle at each semantic target's real vertical position; clicking sets
   that break and clears any other within 2.5% of a page height. Targets are
   sections, blocks, columns **and paragraphs** (content-addressed `p-<hash>`

@@ -26,6 +26,11 @@ Input is exactly one of:
 - `markdown` — inline MD-Blocks source. `basePath` sets the relative-media base
   and defaults to the storage root.
 
+Path-based renders also return a structured `ui` action:
+`{ label: "Edit page breaks", url: "/print?path=<encoded-source-path>", mode: "preview" }`.
+Chat surfaces can open the visual editor directly from the tool result. Inline
+`markdown` renders omit the action because there is no source file to edit.
+
 Design and pagination controls:
 
 - `style` — `editorial` (Segoe UI/navy), `minimal` (compact black-and-white), or

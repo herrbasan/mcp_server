@@ -692,7 +692,12 @@ export async function print_render(args = {}) {
     if (manifest.warnings.length) lines.push('', 'Renderer warnings:', ...manifest.warnings.map((warning) => `  ${warning}`));
 
     const inline = previews.filter((item) => selected.includes(item.page));
-    return { content: [{ type: 'text', text: lines.join('\n') }, ...imageContent(inline)], isError: false };
+    const ui = manifest.source ? {
+        label: 'Edit page breaks',
+        url: `/print?path=${encodeURIComponent(storageRelative(manifest.source))}`,
+        mode: 'preview'
+    } : undefined;
+    return { content: [{ type: 'text', text: lines.join('\n') }, ...imageContent(inline)], isError: false, ...(ui ? { ui } : {}) };
 }
 
 export async function print_preview(args = {}) {

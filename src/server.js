@@ -912,6 +912,8 @@ editor is available to humans at /print.
       fail. preset=page-break and frontmatter print.sectionPages work too.
       preview defaults true: every page is written as PNG and selected
       pages are attached inline. The result lists valid break-target IDs.
+      Path-based renders also return a structured ui action for the /print
+      page-break editor; inline-markdown renders omit it (no source file).
       Relative media resolve against the source file (or basePath).
 
   print.preview — { path*, pages?, width?, name? }
