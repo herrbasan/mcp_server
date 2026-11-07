@@ -1212,6 +1212,11 @@ and execute them in isolated worker_threads with Gateway access.
       to a Buffer on the main thread before worker spawn, and arrives as
       ctx.payload[0], ctx.payload[1], ... in the tool. Console output is always
       captured and returned in _logs. Timeout enforced via worker.terminate().
+      ⚠️ args is passed through VERBATIM: booleans stay booleans, arrays stay
+      arrays, nested objects stay objects. It is the tool's own schema — read
+      it with forge.list { name } and send exactly those keys. Never wrap an
+      array as {"item": [...]}, and never drop a declared flag because it is
+      "optional": the flag usually selects the mode.
       ⚠️ payload PATH RESOLUTION: http(s):// URLs are fetched; UNC paths
       (\\BADKID\...) are translated to local; absolute paths (D:\...) are read
       directly; RELATIVE paths resolve against the SERVER's project root
