@@ -30,6 +30,7 @@ const STEP_LABELS = {
     vision: 'Vision structuring',
     retry: 'Coverage retry',
     summarizing: 'Generating summary',
+    verifying: 'Auditing retention',
     done: 'Done'
 };
 

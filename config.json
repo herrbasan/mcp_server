@@ -68,6 +68,7 @@
       "pageWidth": 1240,
       "chunkPages": 8,
       "coverageThreshold": 0.98,
+      "scanFactThreshold":  0.9,
       "coverageRetry": true,
       "maxDeepPages": 200,
       "nativeProcesses": 16,
@@ -75,8 +76,12 @@
       "maxHeavyJobs": 1,
       "maxSummaryJobs": 4,
       "summaryModels": ["deepseek-flash-chat", "minimax-m31-flash-chat"],
-      "visionModel": "deepseek-flash-chat",
-      "visionFallbackModels": ["minimax-m31-flash-chat"],
+      "visionModel": "badkid-llama-chat",
+      "visionFallbackModels": ["deepseek-flash-chat", "minimax-m31-flash-chat"],
+      "visionMaxTokens": 32000,
+      "verify": true,
+      "verifyModel": "kimi-k31-chat",
+      "verifyFallbackModels": ["deepseek-chat"],
       "summary": true
     },
     "media": {

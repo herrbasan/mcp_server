@@ -12,7 +12,7 @@ workspace + napi bindings, own repo at spin-out), thin JS agent
 | `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page and has a vision model reconstruct structure. |
 | `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
 | `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
-| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `page` · `asset` · `original`. |
+| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `rejected` · `page` · `asset` · `original`. |
 
 ## The artefact is a layered object (spec §2.6)
 
@@ -24,6 +24,7 @@ sufficient layer and digs only when it must:
 | **L0** | `summary.md` | what this is, who for, what it covers — feeds the registry and embeddings |
 | **L1** | `document.md` | structured text; sections addressable via `nconvert.fetch { section: N }` |
 | **L1b** | `document.mechanical.md` | deterministic conversion (deep only) — comparison and fallback |
+| **L1c** | `rejected/chunk-N-M.md` | vision reconstruction the coverage guard refused (deep only) — kept, never thrown away |
 | **L2** | `assets/`, `pages/` | extracted images, rasterized pages — visual understanding |
 | **L3** | `original.<ext>` | byte-exact source, last resort |
 | **index** | `item.json` | manifest: `sha256`, provenance, lineage, layer inventory, stats, warnings, privacy |
@@ -47,6 +48,15 @@ Small mechanical conversions share up to `agents.nconvert.maxConcurrentJobs`
 Mechanical callers await the scheduled result; deep/large callers receive a job
 handle. Submitting the same file twice while queued/running deduplicates to the
 same job, including multiple waiting callers.
+
+**Finished ingests are reused, not repeated.** An ingest is a pure function of
+(source bytes, engine version, output-affecting settings), so a submit whose
+`sha256` and settings match a finished item returns that item instead of
+re-running the mechanical pass, the PDFium renders and the vision calls. The
+reply states the reuse; `force: true` reconverts. Changing the engine version —
+or `visionModel`, `chunkPages`, `pageWidth`, the coverage thresholds, `assets`,
+`keepOriginal`, `ocr` — changes the key and reconverts, so a settings change is
+never silently answered with a stale artefact.
 
 | Surface | Call |
 |---|---|
@@ -76,6 +86,15 @@ the vision model (`visionModel`, default `deepseek-flash-chat`, with
 pool; rendered PNGs go directly from worker to artefact storage, so parent memory is
 bounded by the chunk rather than the whole PDF.
 
+- **Never starve the vision budget.** Measured 2026-11-07: `max_tokens` 800 and
+  8000 both returned "streamed reasoning but never produced an answer"
+  (`ZERO_CONTENT`) for `deepseek-flash-chat` and `minimax-m31-flash-chat` on a
+  page-length prompt, while `32000` answered the identical request correctly
+  (DeepSeek even recovered `325,50 EUR` that the text layer had lost). The cap
+  must clear the model's *thinking*, not the expected answer — billing is on
+  output tokens, so a high ceiling costs nothing extra. Configured as
+  `agents.nconvert.visionMaxTokens`; the same failure appears on text-only
+  prompts with a small cap, so blame the budget before the model.
 - The model **never writes MD-Blocks directives**; it emits
   `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
   cannot inject syntax.
@@ -84,6 +103,22 @@ bounded by the chunk rather than the whole PDF.
   threshold is **retried once with its missing words listed back to the model** — the
   guard is never lowered, the omission is named. Measured: 9/11 → **10/11 chunks
   structured**, specification and package-contents tables recovered (89 → 200 table rows).
+- **Figures are graded, not only words.** The guard also compares digit runs
+  (`2.884,27`, `11.07.1973`, `KV319097290`) with separators normalised away, so a
+  reconstruction that keeps every word and drops an amount no longer passes — before
+  this, no digit in the document was checked at all. Page numbers are excluded as
+  furniture. Measured on shipped deep artefacts: **94.7–100 %** figure coverage.
+- A chunk the guard refuses is **kept** as `rejected/chunk-N-M.md` (readable via
+  `nconvert.fetch { layer: "rejected" }`) rather than discarded: on a scan the
+  mechanical text is an older OCR of the same pixels, so the refused candidate is
+  often the better reading and must stay comparable.
+- A **failed retry keeps the attempt that already measured** (`deep-retry-failed`) — a
+  dead second call no longer erases a page the model did read and reports it as a vision
+  failure.
+- The document frontmatter states what actually happened: `coverage:` is the mean over
+  *structured* chunks, `chunks: N/M structured` the share, and `coverage: n/a` when no
+  chunk was structured. `meta.json` carries `deep.meanCoverage: null` in that case —
+  never a fabricated 100 %.
 - **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
 - Coverage or provider failure falls back per chunk — loudly, never silently.
 - **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
@@ -94,6 +129,27 @@ bounded by the chunk rather than the whole PDF.
 Measured on the corpus: 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
 149 headings, 61 figure blocks, 89 table rows — including a specifications table
 reconstructed from the drawing that mechanical conversion could only emit as prose.
+
+## Verification — how far to trust a result
+
+The deterministic guard measures what survived. It cannot say *what* is missing
+when the evidence itself is damaged, so deep ingests end with an independent
+audit (`nconvert.verify`; automatic for `depth: "deep"` while
+`agents.nconvert.verify` is true, `verify: false` on a call skips it):
+
+- a large-context model (`verifyModel`, default `kimi-k31-chat`, fallback
+  `deepseek-chat`) reads `document.md` beside the text layer, the mechanical
+  document and every refused candidate;
+- it reports facts present, facts at risk, internal consistency (do sums and
+  periods agree?), and — the part that keeps it honest — **what it could not
+  check**, because it never sees the page images;
+- the report lands as `verification.md`, the verdict (`confidence:
+  high|medium|low`) is recorded in `item.json.verification`, and the layer is
+  readable via `nconvert.fetch { layer: "verification" }`.
+
+The audit never alters the document. Its confidence is about *verifiability*, not
+document length: a clean text PDF verifies "high"; a scan whose layer is broken
+usually cannot exceed "medium", and its report says so.
 
 ## Detection and failure philosophy
 

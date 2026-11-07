@@ -32,6 +32,7 @@ await agent.init({
                 chunkPages: 2,
                 coverageThreshold: 0,
                 coverageRetry: false,
+                verify: false,
                 summary: false
             }
         }
@@ -54,14 +55,16 @@ try {
     }
     check('deep job completes', job.state === 'done', `${job.state}: ${job.error || ''}`);
     check('both vision batches contain parallel-rendered pages', imageCounts.length === 3 && imageCounts.every((count) => count === 2), JSON.stringify(imageCounts));
-    check('empty primary response falls back to MiniMax vision', JSON.stringify(visionModels) === JSON.stringify(['deepseek-flash-chat', 'minimax-m31-flash-chat', 'deepseek-flash-chat']), JSON.stringify(visionModels));
+    const caps = JSON.parse((await agent.nconvert_capabilities()).content[0].text);
+    const chain = [caps.deep.visionModel, ...caps.deep.visionFallbackModels];
+    check('empty primary response falls back to the next provider', JSON.stringify(visionModels) === JSON.stringify([chain[0], chain[1], chain[0]]), `${JSON.stringify(visionModels)} vs ${JSON.stringify(chain)}`);
     if (job.state === 'done') {
         const folder = path.join(tmp, job.result.item);
         const pages = [1, 2, 3, 4].map((page) => path.join(folder, 'pages', `page-${String(page).padStart(3, '0')}.png`));
         check('deep artefact includes all pages across reused worker batches', pages.every((page) => fs.existsSync(page)));
         const meta = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8'));
         check('deep metadata records four rendered pages', meta.deep?.pagesRendered === 4, JSON.stringify(meta.deep));
-        check('deep metadata records the fallback provider', meta.deep?.chunks?.[0]?.model === 'minimax-m31-flash-chat' && meta.deep?.chunks?.[1]?.model === 'deepseek-flash-chat', JSON.stringify(meta.deep?.chunks));
+        check('deep metadata records the providers that answered', meta.deep?.chunks?.[0]?.model === chain[1] && meta.deep?.chunks?.[1]?.model === chain[0], `${JSON.stringify(meta.deep?.chunks?.map((c) => c.model))} vs chain ${JSON.stringify(chain)}`);
         check('mechanical layer is preserved', fs.existsSync(path.join(folder, 'document.mechanical.md')));
     }
 } finally {

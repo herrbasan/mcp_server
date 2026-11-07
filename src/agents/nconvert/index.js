@@ -25,6 +25,7 @@ let conf;
 let gateway;
 let nativePool;
 let queue;
+let engineVersion;
 
 export async function init(context) {
     storageRoot = context.config.agents?.storage?.root;
@@ -46,6 +47,9 @@ export async function init(context) {
         pageWidth: 1240,
         chunkPages: 8,
         coverageThreshold: 0.98,
+        // A page carrying its own image is a scan: its text layer is OCR of the
+        // same pixels and cannot judge the vision read. Accept on kept figures.
+        scanFactThreshold: 0.9,
         maxDeepPages: 200,
         summary: true,
         // Native work runs in a bounded process pool. Small mechanical jobs
@@ -56,14 +60,34 @@ export async function init(context) {
         maxHeavyJobs: 1,
         maxSummaryJobs: 4,
         summaryModels: ['deepseek-flash-chat', 'minimax-m31-flash-chat'],
+        // Measured 2026-11-07: a vision call whose max_tokens sits below the
+        // model's reasoning length returns "streamed reasoning but never
+        // produced an answer" — silently, in ~5 s, and looking like a broken
+        // model. 800 and 8000 both starved it; 32000 answered the same page
+        // correctly. The budget is a ceiling, not a reservation, so it must
+        // clear the thinking, not the expected answer.
         visionModel: 'deepseek-flash-chat',
         visionFallbackModels: ['minimax-m31-flash-chat'],
+        visionMaxTokens: 32000,
+        // Deep runs are the expensive, high-stakes path — they get an
+        // independent audit that states how far the result can be trusted.
+        verify: true,
+        verifyModel: 'kimi-k31-chat',
+        verifyFallbackModels: ['deepseek-chat'],
         queueMaxHistory: 200,
         ...(context.config.agents?.nconvert ?? {})
     };
 
     ingestDir = path.join(storageRoot, conf.folder);
     fs.mkdirSync(ingestDir, { recursive: true });
+
+    // The staged binary is named from this same field (napi/setup.js), so it is
+    // the version actually loaded — never hardcode it here.
+    const enginePkgPath = path.join(__dirname, '..', '..', '..', 'nConvert', 'package.json');
+    engineVersion = JSON.parse(fs.readFileSync(enginePkgPath, 'utf8')).version;
+    if (typeof engineVersion !== 'string' || !engineVersion) {
+        throw new Error(`[nconvert] ${enginePkgPath} carries no version`);
+    }
 
     if (!Number.isInteger(conf.maxSummaryJobs) || conf.maxSummaryJobs < 1) {
         throw new Error('[nconvert] config agents.nconvert.maxSummaryJobs must be a positive integer');
@@ -76,6 +100,18 @@ export async function init(context) {
     }
     if (!Array.isArray(conf.visionFallbackModels) || conf.visionFallbackModels.some((model) => typeof model !== 'string' || !model)) {
         throw new Error('[nconvert] config agents.nconvert.visionFallbackModels must be a string array');
+    }
+    if (!Number.isInteger(conf.visionMaxTokens) || conf.visionMaxTokens < 1) {
+        throw new Error('[nconvert] config agents.nconvert.visionMaxTokens must be a positive integer — a budget below the model\'s reasoning length silently produces no answer');
+    }
+    if (typeof conf.scanFactThreshold !== 'number' || conf.scanFactThreshold <= 0 || conf.scanFactThreshold > 1) {
+        throw new Error('[nconvert] config agents.nconvert.scanFactThreshold must be a number in (0, 1]');
+    }
+    if (typeof conf.verifyModel !== 'string' || !conf.verifyModel) {
+        throw new Error('[nconvert] config agents.nconvert.verifyModel must be a non-empty string');
+    }
+    if (!Array.isArray(conf.verifyFallbackModels) || conf.verifyFallbackModels.some((model) => typeof model !== 'string' || !model)) {
+        throw new Error('[nconvert] config agents.nconvert.verifyFallbackModels must be a string array');
     }
 
     nativePool = new NativeProcessPool({
@@ -229,6 +265,37 @@ function textCoverage(pageTexts, outputText) {
     return { ratio: 1 - missing.length / judged, missing };
 }
 
+// Numbers, amounts, dates and identifiers are what "facts" means in practice,
+// and the word vocabulary above measures none of them — a reconstruction can
+// drop every amount and still score 100 %. Compare digit runs with the
+// separators a text layer and a model's retyping disagree about removed.
+function factTokens(text) {
+    const found = new Map();
+    for (const m of String(text).matchAll(/\d(?:[\d.,:/\\-]*\d)?/g)) {
+        const digits = m[0].replace(/\D/g, '');
+        if (digits.length >= 3 && !found.has(digits)) found.set(digits, m[0]);
+    }
+    return found;
+}
+
+function factCoverage(pageTexts, outputText, pageNumbers = new Set()) {
+    const isPageNumber = (digits, form) => !/[.,:/\\-]/.test(form) && pageNumbers.has(Number(digits));
+    const source = new Map();
+    for (const t of pageTexts) {
+        for (const [digits, form] of factTokens(t)) {
+            // A page number is furniture, not a fact — a model that emits
+            // figures without restating "074" has dropped nothing.
+            if (isPageNumber(digits, form) || source.has(digits)) continue;
+            source.set(digits, form);
+        }
+    }
+    if (source.size === 0) return { ratio: 1, missing: [], judged: 0 };
+    const haystack = factTokens(outputText);
+    const missing = [];
+    for (const [digits, form] of source) if (!haystack.has(digits)) missing.push(form);
+    return { ratio: 1 - missing.length / source.size, missing, judged: source.size };
+}
+
 // Page number from any figure reference the model might invent:
 // page-074.png, page-74, pages/page_074.png, p. 74, 74.
 function pageNumberFrom(reference) {
@@ -240,10 +307,10 @@ function chunkPrompt(fromPage, toPage, authoritativeText, missingWords = null) {
     const correction = missingWords && missingWords.length
         ? [
             '',
-            'CORRECTION — your previous attempt omitted words that ARE in the authoritative text.',
+            'CORRECTION — your previous attempt omitted material that IS in the authoritative text.',
             'Include this material verbatim, without dropping anything:',
             missingWords.slice(0, 40).join(', '),
-            'Reproduce the complete authoritative text for these pages.'
+            'Reproduce the complete authoritative text for these pages, every word and every figure.'
         ].join('\n')
         : '';
 
@@ -306,15 +373,20 @@ function stripDirectiveSyntax(markdown) {
         .replace(/^\s*---\s*$/gm, '');
 }
 
-async function requestVision(content) {
+async function requestVision(content, { rotate = 0 } = {}) {
+    // Rotate the chain on a retry: a model that returned nothing once will very
+    // likely do it again, so the second attempt starts at the next provider.
+    const chain = [conf.visionModel, ...conf.visionFallbackModels];
+    const start = chain.length ? rotate % chain.length : 0;
+    const ordered = [...chain.slice(start), ...chain.slice(0, start)];
     const failures = [];
-    for (const model of [conf.visionModel, ...conf.visionFallbackModels]) {
+    for (const model of ordered) {
         try {
             const response = await gateway.chat({
                 model,
                 messages: [{ role: 'user', content }],
                 systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
-                maxTokens: 8000
+                maxTokens: conf.visionMaxTokens
             });
             const text = String(response.content || '').trim();
             if (!text) throw new Error('model returned no content');
@@ -346,6 +418,7 @@ async function deepConvert({ source, env, folder, progress = null }) {
     const warnings = [];
     const parts = [];
     const chunkReports = [];
+    const rejected = [];
 
     for (let ci = 0; ci < chunks.length; ci++) {
         checkCancelled();
@@ -383,11 +456,16 @@ async function deepConvert({ source, env, folder, progress = null }) {
         let provider = null;
         try {
             // One corrective retry when the model drops text: list the missing
-            // vocabulary back to it rather than lowering the guard.
+            // vocabulary back to it rather than lowering the guard. A failed
+            // retry must not discard an attempt that already measured — the
+            // page was read; only the second call died.
             let coverage = null;
+            let factRatio = null;
             let missing = [];
+            let missingFacts = [];
             let attempt = 0;
             const maxAttempts = conf.coverageRetry === false ? 1 : 2;
+            let retryError = null;
 
             while (attempt < maxAttempts) {
                 if (attempt > 0) {
@@ -397,35 +475,101 @@ async function deepConvert({ source, env, folder, progress = null }) {
                         detail: `${missing.length} word(s) missing — corrective retry`
                     });
                 }
-                const response = await requestVision([
-                    ...content.slice(0, -1),
-                    { type: 'text', text: chunkPrompt(from, to, chunkText, attempt === 0 ? null : missing) }
-                ]);
+                let response;
+                try {
+                    response = await requestVision([
+                        ...content.slice(0, -1),
+                        { type: 'text', text: chunkPrompt(from, to, chunkText, attempt === 0 ? null : [...missingFacts, ...missing]) }
+                    ], { rotate: attempt });
+                } catch (error) {
+                    if (attempt === 0) throw error;
+                    retryError = error;
+                    break;
+                }
                 provider = response.model;
                 const candidate = stripDirectiveSyntax(response.content);
                 if (!candidate) throw new Error('model returned no content');
 
                 const measured = textCoverage(chunkPageTexts, candidate);
+                const facts = factCoverage(chunkPageTexts, candidate, new Set(onlyPages.map((i) => i + 1)));
                 coverage = measured.ratio;
+                factRatio = facts.ratio;
                 missing = measured.missing;
+                missingFacts = facts.missing;
                 markdown = candidate;
                 attempt++;
                 await step('vision', {
                     i: ci + 1,
                     n: chunks.length,
-                    detail: `coverage ${(coverage * 100).toFixed(1)}%${attempt > 1 ? ' (after retry)' : ''}`
+                    detail: `coverage ${(coverage * 100).toFixed(1)}%${facts.judged ? `, figures ${(factRatio * 100).toFixed(1)}%` : ''}${attempt > 1 ? ' (after retry)' : ''}`
                 });
-                if (coverage >= conf.coverageThreshold) break;
+                if (coverage >= conf.coverageThreshold && factRatio >= conf.coverageThreshold) break;
             }
 
-            if (coverage < conf.coverageThreshold) {
-                const sample = missing.slice(0, 8).join(', ');
+            if (retryError) {
                 warnings.push({
-                    code: 'deep-low-coverage',
-                    message: `pages ${from}-${to}: model covered ${(coverage * 100).toFixed(1)}% of the authoritative vocabulary after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing e.g.: ${sample}${missing.length > 8 ? ` (+${missing.length - 8} more)` : ''}`
+                    code: 'deep-retry-failed',
+                    message: `pages ${from}-${to}: corrective retry failed (${retryError.message}) — kept attempt ${attempt} at ${(coverage * 100).toFixed(1)}%`
                 });
-                markdown = chunkText;
-                chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-low-coverage', model: provider, attempts: attempt });
+            }
+
+            // A page that carries its own image was never rendered from text —
+            // the layer is an older OCR of the same pixels, so it cannot be the
+            // oracle. Judge the candidate on the facts it keeps instead.
+            const scanLike = (env.assets ?? []).some((asset) => {
+                const m = /page-(\d+)-img-/.exec(asset?.name ?? '');
+                return m && Number(m[1]) >= from && Number(m[1]) <= to;
+            });
+            const keepsFacts = factRatio >= conf.scanFactThreshold && markdown.length >= chunkText.length * 0.8;
+
+            if (coverage < conf.coverageThreshold || factRatio < conf.coverageThreshold) {
+                if (scanLike && keepsFacts) {
+                    warnings.push({
+                        code: 'deep-untrusted-text-layer',
+                        message: `pages ${from}-${to}: the text layer is OCR of the page image and disagrees with the vision read (vocabulary ${(coverage * 100).toFixed(1)}%, figures ${(factRatio * 100).toFixed(1)}%) — kept the vision structure. The mechanical text stays in document.mechanical.md for comparison.`
+                    });
+                    const applied = applyFigureMarkers(markdown, renderedIndices);
+                    markdown = applied.markdown;
+                    if (applied.rejected > 0) {
+                        warnings.push({
+                            code: 'deep-figure-rejected',
+                            message: `pages ${from}-${to}: ${applied.rejected} figure marker(s) referenced pages that were not rendered`
+                        });
+                    }
+                    chunkReports.push({ pages: `${from}-${to}`, verdict: 'structured-over-untrusted-layer', model: provider, coverage: Number(coverage.toFixed(4)), facts: Number(factRatio.toFixed(4)), attempts: attempt });
+                } else {
+                    const words = missing.length;
+                    const figures = missingFacts.length;
+                    const sample = [...missingFacts, ...missing].slice(0, 8).join(', ');
+                    const gap = coverage < conf.coverageThreshold
+                        ? `vocabulary ${(coverage * 100).toFixed(1)}%${factRatio == null ? '' : `, figures ${(factRatio * 100).toFixed(1)}%`}`
+                        : `figures ${(factRatio * 100).toFixed(1)}% (vocabulary ${(coverage * 100).toFixed(1)}%)`;
+                    warnings.push({
+                        code: 'deep-low-coverage',
+                        message: `pages ${from}-${to}: model covered ${gap} of the authoritative text after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing ${figures} figure(s) and ${words} word(s), e.g.: ${sample}${words + figures > 8 ? ` (+${words + figures - 8} more)` : ''}`
+                    });
+                    // Never destroy: the guard rejected this structure, but the
+                    // model did read the page. Keep it beside the artefact so a
+                    // scan whose text layer is itself OCR noise stays comparable.
+                    const rejectedDir = path.join(folder, 'rejected');
+                    fs.mkdirSync(rejectedDir, { recursive: true });
+                    const rejectedName = `chunk-${from}-${to}.md`;
+                    fs.writeFileSync(
+                        path.join(rejectedDir, rejectedName),
+                        `<!-- rejected by the coverage guard — ${gap}, threshold ${(conf.coverageThreshold * 100).toFixed(0)}%, model ${provider} -->\n${markdown.trim()}\n`,
+                        'utf8'
+                    );
+                    rejected.push(rejectedName);
+                    markdown = chunkText;
+                    chunkReports.push({
+                        pages: `${from}-${to}`,
+                        verdict: 'fallback-low-coverage',
+                        model: provider,
+                        attempts: attempt,
+                        facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
+                        rejected: rejectedName
+                    });
+                }
             } else {
                 const applied = applyFigureMarkers(markdown, renderedIndices);
                 markdown = applied.markdown;
@@ -440,6 +584,7 @@ async function deepConvert({ source, env, folder, progress = null }) {
                     verdict: attempt > 1 ? 'structured-after-retry' : 'structured',
                     model: provider,
                     coverage: Number(coverage.toFixed(4)),
+                    facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
                     attempts: attempt
                 });
             }
@@ -460,6 +605,7 @@ async function deepConvert({ source, env, folder, progress = null }) {
         markdown: parts.join('\n\n') + '\n',
         pages: totalPages,
         chunkReports,
+        rejected,
         warnings
     };
 }
@@ -538,10 +684,144 @@ async function makeSummary(documentMd, filename) {
     }
 }
 
-async function writeManifest({ folder, absolute, filename, env, depth, deep, keepOriginal, sourceSha }) {
+// ─── verification: an independent model audits what survived ──────────────
+// The deterministic guard can only compare the document against the text layer.
+// Where that layer is damaged the comparison is blind, and nothing in the
+// artefact said how far to trust the result. A large-context model reads both
+// readings plus any refused candidates, then states retention, gaps and — the
+// part that keeps it honest — what it could NOT check from text alone.
+
+async function generateVerification({ manifest, documentMd, mechanicalMd, rejectedMd, preferredModel = null }) {
+    if (!gateway) return { text: null, reason: 'no gateway available' };
+
+    const truncate = (label, text, cap) => {
+        if (!text) return '';
+        const clipped = text.length > cap ? `${text.slice(0, cap)}\n\n[TRUNCATED at ${cap} of ${text.length} chars — say so in your report]` : text;
+        return `--- ${label} ---\n${clipped}\n`;
+    };
+
+    const prompt = [
+        'You are auditing a document conversion. You did not produce it, and your job is to say honestly what survived.',
+        '',
+        'The SHIPPED DOCUMENT is the readable text we delivered. Any TEXT LAYER or REFUSED READING below is evidence, not truth:',
+        'on a scanned file the text layer is itself an older OCR, so it can be wrong, incomplete, or mangled. Never assume the layer is right.',
+        '',
+        'Answer in exactly this structure:',
+        '',
+        '## Verdict',
+        'confidence: high | medium | low',
+        'One sentence: can this document be used as the record of the file, and how much checking stands behind that?',
+        '',
+        '## Facts present',
+        '| fact | value | where it appears |',
+        'Every amount, date, identifier, name and quantity you can confirm in the shipped document. Skip page numbers unless they carry meaning.',
+        '',
+        '## Facts at risk',
+        '| fact | evidence says | document says | problem |',
+        'Everything missing, altered, duplicated, or attached to the wrong row/column. Say which reading you trust and why.',
+        '',
+        '## Internal consistency',
+        'Do the numbers agree with each other and with the document\'s own arithmetic (sums, subtotals, periods)? Name contradictions.',
+        '',
+        '## What this audit could not check',
+        'Anything that would need the page image or the original layout, and therefore stays unverified. Be specific.',
+        '',
+        'Rules:',
+        '- Quote values exactly as they appear; never reformat or translate them.',
+        '- Never invent a fact to fill a table. An empty row is a lie.',
+        '- If the document is fine, say so plainly and keep the report short.',
+        '- Confidence reflects how far the evidence let you verify — not the document\'s length or your own fluency.',
+        '',
+        truncate('SHIPPED DOCUMENT (document.md)', documentMd, 60000),
+        truncate('TEXT LAYER (document.mechanical.md — deterministic extraction)', mechanicalMd, 60000),
+        truncate('REFUSED READINGS (vision reconstructions the coverage guard rejected)', rejectedMd, 30000)
+    ].join('\n');
+
+    const failures = [];
+    for (const model of [preferredModel ?? conf.verifyModel, ...conf.verifyFallbackModels]) {
+        try {
+            const response = await gateway.chat({
+                model,
+                messages: [{ role: 'user', content: prompt }],
+                systemPrompt: 'You audit conversions. You never invent content, and you never claim to have checked what you were not shown.',
+                maxTokens: 4000,
+                enableThinking: false
+            });
+            const text = String(response.content || '').trim();
+            if (!text) {
+                failures.push(`${model}: empty response`);
+                continue;
+            }
+            const confidence = (text.match(/confidence:\s*(high|medium|low)/i) || [, null])[1];
+            return { text, model: response.model ?? model, confidence: confidence ? confidence.toLowerCase() : null };
+        } catch (error) {
+            failures.push(`${model}: ${error.message}`);
+        }
+    }
+    return { text: null, reason: failures.join(' | ') };
+}
+
+async function makeVerification(input, { preferredModel = null } = {}) {
+    if (summaryActive >= conf.maxSummaryJobs) {
+        await new Promise((resolve) => summaryWaiters.push(resolve));
+    }
+    summaryActive++;
+    try {
+        return await generateVerification({ ...input, preferredModel });
+    } finally {
+        summaryActive--;
+        const next = summaryWaiters.shift();
+        if (next) next();
+    }
+}
+
+// Writes verification.md and records the verdict in the manifest. Returns the
+// report so the caller can surface the confidence without re-reading disk.
+async function verifyItem(itemDir, { model = null } = {}) {
+    const manifest = readManifest(itemDir);
+    const read = (layer) => (layer && fs.existsSync(path.join(itemDir, layer)) ? fs.readFileSync(path.join(itemDir, layer), 'utf8') : '');
+    const rejectedDir = path.join(itemDir, 'rejected');
+    const rejectedMd = fs.existsSync(rejectedDir)
+        ? fs.readdirSync(rejectedDir).filter((f) => f.endsWith('.md')).sort()
+            .map((f) => `### ${f}\n${fs.readFileSync(path.join(rejectedDir, f), 'utf8')}`).join('\n\n')
+        : '';
+
+    const result = await makeVerification({
+        manifest,
+        documentMd: read(manifest.layers.document),
+        mechanicalMd: read(manifest.layers.mechanical),
+        rejectedMd
+    }, { preferredModel: model });
+
+    if (!result.text) throw new Error(`verification failed: ${result.reason}`);
+
+    const header = [
+        '---',
+        `item: ${JSON.stringify(manifest.id)}`,
+        `model: ${JSON.stringify(result.model)}`,
+        `generated: ${new Date().toISOString()}`,
+        `confidence: ${result.confidence ?? 'unstated'}`,
+        '---',
+        ''
+    ].join('\n');
+    fs.writeFileSync(path.join(itemDir, 'verification.md'), header + result.text + '\n', 'utf8');
+
+    manifest.layers.verification = 'verification.md';
+    manifest.verification = {
+        file: 'verification.md',
+        model: result.model,
+        generated: new Date().toISOString(),
+        confidence: result.confidence ?? null
+    };
+    fs.writeFileSync(path.join(itemDir, 'item.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    return { ...result, manifest };
+}
+
+async function writeManifest({ folder, absolute, filename, env, depth, deep, keepOriginal, sourceSha, reuseKey }) {
     const documentMd = fs.readFileSync(path.join(folder, 'document.md'), 'utf8');
     const sections = sectionsOf(documentMd);
     const metaOnDisk = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8'));
+    const rejectedCount = Array.isArray(deep?.rejected) ? deep.rejected.length : 0;
 
     let summary = null;
     let summaryReason = null;
@@ -572,10 +852,12 @@ async function writeManifest({ folder, absolute, filename, env, depth, deep, kee
         format: env.format,
         depth,
         converter: metaOnDisk.converter ?? `nconvert ${env.format}`,
+        reuseKey,
         layers: {
             summary: summary?.file ?? null,
             document: 'document.md',
             mechanical: depth === 'deep' ? 'document.mechanical.md' : null,
+            rejected: rejectedCount > 0 ? { count: rejectedCount, dir: 'rejected' } : null,
             sections: { count: sections.length },
             pages: pageCount > 0 ? { count: pageCount, pattern: 'pages/page-NNN.png' } : null,
             assets: assetCount > 0 ? { count: assetCount, dir: 'assets' } : null,
@@ -623,6 +905,66 @@ export async function regenerateSummary(itemId) {
     return { content: [{ type: 'text', text: `summary.md written for ${manifest.id} (${result.text.length} chars, model ${result.model})` }], isError: false };
 }
 
+// ─── content-addressed reuse ──────────────────────────────────────────────
+// An ingest is a pure function of (source bytes, engine version, the options
+// that change the output). Re-running one costs a full mechanical pass, PDFium
+// renders and vision calls for bytes that were already converted, so a repeat
+// submit returns the existing artefact. `force: true` reconverts.
+function reuseKeyFor({ depth, keepOriginal, assets, args }) {
+    const material = JSON.stringify({
+        engine: engineVersion,
+        depth,
+        keepOriginal,
+        assets,
+        ocr: args?.ocr ?? null,
+        vision: depth === 'deep' ? {
+            model: conf.visionModel,
+            fallbacks: conf.visionFallbackModels,
+            maxTokens: conf.visionMaxTokens,
+            pageWidth: conf.pageWidth,
+            chunkPages: conf.chunkPages,
+            coverageThreshold: conf.coverageThreshold,
+            scanFactThreshold: conf.scanFactThreshold,
+            coverageRetry: conf.coverageRetry !== false,
+            maxDeepPages: conf.maxDeepPages
+        } : null
+    });
+    return crypto.createHash('sha256').update(material).digest('hex').slice(0, 16);
+}
+
+function findReusable(sha, reuseKey) {
+    const entries = fs.readdirSync(ingestDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .sort((a, b) => b.name.localeCompare(a.name));
+    for (const entry of entries) {
+        const manifestPath = path.join(ingestDir, entry.name, 'item.json');
+        if (!fs.existsSync(manifestPath)) continue;
+        let manifest;
+        try {
+            manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        } catch (error) {
+            // Artefacts are written by us but edited by humans — a broken
+            // manifest must not take every future ingest down with it.
+            logger.warn(`nconvert: unreadable manifest ${manifestPath}: ${error.message} — skipped for reuse`, null, 'nconvert');
+            continue;
+        }
+        if (manifest.sha256 === sha && manifest.reuseKey === reuseKey) return manifest;
+    }
+    return null;
+}
+
+function reuseText(manifest) {
+    const layers = Object.entries(manifest.layers ?? {}).filter(([, v]) => v).map(([k]) => k);
+    return [
+        `Already ingested — reusing ${manifest.id} instead of reconverting ${manifest.source}.`,
+        `  item: ${relToStorage(path.join(ingestDir, manifest.id))}/`,
+        `  ${manifest.depth} · ${manifest.format} · converter ${manifest.converter}`,
+        `  sha256 ${String(manifest.sha256).slice(0, 12)}… · ingested ${manifest.ingestedAt}`,
+        `  layers: ${layers.join(', ')}`,
+        '  Same bytes, same engine, same settings — no compute spent. Pass force:true to reconvert.'
+    ].join('\n');
+}
+
 // ─── handlers ────────────────────────────────────────────────────────────
 
 // Small mechanical jobs share a bounded concurrent lane; deep and oversized
@@ -633,7 +975,7 @@ function isHeavy(depth, size) {
 
 function stepsFor(depth) {
     return depth === 'deep'
-        ? ['converting', 'rendering', 'vision', 'summarizing']
+        ? ['converting', 'rendering', 'vision', 'summarizing', 'verifying']
         : ['converting', 'summarizing'];
 }
 
@@ -694,6 +1036,7 @@ async function runIngestion(job, progress = null) {
 
     const keepOriginal = args.keepOriginal ?? conf.keepOriginal;
     const extractAssets = args.assets ?? conf.assets;
+    const reuseKey = reuseKeyFor({ depth, keepOriginal, assets: extractAssets, args });
 
     const slug = slugify(args.name || path.basename(filename, path.extname(filename)));
     const folder = uniqueFolder(`${localTimestamp()}_${slug}`);
@@ -731,9 +1074,12 @@ async function runIngestion(job, progress = null) {
         for (const w of deep.warnings) meta.warnings.push(w);
 
         const coverageValues = deep.chunkReports.filter((c) => c.coverage != null).map((c) => c.coverage);
-        const meanCoverage = coverageValues.length
-            ? coverageValues.reduce((a, b) => a + b, 0) / coverageValues.length
-            : 1;
+        const structuredChunks = coverageValues.length;
+        // No measured chunk means the vision pass was discarded for every
+        // chunk — reporting 100% there was a lie in the shipped frontmatter.
+        const meanCoverage = structuredChunks > 0
+            ? coverageValues.reduce((a, b) => a + b, 0) / structuredChunks
+            : null;
 
         const front = [
             '---',
@@ -742,7 +1088,8 @@ async function runIngestion(job, progress = null) {
             'format: pdf',
             'depth: deep',
             `pages: ${deep.pages}`,
-            `coverage: ${(meanCoverage * 100).toFixed(1)}%`,
+            `coverage: ${meanCoverage == null ? 'n/a' : `${(meanCoverage * 100).toFixed(1)}%`}`,
+            `chunks: ${structuredChunks}/${deep.chunkReports.length} structured`,
             `converted: ${new Date().toISOString()}`,
             'converter: nconvert deep',
             `warnings-count: ${meta.warnings.length}`,
@@ -759,7 +1106,8 @@ async function runIngestion(job, progress = null) {
         meta.deep = {
             pagesRendered: deep.pages,
             chunks: deep.chunkReports,
-            meanCoverage: Number(meanCoverage.toFixed(4)),
+            rejected: deep.rejected,
+            meanCoverage: meanCoverage == null ? null : Number(meanCoverage.toFixed(4)),
             mechanicalDocument: 'document.mechanical.md'
         };
         meta.stats.warnings = meta.warnings.length;
@@ -767,13 +1115,13 @@ async function runIngestion(job, progress = null) {
 
         lines = [
             `Ingested ${filename} (${env.format}, DEEP) → ${relToStorage(folder)}/`,
-            `  document.md — structured by vision over ${deep.pages} rendered page(s), coverage ${(meanCoverage * 100).toFixed(1)}%`,
+            `  document.md — structured by vision over ${deep.pages} rendered page(s), coverage ${meanCoverage == null ? 'n/a (no chunk structured — mechanical text shipped)' : `${(meanCoverage * 100).toFixed(1)}% of ${structuredChunks}/${deep.chunkReports.length} chunk(s)`}`,
             '  document.mechanical.md — the deterministic result, kept for comparison',
             `  pages/ — ${deep.pages} page image(s) at ${conf.pageWidth}px`,
             `  chunks: ${deep.chunkReports.map((c) => `${c.pages}:${c.verdict}`).join(', ')}`,
             `  assets: ${assetsWritten}, original: ${keepOriginal ? 'kept' : 'not kept'}`
         ];
-        deepResult = { meanCoverage };
+        deepResult = { meanCoverage, rejected: deep.rejected };
     } else {
         lines = [
             `Ingested ${filename} (${env.format}) → ${relToStorage(folder)}/`,
@@ -796,7 +1144,7 @@ async function runIngestion(job, progress = null) {
     await step('summarizing');
     const sourceSha = await sha256File(absolute);
     const { manifest, summaryReason } = await writeManifest({
-        folder, absolute, filename, env, depth, deep: deepResult, keepOriginal, sourceSha
+        folder, absolute, filename, env, depth, deep: deepResult, keepOriginal, sourceSha, reuseKey
     });
     finishStep('summarizing');
     lines.push(`  manifest: item.json · sha256 ${sourceSha.slice(0, 12)}…`);
@@ -804,6 +1152,21 @@ async function runIngestion(job, progress = null) {
         lines.push('  summary.md — L0 retrieval summary; dig deeper with nconvert.fetch');
     } else if (summaryReason) {
         lines.push(`  summary: not generated (${summaryReason})`);
+    }
+
+    // Deep runs end with an independent audit: the deterministic guard says how
+    // much text survived, only a model can say what is missing and why.
+    if (depth === 'deep' && conf.verify && args.verify !== false) {
+        await step('verifying');
+        try {
+            const verification = await verifyItem(folder);
+            finishStep('verifying', { detail: `confidence ${verification.confidence ?? 'unstated'}` });
+            lines.push(`  verification.md — independent audit by ${verification.model} (confidence ${verification.confidence ?? 'unstated'}); read the "what this audit could not check" section`);
+        } catch (error) {
+            finishStep('verifying', { detail: 'unavailable' });
+            lines.push(`  verification: not generated (${error.message})`);
+            logger.warn(`nconvert: verification failed for ${filename}: ${error.message}`, null, 'nconvert');
+        }
     }
 
     logger.info(`nconvert: ${filename} (${env.format}${depth === 'deep' ? ', deep' : ''}) → ${relToStorage(folder)}`, null, 'nconvert');
@@ -831,6 +1194,17 @@ async function convertImpl(args, { toolName = 'nconvert.convert' } = {}) {
 
     const heavy = isHeavy(depth, size);
     const sha = await sha256File(absolute);
+
+    const reuseKey = reuseKeyFor({
+        depth,
+        keepOriginal: args?.keepOriginal ?? conf.keepOriginal,
+        assets: args?.assets ?? conf.assets,
+        args
+    });
+    if (args?.force !== true) {
+        const manifest = findReusable(sha, reuseKey);
+        if (manifest) return { content: [{ type: 'text', text: reuseText(manifest) }], isError: false };
+    }
 
     if (!heavy) {
         const job = await queue.runInline({
@@ -862,6 +1236,16 @@ export async function submitIngest(args) {
     }
     const heavy = isHeavy(depth, size);
     const sha = await sha256File(absolute);
+    const reuseKey = reuseKeyFor({
+        depth,
+        keepOriginal: args?.keepOriginal ?? conf.keepOriginal,
+        assets: args?.assets ?? conf.assets,
+        args
+    });
+    if (args?.force !== true) {
+        const manifest = findReusable(sha, reuseKey);
+        if (manifest) return { queued: false, reused: true, item: relToStorage(path.join(ingestDir, manifest.id)), manifest };
+    }
     if (!heavy) {
         const job = await queue.runInline({ source: absolute, args, sha, steps: stepsFor(depth) });
         return { queued: false, job: queue.publicJob(job) };
@@ -961,6 +1345,29 @@ export async function nconvert_items(args) {
 // The layer reader: a caller names the layer it needs and gets exactly that.
 // Text layers return content; binary layers return a path + URL, because the
 // caller fetches bytes with its own tool (and can attach images directly).
+// Independent audit of an existing item — the repair path when verification was
+// skipped, failed, or must be re-run against a different model.
+export async function nconvert_verify(args) {
+    const item = args?.item;
+    if (!item) throw new Error('nconvert.verify: "item" is required (see nconvert.items)');
+    const itemDir = path.join(ingestDir, path.basename(String(item)));
+    if (!fs.existsSync(itemDir)) throw new Error(`nconvert.verify: no such item: ${item}`);
+    const manifest = readManifest(itemDir);
+
+    if (manifest.verification?.file && args?.force !== true) {
+        return {
+            content: [{ type: 'text', text: fs.readFileSync(path.join(itemDir, manifest.verification.file), 'utf8') }],
+            isError: false
+        };
+    }
+
+    const result = await verifyItem(itemDir, { model: args?.model ?? null });
+    return {
+        content: [{ type: 'text', text: fs.readFileSync(path.join(itemDir, 'verification.md'), 'utf8') }],
+        isError: false
+    };
+}
+
 export async function nconvert_fetch(args) {
     const item = args?.item;
     if (!item) throw new Error('nconvert.fetch: "item" is required (see nconvert.items)');
@@ -1005,6 +1412,22 @@ export async function nconvert_fetch(args) {
             if (!manifest.layers.mechanical) throw new Error('nconvert.fetch: no mechanical document for this item (mechanical depth only)');
             return { content: [{ type: 'text', text: fs.readFileSync(path.join(itemDir, manifest.layers.mechanical), 'utf8') }], isError: false };
         }
+        case 'verification': {
+            if (!manifest.layers.verification) throw new Error('nconvert.fetch: this item has no audit — run nconvert.verify { item }');
+            return { content: [{ type: 'text', text: fs.readFileSync(path.join(itemDir, manifest.layers.verification), 'utf8') }], isError: false };
+        }
+        case 'rejected': {
+            if (!manifest.layers.rejected) throw new Error('nconvert.fetch: no rejected candidates for this item (the coverage guard accepted every chunk)');
+            const dir = path.join(itemDir, manifest.layers.rejected.dir);
+            const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
+            const chosen = args?.section != null
+                ? files[Number(args.section)]
+                : files.length === 1 ? files[0] : null;
+            if (!chosen) {
+                throw new Error(`nconvert.fetch: ${files.length} rejected chunk(s) — pick one with section: 0-${files.length - 1} (${files.join(', ')})`);
+            }
+            return { content: [{ type: 'text', text: fs.readFileSync(path.join(dir, chosen), 'utf8') }], isError: false };
+        }
         case 'page': {
             if (!manifest.layers.pages) throw new Error('nconvert.fetch: this item has no rasterized pages (convert with depth "deep")');
             const page = Number(args?.page);
@@ -1028,7 +1451,7 @@ export async function nconvert_fetch(args) {
             return { content: [{ type: 'text', text: describe(path.join(itemDir, manifest.layers.original)) }], isError: false };
         }
         default:
-            throw new Error(`nconvert.fetch: unknown layer "${layer}" — one of: summary, document, mechanical, page, asset, original`);
+            throw new Error(`nconvert.fetch: unknown layer "${layer}" — one of: summary, document, mechanical, rejected, page, asset, original`);
     }
 }
 
@@ -1062,7 +1485,7 @@ const FORMAT_MATRIX = [
 
 export async function nconvert_capabilities() {
     const payload = {
-        converter: 'nconvert 0.9.1',
+        converter: `nconvert ${engineVersion}`,
         spec: 'nConvert/docs/SPEC.md v2.5',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
@@ -1077,9 +1500,11 @@ export async function nconvert_capabilities() {
             renderer: `PDFium @ ${conf.pdfiumPath}`,
             visionModel: conf.visionModel,
             visionFallbackModels: conf.visionFallbackModels,
+            maxTokens: conf.visionMaxTokens,
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
+            scanFactThreshold: conf.scanFactThreshold,
             maxDeepPages: conf.maxDeepPages,
             note: 'depth:"deep" renders pages and has a vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
         },

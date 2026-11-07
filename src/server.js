@@ -884,12 +884,22 @@ succeed WITH warnings — read them, they mark every absorbed variance.
         summary   (L0) retrieval summary; start here
         document  (L1) full MD-Blocks text, or one section via section:N
         mechanical     deterministic conversion, for comparison
+        rejected  the vision reconstruction the guard refused (section:N)
         page      (L2) rasterized page image: returns path + URL
         asset     (L2) extracted image/attachment: returns path + URL
         original  (L3) byte-exact source: returns path + URL
       Binary layers return a path, not bytes — open, attach or ingest it
       with the reader's own tool. Nothing is lost: every layer stays
       addressable.
+
+  nconvert.verify — { item*, model?, force? }
+      Independent audit of an ingested item: a large-context model reads
+      the shipped document beside the text layer, the mechanical text and
+      any refused readings, then reports what survived, what is at risk,
+      whether the numbers are internally consistent, and what it could
+      NOT check without the page images. Writes verification.md and
+      records confidence (high|medium|low) in item.json. Deep ingests run
+      this automatically; use it on older or mechanical-only items.
 
 Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
 napi bindings, nDB pattern; own repo at spin-out).
@@ -1448,6 +1458,7 @@ IMPORTANT RULES
 
         "nconvert.convert": "nconvert_convert", "nconvert.capabilities": "nconvert_capabilities",
         "nconvert.items": "nconvert_items", "nconvert.fetch": "nconvert_fetch",
+    "nconvert.verify": "nconvert_verify",
         "nconvert.enqueue": "nconvert_enqueue", "nconvert.jobs": "nconvert_jobs",
         "nconvert.job": "nconvert_job", "nconvert.cancel": "nconvert_cancel",
 

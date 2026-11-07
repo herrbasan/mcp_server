@@ -13,7 +13,8 @@
                     "assets": { "type": "boolean", "description": "Extract binary assets (images, audio, video, attachments) into assets/. Default true." },
                     "keepOriginal": { "type": "boolean", "description": "Copy the source file into the item as original.<ext> (layer L3). Default true." },
                     "ocr": { "type": "string", "description": "OCR provider name for scans/photos (capability contract in §11 D1 of the spec). Providers land in M5; the default will be gateway vision." },
-                    "name": { "type": "string", "description": "Slug for the item folder base name. Defaults to the source filename." }
+                    "name": { "type": "string", "description": "Slug for the item folder base name. Defaults to the source filename." },
+                    "force": { "type": "boolean", "description": "Reconvert even when the same bytes were already ingested with the same engine and settings. Default false — an identical repeat submit returns the existing item and spends no compute." }
                 },
                 "required": ["path"]
             }
@@ -28,7 +29,8 @@
                     "depth": { "type": "string", "enum": ["mechanical", "deep"], "description": "mechanical (default): inline. deep (PDF): queued — one heavy job runs at a time." },
                     "assets": { "type": "boolean" },
                     "keepOriginal": { "type": "boolean" },
-                    "name": { "type": "string" }
+                    "name": { "type": "string" },
+                    "force": { "type": "boolean", "description": "Reconvert even when the same bytes were already ingested with the same engine and settings." }
                 },
                 "required": ["path"]
             }
@@ -86,16 +88,29 @@
         },
         {
             "name": "nconvert_fetch",
-            "description": "Read one layer of an ingested item. Layers, cheapest first: 'summary' (L0 retrieval summary — start here), 'document' (L1 full MD-Blocks text, or a single section with section:N), 'mechanical' (deterministic conversion for comparison), 'page' (L2 rasterized page image path, page:N), 'asset' (L2 extracted image/attachment path, asset:\"name\"), 'original' (L3 byte-exact source path). Text layers return content; binary layers return a storage path and URL for the caller to open, attach, or ingest.",
+            "description": "Read one layer of an ingested item. Layers, cheapest first: 'summary' (L0 retrieval summary — start here), 'document' (L1 full MD-Blocks text, or a single section with section:N), 'mechanical' (deterministic conversion for comparison), 'rejected' (a vision reconstruction the coverage guard refused — kept so a scan whose text layer is OCR noise stays comparable; section:N picks the chunk), 'page' (L2 rasterized page image path, page:N), 'asset' (L2 extracted image/attachment path, asset:\"name\"), 'original' (L3 byte-exact source path). Text layers return content; binary layers return a storage path and URL for the caller to open, attach, or ingest.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "item": { "type": "string", "description": "Item id (the folder name from nconvert_items)." },
-                    "layer": { "type": "string", "enum": ["summary", "document", "mechanical", "page", "asset", "original"], "description": "Which layer to read. Defaults to summary." },
+                    "layer": { "type": "string", "enum": ["summary", "document", "mechanical", "verification", "rejected", "page", "asset", "original"], "description": "Which layer to read. Defaults to summary. 'rejected' returns the vision reconstruction the coverage guard refused (kept for comparison, e.g. a scan whose text layer is itself OCR noise) — pass section: N when several chunks were rejected. 'verification' returns the independent audit report." },
                     "section": { "type": "integer", "description": "For layer=document: 0-based section index (MD-Blocks sections; for PDFs one per page)." },
                     "page": { "type": "integer", "description": "For layer=page: 1-based page number." },
                     "asset": { "type": "string", "description": "For layer=asset: asset filename inside assets/." },
                     "maxChars": { "type": "integer", "description": "For layer=document: truncate long documents and point at section fetching." }
+                },
+                "required": ["item"]
+            }
+        },
+        {
+            "name": "nconvert_verify",
+            "description": "Independent audit of an already-ingested item: a large-context model reads the shipped document.md together with the text layer, the mechanical document and any refused readings, then reports what survived, what is at risk, whether the numbers are internally consistent, and — explicitly — what it could not check without the page images. The report lands as verification.md and the verdict (confidence: high|medium|low) is recorded in item.json. Deep ingests run this automatically (agents.nconvert.verify); use this tool to audit an older item, a mechanical-only item, or to re-run with a different model.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item": { "type": "string", "description": "Item id (the folder name from nconvert.items)." },
+                    "model": { "type": "string", "description": "Override the verification model for this run. Default: agents.nconvert.verifyModel (kimi-k31-chat), then verifyFallbackModels." },
+                    "force": { "type": "boolean", "description": "Re-run the audit even when verification.md already exists." }
                 },
                 "required": ["item"]
             }

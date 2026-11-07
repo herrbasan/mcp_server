@@ -4,6 +4,75 @@ Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md`.
 Operator doc: `documentation/tools/nconvert.md` (includes the queue section).
 Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
 
+## Session 2026-11-07 — guard honesty, fact grading, reuse (uncommitted)
+
+A live deep retest of the DKV scan on **engine 0.9.2** exposed three defects in the
+deep path. All fixed, tested, and reflected in `documentation/tools/nconvert.md`.
+
+1. **A failed corrective retry erased the attempt that had already measured** — the
+   outer catch replaced a read page with mechanical text and reported
+   `deep-chunk-failed`, as if vision had never run. Retries are now per-attempt:
+   failure yields `deep-retry-failed` and keeps the measured candidate.
+2. **`coverage: 100.0%` was fabricated** when no chunk reported a measurement
+   (`meanCoverage` defaulted to 1). Frontmatter now states `coverage: n/a` and
+   `chunks: N/M structured`; the manifest carries `meanCoverage: null`.
+3. **The guard checked no figures at all** — it matched `[\p{L}]{4,}` only, so a
+   reconstruction could drop every amount and still score 100 %. `factCoverage`
+   now compares digit runs (`2.884,27`, `11.07.1973`, `KV319097290`) with separators
+   normalised away; page numbers are excluded as furniture. Measured on shipped deep
+   artefacts: **94.7–100 %** figure retention.
+
+Also in this change set:
+
+- **Rejected candidates are kept** as `rejected/chunk-N-M.md`, readable through
+  `nconvert.fetch { layer: "rejected" }` (never-destroy applies to refused work too).
+- **Content-addressed reuse:** identical bytes + engine version + output-affecting
+  settings return the finished item instead of re-running the mechanical pass, the
+  PDFium renders and the vision calls. `force: true` reconverts. The key lives in
+  `item.json.reuseKey`; a settings change reconverts rather than serving a stale item.
+- `capabilities.converter` reads `nConvert/package.json` (it was hardcoded `0.9.1`
+  while the engine was `0.9.2` — the smoke test carried the same stale literal).
+- Tests: `tests/nconvert-deep-retry-test.mjs`, `tests/nconvert-facts-reuse-test.mjs`,
+  both wired into `npm run test:nconvert`. Full JS suite green (7 files).
+
+**Not live yet:** the running server still holds the pre-change JS. Restart is David's
+call — he asked not to restart the shared server without being asked.
+
+### Decided and implemented — what is authoritative on a scan
+
+Evidence from `ingest/20261107_0738_scan-guard-probe` (DKV scan, 1 page):
+
+- attempt 1 (DeepSeek): **97.7 % vocabulary, 94.4 % figures** — refused at the 98 % gate;
+- the retry lost both providers (`ZERO_CONTENT`, nPM finding `mw60gr94`) — nothing recovered;
+- what shipped is the mechanical OCR layer with interleaved columns, and it **misses
+  `325,50 EUR`** — which the vision read recovered, and which is exactly half of
+  2021's `651,00` (6 months vs 12), so it is almost certainly real.
+
+Resolution (2026-11-07, David's mandate "retain facts, be clear about confidence"):
+**(a) + (b)**. A page that carries its own image (`page-NNN-img-*`) is a scan, so its
+layer is not the oracle: the vision reading is kept when it holds at least
+`agents.nconvert.scanFactThreshold` (default 0.9) of the layer's figures and is not
+shorter than 80 % of it. The chunk reports `structured-over-untrusted-layer` with a
+`deep-untrusted-text-layer` warning. Both readings stay in the artefact
+(`document.md` + `document.mechanical.md`), and a refused candidate is still kept
+under `rejected/`. M5 replaces the heuristic with a real OCR provider reading the
+render.
+
+### Verification layer (2026-11-07)
+
+Deep ingests end with an independent audit by `kimi-k31-chat`
+(`agents.nconvert.verifyModel`, fallback `deepseek-chat`): it reads `document.md`
+beside the text layer, the mechanical text and the refused candidates, writes
+`verification.md`, and records `confidence: high|medium|low` in `item.json`.
+`nconvert.verify { item, model?, force? }` re-runs it on any existing item;
+`nconvert.fetch { layer: "verification" }` reads it. The report is required to state
+what it could not check — it never sees page images, so it cannot witness pixel truth,
+and it must not claim otherwise.
+
+### Housekeeping
+`nDB` submodule sits detached at `v1.5.0-5-g37813f8` (no branch) — invisible to the
+host's behind/ahead indicator.
+
 ## Current state — M3 complete + resource optimization (engine 0.9.1)
 
 - New live converters: **odt/odp/ods, epub, eml/mbox, xls (BIFF), xlsb**.

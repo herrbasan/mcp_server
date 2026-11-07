@@ -8,7 +8,7 @@
         "start": "node src/server.js",
         "dev": "node --watch src/server.js",
         "build:nconvert": "node nConvert/napi/setup.js",
-    "test:nconvert": "cd nConvert && cargo test --release && cd .. && node tests/nconvert-queue-test.mjs && node tests/nconvert-process-pool-test.mjs && node tests/nconvert-agent-smoke.mjs && node tests/nconvert-deep-smoke.mjs && node tests/nconvert-summary-concurrency.mjs && node nConvert/napi/test/corpus.mjs",
+    "test:nconvert":  "cd nConvert && cargo test --release && cd .. && node tests/nconvert-queue-test.mjs && node tests/nconvert-process-pool-test.mjs && node tests/nconvert-agent-smoke.mjs && node tests/nconvert-deep-smoke.mjs && node tests/nconvert-deep-retry-test.mjs && node tests/nconvert-facts-reuse-test.mjs && node tests/nconvert-summary-concurrency.mjs && node nConvert/napi/test/corpus.mjs",
         "test:print": "node tests/print-agent-smoke.mjs",
         "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build; nVDB: cd src/nVDB && npm run build)"
     },
