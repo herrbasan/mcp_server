@@ -884,7 +884,9 @@ succeed WITH warnings — read them, they mark every absorbed variance.
         summary   (L0) retrieval summary; start here
         document  (L1) full MD-Blocks text, or one section via section:N
         mechanical     deterministic conversion, for comparison
-        rejected  the vision reconstruction the guard refused (section:N)
+        rejected  (legacy only) the reconstruction the old coverage guard
+                  refused, on items ingested before 2026-11-07 — the guard is
+                  a diagnostic now, so new items never carry this layer
         page      (L2) rasterized page image: returns path + URL
         asset     (L2) extracted image/attachment: returns path + URL
         original  (L3) byte-exact source: returns path + URL
@@ -898,8 +900,9 @@ succeed WITH warnings — read them, they mark every absorbed variance.
       any refused readings, then reports what survived, what is at risk,
       whether the numbers are internally consistent, and what it could
       NOT check without the page images. Writes verification.md and
-      records confidence (high|medium|low) in item.json. Deep ingests run
-      this automatically; use it on older or mechanical-only items.
+      records confidence (high|medium|low) in item.json. Deep ingests do
+      not audit themselves (agents.nconvert.verify defaults to false);
+      run it when an item's trustworthiness matters.
 
 Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
 napi bindings, nDB pattern; own repo at spin-out).

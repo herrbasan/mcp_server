@@ -68,8 +68,7 @@
       "pageWidth": 1240,
       "chunkPages": 8,
       "coverageThreshold": 0.98,
-      "scanFactThreshold":  0.9,
-      "coverageRetry": true,
+      "coverageRetry": false,
       "maxDeepPages": 200,
       "nativeProcesses": 16,
       "maxConcurrentJobs": 16,
@@ -79,7 +78,7 @@
       "visionModel": "badkid-llama-chat",
       "visionFallbackModels": ["deepseek-flash-chat", "minimax-m31-flash-chat"],
       "visionMaxTokens": 32000,
-      "verify": true,
+      "verify": false,
       "verifyModel": "kimi-k31-chat",
       "verifyFallbackModels": ["deepseek-chat"],
       "summary": true

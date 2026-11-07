@@ -127,6 +127,12 @@ warning instead of being replaced by mechanical text, and no retries run.
 `agents.nconvert.coverageRetry: false` does part of this today. Acceptance: a
 deep run never loses a page it already had.
 
+> **Done 2026-11-07.** `coverageRetry` and `verify` default to false, the guard
+> warns (`deep-low-coverage` / `deep-untrusted-text-layer`) and the chunk ships
+> with its measured coverage; `rejected/` is legacy-only and `scanFactThreshold`
+> was removed with the gate it configured. Verified by `nconvert-deep-retry-test`
+> and `nconvert-facts-reuse-test`, both rewritten to the new contract.
+
 **P1 — geometry for born-digital PDF.** Tier 1 above, no model calls.
 Acceptance, measured on `H:\Ingest_TestFiles\GSB_11_Anwendungshandbuch_11.2.4.pdf`
 (~200 pages): correct heading hierarchy, tables with correct cell ownership, two

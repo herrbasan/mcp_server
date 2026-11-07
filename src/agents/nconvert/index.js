@@ -47,9 +47,12 @@ export async function init(context) {
         pageWidth: 1240,
         chunkPages: 8,
         coverageThreshold: 0.98,
-        // A page carrying its own image is a scan: its text layer is OCR of the
-        // same pixels and cannot judge the vision read. Accept on kept figures.
-        scanFactThreshold: 0.9,
+        // P0 (2026-11-07): guards are diagnostics, not gates. A chunk below the
+        // threshold ships with the gap recorded; it is never replaced by the
+        // mechanical text, and no corrective retry runs by default — the retry
+        // doubled work on chunks that had lost nothing and could erase an
+        // attempt that had already measured.
+        coverageRetry: false,
         maxDeepPages: 200,
         summary: true,
         // Native work runs in a bounded process pool. Small mechanical jobs
@@ -69,9 +72,10 @@ export async function init(context) {
         visionModel: 'deepseek-flash-chat',
         visionFallbackModels: ['minimax-m31-flash-chat'],
         visionMaxTokens: 32000,
-        // Deep runs are the expensive, high-stakes path — they get an
-        // independent audit that states how far the result can be trusted.
-        verify: true,
+        // The audit is genuinely useful but costs one large-model call per
+        // document, so it runs on demand (nconvert.verify) rather than after
+        // every ingest.
+        verify: false,
         verifyModel: 'kimi-k31-chat',
         verifyFallbackModels: ['deepseek-chat'],
         queueMaxHistory: 200,
@@ -103,9 +107,6 @@ export async function init(context) {
     }
     if (!Number.isInteger(conf.visionMaxTokens) || conf.visionMaxTokens < 1) {
         throw new Error('[nconvert] config agents.nconvert.visionMaxTokens must be a positive integer — a budget below the model\'s reasoning length silently produces no answer');
-    }
-    if (typeof conf.scanFactThreshold !== 'number' || conf.scanFactThreshold <= 0 || conf.scanFactThreshold > 1) {
-        throw new Error('[nconvert] config agents.nconvert.scanFactThreshold must be a number in (0, 1]');
     }
     if (typeof conf.verifyModel !== 'string' || !conf.verifyModel) {
         throw new Error('[nconvert] config agents.nconvert.verifyModel must be a non-empty string');
@@ -418,7 +419,6 @@ async function deepConvert({ source, env, folder, progress = null }) {
     const warnings = [];
     const parts = [];
     const chunkReports = [];
-    const rejected = [];
 
     for (let ci = 0; ci < chunks.length; ci++) {
         checkCancelled();
@@ -515,61 +515,45 @@ async function deepConvert({ source, env, folder, progress = null }) {
 
             // A page that carries its own image was never rendered from text —
             // the layer is an older OCR of the same pixels, so it cannot be the
-            // oracle. Judge the candidate on the facts it keeps instead.
+            // oracle. It only changes which warning names the gap.
             const scanLike = (env.assets ?? []).some((asset) => {
                 const m = /page-(\d+)-img-/.exec(asset?.name ?? '');
                 return m && Number(m[1]) >= from && Number(m[1]) <= to;
             });
-            const keepsFacts = factRatio >= conf.scanFactThreshold && markdown.length >= chunkText.length * 0.8;
 
+            // P0 (2026-11-07): the guard is a diagnostic, not a gate. The model
+            // did read the page, so refusing its structure and shipping the
+            // mechanical text instead threw away real structure and every figure
+            // it had kept. A chunk that measures below the threshold now ships
+            // as-is with the gap recorded; document.mechanical.md stays beside
+            // it for comparison.
             if (coverage < conf.coverageThreshold || factRatio < conf.coverageThreshold) {
-                if (scanLike && keepsFacts) {
+                const gap = coverage < conf.coverageThreshold
+                    ? `vocabulary ${(coverage * 100).toFixed(1)}%${factRatio == null ? '' : `, figures ${(factRatio * 100).toFixed(1)}%`}`
+                    : `figures ${(factRatio * 100).toFixed(1)}% (vocabulary ${(coverage * 100).toFixed(1)}%)`;
+                warnings.push(scanLike ? {
+                    code: 'deep-untrusted-text-layer',
+                    message: `pages ${from}-${to}: the text layer is OCR of the page image and disagrees with the vision read (${gap}) — kept the vision structure. The mechanical text stays in document.mechanical.md for comparison.`
+                } : {
+                    code: 'deep-low-coverage',
+                    message: `pages ${from}-${to}: model measured ${gap} against the authoritative text after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — kept the vision structure; compare document.mechanical.md if the gap looks wrong`
+                });
+                const applied = applyFigureMarkers(markdown, renderedIndices);
+                markdown = applied.markdown;
+                if (applied.rejected > 0) {
                     warnings.push({
-                        code: 'deep-untrusted-text-layer',
-                        message: `pages ${from}-${to}: the text layer is OCR of the page image and disagrees with the vision read (vocabulary ${(coverage * 100).toFixed(1)}%, figures ${(factRatio * 100).toFixed(1)}%) — kept the vision structure. The mechanical text stays in document.mechanical.md for comparison.`
-                    });
-                    const applied = applyFigureMarkers(markdown, renderedIndices);
-                    markdown = applied.markdown;
-                    if (applied.rejected > 0) {
-                        warnings.push({
-                            code: 'deep-figure-rejected',
-                            message: `pages ${from}-${to}: ${applied.rejected} figure marker(s) referenced pages that were not rendered`
-                        });
-                    }
-                    chunkReports.push({ pages: `${from}-${to}`, verdict: 'structured-over-untrusted-layer', model: provider, coverage: Number(coverage.toFixed(4)), facts: Number(factRatio.toFixed(4)), attempts: attempt });
-                } else {
-                    const words = missing.length;
-                    const figures = missingFacts.length;
-                    const sample = [...missingFacts, ...missing].slice(0, 8).join(', ');
-                    const gap = coverage < conf.coverageThreshold
-                        ? `vocabulary ${(coverage * 100).toFixed(1)}%${factRatio == null ? '' : `, figures ${(factRatio * 100).toFixed(1)}%`}`
-                        : `figures ${(factRatio * 100).toFixed(1)}% (vocabulary ${(coverage * 100).toFixed(1)}%)`;
-                    warnings.push({
-                        code: 'deep-low-coverage',
-                        message: `pages ${from}-${to}: model covered ${gap} of the authoritative text after ${attempt} attempt(s) (threshold ${(conf.coverageThreshold * 100).toFixed(0)}%) — mechanical text used instead. Missing ${figures} figure(s) and ${words} word(s), e.g.: ${sample}${words + figures > 8 ? ` (+${words + figures - 8} more)` : ''}`
-                    });
-                    // Never destroy: the guard rejected this structure, but the
-                    // model did read the page. Keep it beside the artefact so a
-                    // scan whose text layer is itself OCR noise stays comparable.
-                    const rejectedDir = path.join(folder, 'rejected');
-                    fs.mkdirSync(rejectedDir, { recursive: true });
-                    const rejectedName = `chunk-${from}-${to}.md`;
-                    fs.writeFileSync(
-                        path.join(rejectedDir, rejectedName),
-                        `<!-- rejected by the coverage guard — ${gap}, threshold ${(conf.coverageThreshold * 100).toFixed(0)}%, model ${provider} -->\n${markdown.trim()}\n`,
-                        'utf8'
-                    );
-                    rejected.push(rejectedName);
-                    markdown = chunkText;
-                    chunkReports.push({
-                        pages: `${from}-${to}`,
-                        verdict: 'fallback-low-coverage',
-                        model: provider,
-                        attempts: attempt,
-                        facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
-                        rejected: rejectedName
+                        code: 'deep-figure-rejected',
+                        message: `pages ${from}-${to}: ${applied.rejected} figure marker(s) referenced pages that were not rendered`
                     });
                 }
+                chunkReports.push({
+                    pages: `${from}-${to}`,
+                    verdict: scanLike ? 'structured-over-untrusted-layer' : 'kept-low-coverage',
+                    model: provider,
+                    coverage: Number(coverage.toFixed(4)),
+                    facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
+                    attempts: attempt
+                });
             } else {
                 const applied = applyFigureMarkers(markdown, renderedIndices);
                 markdown = applied.markdown;
@@ -605,7 +589,6 @@ async function deepConvert({ source, env, folder, progress = null }) {
         markdown: parts.join('\n\n') + '\n',
         pages: totalPages,
         chunkReports,
-        rejected,
         warnings
     };
 }
@@ -924,7 +907,6 @@ function reuseKeyFor({ depth, keepOriginal, assets, args }) {
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
-            scanFactThreshold: conf.scanFactThreshold,
             coverageRetry: conf.coverageRetry !== false,
             maxDeepPages: conf.maxDeepPages
         } : null
@@ -1106,7 +1088,6 @@ async function runIngestion(job, progress = null) {
         meta.deep = {
             pagesRendered: deep.pages,
             chunks: deep.chunkReports,
-            rejected: deep.rejected,
             meanCoverage: meanCoverage == null ? null : Number(meanCoverage.toFixed(4)),
             mechanicalDocument: 'document.mechanical.md'
         };
@@ -1417,7 +1398,7 @@ export async function nconvert_fetch(args) {
             return { content: [{ type: 'text', text: fs.readFileSync(path.join(itemDir, manifest.layers.verification), 'utf8') }], isError: false };
         }
         case 'rejected': {
-            if (!manifest.layers.rejected) throw new Error('nconvert.fetch: no rejected candidates for this item (the coverage guard accepted every chunk)');
+            if (!manifest.layers.rejected) throw new Error('nconvert.fetch: this item has no rejected candidates — since 2026-11-07 the coverage guard is a diagnostic, so a low-coverage chunk ships with a warning instead of being replaced. Only items ingested before that change can carry rejected/');
             const dir = path.join(itemDir, manifest.layers.rejected.dir);
             const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
             const chosen = args?.section != null
@@ -1504,7 +1485,6 @@ export async function nconvert_capabilities() {
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
-            scanFactThreshold: conf.scanFactThreshold,
             maxDeepPages: conf.maxDeepPages,
             note: 'depth:"deep" renders pages and has a vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
         },

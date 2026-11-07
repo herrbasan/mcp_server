@@ -12,7 +12,7 @@ workspace + napi bindings, own repo at spin-out), thin JS agent
 | `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page and has a vision model reconstruct structure. |
 | `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
 | `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
-| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `rejected` · `page` · `asset` · `original`. |
+| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `verification` · `rejected` (legacy items only) · `page` · `asset` · `original`. |
 
 ## The artefact is a layered object (spec §2.6)
 
@@ -24,7 +24,7 @@ sufficient layer and digs only when it must:
 | **L0** | `summary.md` | what this is, who for, what it covers — feeds the registry and embeddings |
 | **L1** | `document.md` | structured text; sections addressable via `nconvert.fetch { section: N }` |
 | **L1b** | `document.mechanical.md` | deterministic conversion (deep only) — comparison and fallback |
-| **L1c** | `rejected/chunk-N-M.md` | vision reconstruction the coverage guard refused (deep only) — kept, never thrown away |
+| **L1c** | `rejected/chunk-N-M.md` | **legacy only** — items ingested before 2026-11-07 carry the reconstruction the old coverage guard refused. The guard is a diagnostic now; nothing new is refused |
 | **L2** | `assets/`, `pages/` | extracted images, rasterized pages — visual understanding |
 | **L3** | `original.<ext>` | byte-exact source, last resort |
 | **index** | `item.json` | manifest: `sha256`, provenance, lineage, layer inventory, stats, warnings, privacy |
@@ -54,7 +54,7 @@ same job, including multiple waiting callers.
 `sha256` and settings match a finished item returns that item instead of
 re-running the mechanical pass, the PDFium renders and the vision calls. The
 reply states the reuse; `force: true` reconverts. Changing the engine version —
-or `visionModel`, `chunkPages`, `pageWidth`, the coverage thresholds, `assets`,
+or `visionModel`, `chunkPages`, `pageWidth`, the coverage threshold, `assets`,
 `keepOriginal`, `ocr` — changes the key and reconverts, so a settings change is
 never silently answered with a stale artefact.
 
@@ -81,8 +81,8 @@ stream, unreachable by any image extractor. `depth: "deep"` recovers that.
 never retypes the document) → for each `chunkPages` chunk (default 8), PDFium renders
 only that chunk at 1240 px → the chunk sends page images + its authoritative text to
 the vision model (`visionModel`, default `deepseek-flash-chat`, with
-`visionFallbackModels`, default MiniMax M3.1 Flash), which decides only structure → **text-coverage validation** (default
-98 %) → assembled MD-Blocks. Pages within a chunk fan out across the native process
+`visionFallbackModels`, default MiniMax M3.1 Flash), which decides only structure →
+**text-coverage measurement** (default 98 %, diagnostic only) → assembled MD-Blocks. Pages within a chunk fan out across the native process
 pool; rendered PNGs go directly from worker to artefact storage, so parent memory is
 bounded by the chunk rather than the whole PDF.
 
@@ -98,27 +98,29 @@ bounded by the chunk rather than the whole PDF.
 - The model **never writes MD-Blocks directives**; it emits
   `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
   cannot inject syntax.
-- **Coverage** is measured on the authoritative *vocabulary*: unique words, hyphenation
-  joined, running headers excluded, concatenation artifacts reassembled. A chunk below
-  threshold is **retried once with its missing words listed back to the model** — the
-  guard is never lowered, the omission is named. Measured: 9/11 → **10/11 chunks
-  structured**, specification and package-contents tables recovered (89 → 200 table rows).
-- **Figures are graded, not only words.** The guard also compares digit runs
-  (`2.884,27`, `11.07.1973`, `KV319097290`) with separators normalised away, so a
-  reconstruction that keeps every word and drops an amount no longer passes — before
-  this, no digit in the document was checked at all. Page numbers are excluded as
-  furniture. Measured on shipped deep artefacts: **94.7–100 %** figure coverage.
-- A chunk the guard refuses is **kept** as `rejected/chunk-N-M.md` (readable via
-  `nconvert.fetch { layer: "rejected" }`) rather than discarded: on a scan the
-  mechanical text is an older OCR of the same pixels, so the refused candidate is
-  often the better reading and must stay comparable.
-- A **failed retry keeps the attempt that already measured** (`deep-retry-failed`) — a
-  dead second call no longer erases a page the model did read and reports it as a vision
-  failure.
-- The document frontmatter states what actually happened: `coverage:` is the mean over
-  *structured* chunks, `chunks: N/M structured` the share, and `coverage: n/a` when no
-  chunk was structured. `meta.json` carries `deep.meanCoverage: null` in that case —
-  never a fabricated 100 %.
+- **Coverage is measured, not enforced** (P0, 2026-11-07). The guard compares the
+  model's reading against the authoritative *vocabulary*: unique words, hyphenation
+  joined, running headers excluded, concatenation artifacts reassembled. A chunk
+  below the threshold (`coverageThreshold`, default 98 %) now **ships as the model
+  read it** with `deep-low-coverage` naming the gap — it is no longer replaced by
+  mechanical text. A retry runs only when `coverageRetry` is true (default
+  **false**): it doubled work on chunks that had lost nothing, and a dead second
+  call used to erase a page that had already been read.
+- **Figures are graded, not only words.** Digit runs (`2.884,27`, `11.07.1973`,
+  `KV319097290`) are compared with separators normalised away, so a reconstruction
+  that keeps every word and drops an amount is visible in the warning. Page numbers
+  are excluded as furniture. Measured before the change: **94.7–100 %** figure
+  coverage on shipped deep artefacts.
+- **Nothing is refused any more.** The old `rejected/` layer held the reconstruction
+  the guard discarded; since the chunk itself ships, that layer is only written by
+  items ingested before 2026-11-07 (`nconvert.fetch { layer: "rejected" }` fails
+  loudly on a new item). `document.mechanical.md` is the comparison beside every
+  deep result.
+- The document frontmatter states what actually happened: `coverage:` is the mean of
+  the measured chunks, `chunks: N/M structured` the share, and `coverage: n/a` only
+  when no chunk produced a measurable reading at all (a `deep-chunk-failed` chunk).
+  `meta.json` carries `deep.meanCoverage: null` in that case — never a fabricated
+  100 %.
 - **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
 - Coverage or provider failure falls back per chunk — loudly, never silently.
 - **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
@@ -133,9 +135,10 @@ reconstructed from the drawing that mechanical conversion could only emit as pro
 ## Verification — how far to trust a result
 
 The deterministic guard measures what survived. It cannot say *what* is missing
-when the evidence itself is damaged, so deep ingests end with an independent
-audit (`nconvert.verify`; automatic for `depth: "deep"` while
-`agents.nconvert.verify` is true, `verify: false` on a call skips it):
+when the evidence itself is damaged, so there is an independent audit
+(`nconvert.verify`). It runs **on demand**, not after every ingest: one
+large-model call per document is not a routine cost (set
+`agents.nconvert.verify: true` to make deep ingests audit themselves):
 
 - a large-context model (`verifyModel`, default `kimi-k31-chat`, fallback
   `deepseek-chat`) reads `document.md` beside the text layer, the mechanical

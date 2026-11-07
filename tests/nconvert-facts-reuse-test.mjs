@@ -1,6 +1,9 @@
 // Three guarantees, each visible in the code path the server actually takes:
-//  1. the coverage guard checks FIGURES, not only words of 4+ letters;
-//  2. a chunk the guard rejects is kept (rejected/) instead of thrown away;
+//  1. the coverage guard checks FIGURES, not only words of 4+ letters — as a
+//     diagnostic since P0 (2026-11-07): a figure gap is measured and reported,
+//     but the model's reading still ships;
+//  2. nothing is refused into a rejected/ layer any more — the chunk ships with
+//     its measured gap and document.mechanical.md stays beside it;
 //  3. identical bytes + identical settings reuse the finished artefact instead
 //     of re-running the whole pipeline (force:true reconverts).
 
@@ -47,6 +50,8 @@ await agent.init({
                 chunkPages: 2,
                 coverageThreshold: 0.98,
                 coverageRetry: true,
+                // The audit is on demand by default; this test exercises it.
+                verify: true,
                 summary: false
             }
         }
@@ -88,18 +93,22 @@ try {
         const codes = (meta.warnings || []).map((w) => w.code);
         const chunk = meta.deep.chunks[0];
 
-        check('full vocabulary is not enough when figures are missing', chunk.verdict === 'fallback-low-coverage', JSON.stringify(chunk));
-        check('fact coverage is measured and recorded', chunk.facts === 0, String(chunk.facts));
+        check('a figure gap no longer discards the reading', chunk.verdict === 'kept-low-coverage', JSON.stringify(chunk));
+        check('fact coverage is measured and recorded', chunk.facts === 0 && chunk.coverage > 0.9, JSON.stringify(chunk));
         check('the warning names the figure gap', codes.includes('deep-low-coverage') && /figures 0\.0%/.test(JSON.stringify(meta.warnings)), JSON.stringify(meta.warnings));
         check('the retry asks for the missing figures', /CORRECTION/.test(retryPrompt || '') && /every figure/.test(retryPrompt || ''));
 
-        const rejectedFile = path.join(folder, 'rejected', chunk.rejected || '');
-        check('the rejected candidate is preserved', Boolean(chunk.rejected) && fs.existsSync(rejectedFile) && fs.readFileSync(rejectedFile, 'utf8').length > 40, String(chunk.rejected));
         const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'item.json'), 'utf8'));
-        check('the manifest records the rejected layer', manifest.layers.rejected?.count === 1, JSON.stringify(manifest.layers.rejected));
-
-        const fetched = await agent.nconvert_fetch({ item: manifest.id, layer: 'rejected' });
-        check('the rejected layer is readable through fetch', /rejected by the coverage guard/.test(fetched.content[0].text), fetched.content[0].text.slice(0, 80));
+        check('nothing is refused into a rejected layer', manifest.layers.rejected === null, JSON.stringify(manifest.layers.rejected));
+        const documentMd = fs.readFileSync(path.join(folder, 'document.md'), 'utf8');
+        check('the chunk ships as structured with its measured coverage', /^chunks: 1\/1 structured$/m.test(documentMd) && /^coverage: \d+\.\d%$/m.test(documentMd), documentMd.split('\n').slice(0, 14).join(' | '));
+        let rejectedFails = false;
+        try {
+            await agent.nconvert_fetch({ item: manifest.id, layer: 'rejected' });
+        } catch (error) {
+            rejectedFails = /no rejected candidates/.test(error.message);
+        }
+        check('fetching the rejected layer fails loudly with the new contract', rejectedFails);
 
         check('the deep ingest is audited', manifest.verification?.file === 'verification.md' && manifest.layers.verification === 'verification.md', JSON.stringify(manifest.verification));
         check('the audit records its confidence', manifest.verification?.confidence === 'medium', String(manifest.verification?.confidence));

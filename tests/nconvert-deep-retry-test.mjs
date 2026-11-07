@@ -1,8 +1,11 @@
-// Regression: a corrective retry that dies must not erase the attempt that
-// already measured, and an unmeasured deep run must never report 100% coverage.
-// Live evidence (2026-11-07, DKV scan): attempt 1 read the page at 74.4%,
-// the retry lost both providers, and the artefact shipped mechanical OCR-layer
-// text labelled `coverage: 100.0%` with a `deep-chunk-failed` warning.
+// Contract after P0 (2026-11-07): the coverage guard is a diagnostic, not a
+// gate. A chunk that measures low — including one whose corrective retry then
+// dies — ships as the model read it, with the measured gap recorded, and the
+// mechanical text stays beside it in document.mechanical.md.
+// Live evidence that forced the change (DKV scan, 2026-11-07): attempt 1 read
+// the page at 74.4%, the retry lost both providers, and the artefact shipped
+// mechanical OCR-layer text labelled `coverage: 100.0%` — a page the model had
+// already read was thrown away and the report said nothing was missing.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -63,15 +66,16 @@ try {
         const folder = path.join(tmp, job.result.item);
         const meta = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8'));
         const codes = (meta.warnings || []).map((w) => w.code);
-
-        check('retry failure keeps the measured attempt', meta.deep?.chunks?.[0]?.verdict === 'fallback-low-coverage', JSON.stringify(meta.deep?.chunks));
-        check('retry failure is reported, not masked as a vision failure', codes.includes('deep-retry-failed') && !codes.includes('deep-chunk-failed'), JSON.stringify(codes));
-        check('kept attempt still reports its low coverage', codes.includes('deep-low-coverage'), JSON.stringify(codes));
-        check('unmeasured coverage is null, never 100%', meta.deep?.meanCoverage === null, String(meta.deep?.meanCoverage));
-
         const documentMd = fs.readFileSync(path.join(folder, 'document.md'), 'utf8');
-        check('frontmatter states coverage n/a', /^coverage: n\/a$/m.test(documentMd), documentMd.split('\n').slice(0, 14).join(' | '));
-        check('frontmatter states how many chunks structured', /^chunks: 0\/1 structured$/m.test(documentMd));
+
+        check('a failed retry keeps the measured attempt', meta.deep?.chunks?.[0]?.verdict === 'kept-low-coverage', JSON.stringify(meta.deep?.chunks));
+        check('retry failure is reported, not masked as a vision failure', codes.includes('deep-retry-failed') && !codes.includes('deep-chunk-failed'), JSON.stringify(codes));
+        check('the kept attempt still reports its low coverage', codes.includes('deep-low-coverage'), JSON.stringify(codes));
+        check('the shipped chunk is the model reading, not the mechanical text', documentMd.includes('A fragment that keeps nothing.'), documentMd.split('\n').slice(0, 14).join(' | '));
+        check('no chunk is refused into a rejected layer any more', meta.deep?.rejected === undefined && meta.deep.chunks.every((c) => !c.rejected), JSON.stringify(meta.deep?.chunks));
+        check('measured coverage is reported, never a fabricated 100%', typeof meta.deep?.meanCoverage === 'number' && meta.deep.meanCoverage >= 0 && meta.deep.meanCoverage < 0.5, String(meta.deep?.meanCoverage));
+        check('frontmatter states the measured coverage', /^coverage: \d+\.\d%$/m.test(documentMd) && !/^coverage: 100\.0%$/m.test(documentMd), documentMd.split('\n').slice(0, 14).join(' | '));
+        check('frontmatter counts the kept chunk as structured', /^chunks: 1\/1 structured$/m.test(documentMd), documentMd.split('\n').slice(0, 14).join(' | '));
         const caps = JSON.parse((await agent.nconvert_capabilities()).content[0].text);
         const chain = [caps.deep.visionModel, ...caps.deep.visionFallbackModels];
         check('the retry rotates and walks the whole chain', JSON.stringify(visionModels) === JSON.stringify([chain[0], ...chain.slice(1), chain[0]]), `${JSON.stringify(visionModels)} vs ${JSON.stringify(chain)}`);
