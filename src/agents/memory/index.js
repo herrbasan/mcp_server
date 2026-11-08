@@ -359,8 +359,10 @@ export async function memory_recall(args, context) {
         };
     }
 
-    // Semantic search via nVDB — over-fetch so the summary tier has headroom
-    const searchResults = MEM_COLL.search({
+    // Semantic search via nVDB — over-fetch so the summary tier has headroom.
+    // nVDB search is async (native call); without await this yields a Promise
+    // whose .length is undefined and whose iteration throws.
+    const searchResults = await MEM_COLL.search({
         vector: queryEmbed,
         topK: Math.max(limit * 5, 25)
     });
