@@ -64,9 +64,10 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             throw new Error('Gateway chat aborted before it started (caller signal already aborted)');
         }
 
-        // Non-streaming mode (chat sessions, summarize calls): one POST, full
-        // JSON response, returns content + tool_calls + finish_reason + usage.
-        // The SSE path below is untouched; existing callers omit `stream`.
+        // Non-streaming mode (callers that explicitly need one JSON response):
+        // one POST, returns content + tool_calls + finish_reason + usage.
+        // Chat sessions use the SSE path below so long reasoning keeps the
+        // connection alive instead of hitting undici's 300s header timeout.
         if (stream === false) {
             const body = {
                 messages: fullMessages,
@@ -141,6 +142,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             stream: true,
             strip_thinking: true
         };
+        if (tools != null) body.tools = tools;
         if (maxTokens != null) body.max_tokens = maxTokens;
         if (temperature != null) body.temperature = temperature;
         if (responseFormat != null) body.response_format = responseFormat;
@@ -166,6 +168,9 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             : controller.signal;
         const startedAt = Date.now();
         const response = { content: '', cancelled: false };
+        const toolAcc = new Map();
+        let finishReason = null;
+        let usage = null;
 
         // A stream that produces no bytes for STALL_TIMEOUT_MS is hung, not
         // generating. Without this guard a stalled gateway call never resolves
@@ -261,6 +266,24 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
                     }
 
                     const choice = chunk.choices?.[0];
+                    if (chunk.usage && (usage == null || (chunk.usage.completion_tokens ?? 0) > 0)) {
+                        usage = chunk.usage;
+                    }
+                    if (choice?.finish_reason) finishReason = choice.finish_reason;
+
+                    // Tool calls arrive as incremental fragments. The chat-session
+                    // tool loop needs the same complete {id, name, arguments} shape
+                    // the non-streaming endpoint returns.
+                    for (const tc of choice?.delta?.tool_calls ?? []) {
+                        const index = tc.index ?? 0;
+                        const acc = toolAcc.get(index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+                        if (tc.id) acc.id = tc.id;
+                        if (tc.type) acc.type = tc.type;
+                        if (tc.function?.name) acc.function.name = tc.function.name;
+                        if (tc.function?.arguments) acc.function.arguments += tc.function.arguments;
+                        toolAcc.set(index, acc);
+                    }
+
                     const content = choice?.delta?.content || '';
                     if (!content) continue;
 
@@ -320,6 +343,9 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             totalChars
         });
 
+        response.tool_calls = toolAcc.size > 0 ? [...toolAcc.values()] : null;
+        response.finish_reason = finishReason;
+        response.usage = usage;
         return response;
     }
 

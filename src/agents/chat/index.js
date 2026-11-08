@@ -361,7 +361,10 @@ async function chatWithTransientRetry({ model, wire, name, hops, timeoutMs }) {
     const call = () => GATEWAY.chat({
         model,
         messages: wire,
-        stream: false,
+        // Long reasoning must stream: a non-streaming Grok request can spend
+        // minutes thinking before headers, tripping undici's 300s default while
+        // the session timeout says 600s. SSE keeps the call alive.
+        stream: true,
         tools: [dispatcherDef()],
         timeoutMs: timeoutMs ?? CONFIG.requestTimeoutMs,
         clientSession: name
