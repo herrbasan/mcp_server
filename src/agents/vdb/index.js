@@ -889,7 +889,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
         const coll = getCollection(collectionName);
         const filter = buildFilter(collectionName, folder, extension);
         const fetchK = Math.max(top_k * 3, 30);
-        const searchResults = coll.search({
+        const searchResults = await coll.search({
             vector: queryEmbedding,
             topK: fetchK,
             distance: 'cosine',
