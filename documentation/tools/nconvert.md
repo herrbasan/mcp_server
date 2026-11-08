@@ -36,9 +36,13 @@ sufficient layer and digs only when it must:
 - **Discovery:** `nconvert.items` lists; VDB indexes the store for semantic search;
   `nconvert.fetch` returns the layer a hit points at.
 - Summary generation is default-on (`agents.nconvert.summary: false` to skip) and is
-  reported in the tool response when unavailable. Provider calls use explicit cloud
-  models (`summaryModels`, default DeepSeek Flash then MiniMax M3.1 Flash) and are
-  independently bounded by `agents.nconvert.maxSummaryJobs` (default 4).
+  reported in the tool response when unavailable. It runs on the **local model**
+  (`summaryModels`, default `badkid-llama-chat`) with no fallback chain, so ingest
+  makes no provider calls at all by default; a cloud model can be named instead,
+  one target at a time. Measured 2026-11-08 on the 353-page handbook and a kickoff
+  deck: local 3.4 s per summary versus 4.0 s cloud, with longer, better-structured
+  output. Provider calls are independently bounded by
+  `agents.nconvert.maxSummaryJobs` (default 4).
 
 ## The ingest queue (bounded mechanical lane + one deep/large job)
 
@@ -121,19 +125,32 @@ stream, unreachable by any image extractor. `depth: "deep"` recovers that.
 **Pipeline:** mechanical pass first (its text is the *content authority* — the model
 never retypes the document) → for each `chunkPages` chunk (default 8), PDFium renders
 only that chunk at 1240 px → the chunk sends page images + its authoritative text to
-the vision model (`visionModel`, default `deepseek-flash-chat`, with
-`visionFallbackModels`, default MiniMax M3.1 Flash), which decides only structure →
-**text-coverage measurement** (default 98 %, diagnostic only) → assembled MD-Blocks. Pages within a chunk fan out across the native process
+the vision model (`visionModel`, default `badkid-llama-chat`), which decides only
+structure → **text-coverage measurement** (default 98 %, diagnostic only) → assembled
+MD-Blocks. Pages within a chunk fan out across the native process
 pool; rendered PNGs go directly from worker to artefact storage, so parent memory is
 bounded by the chunk rather than the whole PDF.
 
+- **One vision target, no chain** (2026-11-08). `visionFallbackModels` defaults to
+  `[]`: point `visionModel` at the local model *or* at a cloud model — a chain is an
+  option, not the default. Production reads pages locally. Reason: the retry rotated
+  to the next provider, so one coverage miss on a ~5 s local chunk became a ~50 s
+  cloud reasoning call that sometimes returned nothing. A failure now surfaces
+  instead of silently hopping providers.
+- **Vision calls disable thinking** (`reasoningEffort: 'none'`, `enableThinking:
+  false`). Measured 2026-11-08 on one page image at 400 tokens: `deepseek-flash-chat`
+  returned **0 chars with all 400 tokens spent on reasoning** at its config effort
+  `low`, and **1143 chars** at `none`. Note that `enable_thinking: false` alone does
+  not reach it — the Gateway's model config pins `reasoning_effort`, and effort
+  outranks the boolean. `minimax-m31-flash-chat` declares no `none` level and cannot
+  comply.
 - **Never starve the vision budget.** Measured 2026-11-07: `max_tokens` 800 and
   8000 both returned "streamed reasoning but never produced an answer"
   (`ZERO_CONTENT`) for `deepseek-flash-chat` and `minimax-m31-flash-chat` on a
   page-length prompt, while `32000` answered the identical request correctly
-  (DeepSeek even recovered `325,50 EUR` that the text layer had lost). The cap
-  must clear the model's *thinking*, not the expected answer — billing is on
-  output tokens, so a high ceiling costs nothing extra. Configured as
+  (DeepSeek even recovered `325,50 EUR` that the text layer had lost). With thinking
+  off the ceiling is headroom, not a requirement — but a model that cannot switch
+  thinking off still needs it to clear its reasoning. Configured as
   `agents.nconvert.visionMaxTokens`; the same failure appears on text-only
   prompts with a small cap, so blame the budget before the model.
 - The model **never writes MD-Blocks directives**; it emits
@@ -172,6 +189,36 @@ bounded by the chunk rather than the whole PDF.
 Measured on the corpus: 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
 149 headings, 61 figure blocks, 89 table rows — including a specifications table
 reconstructed from the drawing that mechanical conversion could only emit as prose.
+
+## Scan path (M5) — pixels become text on the CPU
+
+A page that carries its own image (`page-NNN-img-*`) is a **scan**: its embedded text
+layer is an older OCR of the same pixels and is discarded by policy, not trusted. Those
+pages are read locally by two ONNX models instead of a vision model:
+
+| stage | model | CPU time |
+|---|---|---|
+| regions | PP-DocLayout v2 | ~0.3 s |
+| text detection | PP-OCRv6 det small | ~0.1 s |
+| recognition | PP-OCRv6 rec small | ~0.7 s |
+| **per page** | | **~1.2 s, zero VRAM** |
+
+- **Nothing leaves the machine.** No provider call, no GPU, no Python: the models run
+  through `ort` inside the same Rust core (`nConvert/src/ocr.rs`) and are reached by the
+  agent as the native `ocr` operation in the process pool.
+- **Models** live under the storage root at `models/ocr` (`agents.nconvert.ocrModels`):
+  `pp_doc_layoutv2.onnx`, `PP-OCRv6_det_small.onnx`, `PP-OCRv6_rec_small.onnx`.
+  Set `agents.nconvert.ocr: false` to fall back to the vision path for scans.
+- **Regions become structure**, not prose: a `table` region is rebuilt as a Markdown
+  table (rows by y-cluster, columns by x-cluster, two-line headers merged), a
+  `paragraph_title` becomes `## `, `header`/`footer`/`aside_text` are dropped.
+  Lines outside every region are appended in reading order — never lost.
+- **Provenance is stated.** The chunk report carries `derivedBy: "ocr"`, the frontmatter
+  gains `derived-by: ocr | model | measured`, and OCR chunks report `coverage: null`
+  because there is no layer to measure against — the reading *is* the measurement.
+- **Measured on the DKV certificate** (the page whose Acrobat layer lost `325,50 EUR`):
+  18/18 ground-truth facts, both tax tables reconstructed with correct cell ownership,
+  `derived-by: ocr`, 2.9 s end to end for the document.
 
 ## Verification — how far to trust a result
 

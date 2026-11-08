@@ -33,7 +33,16 @@ await agent.init({
     config: {
         agents: {
             storage: { root: tmp },
-            nconvert: { nativeProcesses: 2, maxConcurrentJobs: 4, maxSummaryJobs: 1, summary: true }
+            nconvert: {
+                nativeProcesses: 2,
+                maxConcurrentJobs: 4,
+                maxSummaryJobs: 1,
+                summary: true,
+                // Production runs summaries on the local model with no chain
+                // (2026-11-08). The serialisation and fallback mechanics still
+                // have to work for a configured chain, so declare one here.
+                summaryModels: ['badkid-llama-chat', 'deepseek-flash-chat']
+            }
         }
     }
 });
@@ -47,8 +56,8 @@ try {
     const results = await Promise.all(files.map((file) => agent.nconvert_convert({ path: file, keepOriginal: false })));
     check('parallel mechanical conversions complete', results.every((result) => !result.isError));
     check('summary provider calls stay serial', maxActive === 1, `${maxActive}`);
-    check('summaries use explicit cloud models', models.every((model) => ['deepseek-flash-chat', 'minimax-m31-flash-chat'].includes(model)), JSON.stringify(models));
-    check('primary failure falls back to the second cloud model', models[0] === 'deepseek-flash-chat' && models[1] === 'minimax-m31-flash-chat', JSON.stringify(models));
+    check('summaries use the configured chain', models.every((model) => ['badkid-llama-chat', 'deepseek-flash-chat'].includes(model)), JSON.stringify(models));
+    check('a failed primary falls back to the next configured model', models[0] === 'badkid-llama-chat' && models[1] === 'deepseek-flash-chat', JSON.stringify(models));
     const summaries = files.map((file) => {
         const match = /→ (ingest\/\S+)\//.exec(results[files.indexOf(file)].content[0].text);
         return fs.existsSync(path.join(tmp, match[1], 'summary.md'));

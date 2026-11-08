@@ -27,6 +27,7 @@ const STEP_LABELS = {
     detecting: 'Detecting format',
     converting: 'Mechanical conversion',
     rendering: 'Rendering pages',
+    ocr: 'OCR (local models)',
     vision: 'Vision structuring',
     retry: 'Coverage retry',
     summarizing: 'Generating summary',
@@ -237,6 +238,19 @@ export class IngestQueue {
                 if (s && s.status === 'active') {
                     s.status = 'done';
                     if (detail != null) s.detail = detail;
+                    q.persist();
+                    q.emit(job, 'job.update');
+                }
+            },
+            // A declared step that this run does not need (a scan never calls the
+            // vision model; a born-digital chunk never calls OCR). Closing it as
+            // done with the reason beats leaving it 'pending' forever, which reads
+            // as "still running" in every dashboard.
+            skipStep(id, { detail = null } = {}) {
+                const s = find(id);
+                if (s && s.status === 'pending') {
+                    s.status = 'done';
+                    s.detail = detail;
                     q.persist();
                     q.emit(job, 'job.update');
                 }

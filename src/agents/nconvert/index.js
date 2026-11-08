@@ -62,15 +62,23 @@ export async function init(context) {
         maxConcurrentJobs: 16,
         maxHeavyJobs: 1,
         maxSummaryJobs: 4,
-        summaryModels: ['deepseek-flash-chat', 'minimax-m31-flash-chat'],
-        // Measured 2026-11-07: a vision call whose max_tokens sits below the
-        // model's reasoning length returns "streamed reasoning but never
-        // produced an answer" — silently, in ~5 s, and looking like a broken
-        // model. 800 and 8000 both starved it; 32000 answered the same page
-        // correctly. The budget is a ceiling, not a reservation, so it must
-        // clear the thinking, not the expected answer.
-        visionModel: 'deepseek-flash-chat',
-        visionFallbackModels: ['minimax-m31-flash-chat'],
+        summaryModels: ['badkid-llama-chat'],
+        // One target, no chain (David, 2026-11-08): production reads pages with a
+        // local model. A cloud fallback turned a ~5 s local retry into a ~50 s
+        // reasoning call and sometimes returned nothing at all, so vision now
+        // points at exactly one model and a failure surfaces instead of hopping
+        // providers.
+        visionModel: 'badkid-llama-chat',
+        visionFallbackModels: [],
+        // Scan path (M5). Two local ONNX models on the CPU read pages that
+        // carry no usable text layer; the vision model is not used for them.
+        // Models live under the storage root: models/ocr.
+        ocr: true,
+        ocrModels: 'models/ocr',
+        // A ceiling, not a reservation — but it still has to clear the thinking of
+        // a model that cannot switch it off (requestVision forces effort 'none';
+        // minimax-m31 declares no such level). Measured 2026-11-07: 800 and 8000
+        // tokens both starved deepseek into "reasoning, no answer".
         visionMaxTokens: 32000,
         // The audit is genuinely useful but costs one large-model call per
         // document, so it runs on demand (nconvert.verify) rather than after
@@ -218,6 +226,21 @@ async function renderPages(source, onlyPages, folder) {
         folder
     })));
     return results.flatMap((result) => result.pages).sort((a, b) => a.index - b.index);
+}
+
+function ocrModelsDir() {
+    return path.isAbsolute(conf.ocrModels) ? conf.ocrModels : path.join(storageRoot, conf.ocrModels);
+}
+
+// Reads one rendered page with the local ONNX models (PP-DocLayout v2 +
+// PP-OCRv6). Returns { markdown, regions, lines } — no provider is involved.
+async function ocrPageFile(file) {
+    return nativePool.run({
+        op: 'ocr',
+        source: file,
+        modelDir: ocrModelsDir(),
+        optionsJson: '{}'
+    });
 }
 
 // Mechanical PDF text concatenates adjacent runs ("installationchapter") where
@@ -387,7 +410,15 @@ async function requestVision(content, { rotate = 0 } = {}) {
                 model,
                 messages: [{ role: 'user', content }],
                 systemPrompt: 'You reconstruct documents faithfully. You never invent content.',
-                maxTokens: conf.visionMaxTokens
+                maxTokens: conf.visionMaxTokens,
+                // Perception, not reasoning. A thinking model spends its output
+                // budget on reasoning before writing a line of the page — measured
+                // 2026-11-08: deepseek-flash at 400 tokens returned 0 chars at
+                // effort 'low' and 1143 chars at 'none'. enable_thinking alone does
+                // NOT reach it: the Gateway's model config pins reasoning_effort
+                // 'low', and effort outranks the boolean.
+                enableThinking: false,
+                reasoningEffort: 'none'
             });
             const text = String(response.content || '').trim();
             if (!text) throw new Error('model returned no content');
@@ -402,6 +433,7 @@ async function requestVision(content, { rotate = 0 } = {}) {
 async function deepConvert({ source, env, folder, progress = null }) {
     const step = async (id, opts) => { if (progress) await progress.step(id, opts); };
     const finishStep = (id, opts) => { if (progress) progress.finishStep(id, opts); };
+    const skipStep = (id, opts) => { if (progress) progress.skipStep(id, opts); };
     const checkCancelled = () => { if (progress) progress.checkCancelled(); };
 
     const texts = env.page_texts || [];
@@ -444,7 +476,45 @@ async function deepConvert({ source, env, folder, progress = null }) {
         for (const p of pages) renderedIndices.add(p.index + 1);
         finishStep('rendering', { detail: `pages ${from}-${to} rendered` });
         checkCancelled();
+
+        // A scan has no text layer worth trusting — the embedded layer is an
+        // older OCR of the same pixels (policy: discard it) and a vision model
+        // retypes rather than reads. The local ONNX path reads the pixels:
+        // ~1.2 s per page on the CPU, no GPU, no provider call.
+        const scanPages = new Set((env.assets ?? [])
+            .map((asset) => /page-(\d+)-img-/.exec(asset?.name ?? ''))
+            .filter(Boolean)
+            .map((m) => Number(m[1])));
+        const chunkPageNumbers = onlyPages.map((i) => i + 1);
+        const allScan = conf.ocr !== false && chunkPageNumbers.every((p) => scanPages.has(p));
+        if (allScan) {
+            await step('ocr', { i: ci + 1, n: chunks.length, detail: `pages ${from}-${to} on CPU` });
+            const ocrParts = [];
+            const ocrPages = [];
+            for (const p of pages) {
+                const res = await ocrPageFile(p.file);
+                ocrParts.push(String(res.markdown ?? '').trim());
+                ocrPages.push({ page: p.index + 1, lines: res.lines.length, regions: res.regions.length });
+            }
+            finishStep('ocr', { detail: `${ocrPages.reduce((a, p) => a + p.lines, 0)} lines` });
+            skipStep('vision', { detail: 'not needed — pages read by OCR' });
+            const ocrMarkdown = ocrParts.filter(Boolean).join('\n\n');
+            if (chunk.start > 0) parts.push('---');
+            if (ocrMarkdown.trim()) parts.push(ocrMarkdown.trim());
+            chunkReports.push({
+                pages: `${from}-${to}`,
+                verdict: 'ocr',
+                model: 'pp-ocrv6+pp-doclayoutv2',
+                derivedBy: 'ocr',
+                coverage: null,
+                facts: null,
+                pagesDetail: ocrPages
+            });
+            continue;
+        }
+
         await step('vision', { i: ci + 1, n: chunks.length });
+        skipStep('ocr', { detail: 'not needed — no scan pages in this chunk' });
 
         const content = await Promise.all(pages.map(async (p) => ({
             type: 'image_url',
@@ -612,9 +682,11 @@ function sectionsOf(markdown) {
 }
 
 // L0: the layer that answers "what is this?" without reading the document.
-// Summary generation tries cloud models in configured order. Task routing is
-// deliberately bypassed: an explicit model keeps this background load off the
-// local provider and makes fallback behavior deterministic.
+// Summary generation runs on the configured local model by default (David,
+// 2026-11-08): a retrieval summary is small output over a large prompt, and the
+// platform strategy is to keep provider traffic out of ingest entirely. The
+// list is still a chain, so a cloud model can be named instead — but it is one
+// target at a time, and a failure surfaces rather than hopping providers.
 let summaryActive = 0;
 const summaryWaiters = [];
 
@@ -638,7 +710,12 @@ async function generateSummary(documentMd, filename) {
                 messages: [{ role: 'user', content: prompt }],
                 systemPrompt: 'You write precise retrieval summaries. You never invent content.',
                 maxTokens: 700,
-                enableThinking: false
+                // Same rule as the vision calls: effort outranks the boolean in
+                // the Gateway, so `enableThinking` alone leaves a reasoning model
+                // thinking — measured 2026-11-08, a DeepSeek summary hit the
+                // 700-token ceiling mid-sentence ("… and WebMCP; top").
+                enableThinking: false,
+                reasoningEffort: 'none'
             });
             const text = String(response.content || '').trim();
             if (!text) {
@@ -904,6 +981,8 @@ function reuseKeyFor({ depth, keepOriginal, assets, args }) {
             model: conf.visionModel,
             fallbacks: conf.visionFallbackModels,
             maxTokens: conf.visionMaxTokens,
+            thinking: 'off',
+            ocr: conf.ocr !== false,
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
@@ -957,7 +1036,7 @@ function isHeavy(depth, size) {
 
 function stepsFor(depth) {
     return depth === 'deep'
-        ? ['converting', 'rendering', 'vision', 'summarizing', 'verifying']
+        ? ['converting', 'rendering', 'ocr', 'vision', 'summarizing', 'verifying']
         : ['converting', 'summarizing'];
 }
 
@@ -1060,11 +1139,15 @@ async function runIngestion(job, progress = null) {
         for (const w of deep.warnings) meta.warnings.push(w);
 
         const coverageValues = deep.chunkReports.filter((c) => c.coverage != null).map((c) => c.coverage);
-        const structuredChunks = coverageValues.length;
+        // OCR chunks carry no layer-coverage figure: their text IS the reading,
+        // measured against pixels rather than against an untrusted layer. They
+        // count as structured, and the method is stated per item.
+        const structuredChunks = deep.chunkReports.filter((c) => c.verdict !== 'fallback-error').length;
+        const derivedBy = [...new Set(deep.chunkReports.map((c) => c.derivedBy ?? 'model'))];
         // No measured chunk means the vision pass was discarded for every
         // chunk — reporting 100% there was a lie in the shipped frontmatter.
-        const meanCoverage = structuredChunks > 0
-            ? coverageValues.reduce((a, b) => a + b, 0) / structuredChunks
+        const meanCoverage = coverageValues.length > 0
+            ? coverageValues.reduce((a, b) => a + b, 0) / coverageValues.length
             : null;
 
         const front = [
@@ -1076,6 +1159,7 @@ async function runIngestion(job, progress = null) {
             `pages: ${deep.pages}`,
             `coverage: ${meanCoverage == null ? 'n/a' : `${(meanCoverage * 100).toFixed(1)}%`}`,
             `chunks: ${structuredChunks}/${deep.chunkReports.length} structured`,
+            `derived-by: ${derivedBy.join(', ')}`,
             `converted: ${new Date().toISOString()}`,
             'converter: nconvert deep',
             `warnings-count: ${meta.warnings.length}`,
@@ -1100,7 +1184,7 @@ async function runIngestion(job, progress = null) {
 
         lines = [
             `Ingested ${filename} (${env.format}, DEEP) → ${relToStorage(folder)}/`,
-            `  document.md — structured by vision over ${deep.pages} rendered page(s), coverage ${meanCoverage == null ? 'n/a (no chunk structured — mechanical text shipped)' : `${(meanCoverage * 100).toFixed(1)}% of ${structuredChunks}/${deep.chunkReports.length} chunk(s)`}`,
+            `  document.md — structured by ${derivedBy.join(' + ')} over ${deep.pages} rendered page(s), coverage ${meanCoverage == null ? 'n/a (no chunk measured — see derived-by)' : `${(meanCoverage * 100).toFixed(1)}% of ${structuredChunks}/${deep.chunkReports.length} chunk(s)`}`,
             '  document.mechanical.md — the deterministic result, kept for comparison',
             `  pages/ — ${deep.pages} page image(s) at ${conf.pageWidth}px`,
             `  chunks: ${deep.chunkReports.map((c) => `${c.pages}:${c.verdict}`).join(', ')}`,
@@ -1142,8 +1226,7 @@ async function runIngestion(job, progress = null) {
     // Deep runs end with an independent audit: the deterministic guard says how
     // much text survived, only a model can say what is missing and why.
     if (depth === 'deep' && conf.verify && args.verify !== false) {
-        await step('verifying');
-        try {
+        await step('verifying');        try {
             const verification = await verifyItem(folder);
             finishStep('verifying', { detail: `confidence ${verification.confidence ?? 'unstated'}` });
             lines.push(`  verification.md — independent audit by ${verification.model} (confidence ${verification.confidence ?? 'unstated'}); read the "what this audit could not check" section`);
@@ -1152,6 +1235,8 @@ async function runIngestion(job, progress = null) {
             lines.push(`  verification: not generated (${error.message})`);
             logger.warn(`nconvert: verification failed for ${filename}: ${error.message}`, null, 'nconvert');
         }
+    } else if (depth === 'deep' && progress) {
+        progress.skipStep('verifying', { detail: 'not requested (agents.nconvert.verify=false)' });
     }
 
     logger.info(`nconvert: ${filename} (${env.format}${depth === 'deep' ? ', deep' : ''}) → ${relToStorage(folder)}`, null, 'nconvert');
@@ -1461,7 +1546,7 @@ const FORMAT_MATRIX = [
     { format: 'eml', phase: 'M3 · live', note: 'mail-parser 0.11; MIME + encoded headers, plain/HTML body, attachments as assets with inventory' },
     { format: 'mbox', phase: 'M3 · live', note: 'mbox message splitting via mail-parser; section per message, attachments as assets' },
     { format: 'pdf', phase: 'M4 · live', note: 'per-page text + embedded images as assets (JPX→PNG, DCT→jpg, flate→PNG); AES-256/R6 auto-decrypts; PDFium rasterization for deep conversion' },
-    { format: 'image', phase: 'M5', note: 'OCR provider hand-off (multi-page); needs_ocr returned today' },
+    { format: 'image', phase: 'M5', note: 'raster images still return needs_ocr: the local OCR path is wired for PDF scan pages, not for standalone image input' },
     { format: 'rtf', phase: 'M6', note: 'hand parser for supported control words' },
     { format: 'doc', phase: 'M6 · live (pulled forward)', note: 'Word 97-2003 binary: piece-table text (cp1252 + UTF-16 pieces), fields → result text, page breaks → ***, photos carved from the Data stream (JPEG/PNG); tables/footnotes/headers warned not converted; Word 6/95 + encrypted refused loudly' },
     { format: 'xls', phase: 'M6 · live (pulled forward)', note: 'Excel 97-2003 BIFF via calamine; sheet per section, merges and ISO dates' },
@@ -1486,11 +1571,13 @@ export async function nconvert_capabilities() {
             visionModel: conf.visionModel,
             visionFallbackModels: conf.visionFallbackModels,
             maxTokens: conf.visionMaxTokens,
+            ocr: conf.ocr !== false,
+            ocrModels: conf.ocrModels,
             pageWidth: conf.pageWidth,
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
             maxDeepPages: conf.maxDeepPages,
-            note: 'depth:"deep" renders pages and has a vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
+            note: 'depth:"deep" renders pages; scan pages are read locally by PP-DocLayout v2 + PP-OCRv6 (CPU), other pages have the vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
         },
         execution: {
             nativeProcesses: conf.nativeProcesses,

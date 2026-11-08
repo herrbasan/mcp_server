@@ -36,6 +36,9 @@ process.on('message', async (task) => {
                 result.push({ index: page.index, width: page.width, height: page.height, file });
             }
             process.send({ id: task.id, ok: true, result: { pages: result } });
+        } else if (task.op === 'ocr') {
+            const raw = await native.ocrPage(bytes, task.modelDir, task.optionsJson ?? '{}');
+            process.send({ id: task.id, ok: true, result: JSON.parse(raw) });
         } else {
             throw new Error(`unknown native operation: ${task.op}`);
         }

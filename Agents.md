@@ -93,16 +93,27 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
   queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,
   `nconvert.job`, `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
   `nconvert.fetch`.
+- **Scan path (M5, local ONNX)**: a page carrying its own image is a scan — its
+  embedded text layer is an older OCR and is discarded by policy. Such pages are
+  read by PP-DocLayout v2 + PP-OCRv6 in `nConvert/src/ocr.rs` (`ort`, CPU, ~1.2 s
+  per page, zero VRAM, no provider call), reached as the `ocr` native operation.
+  Regions become structure: `table` regions are rebuilt as Markdown tables,
+  `paragraph_title` becomes `## `, page numbers and decorative images are dropped
+  — no text is ever dropped. Models live under the storage root at `models/ocr`
+  (`agents.nconvert.ocrModels`); `agents.nconvert.ocr: false` falls back to the
+  vision path. Chunks report `derivedBy: "ocr"` and the frontmatter states
+  `derived-by: ocr | model | measured`.
 - **Ingest queue** (`src/agents/nconvert/queue.js`): bounded lanes — up to 16
-  small mechanical jobs, one deep/large job, and four cloud summary calls by
-  default. Summaries and deep vision use DeepSeek Flash with MiniMax M3.1 Flash
-  fallback. Native conversion and PDFium rendering use a lazy persistent process
-  pool (`nativeProcesses: 16`); deep chunks fan out pages across independent
-  PDFium processes and write PNGs directly to artefact storage. Fast lane —
-  mechanical calls await their result; deep/large jobs return a queued handle.
-  Step-model progress (converting → rendering → vision i/n + coverage → retry →
-  summarizing), restart-safe FIFO (`data/nconvert/jobs.json`), sha256 dedup,
-  cooperative cancel, REST + SSE.
+  small mechanical jobs, one deep/large job, and four summary calls by default.
+  Summaries and deep vision both run on the local model (`badkid-llama-chat`) with
+  no provider fallback chain (2026-11-08); a cloud model can be named instead, one
+  target at a time. Native conversion and PDFium rendering use a lazy persistent
+  process pool (`nativeProcesses: 16`); deep chunks fan out pages across
+  independent PDFium processes and write PNGs directly to artefact storage. Fast
+  lane — mechanical calls await their result; deep/large jobs return a queued
+  handle. Step-model progress (converting → rendering → ocr/vision i/n + coverage
+  → retry → summarizing), restart-safe FIFO (`data/nconvert/jobs.json`), sha256
+  dedup, cooperative cancel, REST + SSE.
 - **REST + SSE** (dashboard surface): `GET/POST /nconvert/jobs`,
   `GET /nconvert/jobs/:id`, `POST /nconvert/jobs/:id/cancel`, and
   `GET /nconvert/events` (SSE: `queue.snapshot` on connect, then `job.*`).

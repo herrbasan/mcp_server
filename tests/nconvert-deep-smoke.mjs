@@ -12,14 +12,11 @@ const agent = await import('../src/agents/nconvert/index.js');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nconvert-deep-smoke-'));
 let imageCounts = [];
 let visionModels = [];
-let visionCalls = 0;
 await agent.init({
     gateway: {
         async chat({ model, messages }) {
             visionModels.push(model);
             imageCounts.push(messages[0].content.filter((part) => part.type === 'image_url').length);
-            visionCalls++;
-            if (visionCalls === 1) return { content: '' };
             return { content: '# DKV\n\nDeep conversion path verified with a stubbed provider.' };
         }
     },
@@ -54,17 +51,19 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 10));
     }
     check('deep job completes', job.state === 'done', `${job.state}: ${job.error || ''}`);
-    check('both vision batches contain parallel-rendered pages', imageCounts.length === 3 && imageCounts.every((count) => count === 2), JSON.stringify(imageCounts));
+    check('every vision batch contains parallel-rendered pages', imageCounts.length === 2 && imageCounts.every((count) => count === 2), JSON.stringify(imageCounts));
     const caps = JSON.parse((await agent.nconvert_capabilities()).content[0].text);
     const chain = [caps.deep.visionModel, ...caps.deep.visionFallbackModels];
-    check('empty primary response falls back to the next provider', JSON.stringify(visionModels) === JSON.stringify([chain[0], chain[1], chain[0]]), `${JSON.stringify(visionModels)} vs ${JSON.stringify(chain)}`);
+    // One target by default (2026-11-08). The fallback walk is covered by
+    // nconvert-deep-retry-test, which declares a chain explicitly.
+    check('every call targets the single configured model', chain.length === 1 && visionModels.every((model) => model === chain[0]), `${JSON.stringify(visionModels)} vs chain ${JSON.stringify(chain)}`);
     if (job.state === 'done') {
         const folder = path.join(tmp, job.result.item);
         const pages = [1, 2, 3, 4].map((page) => path.join(folder, 'pages', `page-${String(page).padStart(3, '0')}.png`));
         check('deep artefact includes all pages across reused worker batches', pages.every((page) => fs.existsSync(page)));
         const meta = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8'));
         check('deep metadata records four rendered pages', meta.deep?.pagesRendered === 4, JSON.stringify(meta.deep));
-        check('deep metadata records the providers that answered', meta.deep?.chunks?.[0]?.model === chain[1] && meta.deep?.chunks?.[1]?.model === chain[0], `${JSON.stringify(meta.deep?.chunks?.map((c) => c.model))} vs chain ${JSON.stringify(chain)}`);
+        check('deep metadata records the providers that answered', meta.deep?.chunks?.every((chunk) => chunk.model === chain[0]), `${JSON.stringify(meta.deep?.chunks?.map((c) => c.model))} vs chain ${JSON.stringify(chain)}`);
         check('mechanical layer is preserved', fs.existsSync(path.join(folder, 'document.mechanical.md')));
     }
 } finally {
