@@ -51,7 +51,7 @@ try {
         await new Promise((resolve) => setTimeout(resolve, 10));
     }
     check('deep job completes', job.state === 'done', `${job.state}: ${job.error || ''}`);
-    check('every vision batch contains parallel-rendered pages', imageCounts.length === 2 && imageCounts.every((count) => count === 2), JSON.stringify(imageCounts));
+    check('only the figure-bearing chunk calls vision', imageCounts.length === 1 && imageCounts[0] === 2, JSON.stringify(imageCounts));
     const caps = JSON.parse((await agent.nconvert_capabilities()).content[0].text);
     const chain = [caps.deep.visionModel, ...caps.deep.visionFallbackModels];
     // One target by default (2026-11-08). The fallback walk is covered by
@@ -63,7 +63,12 @@ try {
         check('deep artefact includes all pages across reused worker batches', pages.every((page) => fs.existsSync(page)));
         const meta = JSON.parse(fs.readFileSync(path.join(folder, 'meta.json'), 'utf8'));
         check('deep metadata records four rendered pages', meta.deep?.pagesRendered === 4, JSON.stringify(meta.deep));
-        check('deep metadata records the providers that answered', meta.deep?.chunks?.every((chunk) => chunk.model === chain[0]), `${JSON.stringify(meta.deep?.chunks?.map((c) => c.model))} vs chain ${JSON.stringify(chain)}`);
+        check('the first chunk keeps measured geometry without a provider', meta.deep?.chunks?.[0]?.verdict === 'measured' && meta.deep.chunks[0].derivedBy === 'measured' && meta.deep.chunks[0].model === null && meta.deep.chunks[0].coverage === null, JSON.stringify(meta.deep?.chunks?.[0]));
+        check('the vector-figure chunk explains its vision escalation', meta.deep?.chunks?.[1]?.triggers?.some((trigger) => trigger.reason === 'vector-figure' && trigger.page === 3 && trigger.pathSegments === 375), JSON.stringify(meta.deep?.chunks?.[1]));
+        check('deep metadata records the provider only for the vision chunk', meta.deep?.chunks?.[1]?.model === chain[0] && visionModels.length === 1, `${JSON.stringify(meta.deep?.chunks?.map((c) => c.model))} vs chain ${JSON.stringify(chain)}`);
+        const documentMd = fs.readFileSync(path.join(folder, 'document.md'), 'utf8');
+        check('frontmatter records mixed measured and model provenance', /^derived-by: measured, model$/m.test(documentMd), documentMd.split('\n').slice(0, 14).join(' | '));
+        check('the measured chunk ships its deterministic structure', documentMd.includes('## Impressum'), documentMd.split('\n').slice(0, 30).join(' | '));
         check('mechanical layer is preserved', fs.existsSync(path.join(folder, 'document.mechanical.md')));
     }
 } finally {

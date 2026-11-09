@@ -104,6 +104,13 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
   (`agents.nconvert.ocrModels`); `agents.nconvert.ocr: false` falls back to the
   vision path. Chunks report `derivedBy: "ocr"` and the frontmatter states
   `derived-by: ocr | model | measured`.
+- **Conditional deep vision (2026-11-09)**: scan chunks use local OCR;
+  unambiguous born-digital chunks ship the measured `pdf_layout` sections
+  directly (`derivedBy: "measured"`, zero provider calls); vision runs only for
+  unavailable geometry, embedded figures, or pages reaching
+  `visionPathSegments` (default 128 PDFium path segments). Chunk reports carry
+  `triggers` and `pathSegments`. The whole chunk escalates when one page is
+  ambiguous.
 - **Ingest queue** (`src/agents/nconvert/queue.js`): bounded lanes — up to 16
   small mechanical jobs, one deep/large job, and four summary calls by default.
   Summaries and deep vision both run on the local model (`badkid-llama-chat`) with

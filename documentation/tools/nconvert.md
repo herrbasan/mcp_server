@@ -9,7 +9,7 @@ workspace + napi bindings, own repo at spin-out), thin JS agent
 
 | Method | Args | What it does |
 |---|---|---|
-| `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page and has a vision model reconstruct structure. |
+| `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page, then uses OCR, measured geometry, or conditional vision per chunk. |
 | `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
 | `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
 | `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `verification` · `rejected` (legacy items only) · `page` · `asset` · `original`. |
@@ -60,7 +60,7 @@ same job, including multiple waiting callers.
 `sha256` and settings match a finished item returns that item instead of
 re-running the mechanical pass, the PDFium renders and the vision calls. The
 reply states the reuse; `force: true` reconverts. Changing the engine version —
-or `visionModel`, `chunkPages`, `pageWidth`, the coverage threshold, `assets`,
+or `visionModel`, `visionPathSegments`, `chunkPages`, `pageWidth`, the coverage threshold, `assets`,
 `keepOriginal`, `ocr` — changes the key and reconverts, so a settings change is
 never silently answered with a stale artefact.
 
@@ -117,21 +117,19 @@ zero provider calls.
   conversion falls back to flat plain-text extraction and says so with the
   `pdf-layout-unavailable` warning.
 
-## Deep conversion (spec §2.5) — structure from the drawing
+## Deep conversion (spec §2.5) — measured first, vision on ambiguity
 
-Mechanical conversion reads what a file *declares*. Technical documents keep much of
-their meaning in the drawing: the ASUS corpus manual holds **295,482 vector path
-segments against 23 raster images** — every diagram is Bézier curves in the content
-stream, unreachable by any image extractor. `depth: "deep"` recovers that.
+Mechanical conversion reads what a file *declares*. Born-digital PDFs already declare glyph positions and font metrics, so `pdf_layout` owns ordinary structure. Technical documents can still keep meaning in drawings: the ASUS corpus manual holds **295,482 vector path segments against 23 raster images** — diagrams are Bézier curves in the content stream, unreachable by text extraction alone. `depth: "deep"` preserves page rasters and escalates only the chunks that need visual semantics.
 
-**Pipeline:** mechanical pass first (its text is the *content authority* — the model
-never retypes the document) → for each `chunkPages` chunk (default 8), PDFium renders
-only that chunk at 1240 px → the chunk sends page images + its authoritative text to
-the vision model (`visionModel`, default `badkid-llama-chat`), which decides only
-structure → **text-coverage measurement** (default 98 %, diagnostic only) → assembled
-MD-Blocks. Pages within a chunk fan out across the native process
-pool; rendered PNGs go directly from worker to artefact storage, so parent memory is
-bounded by the chunk rather than the whole PDF.
+**Pipeline:** mechanical pass first (its text is the *content authority*) → for each `chunkPages` chunk (default 8), PDFium renders only that chunk at 1240 px → the host selects one route:
+
+1. **Scan:** every page carries its own image → local PP-DocLayout v2 + PP-OCRv6 on CPU.
+2. **Measured:** no ambiguity trigger → the per-page `pdf_layout` sections ship directly, with no provider call and `derivedBy: "measured"`.
+3. **Vision:** any trigger → page images + authoritative text go to `visionModel` (default `badkid-llama-chat`) → text-coverage measurement (default 98 %, diagnostic only) → assembled MD-Blocks. The whole chunk takes this route if one page is ambiguous.
+
+**Vision triggers:** unavailable/inconsistent geometry; an embedded figure; or at least `agents.nconvert.visionPathSegments` vector path segments on one page (default **128**; `0` forces vision). PDFium counts segments per page, excluding text and raster images. On the 353-page GSB handbook, the threshold selects 40 pages; 64 would select 131 and incorrectly turn ordinary rules and borders into model work. Each `meta.json` vision chunk records its `triggers` and `pathSegments`.
+
+Pages within a chunk fan out across the native process pool; rendered PNGs go directly from worker to artefact storage, so parent memory is bounded by the chunk rather than the whole PDF.
 
 - **One vision target, no chain** (2026-11-08). `visionFallbackModels` defaults to
   `[]`: point `visionModel` at the local model *or* at a cloud model — a chain is an
@@ -177,10 +175,10 @@ bounded by the chunk rather than the whole PDF.
   loudly on a new item). `document.mechanical.md` is the comparison beside every
   deep result.
 - The document frontmatter states what actually happened: `coverage:` is the mean of
-  the measured chunks, `chunks: N/M structured` the share, and `coverage: n/a` only
-  when no chunk produced a measurable reading at all (a `deep-chunk-failed` chunk).
-  `meta.json` carries `deep.meanCoverage: null` in that case — never a fabricated
-  100 %.
+  model-read chunks, `chunks: N/M structured` the share across every route, and
+  `coverage: n/a` when no chunk had a model reading to compare (measured/OCR runs,
+  or failed vision). `meta.json` carries `deep.meanCoverage: null` in that case —
+  never a fabricated 100 %.
 - **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
 - Coverage or provider failure falls back per chunk — loudly, never silently.
 - **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
@@ -188,7 +186,7 @@ bounded by the chunk rather than the whole PDF.
   PDFium is process-parallel, not thread-parallel: `nativeProcesses` (default 16)
   persistent workers are started lazily, each with its own reusable PDFium binding.
 
-Measured on the corpus: 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
+Historical full-vision measurement (before conditional vision): 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
 149 headings, 61 figure blocks, 89 table rows — including a specifications table
 reconstructed from the drawing that mechanical conversion could only emit as prose.
 

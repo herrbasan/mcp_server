@@ -50,6 +50,7 @@ await agent.init({
                 chunkPages: 2,
                 coverageThreshold: 0.98,
                 coverageRetry: true,
+                visionPathSegments: 0,
                 // The audit is on demand by default; this test exercises it.
                 verify: true,
                 summary: false

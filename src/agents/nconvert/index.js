@@ -70,6 +70,10 @@ export async function init(context) {
         // providers.
         visionModel: 'badkid-llama-chat',
         visionFallbackModels: [],
+        // Geometry handles ordinary born-digital pages. A substantial vector
+        // drawing still needs figure semantics: 128 segments selected 40/353
+        // GSB handbook pages, while 64 selected 131 and caught ordinary rules.
+        visionPathSegments: 128,
         // Scan path (M5). Two local ONNX models on the CPU read pages that
         // carry no usable text layer; the vision model is not used for them.
         // Models live under the storage root: models/ocr.
@@ -112,6 +116,9 @@ export async function init(context) {
     }
     if (!Array.isArray(conf.visionFallbackModels) || conf.visionFallbackModels.some((model) => typeof model !== 'string' || !model)) {
         throw new Error('[nconvert] config agents.nconvert.visionFallbackModels must be a string array');
+    }
+    if (!Number.isInteger(conf.visionPathSegments) || conf.visionPathSegments < 0) {
+        throw new Error('[nconvert] config agents.nconvert.visionPathSegments must be a non-negative integer');
     }
     if (!Number.isInteger(conf.visionMaxTokens) || conf.visionMaxTokens < 1) {
         throw new Error('[nconvert] config agents.nconvert.visionMaxTokens must be a positive integer — a budget below the model\'s reasoning length silently produces no answer');
@@ -451,6 +458,13 @@ async function deepConvert({ source, env, folder, progress = null }) {
     const warnings = [];
     const parts = [];
     const chunkReports = [];
+    const imagePages = new Set((env.assets ?? [])
+        .map((asset) => /page-(\d+)-img-/.exec(asset?.name ?? ''))
+        .filter(Boolean)
+        .map((m) => Number(m[1])));
+    const measuredPages = new Map((env.pdf_pages ?? []).map((page) => [page.page, page]));
+    const pageSections = pageSectionsOf(env.document_md ?? '');
+    const geometryUsable = measuredPages.size > 0 && pageSections.length === texts.length;
 
     for (let ci = 0; ci < chunks.length; ci++) {
         checkCancelled();
@@ -481,10 +495,7 @@ async function deepConvert({ source, env, folder, progress = null }) {
         // older OCR of the same pixels (policy: discard it) and a vision model
         // retypes rather than reads. The local ONNX path reads the pixels:
         // ~1.2 s per page on the CPU, no GPU, no provider call.
-        const scanPages = new Set((env.assets ?? [])
-            .map((asset) => /page-(\d+)-img-/.exec(asset?.name ?? ''))
-            .filter(Boolean)
-            .map((m) => Number(m[1])));
+        const scanPages = imagePages;
         const chunkPageNumbers = onlyPages.map((i) => i + 1);
         const allScan = conf.ocr !== false && chunkPageNumbers.every((p) => scanPages.has(p));
         if (allScan) {
@@ -513,8 +524,37 @@ async function deepConvert({ source, env, folder, progress = null }) {
             continue;
         }
 
-        await step('vision', { i: ci + 1, n: chunks.length });
-        skipStep('ocr', { detail: 'not needed — no scan pages in this chunk' });
+        const visionTriggers = [];
+        for (const pageNumber of chunkPageNumbers) {
+            const measured = measuredPages.get(pageNumber);
+            if (!geometryUsable || !measured) visionTriggers.push({ page: pageNumber, reason: 'layout-unavailable' });
+            if (imagePages.has(pageNumber)) visionTriggers.push({ page: pageNumber, reason: 'embedded-figure' });
+            if (measured && measured.path_segments >= conf.visionPathSegments) {
+                visionTriggers.push({ page: pageNumber, reason: 'vector-figure', pathSegments: measured.path_segments });
+            }
+        }
+        const pathSegments = chunkPageNumbers.reduce((sum, pageNumber) => sum + (measuredPages.get(pageNumber)?.path_segments ?? 0), 0);
+        if (visionTriggers.length === 0) {
+            skipStep('ocr', { detail: 'not needed — no scan pages in this chunk' });
+            skipStep('vision', { detail: 'not needed — measured glyph geometry' });
+            const measuredMarkdown = pageSections.slice(chunk.start, chunk.end + 1).join('\n\n---\n\n');
+            if (chunk.start > 0) parts.push('---');
+            if (measuredMarkdown.trim()) parts.push(measuredMarkdown.trim());
+            chunkReports.push({
+                pages: `${from}-${to}`,
+                verdict: 'measured',
+                model: null,
+                derivedBy: 'measured',
+                coverage: null,
+                facts: null,
+                pathSegments
+            });
+            continue;
+        }
+
+        const triggerSummary = [...new Set(visionTriggers.map((trigger) => trigger.reason))].join(', ');
+        await step('vision', { i: ci + 1, n: chunks.length, detail: triggerSummary });
+        skipStep('ocr', { detail: 'not needed — no scan-only route for this chunk' });
 
         const content = await Promise.all(pages.map(async (p) => ({
             type: 'image_url',
@@ -622,7 +662,9 @@ async function deepConvert({ source, env, folder, progress = null }) {
                     model: provider,
                     coverage: Number(coverage.toFixed(4)),
                     facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
-                    attempts: attempt
+                    attempts: attempt,
+                    triggers: visionTriggers,
+                    pathSegments
                 });
             } else {
                 const applied = applyFigureMarkers(markdown, renderedIndices);
@@ -639,7 +681,9 @@ async function deepConvert({ source, env, folder, progress = null }) {
                     model: provider,
                     coverage: Number(coverage.toFixed(4)),
                     facts: factRatio == null ? null : Number(factRatio.toFixed(4)),
-                    attempts: attempt
+                    attempts: attempt,
+                    triggers: visionTriggers,
+                    pathSegments
                 });
             }
         } catch (e) {
@@ -648,7 +692,7 @@ async function deepConvert({ source, env, folder, progress = null }) {
                 message: `pages ${from}-${to}: vision pass failed (${e.message}) — mechanical text used instead`
             });
             markdown = chunkText;
-            chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-error' });
+            chunkReports.push({ pages: `${from}-${to}`, verdict: 'fallback-error', triggers: visionTriggers, pathSegments });
         }
 
         if (chunk.start > 0) parts.push('---');
@@ -677,8 +721,14 @@ function countIn(text, re) {
 
 // Split our own emitted document into MD-Blocks sections (root-level ---).
 function sectionsOf(markdown) {
+    return pageSectionsOf(markdown).filter((s) => s.length > 0);
+}
+
+// PDF pages map one-to-one to emitted sections, including intentionally empty
+// pages. Deep conversion needs that positional mapping; retrieval does not.
+function pageSectionsOf(markdown) {
     const body = markdown.replace(/^---\n[\s\S]*?\n---\n/, '');
-    return body.split(/^\s*---\s*$/m).map((s) => s.trim()).filter((s) => s.length > 0);
+    return body.split(/^\s*---\s*$/m).map((s) => s.trim());
 }
 
 // L0: the layer that answers "what is this?" without reading the document.
@@ -987,7 +1037,8 @@ function reuseKeyFor({ depth, keepOriginal, assets, args }) {
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
             coverageRetry: conf.coverageRetry !== false,
-            maxDeepPages: conf.maxDeepPages
+            maxDeepPages: conf.maxDeepPages,
+            pathSegments: conf.visionPathSegments
         } : null
     });
     return crypto.createHash('sha256').update(material).digest('hex').slice(0, 16);
@@ -1144,8 +1195,8 @@ async function runIngestion(job, progress = null) {
         // count as structured, and the method is stated per item.
         const structuredChunks = deep.chunkReports.filter((c) => c.verdict !== 'fallback-error').length;
         const derivedBy = [...new Set(deep.chunkReports.map((c) => c.derivedBy ?? 'model'))];
-        // No measured chunk means the vision pass was discarded for every
-        // chunk — reporting 100% there was a lie in the shipped frontmatter.
+        // No model-read chunk means the run was fully measured/OCR (or every
+        // vision attempt failed). There is no vocabulary comparison to average.
         const meanCoverage = coverageValues.length > 0
             ? coverageValues.reduce((a, b) => a + b, 0) / coverageValues.length
             : null;
@@ -1184,7 +1235,7 @@ async function runIngestion(job, progress = null) {
 
         lines = [
             `Ingested ${filename} (${env.format}, DEEP) → ${relToStorage(folder)}/`,
-            `  document.md — structured by ${derivedBy.join(' + ')} over ${deep.pages} rendered page(s), coverage ${meanCoverage == null ? 'n/a (no chunk measured — see derived-by)' : `${(meanCoverage * 100).toFixed(1)}% of ${structuredChunks}/${deep.chunkReports.length} chunk(s)`}`,
+            `  document.md — structured by ${derivedBy.join(' + ')} over ${deep.pages} rendered page(s); ${structuredChunks}/${deep.chunkReports.length} chunk(s) structured${meanCoverage == null ? ', coverage n/a (no model-read chunk)' : `, model coverage ${(meanCoverage * 100).toFixed(1)}% across ${coverageValues.length} chunk(s)`}`,
             '  document.mechanical.md — the deterministic result, kept for comparison',
             `  pages/ — ${deep.pages} page image(s) at ${conf.pageWidth}px`,
             `  chunks: ${deep.chunkReports.map((c) => `${c.pages}:${c.verdict}`).join(', ')}`,
@@ -1571,7 +1622,7 @@ const FORMAT_MATRIX = [
 export async function nconvert_capabilities() {
     const payload = {
         converter: `nconvert ${engineVersion}`,
-        spec: 'nConvert/docs/SPEC.md v2.5',
+        spec: 'nConvert/docs/SPEC.md v2.7',
         artefact: 'layered item under storage ingest/: L0 summary.md · L1 document.md (+mechanical) · L2 assets/, pages/ · L3 original · item.json manifest',
         limits: {
             maxInputMb: conf.maxInputMb,
@@ -1592,7 +1643,9 @@ export async function nconvert_capabilities() {
             chunkPages: conf.chunkPages,
             coverageThreshold: conf.coverageThreshold,
             maxDeepPages: conf.maxDeepPages,
-            note: 'depth:"deep" renders pages; scan pages are read locally by PP-DocLayout v2 + PP-OCRv6 (CPU), other pages have the vision model reconstruct structure over the mechanically extracted text; document.mechanical.md is always kept'
+            conditionalVision: true,
+            visionPathSegments: conf.visionPathSegments,
+            note: 'depth:"deep" renders pages; scans use local OCR, unambiguous born-digital chunks keep measured PDFium structure, and only figure/geometry ambiguity calls the vision model; document.mechanical.md is always kept'
         },
         execution: {
             nativeProcesses: conf.nativeProcesses,

@@ -78,6 +78,7 @@
       "summaryModels": ["badkid-llama-chat"],
       "visionModel": "badkid-llama-chat",
       "visionFallbackModels": [],
+      "visionPathSegments": 128,
       "ocr": true,
       "ocrModels": "models/ocr",
       "visionMaxTokens": 32000,

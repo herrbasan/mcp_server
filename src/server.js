@@ -838,13 +838,13 @@ succeed WITH warnings — read them, they mark every absorbed variance.
   nconvert.convert — { path*, depth?, assets?, keepOriginal?, ocr?, name? }
       Convert one file (storage path or absolute). depth 'mechanical'
       (default) is deterministic text + embedded-image extraction; depth
-      'deep' (PDF) additionally renders every page with PDFium and has a
-      vision model reconstruct STRUCTURE — headings, tables, figure
-      placement, reading order — over the mechanically extracted text,
-      which stays authoritative. Deep writes pages/page-NNN.png and keeps
-      document.mechanical.md beside the result; every chunk is validated
-      for text coverage (default 98%) and falls back loudly if the model
-      loses content. Live formats: txt/csv/tsv/md/json/yaml/toml/xml (M1)
+      'deep' (PDF) additionally renders every page with PDFium. Scan chunks
+      use local CPU OCR; unambiguous born-digital chunks keep measured glyph
+      structure; only embedded/vector figures or unavailable geometry call the
+      vision model (configurable vector threshold, default 128 segments). Deep
+      writes pages/page-NNN.png and keeps document.mechanical.md beside the
+      result; model-read chunks report text coverage without discarding the
+      reading. Live formats: txt/csv/tsv/md/json/yaml/toml/xml (M1)
       and pdf (M4) with text, embedded images and AES-256/R6 decryption.
       html (M2), office formats, e-books, mail (M3), OCR providers (M5)
       are detected and reported with their milestone. md input is a

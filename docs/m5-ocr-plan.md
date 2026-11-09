@@ -132,6 +132,7 @@ Still open:
 5. **Table columns** are clustered by x-centre; a scan with a very narrow first column
    (the DKV "Zeile 23" cells) can split a column. Not observed as data loss, but worth a
    test document.
-6. **`scanFactThreshold`-era heuristics and the vision retry loop** still exist for
-   non-scan chunks — they can be deleted only once the conditional-vision decision
-   (skip the model when measured geometry exists) is made.
+6. **`scanFactThreshold`-era heuristics and the vision retry loop** now run only
+   for chunks that still need a VLM (conditional vision shipped 2026-11-09).
+   Measured and OCR chunks bypass them; deleting the rest belongs to the future
+   advisory-hints redesign, not the routing change.

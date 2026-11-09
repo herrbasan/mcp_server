@@ -40,6 +40,7 @@ await agent.init({
                 chunkPages: 2,
                 coverageThreshold: 0.98,
                 coverageRetry: true,
+                visionPathSegments: 0,
                 // Production configures no fallback (one target, 2026-11-08). The
                 // rotation mechanism still has to work for anyone who does, so
                 // this test declares a two-model chain explicitly.

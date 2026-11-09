@@ -1,11 +1,11 @@
 # nConvert — current state
 
-**As of 2026-11-09 · engine 0.10.2 · everything below is committed and pushed**
-(`herrbasan/nConvert` `b7f16d3`, `herrbasan/mcp_server` `01023d7`).
+**As of 2026-11-09 · engine 0.11.0 · conditional vision validated locally**
 
-Ingest makes **no provider calls** in its default configuration: born-digital PDFs are
-read from glyph geometry, scans by two ONNX models on the CPU, structure by the local
-VLM, summaries by the local VLM. Cloud is opt-in, one target at a time.
+Ingest makes **no cloud calls** in its default configuration: ordinary born-digital
+PDFs are read from glyph geometry without a model, scans by two ONNX models on the
+CPU, figure/geometry ambiguity by the local VLM, summaries by the local VLM. Cloud is
+opt-in, one target at a time.
 
 Superseded session narratives live in git history; the durable decisions, numbers and
 traps are consolidated here.
@@ -17,17 +17,18 @@ npm run test:nconvert        # 84 Rust tests + 7 JS suites + 79-file Tika corpus
 node nConvert/napi/setup.js  # rebuild + stage the addon (see the EBUSY trap)
 ```
 
-Then over MCP: `nconvert.capabilities` should show `nconvert 0.10.2`,
-`deep.ocr: true`, `deep.visionFallbackModels: []`, `summary.models: ["badkid-llama-chat"]`.
+Then over MCP: `nconvert.capabilities` should show `nconvert 0.11.0`,
+`deep.ocr: true`, `deep.conditionalVision: true`, `deep.visionPathSegments: 128`,
+`deep.visionFallbackModels: []`, `summary.models: ["badkid-llama-chat"]`.
 `nconvert.items` reports the registry size, not the page size (fixed 2026-11-09).
 
 ## Three reading paths
 
 | input | reader | cost | measured |
 |---|---|---|---|
-| born-digital PDF | PDFium glyphs → `pdf_layout` geometry | CPU, no model | 353 pages, 4 s, 265 headings, 41 tables, 0 provider calls |
+| born-digital PDF | PDFium glyphs → `pdf_layout` geometry; VLM only for figures/ambiguity | CPU by default, no model on measured chunks | 353 pages, 4 s mechanical, 265 headings, 41 tables; 40/353 pages reach the 128-segment vision trigger |
 | scan (page carries its own image) | PP-DocLayout v2 + PP-OCRv6 (`src/ocr.rs`, `ort`) | ~1.2 s/page, zero VRAM | DKV certificate: 18/18 facts, both tax tables, `325,50 EUR` |
-| ambiguity | local VLM, advisory | ~3.1 s/page, GPU | only where OCR + geometry cannot decide |
+| ambiguity | local VLM, advisory | ~3.1 s/page, GPU | embedded figures, unavailable geometry, or ≥128 vector path segments |
 
 Scan detection is a measurement, not a guess: a page whose assets include
 `page-NNN-img-*` never had a text layer of its own — the embedded one is an older OCR
@@ -45,7 +46,7 @@ src/agents/nconvert/
   native-worker.js            runs convert | render | ocr in a worker
 nConvert/                     Rust core (git submodule)
   src/convert.rs              dispatch, options, limits, envelope
-  src/pdf_layout.rs           measured structure from glyph geometry (no model)
+  src/pdf_layout.rs           measured structure + per-page vector path counts (no model)
   src/ocr.rs                  scan path: regions + text over ort (CPU)
   src/render.rs               PDFium rasterization + text search (page coordinates)
   src/emit.rs                 the single MD-Blocks emitter
@@ -59,6 +60,12 @@ the classifier is staged but not wired).
 
 ## Decisions (date · decision · reason)
 
+- **2026-11-09 · conditional deep vision.** Ordinary born-digital chunks ship
+  the measured `pdf_layout` sections directly; only unavailable geometry,
+  embedded figures, or ≥128 PDFium vector path segments call the local VLM.
+  One ambiguous page escalates its whole chunk and the report names every
+  trigger. Measured on GSB: 128 selects 40/353 pages; 64 selects 131 and turns
+  ordinary rules/borders into model work. Four-page smoke: 2 vision calls → 1.
 - **2026-11-07 · P0 — the coverage guard is a diagnostic, not a gate.** A chunk that
   measures low ships as the model read it, with the gap recorded. The old gate threw
   away a page the model had already read and still reported `coverage: 100%`.
@@ -113,9 +120,9 @@ the classifier is staged but not wired).
 
 ## Contracts the artefact keeps
 
-- `derived-by: ocr | model | measured` in the frontmatter; OCR chunks report
-  `coverage: null` because there is no layer to measure against — the reading *is* the
-  measurement.
+- `derived-by: ocr | model | measured` in the frontmatter; OCR and measured chunks
+  report `coverage: null` because there is no model reading to compare against the
+  authoritative layer. Mean coverage is calculated across model-read chunks only.
 - `document.mechanical.md` is always written beside a deep result (never-destroy).
 - Every absorbed variance is a warning with a code; unknown or corrupt input fails with a
   diagnosis instead of degrading.
@@ -130,23 +137,22 @@ the classifier is staged but not wired).
 - Tests: 84 Rust unit + 1 OCR acceptance (`nConvert/tests/ocr_scan.rs`, skips without the
   weights) + 7 JS suites + 79-file Tika corpus (39 converted, 40 correctly refused, 0
   failures).
-- Repo clean and pushed. The `nDB` submodule is detached at `v1.5.0-5-g37813f8` —
-  pre-existing, invisible to VS Code's behind/ahead indicator.
+- Live 0.11.0 smoke: two born-digital pages in 2.2 s, 1/1 measured chunk,
+  `model: null`, `pathSegments: 0`, both page sections preserved, zero warnings.
+- Repo state is not asserted here; see git status. The `nDB` submodule is detached at `v1.5.0-5-g37813f8` — pre-existing, invisible
+  to VS Code's behind/ahead indicator.
 
 ## What is left, ranked
 
-1. **Conditional vision** — born-digital `deep` runs still spend ~3 s of GPU per page on
-   structure the layout pass already measured. Biggest remaining lever; it changes what
-   `deep` means, so it is David's call.
-2. **Model provisioning** — the 235 MB of weights are not in the repo; a new machine
+1. **Model provisioning** — the 235 MB of weights are not in the repo; a new machine
    cannot do scans without a fetch script (mirror `napi/fetch-pdfium.js`).
-3. **Quantise PP-DocLayout v2** — 204 MB of the 235; an hour of work, likely 4× smaller.
-4. **Running headers repeat on multi-page scans** — kept deliberately (dropping them
+2. **Quantise PP-DocLayout v2** — 204 MB of the 235; an hour of work, likely 4× smaller.
+3. **Running headers repeat on multi-page scans** — kept deliberately (dropping them
    lost real text on the DKV page); the fix is cross-page repetition detection.
-5. **Rotated pages** — the 0.6 MB angle classifier is staged, not wired.
-6. **Tiny italic footnotes** — a few character errors in Rust where the Python reference
+4. **Rotated pages** — the 0.6 MB angle classifier is staged, not wired.
+5. **Tiny italic footnotes** — a few character errors in Rust where the Python reference
    (RapidOCR) is exact; rec preprocessing tuning.
-7. **Standalone raster input** still returns `needs_ocr`; the OCR path is wired for PDF
+6. **Standalone raster input** still returns `needs_ocr`; the OCR path is wired for PDF
    scan pages only.
 
 ## See also
@@ -154,5 +160,4 @@ the classifier is staged but not wired).
 - `documentation/tools/nconvert.md` — operator reference (tools, artefact, paths).
 - `docs/m5-ocr-plan.md` — the scan-path evidence and pipeline detail.
 - `nConvert/AGENTS.md` — the module's own architecture map.
-- `nConvert/docs/SPEC.md` — spec of record (v2.5). It predates the M5 scan path;
-  this handover and `docs/m5-ocr-plan.md` are current for that.
+- `nConvert/docs/SPEC.md` — spec of record (v2.7, conditional deep vision).
