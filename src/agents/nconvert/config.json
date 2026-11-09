@@ -114,6 +114,17 @@
                 },
                 "required": ["item"]
             }
+        },
+        {
+            "name": "nconvert_summarize",
+            "description": "Rewrite the L0 retrieval summary of an already-ingested item without re-converting it. The repair path for an item whose summary failed or was skipped (provider unavailable, summarisation disabled), and the way to refresh a summary after summarisation improves: it reads document.md from the artefact, writes summary.md, and records the model and timestamp in item.json. Cheap — one model call over the shipped text, no PDFium, no vision, no OCR.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item": { "type": "string", "description": "Item id (the folder name from nconvert.items)." }
+                },
+                "required": ["item"]
+            }
         }
     ]
 }

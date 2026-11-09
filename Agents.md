@@ -92,7 +92,8 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 - **MCP tools**: `nconvert.convert` (mechanical inline; deep or >25 MB →
   queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,
   `nconvert.job`, `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
-  `nconvert.fetch`.
+  `nconvert.fetch`, `nconvert.summarize` (rewrite L0 from the artefact),
+  `nconvert.verify` (on-demand audit).
 - **Scan path (M5, local ONNX)**: a page carrying its own image is a scan — its
   embedded text layer is an older OCR and is discarded by policy. Such pages are
   read by PP-DocLayout v2 + PP-OCRv6 in `nConvert/src/ocr.rs` (`ort`, CPU, ~1.2 s

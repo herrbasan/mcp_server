@@ -904,6 +904,12 @@ succeed WITH warnings — read them, they mark every absorbed variance.
       not audit themselves (agents.nconvert.verify defaults to false);
       run it when an item's trustworthiness matters.
 
+  nconvert.summarize — { item* }
+      Rewrite an item's L0 retrieval summary from its shipped document.md,
+      without re-converting. The repair path when a summary failed or was
+      skipped (provider down, summary disabled), and the way to refresh one
+      after summarisation improves. One model call; no PDFium, vision or OCR.
+
 Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
 napi bindings, nDB pattern; own repo at spin-out).
 
@@ -1466,7 +1472,7 @@ IMPORTANT RULES
 
         "nconvert.convert": "nconvert_convert", "nconvert.capabilities": "nconvert_capabilities",
         "nconvert.items": "nconvert_items", "nconvert.fetch": "nconvert_fetch",
-    "nconvert.verify": "nconvert_verify",
+        "nconvert.verify": "nconvert_verify", "nconvert.summarize": "nconvert_summarize",
         "nconvert.enqueue": "nconvert_enqueue", "nconvert.jobs": "nconvert_jobs",
         "nconvert.job": "nconvert_job", "nconvert.cancel": "nconvert_cancel",
 

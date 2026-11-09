@@ -13,6 +13,8 @@ workspace + napi bindings, own repo at spin-out), thin JS agent
 | `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
 | `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
 | `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `verification` · `rejected` (legacy items only) · `page` · `asset` · `original`. |
+| `nconvert.summarize` | `{ item* }` | Rewrite the L0 summary from the shipped `document.md`, without re-converting — the repair path when a summary failed or was skipped, and the way to refresh one later. One model call. |
+| `nconvert.verify` | `{ item*, model?, force? }` | Independent audit of an item, written to `verification.md` with a confidence verdict. |
 
 ## The artefact is a layered object (spec §2.6)
 

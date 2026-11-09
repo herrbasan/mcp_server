@@ -1438,6 +1438,17 @@ export async function nconvert_verify(args) {
     };
 }
 
+// Repair path for the L0 layer: an item ingested while the summary provider was
+// unavailable gains its retrieval summary without re-converting the document.
+// The work itself lives in regenerateSummary(); this is only the tool entrance.
+export async function nconvert_summarize(args) {
+    const item = args?.item;
+    if (!item) throw new Error('nconvert.summarize: "item" is required (see nconvert.items)');
+    const itemDir = path.join(ingestDir, path.basename(String(item)));
+    if (!fs.existsSync(itemDir)) throw new Error(`nconvert.summarize: no such item: ${item}`);
+    return regenerateSummary(String(item));
+}
+
 export async function nconvert_fetch(args) {
     const item = args?.item;
     if (!item) throw new Error('nconvert.fetch: "item" is required (see nconvert.items)');

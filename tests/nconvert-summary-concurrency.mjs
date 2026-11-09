@@ -63,6 +63,15 @@ try {
         return fs.existsSync(path.join(tmp, match[1], 'summary.md'));
     });
     check('all queued summaries are written', summaries.every(Boolean));
+
+    // The repair path: an item whose summary failed can gain its L0 layer
+    // without re-converting the document.
+    const target = /→ (ingest\/\S+)\//.exec(results[0].content[0].text)[1];
+    fs.rmSync(path.join(tmp, target, 'summary.md'), { force: true });
+    const regenerated = await agent.nconvert_summarize({ item: path.basename(target) });
+    check('nconvert.summarize rewrites the L0 layer', !regenerated.isError && fs.existsSync(path.join(tmp, target, 'summary.md')), regenerated.content?.[0]?.text);
+    const manifest = JSON.parse(fs.readFileSync(path.join(tmp, target, 'item.json'), 'utf8'));
+    check('item.json records the regenerated summary', manifest.layers?.summary === 'summary.md' && Boolean(manifest.summary?.generated), JSON.stringify(manifest.summary));
 } finally {
     await agent.shutdown();
     fs.rmSync(tmp, { recursive: true, force: true });
