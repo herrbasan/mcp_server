@@ -1383,21 +1383,25 @@ export async function nconvert_cancel(args) {
 
 export async function nconvert_items(args) {
     const limit = Math.min(Number(args?.limit ?? 20), 100);
-    const entries = fs.existsSync(ingestDir)
+    const all = fs.existsSync(ingestDir)
         ? fs.readdirSync(ingestDir, { withFileTypes: true })
             .filter((e) => e.isDirectory() && !e.name.startsWith('_'))
             .map((e) => path.join(ingestDir, e.name))
             .filter((dir) => fs.existsSync(path.join(dir, 'item.json')))
             .sort()
             .reverse()
-            .slice(0, limit)
         : [];
+    // The count is the registry size, not the page size — reporting the sliced
+    // length made "2 ingested item(s)" for a corpus of 74.
+    const entries = all.slice(0, limit);
 
     if (entries.length === 0) {
         return { content: [{ type: 'text', text: 'No ingested items yet. Use nconvert.convert first.' }], isError: false };
     }
 
-    const lines = [`${entries.length} ingested item(s), newest first:`, ''];
+    const lines = [limit < all.length
+        ? `${all.length} ingested item(s), newest first — showing ${entries.length}:`
+        : `${all.length} ingested item(s), newest first:`, ''];
     for (const dir of entries) {
         const m = readManifest(dir);
         const bits = [

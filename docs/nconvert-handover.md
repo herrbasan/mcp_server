@@ -1,294 +1,158 @@
-# nConvert — Session Handover (2026-11-05)
+# nConvert — current state
 
-Pick-up point for the next session. Spec of record: `nConvert/docs/SPEC.md`.
-Operator doc: `documentation/tools/nconvert.md` (includes the queue section).
-Engine repo: `herrbasan/nConvert` (private, MIT), consumed as a submodule.
+**As of 2026-11-09 · engine 0.10.2 · everything below is committed and pushed**
+(`herrbasan/nConvert` `b7f16d3`, `herrbasan/mcp_server` `01023d7`).
 
-## Session 2026-11-07 — guard honesty, fact grading, reuse (uncommitted)
+Ingest makes **no provider calls** in its default configuration: born-digital PDFs are
+read from glyph geometry, scans by two ONNX models on the CPU, structure by the local
+VLM, summaries by the local VLM. Cloud is opt-in, one target at a time.
 
-A live deep retest of the DKV scan on **engine 0.9.2** exposed three defects in the
-deep path. All fixed, tested, and reflected in `documentation/tools/nconvert.md`.
+Superseded session narratives live in git history; the durable decisions, numbers and
+traps are consolidated here.
 
-1. **A failed corrective retry erased the attempt that had already measured** — the
-   outer catch replaced a read page with mechanical text and reported
-   `deep-chunk-failed`, as if vision had never run. Retries are now per-attempt:
-   failure yields `deep-retry-failed` and keeps the measured candidate.
-2. **`coverage: 100.0%` was fabricated** when no chunk reported a measurement
-   (`meanCoverage` defaulted to 1). Frontmatter now states `coverage: n/a` and
-   `chunks: N/M structured`; the manifest carries `meanCoverage: null`.
-3. **The guard checked no figures at all** — it matched `[\p{L}]{4,}` only, so a
-   reconstruction could drop every amount and still score 100 %. `factCoverage`
-   now compares digit runs (`2.884,27`, `11.07.1973`, `KV319097290`) with separators
-   normalised away; page numbers are excluded as furniture. Measured on shipped deep
-   artefacts: **94.7–100 %** figure retention.
+## Verify first (2 minutes)
 
-Also in this change set:
-
-- **Rejected candidates are kept** as `rejected/chunk-N-M.md`, readable through
-  `nconvert.fetch { layer: "rejected" }` (never-destroy applies to refused work too).
-- **Content-addressed reuse:** identical bytes + engine version + output-affecting
-  settings return the finished item instead of re-running the mechanical pass, the
-  PDFium renders and the vision calls. `force: true` reconverts. The key lives in
-  `item.json.reuseKey`; a settings change reconverts rather than serving a stale item.
-- `capabilities.converter` reads `nConvert/package.json` (it was hardcoded `0.9.1`
-  while the engine was `0.9.2` — the smoke test carried the same stale literal).
-- Tests: `tests/nconvert-deep-retry-test.mjs`, `tests/nconvert-facts-reuse-test.mjs`,
-  both wired into `npm run test:nconvert`. Full JS suite green (7 files).
-
-**Not live yet:** the running server still holds the pre-change JS. Restart is David's
-call — he asked not to restart the shared server without being asked.
-
-### Decided and implemented — what is authoritative on a scan
-
-Evidence from `ingest/20261107_0738_scan-guard-probe` (DKV scan, 1 page):
-
-- attempt 1 (DeepSeek): **97.7 % vocabulary, 94.4 % figures** — refused at the 98 % gate;
-- the retry lost both providers (`ZERO_CONTENT`, nPM finding `mw60gr94`) — nothing recovered;
-- what shipped is the mechanical OCR layer with interleaved columns, and it **misses
-  `325,50 EUR`** — which the vision read recovered, and which is exactly half of
-  2021's `651,00` (6 months vs 12), so it is almost certainly real.
-
-Resolution (2026-11-07, David's mandate "retain facts, be clear about confidence"):
-**(a) + (b)**. A page that carries its own image (`page-NNN-img-*`) is a scan, so its
-layer is not the oracle: the vision reading is kept when it holds at least
-`agents.nconvert.scanFactThreshold` (default 0.9) of the layer's figures and is not
-shorter than 80 % of it. The chunk reports `structured-over-untrusted-layer` with a
-`deep-untrusted-text-layer` warning. Both readings stay in the artefact
-(`document.md` + `document.mechanical.md`), and a refused candidate is still kept
-under `rejected/`. M5 replaces the heuristic with a real OCR provider reading the
-render.
-
-### Verification layer (2026-11-07)
-
-Deep ingests end with an independent audit by `kimi-k31-chat`
-(`agents.nconvert.verifyModel`, fallback `deepseek-chat`): it reads `document.md`
-beside the text layer, the mechanical text and the refused candidates, writes
-`verification.md`, and records `confidence: high|medium|low` in `item.json`.
-`nconvert.verify { item, model?, force? }` re-runs it on any existing item;
-`nconvert.fetch { layer: "verification" }` reads it. The report is required to state
-what it could not check — it never sees page images, so it cannot witness pixel truth,
-and it must not claim otherwise.
-
-### Housekeeping
-`nDB` submodule sits detached at `v1.5.0-5-g37813f8` (no branch) — invisible to the
-host's behind/ahead indicator.
-
-## Current state — M3 complete + resource optimization (engine 0.9.1)
-
-- New live converters: **odt/odp/ods, epub, eml/mbox, xls (BIFF), xlsb**.
-- Detection fixes: IDML/iBooks no longer misdetected as ODF; xlsb no longer
-  routed into the XML xlsx reader; ODF presentation gets its own verdict;
-  mail shapes detected instead of degrading to txt.
-- Committed public corpus: **79 Apache Tika fixtures** under
-  `nConvert/corpus/tika/` (Apache-2.0). `node nConvert/napi/test/corpus.mjs`
-  gives every file an explicit outcome: **39 converted, 40 correctly refused,
-  0 failures**. Full `npm run test:nconvert`: **79 Rust tests + agent smoke +
-  corpus contract, all green**.
-- Known honest limitation: Tika's `testEXCEL.xlsb` trips calamine's
-  BrtBundleSh reader; the engine catches the third-party panic and refuses
-  with a diagnosis. Normal xlsb files use the shared spreadsheet path.
-- Encrypted ODT, IDML and iBooks have named refusals. Next milestone: **M5
-  OCR**, then rtf/msg (M6) or the research roadmap's long tail.
-
-### Resource optimization (2026-11-05, currently uncommitted)
-
-- Native conversion and PDFium now use a lazy persistent process pool (default
-  16). Small mechanical jobs share 16 queue slots; deep/large jobs are limited
-  to 1 and summary-provider calls to 4. Summaries and deep vision explicitly
-  use cloud DeepSeek Flash (MiniMax M3.1 Flash fallback for summaries and deep
-  vision), keeping LLM
-  load off the host. PDF pages fan out per chunk and workers write PNGs directly
-  to artefact storage. File hashes stream instead of
-  blocking on whole-file reads.
-- Engine 0.9.1 fixes repeated PDFium renders: one binding is initialized and
-  reused per worker process. Same-process PDF threads are not a valid shortcut.
-- Benchmarks: 16 real PPTX conversions 2.86 s serial → 0.83 s through the
-  persistent 16-process pool; 64 PDF pages 1.02 s serial → 0.33 s with 8
-  processes. Process startup makes 16 processes slightly slower than 8 on this
-  render shape, but still ~3× faster than serial.
-- Full `npm run test:nconvert` green: 79 Rust tests, queue/pool/agent/deep/
-  summary tests, and 79-file corpus (39 converted / 40 refused / 0 failures).
-  Live gateway probes also passed for DeepSeek text + streaming vision and
-  MiniMax M3.1 Flash text. (DeepSeek's non-streaming image probe returned empty content;
-  nConvert uses the working streaming path.) The first live DKV deep run then
-  exposed a streaming zero-answer too, so MiniMax vision fallback was added and
-  its direct streaming-vision probe passed. nConvert retest is pending the next
-  restart.
-- The first slowdown coincided with an 80-job baseline plus live summaries; the
-  later typing freeze had no nConvert work active and showed hot VS Code /
-  Chromium processes. Do not attribute both events to nConvert.
-
-Verify with:
-
-```powershell
-cd D:\DEV\mcp_server
-npm run build:nconvert
-npm run test:nconvert
+```bash
+npm run test:nconvert        # 84 Rust tests + 7 JS suites + 79-file Tika corpus
+node nConvert/napi/setup.js  # rebuild + stage the addon (see the EBUSY trap)
 ```
 
-The staged native binary is 0.9.1. A running server keeps its already-loaded
-engine until restart; **server restart + client reconnect is the human's
-step**. The previous handover below is retained as history.
+Then over MCP: `nconvert.capabilities` should show `nconvert 0.10.2`,
+`deep.ocr: true`, `deep.visionFallbackModels: []`, `summary.models: ["badkid-llama-chat"]`.
+`nconvert.items` reports the registry size, not the page size (fixed 2026-11-09).
 
-## Previous handover (2026-11-03, evening)
+## Three reading paths
 
-## Verify first (30 seconds)
+| input | reader | cost | measured |
+|---|---|---|---|
+| born-digital PDF | PDFium glyphs → `pdf_layout` geometry | CPU, no model | 353 pages, 4 s, 265 headings, 41 tables, 0 provider calls |
+| scan (page carries its own image) | PP-DocLayout v2 + PP-OCRv6 (`src/ocr.rs`, `ort`) | ~1.2 s/page, zero VRAM | DKV certificate: 18/18 facts, both tax tables, `325,50 EUR` |
+| ambiguity | local VLM, advisory | ~3.1 s/page, GPU | only where OCR + geometry cannot decide |
 
-```powershell
-cd D:\DEV\mcp_server; git --no-pager log -1 --oneline; git status --porcelain
-cd nConvert; git --no-pager log -1 --oneline; git status --porcelain
+Scan detection is a measurement, not a guess: a page whose assets include
+`page-NNN-img-*` never had a text layer of its own — the embedded one is an older OCR
+of the same pixels and is discarded by policy.
+
+## Architecture
+
 ```
-Then `nconvert.items` — expect 4+ items. Server live on engine **0.7.0**
-(pptx live). **Restarting the server is agent-executable for this project**
-(David's permission, 2026-11-03): `POST
-http://192.168.0.100:9333/api/services/agent_orchestrator/restart` — then
-verify with a workshop call; clients must reconnect to see new tools.
-The Finanzamt letter is ingested clean:
-`20261103_0933_finanzamt-pfaffenhofenmietedarlegung` — 3 full photos
-(PIL-verified decode), the corrupt 0.6.0 item was deleted. ZOLL deck
-ingested at `20261103_1610_20260923zollkickoff-workshop`.
+src/server.js                 HTTP + MCP (compact + SSE) + REST/SSE for the queue
+src/agent-loader.js           loads every src/agents/<name>/ with a config.json
+src/agents/nconvert/
+  index.js                    tools, deep pipeline, artefact assembly, reuse
+  queue.js                    bounded lanes, step model, restart-safe FIFO (data/nconvert/jobs.json)
+  native-process-pool.js      persistent worker processes (16), one task each
+  native-worker.js            runs convert | render | ocr in a worker
+nConvert/                     Rust core (git submodule)
+  src/convert.rs              dispatch, options, limits, envelope
+  src/pdf_layout.rs           measured structure from glyph geometry (no model)
+  src/ocr.rs                  scan path: regions + text over ort (CPU)
+  src/render.rs               PDFium rasterization + text search (page coordinates)
+  src/emit.rs                 the single MD-Blocks emitter
+nConvert/napi/src/lib.rs      AsyncTasks: convert, renderPages, searchText, ocrPage
+```
 
-State at handover: host clean, engine clean, submodule pinned at engine
-0.7.0, all committed (engine 24d1c92, host f1b445d).
+Models live **outside the repo** under the storage root: `models/ocr/`
+(`pp_doc_layoutv2.onnx` 204 MB, `PP-OCRv6_det_small.onnx` 9.5 MB,
+`PP-OCRv6_rec_small.onnx` 20.3 MB, `ch_ppocr_mobile_v2.0_cls_mobile.onnx` 0.6 MB —
+the classifier is staged but not wired).
 
-## What is live
+## Decisions (date · decision · reason)
 
-| Capability | Notes |
-|---|---|
-| txt, csv, tsv, md, json, yaml, toml, xml | M1 |
-| PDF text (per page), embedded images, AES-256/R6 decrypt | M4 |
-| PDFium rasterization + deep vision conversion + corrective retry | M4.2 |
-| Layered artefact + `items`/`fetch` reader | M4.5 |
-| **DOCX mechanical** | **M3 · live** (engine 0.5.0): styles → headings, numPr → nested lists, gridSpan/vMerge → rectangular grid, media → assets, footnotes → GFM, hyperlink fields (element + fldChar form), OMML math flattened (warned), page breaks → `***`, captions attach to image blocks, ZIP expansion budget per entry + total |
-| **PPTX mechanical** | **M3 · live** (engine 0.7.0): one section per slide (order from sldIdLst via rels — never filename sort), title/body placeholders → heading/paragraphs, buChar/buAutoNum + lvl → nested lists, DrawingML tables → shared span grid, media → assets (SVG preferred over PNG fallback), speaker notes → `preset=narration` blocks, charts/SmartArt warned pending. Shared OOXML machinery extracted to `src/ooxml.rs` (ZipParts, budget, grid, run model) |
-| **XLSX mechanical** | **M3 · live** (engine 0.8.0): calamine; one section per sheet, first row as header, merged cells fill from origin, styled serials → ISO dates (Lotus-bug-aware), integral floats without `.0`, row cap + maxCells, empty sheets warned-skip, expansion budget pre-charged from the ZIP central directory |
-| **Ingest queue + progress** | **Live** (2026-11-03, host-only): fast lane (mechanical inline) + one heavy job (deep / >25 MB) at a time; step-model progress with i/n and coverage; jobs persist across restarts (running → re-queued); sha256 dedup; cooperative cancel at checkpoints; MCP `nconvert.enqueue/jobs/job/cancel` + REST `/nconvert/jobs*` + SSE `/nconvert/events`; retention 200. Verified live: deep DKV pdf queued → rendered 1 page → vision 98.8 % after retry (own step) → summarizing → done, with cancel tested mid-summary |
-| **DOC (Word 97-2003)** | **M6 · live, pulled forward** (engine 0.6.1): CFB container (`cfb` crate 0.16, MIT) + [MS-DOC] piece-table text (cp1252 + UTF-16 pieces), field results kept / instructions dropped, page breaks → `***`, photos carved from the `Data` stream **structure-aware** (`jpeg_bounds`: segments + entropy walk — EXIF-embedded thumbnails no longer truncate the host image); tables/footnotes/headers/textboxes warned-not-converted; Word 6/95 (nFib<0xC1) and encrypted/obfuscated refused loudly. Detection now classifies inside CFB by stream shapes (WordDocument → doc, Workbook → xls, __substg → msg) |
+- **2026-11-07 · P0 — the coverage guard is a diagnostic, not a gate.** A chunk that
+  measures low ships as the model read it, with the gap recorded. The old gate threw
+  away a page the model had already read and still reported `coverage: 100%`.
+- **2026-11-07 · P1 — born-digital structure is measured, not guessed.** PDFium glyph
+  boxes → lines, blocks, columns, headings, tables. No model, no provider call.
+- **2026-11-09 · P2/M5 — scans are read locally.** PP-DocLayout v2 for regions,
+  PP-OCRv6 for text, both ONNX on the CPU, assembled into structure: tables rebuilt by
+  row/column clustering, two-line headers merged, page numbers and decorative images
+  dropped, orphan lines appended — **no text is ever dropped**.
+- **2026-11-08 · one vision target, no chain.** The retry used to rotate providers, so a
+  coverage miss on a ~5 s local chunk became a ~50 s cloud reasoning call that sometimes
+  returned nothing. `visionFallbackModels: []`, default local.
+- **2026-11-08 · thinking off for perception and summaries** (`reasoningEffort: 'none'`).
+  `enableThinking: false` alone does **not** reach a model whose Gateway config pins
+  `reasoning_effort` — effort outranks the boolean.
+- **2026-11-08 · summaries on the local model.** Measured 3.4 s vs 4.0 s cloud on the
+  353-page handbook, with longer, better-structured output; the cloud path also stopped
+  truncating mid-word once effort was off.
+- **2026-11-09 · `nconvert.summarize` exists.** `regenerateSummary()` had been exported
+  and documented since the layered item landed but nothing called it — a documented
+  capability with no entrance. Now a tool.
+- **2026-11-09 · the compiler is the dead-code signal.** Six warnings removed, zero
+  remain; no unreferenced `pub` items; no unused imports; every declared tool has a
+  handler.
 
-Tools: `nconvert.convert`, `nconvert.capabilities`, `nconvert.items`,
-`nconvert.fetch`. Store: `storage/ingest/<YYYYMMDD_HHMM>_<slug>/`.
+## Traps that cost hours (do not re-learn)
 
-## Measured (2026-11-02 evening)
+- **`ort` is a release candidate.** Pin `2.0.0-rc.15` and `ndarray 0.17` (ort pins
+  ndarray; mixing versions produces a type error that reads like a bug in your own
+  code). Environment: `let env = ort::init().build()?;` then `Session::builder(&env)`.
+- **PP-OCRv6's dictionary is one class short.** The rec model's ONNX metadata key
+  `character` holds 18 708 entries but the model emits 18 710 classes: 0 is the CTC
+  blank and PaddleOCR appends the space class at runtime. Map `idx-1` and treat
+  out-of-range as `" "` — otherwise every line comes out with its spaces stripped.
+- **PP-DocLayout v2 stretches to 800×800** (no letterbox) and takes
+  `scale_factor = [800/h, 800/w]` per axis. Getting this wrong squashes x only, which
+  reads as a model bug.
+- **DB unclip is closed-form for rectangles:** `d = area * ratio / perimeter`, then
+  expand the box by `d`. A hand-rolled padding guess turned small print into noise; this
+  one line took the same page from unusable to 18/18.
+- **Staging a rebuilt addon while the server runs fails with `EBUSY`.** `napi/setup.js`
+  copies a version-stamped file first, so bump the version and the new binary lands
+  beside the locked one (the loader picks newest by mtime).
+- **PowerShell 5.1 writes a BOM** with `Set-Content -Encoding utf8`, which breaks the
+  engine's `JSON.parse` of its own package.json. Write manifests with
+  `[System.IO.File]::WriteAllText` + `UTF8Encoding($false)`.
+- **llama.cpp prompt caching is all-or-nothing here.** Identical prompt → 0.8 s first
+  token; change one character of text or one image → full ~6 s re-prefill (`max_tokens`
+  is irrelevant). Per-chunk latency variance is cache state, not degradation.
+- **PDFium is process-parallel, not thread-parallel.** `pdfium-render` serializes per
+  process, so rendering fans out across the persistent pool.
 
-- Engine: **40/40 tests** (6 new docx tests: end-to-end, determinism, budget
-  hard error, missing-part, page-break split, field hyperlink).
-- Engine 0.6.0: **47/47 tests** (+7 doc tests incl. a real-file corpus test
-  on `Finanzamt Pfaffenhofen_Miete_Darlegung.doc`: umlaut text + 6 carved
-  JPEGs — 3 photos × (full + 160px thumbnail)).
-- Real corpus `.doc` #2: `Zeitsprung_V2.3.doc` (Word 97, 19 203 CPs) —
-  2 606 words clean German (AV storyboard), picture anchors present but images
-  are metafiles → 0 carved, honestly warned (`doc-picture-chars`).
-- PPTX real decks (engine 0.7.0, 2026-11-03): ZOLL KickOff (17 slides,
-  PptxGenJS, plain textboxes) → 1 914 words, 5 tables in 12 ms;
-  `Erläuterung zur Nutzung des Folienmasters` (109 slides, 50 notes, 226
-  media / 19.2 MB incl. 163 SVG) → 1 471 blocks, 8 headings, 4 tables,
-  **215 figure refs**, 226 assets, **43 narration blocks**, 132 KB md,
-  266 ms. Chart + EMF warnings honest. 54/54 engine tests.
-- Bindings: ALL PASS incl. PDFium corpus rasterization. Agent smoke: ALL PASS.
-- Real-world DOCX (no Materna file on this machine): trustainable manuscript
-  (226 KB, German) — 172 blocks, 27 list lines, 45 bold, 2 images, captions —
-  in 30 ms; AMD `License.docx` — 514 blocks, 70 clause list lines, endnotes
-  warning — in 11 ms. Both clean, zero conversion errors.
-- **Pending: a real Materna DOCX** — the original M3 exit criterion. Convert
-  one when available (work machine), expect numbering/tables/images.
+## Contracts the artefact keeps
 
-## Fixed en route (was biting silently)
+- `derived-by: ocr | model | measured` in the frontmatter; OCR chunks report
+  `coverage: null` because there is no layer to measure against — the reading *is* the
+  measurement.
+- `document.mechanical.md` is always written beside a deep result (never-destroy).
+- Every absorbed variance is a warning with a code; unknown or corrupt input fails with a
+  diagnosis instead of degrading.
+- Content-addressed reuse: an identical submit returns the existing item and spends no
+  compute. Engine version or settings change invalidates it deliberately.
+- The step list tells the truth: a step this run does not need closes with a reason
+  ("not needed — pages read by OCR"), never stays `pending`.
 
-- **detect.rs central-directory walk was broken** (`p = eocd + 16` walked the
-  EOCD record itself instead of reading the cd-offset field stored there):
-  every real ZIP failed detection with "central directory unreadable".
-  Invisible until now because docx was Unsupported — an error either way.
-  Fixed, plus the backward EOCD scan (≤64 KB comments) now actually scans.
-- **Self-consistent fixture trap (doc FIB offsets)**: first implementation put
-  rgLw97@62 and rgFcLcb97@120 — wrong by 2/34 bytes, but the hand-built fixture
-  encoded the same wrong offsets, so all tests passed. Only the REAL Finanzamt
-  file exposed it (lcbClx read as 0). Correct: rgLw97@64, rgFcLcb97@154,
-  fcClx@418. Lesson recorded: a format parser needs at least one real-world
-  fixture in its tests, generated fixtures alone prove nothing about offsets.
-- **quick-xml 0.39 splits text at entities** (`Event::GeneralRef`): a
-  catch-all arm silently deleted `&amp;` → "GEO  AEO" on the ZOLL corpus;
-  affected docx too (latent — no fixture had entities). Fixed in all text
-  consumers via `ooxml::entity_text`; regression asserts in both fixtures.
-- **JPEG signature carving truncated full-size photos (0.6.0 → 0.6.1)**:
-  Finanzamt photos carry EXIF APP1 segments with embedded thumbnail JPEGs;
-  cutting at the first FFD9 produced "SOI + EXIF + thumb-EOI" blobs (thumbs
-  readable, fulls corrupt). The carver now walks JPEG structure (segments +
-  entropy stuffing rules, `jpeg_bounds`) and jumps past each carved image;
-  PNG end is IEND + CRC. Verified: all 3 real photos (714×1116, 644×1078,
-  706×972) fully decode via PIL. Second lesson from the same file: **validate
-  carved images by decoding, not by finding magic bytes** — the corrupt blobs
-  had perfect signatures.
+## State
 
-## Next: queue + progress (M7 pulled forward), then formats
+- Corpus on disk: **74 items, 931 MB**.
+- Tests: 84 Rust unit + 1 OCR acceptance (`nConvert/tests/ocr_scan.rs`, skips without the
+  weights) + 7 JS suites + 79-file Tika corpus (39 converted, 40 correctly refused, 0
+  failures).
+- Repo clean and pushed. The `nDB` submodule is detached at `v1.5.0-5-g37813f8` —
+  pre-existing, invisible to VS Code's behind/ahead indicator.
 
-**Design proposed 2026-11-03, awaiting David's call on two forks:**
-1. Fast lane (mechanical inline + one heavy job at a time) vs strict FIFO
-2. SSE (`GET /nconvert/events`) as the event transport (recommended)
+## What is left, ranked
 
-Core design: job store `data/nconvert/jobs.json` (atomic, survives restarts),
-`queued → running → done/failed/cancelled`, FIFO, sha256 dedup, step-model
-progress (detecting → converting → rendering i/N → vision i/N + coverage →
-retry → summarizing → indexing), MCP tools `nconvert.enqueue/jobs/job/cancel`,
-REST for the admin dashboard, cooperative cancel between chunks.
+1. **Conditional vision** — born-digital `deep` runs still spend ~3 s of GPU per page on
+   structure the layout pass already measured. Biggest remaining lever; it changes what
+   `deep` means, so it is David's call.
+2. **Model provisioning** — the 235 MB of weights are not in the repo; a new machine
+   cannot do scans without a fetch script (mirror `napi/fetch-pdfium.js`).
+3. **Quantise PP-DocLayout v2** — 204 MB of the 235; an hour of work, likely 4× smaller.
+4. **Running headers repeat on multi-page scans** — kept deliberately (dropping them
+   lost real text on the DKV page); the fix is cross-page repetition detection.
+5. **Rotated pages** — the 0.6 MB angle classifier is staged, not wired.
+6. **Tiny italic footnotes** — a few character errors in Rust where the Python reference
+   (RapidOCR) is exact; rec preprocessing tuning.
+7. **Standalone raster input** still returns `needs_ocr`; the OCR path is wired for PDF
+   scan pages only.
 
-1. **.msg/.eml** — needs a real export from David (none on the machine).
-2. **rtf** (text-based spec, hand parser).
-3. **DOCX/PPTX charts** — cached series → data table.
-4. **xls (BIFF)** — real fixture in corpus (`2011_Staubsauger-Typensuche_final.xls`).
-5. **doc refinements**: WMF/EMF rasters, footnote/header text, Escher provenance.
-6. odt / epub.
+## See also
 
-## Known limits (all deliberate, all recorded)
-
-1. **Multilingual blocks** — vision model cannot reproduce CJK/RTL; falls back to
-   mechanical text. M5 target.
-2. **Scans** — embedded OCR layers carry their era's errors (a 2013 letter reads
-   *Ubelstem*, *EntzOndungsparameter*). M5 target via gateway vision.
-3. **Deep is PDF-only** — the rasterizer is the gate.
-4. **Retries cost time** — 238 s → 527 s on the 82-page run. `coverageRetry: false`
-   in `agents.nconvert` disables it.
-5. **No chunk-level retrieval yet** — VDB searches whole documents; chunking,
-   section summaries and the explicit embedding hand-off are M7.
-6. **Media (YouTube) not in the artefact model** — M7.
-7. **`privacy` is `unset` on every item** — field exists, policy doesn't.
-8. **DOCX**: charts pending; endnotes warned not converted; documents with
-   manual formatting (no heading styles) yield no headings — mechanical reads
-   what the file declares; that is correct, not a bug.
-
-## Gotchas that will bite again
-
-- **Windows DLL lock:** a running server holds the staged `.node`. `napi/setup.js`
-  stages version-stamped copies and the loader takes the newest by mtime — bump
-  the version to stage a fresh one; never try to overwrite a loaded binary.
-- **Gateway stream drops** (ECONNRESET in nPM telemetry, 2026-11-02) kill turns
-  mid-generation — three turns died before a big file-write landed. Write large
-  files in chunks with a trailing append marker, not one giant tool call.
-- **Submodule + running server:** do not move/replace `nConvert/` while the server
-  is up; the lock blocks it. The swap was completed *around* a locked file.
-- **`profile.release` only at the workspace root** — member profiles are ignored.
-- **`type: "commonjs"`** in `nConvert/package.json` is required (host is ESM).
-- **lopdf auto-decrypts V5/R6 at load** — presence is `encryption_state.is_some()`,
-  not `trailer.has(b"Encrypt")`.
-- **Never trust the PowerShell console for encoding** — it renders UTF-8 as CP1252.
-  A CJK search failed in PS and matched instantly via `storage.grep`.
-- **quick-xml events borrow the read buffer** — own your values (attr strings,
-  element names) before the next `read_event_into`; passing `e.name()` into a
-  call that also takes `&mut buf` is a double borrow.
-- **`w:name` in styles.xml is attribute-form** (`w:val`) — element text is a
-  fallback; style names stay canonical English in-file regardless of UI language.
-- **Bulk edits:** never run multi-file text substitution in a shell loop (a
-  flattened array replaced single characters and destroyed five files on
-  2026-10-30). Use the edit tool.
-
-## Open questions for David
-
-- **Restart the MCP server** when convenient to load nconvert 0.6.0 (doc +
-  docx live for connected clients; reconnect after restart).
-- **A real Materna DOCX** for the golden validation.
-- Deep conversion for **office formats**: rasterize via LibreOffice, or keep deep
-  PDF-only and accept mechanical DOCX? (Blocks a real feature decision.)
-- **Chunking granularity** for M7: MD-Blocks sections (a slide/chapter/page) as the
-  unit, or finer windows? Sections are the natural unit and already computed.
-- **`privacy` values and who sets them** — product decision, not an engineering one.
-- Media ingestion scope: transcript-only, or transcript + keyframes + summary in
-  one item?
+- `documentation/tools/nconvert.md` — operator reference (tools, artefact, paths).
+- `docs/m5-ocr-plan.md` — the scan-path evidence and pipeline detail.
+- `nConvert/AGENTS.md` — the module's own architecture map.
+- `nConvert/docs/SPEC.md` — spec of record (v2.5). It predates the M5 scan path;
+  this handover and `docs/m5-ocr-plan.md` are current for that.
