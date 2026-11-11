@@ -1,6 +1,6 @@
 # usage-monitor — provider subscription usage
 
-Reference documentation for the usage-monitor agent. Last verified 2026-10-14
+Reference documentation for the usage-monitor agent. Last verified 2026-11-10
 against `src/agents/usage-monitor/index.js` and a live cycle.
 
 ## What it is
@@ -30,15 +30,16 @@ the card shows the reason instead of hiding the last known figures.
 
 ## Extraction routes
 
-Browser providers share the workshop Chrome profile (`data/chrome-profile`) via
-CDP attach-or-launch, exactly like the browser agent, so the logins Dave
-established persist. A headless launch strips `Headless` from the UA (OpenAI's
-Cloudflare gates on it).
+Browser providers run on the monitor's OWN Chrome profile
+(`data/chrome-profile-usage`, port 9223 — see `profiles.js`) via CDP
+attach-or-launch, so the logins Dave established persist and a scrape cannot
+sign out the browser agent's `shared` profile (2026-11-02 split). A headless
+launch strips `Headless` from the UA (OpenAI's Cloudflare gates on it).
 
 | Provider | Route | Notes |
 |---|---|---|
 | kimi | page-context RPC, `access_token` from localStorage | retries once on a stale token |
-| z.ai | page-context fetch of the quota API, token from localStorage | proto3 drops zero values → an unused window ships no reset time |
+| z.ai | direct REST, gateway key (`api.z.ai/api/monitor/usage/quota/limit`) | no browser since 2026-11-10 — the session route needed a human login and died logged-out on 11-08 |
 | minimax | page-context fetch (cookies) | reads the explicit `*_used_percent` fields; weekly only when status ≠ 3 |
 | deepseek | direct REST, gateway key | balance only |
 | gemini | DOM scrape: rate-limit table (range forced to 1 Day) + spend page | selected by **account identity**, not by `/u/N` — see below |
@@ -119,6 +120,15 @@ account each `/u/N` resolves to, and whether its rate-limit table renders.
   wrong; the JSON the dashboard itself fetches has none of them.
 - **Zero is a real value.** proto3 JSON omits zero-valued fields (z.ai, kimi),
   so an absent ratio means 0% used, not missing data.
+- **z.ai reports failure inside an HTTP 200.** `api.z.ai` returns status 200
+  whatever the credential: a dead token arrives as
+  `{"code":401,"msg":"token expired or incorrect"}`. Check `code`, not `res.ok`
+  (measured 2026-11-10 during the logged-out episode).
+- **A browser session is a login, not a credential.** The z.ai path scraped a
+  token out of `localStorage`, so expiry of a session meant 30 h of failed
+  cycles and a human re-login; the same endpoint answers the gateway's GLM key,
+  so z.ai is now a direct-API provider like deepseek. Prefer a key wherever the
+  provider issues one — a scrape's failure mode is "nobody was at the keyboard".
 - Failure captures (`data/usage-monitor-debug/`, URL + body text + screenshot)
   are kept at the newest 30 per provider.
 - **An account's absence is not a selector error.** Gemini spent 43 cycles

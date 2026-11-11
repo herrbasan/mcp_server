@@ -5,7 +5,7 @@
 // Window kinds: "5h" | "weekly" | "tpm-day" | "monthly" | "pool".
 //
 // Extraction routes (see documentation/tools/usage-monitor.md):
-//   z.ai      page-context fetch, Bearer from localStorage
+//   z.ai      direct API with gateway-config key (quota endpoint)
 //   gemini    DOM scrape (rate-limit table w/ range forced to 1 Day + spend page).
 //             Needs an account that has an AI Studio project — the table renders
 //             per project, not per account (david@raum.com).
@@ -176,29 +176,6 @@ async function debugCapture(page, name, err) {
 const zaiReset = (l) => l.nextResetTime
     ? { resetAt: new Date(l.nextResetTime).toISOString() }
     : { note: 'no reset time — window unused' };
-
-async function extractZai(page) {
-    await page.goto('https://z.ai/manage-apikey/coding-plan/personal/usage', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await page.waitForSelector('text/Quota', { timeout: 20000 }).catch(() => {});
-    const res = await evalOn(page, `
-        const tok = localStorage.getItem('z-ai-open-platform-token-production');
-        if (!tok) throw new Error('z.ai: no token in localStorage — logged out');
-        const r = await fetch('https://api.z.ai/api/monitor/usage/quota/limit', { headers: { Authorization: 'Bearer ' + tok } });
-        const j = await r.json();
-        if (j.code !== 200) throw new Error('z.ai API code ' + j.code);
-        const win = {};
-        for (const l of j.data.limits || []) {
-            if (l.type === 'TOKENS_LIMIT' && l.unit === 3) win.fiveHour = l;
-            if (l.type === 'TOKENS_LIMIT' && l.unit === 6) win.weekly = l;
-        }
-        if (!win.fiveHour || !win.weekly) throw new Error('z.ai: expected windows missing');
-        return win;
-    `);
-    return { windows: [
-        { kind: '5h', usedPct: res.fiveHour.percentage, ...zaiReset(res.fiveHour), primary: true },
-        { kind: 'weekly', usedPct: res.weekly.percentage, ...zaiReset(res.weekly), primary: true }
-    ] };
-}
 
 const K_M = { K: 1e3, M: 1e6, B: 1e9 };
 function parseNum(s) {
@@ -634,6 +611,34 @@ function gatewayModel(matchRe) {
     return entry[1];
 }
 
+// z.ai answers this quota endpoint to an API key exactly as it did to the
+// dashboard's session token (verified 2026-11-10: same windows, same values).
+// The session route is what died — logged out 2026-11-08, 182 failed cycles of
+// "no token in localStorage" — while the gateway's GLM key never expired. The
+// browser is out of this path entirely, so nothing here can be signed out.
+async function extractZai() {
+    const m = gatewayModel(/api\.z\.ai/);
+    if (!m.apiKey) throw new Error('z.ai: the gateway model carries no apiKey');
+    const res = await fetch(new URL(m.endpoint).origin + '/api/monitor/usage/quota/limit', {
+        headers: { Authorization: `Bearer ${m.apiKey}` }, signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) throw new Error(`z.ai HTTP ${res.status}`);
+    const j = await res.json();
+    // HTTP 200 carries the verdict in the body (measured 2026-11-10: an invalid
+    // token answered 200 with {"code":401}) — status alone would read it as ok.
+    if (j.code !== 200) throw new Error(`z.ai API code ${j.code}${j.msg ? ' — ' + j.msg : ''}`);
+    const win = {};
+    for (const l of j.data?.limits || []) {
+        if (l.type === 'TOKENS_LIMIT' && l.unit === 3) win.fiveHour = l;
+        if (l.type === 'TOKENS_LIMIT' && l.unit === 6) win.weekly = l;
+    }
+    if (!win.fiveHour || !win.weekly) throw new Error('z.ai: expected windows missing');
+    return { windows: [
+        { kind: '5h', usedPct: win.fiveHour.percentage, ...zaiReset(win.fiveHour), primary: true },
+        { kind: 'weekly', usedPct: win.weekly.percentage, ...zaiReset(win.weekly), primary: true }
+    ] };
+}
+
 async function extractDeepseek() {
     const m = gatewayModel(/api\.deepseek\.com/);
     const res = await fetch(new URL(m.endpoint).origin + '/user/balance', {
@@ -671,7 +676,7 @@ async function extractOpenrouter() {
 // independent, interleaving browser/direct is harmless.
 const PROVIDERS = [
     { name: 'kimi', browser: 'usage', fn: extractKimi },
-    { name: 'zai', browser: 'usage', fn: extractZai },
+    { name: 'zai', browser: false, fn: extractZai },
     { name: 'minimax', browser: 'usage', fn: extractMinimax },
     { name: 'deepseek', browser: false, fn: extractDeepseek },
     { name: 'gemini', browser: 'usage', fn: extractGemini },
