@@ -1,20 +1,38 @@
 # nConvert — Universal Document Ingest
 
 One engine turns any document into a **layered artefact** in a fixed store:
-`storage/ingest/`. Rust core (`nConvert/` at the repo root, nDB pattern:
-workspace + napi bindings, own repo at spin-out), thin JS agent
-(`src/agents/nconvert/`). Spec of record: `nConvert/docs/SPEC.md`.
+`storage/ingest/`.
+
+**The engine is not in this repo any more.** Conversion, job records and the
+artefact folders live in `nteligence-server` (`D:\DEV\nTeligence`); the tools
+below are an HTTP proxy to it (`agents.nconvert.serviceUrl`, default
+`http://127.0.0.1:3300`). The vendored `nConvert/` submodule, its N-API build,
+the ingest queue and the native process pool were removed from `mcp_server` on
+2026-11-11 — do not reintroduce them here. Engine spec of record:
+`nConvert/docs/SPEC.md`; backend plan: `nTeligence/docs/rust-backend-plan.md`.
+
+Lane status (2026-11-11): **mechanical is live** for every format the engine
+supports. `depth: "deep"`, OCR of scans/standalone images, `nconvert.summarize`
+(L0) and `nconvert.verify` (audit) are **not implemented in the service yet** and
+refuse with a named reason — they never degrade silently to mechanical output.
+
+Engine settings named below (`coverageThreshold`, `chunkPages`,
+`visionPathSegments`, `summary`, `verify`, OCR model paths, …) belong to the
+engine and live with nTeligence; they are not keys in this repo. `agents.nconvert`
+here holds only `serviceUrl`, `folder`, `maxInputMb`, `maxExpandedMb`, `ignore`,
+`contextEnhancement` and `watch`.
 
 ## Tools
 
 | Method | Args | What it does |
 |---|---|---|
-| `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name? }` | Ingests one file into an artefact under `storage/ingest/`. `depth: "deep"` (PDF) renders every page, then uses OCR, measured geometry, or conditional vision per chunk. |
-| `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, deep status. |
+| `nconvert.convert` | `{ path*, depth?, assets?, keepOriginal?, ocr?, name?, force? }` | Ingests one file into an artefact under `storage/ingest/`. Mechanical lane only: `depth: "deep"`, `ocr` and other deep-lane arguments are refused with a reason. Identical bytes with the same settings reuse the existing item (`force: true` reconverts). Every submit returns a `ui` action for `/nconvert`. |
+| `nconvert.job` | `{ id*, since?, activityLimit? }` | Step timings, result link and error. Structured activity lands with the queued lanes; `since` is accepted and currently returns an empty page. |
+| `nconvert.capabilities` | `{}` | Format matrix, limits, converter version, and which lanes are unavailable. |
 | `nconvert.items` | `{ limit? }` | The artefact registry, newest first — id, source, format, depth, layers carried. |
-| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `summary` · `document` · `mechanical` · `verification` · `rejected` (legacy items only) · `page` · `asset` · `original`. |
-| `nconvert.summarize` | `{ item* }` | Rewrite the L0 summary from the shipped `document.md`, without re-converting — the repair path when a summary failed or was skipped, and the way to refresh one later. One model call. |
-| `nconvert.verify` | `{ item*, model?, force? }` | Independent audit of an item, written to `verification.md` with a confidence verdict. |
+| `nconvert.fetch` | `{ item*, layer?, section?, page?, asset?, maxChars? }` | Read one layer: `document` · `mechanical` · `verification` · `page` · `asset` · `original`; `summary` names why L0 is not there yet; `rejected` is refused (deep-lane legacy). |
+| `nconvert.summarize` | `{ item* }` | **Not available yet** — returns the refusal naming the missing Gateway client (Pass 2). |
+| `nconvert.verify` | `{ item*, model?, force? }` | **Not available yet** — returns the refusal naming the missing audit lane. |
 
 ## The artefact is a layered object (spec §2.6)
 
@@ -37,20 +55,20 @@ sufficient layer and digs only when it must:
   served by `nconvert.fetch`, so no layer is mentioned but unreachable.
 - **Discovery:** `nconvert.items` lists; VDB indexes the store for semantic search;
   `nconvert.fetch` returns the layer a hit points at.
-- Summary generation is default-on (`agents.nconvert.summary: false` to skip) and is
+- Summary generation is default-on (engine `summary: false` to skip) and is
   reported in the tool response when unavailable. It runs on the **local model**
   (`summaryModels`, default `badkid-llama-chat`) with no fallback chain, so ingest
-  makes no provider calls at all by default; a cloud model can be named instead,
+  makes no cloud calls by default; a cloud model can be named instead,
   one target at a time. Measured 2026-11-08 on the 353-page handbook and a kickoff
   deck: local 3.4 s per summary versus 4.0 s cloud, with longer, better-structured
   output. Provider calls are independently bounded by
-  `agents.nconvert.maxSummaryJobs` (default 4).
+  `maxSummaryJobs` (engine, default 4).
 
 ## The ingest queue (bounded mechanical lane + one deep/large job)
 
-Small mechanical conversions share up to `agents.nconvert.maxConcurrentJobs`
-(default 16) scheduled slots. Deep conversions and inputs over ~25 MB
-(`agents.nconvert.heavyMb`) are limited by `maxHeavyJobs` (default 1).
+Small mechanical conversions share up to `maxConcurrentJobs` (engine, default 16)
+scheduled slots. Deep conversions and inputs over ~25 MB (`heavyMb`, engine) are
+limited by `maxHeavyJobs` (default 1).
 Mechanical callers await the scheduled result; deep/large callers receive a job
 handle. Submitting the same file twice while queued/running deduplicates to the
 same job, including multiple waiting callers.
@@ -66,15 +84,45 @@ never silently answered with a stale artefact.
 
 | Surface | Call |
 |---|---|
-| MCP | `nconvert.enqueue { path, depth?… }` (alias of `nconvert.convert` — same routing), `nconvert.jobs { state?, limit? }`, `nconvert.job { id }`, `nconvert.cancel { id }` |
-| REST | `GET /nconvert/jobs`, `GET /nconvert/jobs/:id`, `POST /nconvert/jobs { path, depth?… }`, `POST /nconvert/jobs/:id/cancel` |
-| Events | `GET /nconvert/events` — SSE: `queue.snapshot` on connect, then `job.queued` / `job.started` / `job.update` / `job.done` / `job.failed` / `job.cancelled` frames |
+| MCP | `nconvert.enqueue { path, depth?… }` (alias of `nconvert.convert` — same routing), `nconvert.jobs { state?, limit? }`, `nconvert.job { id, since?, activityLimit? }`, `nconvert.cancel { id }` |
+| REST | `GET /nconvert/jobs`, `GET /nconvert/jobs/:id` (`?since=N` for incremental activity), `POST /nconvert/jobs { path, depth?… }`, `POST /nconvert/jobs/:id/cancel` |
+| Upload | `POST /nconvert/upload?filename=…&depth=…` with an `application/octet-stream` body; same queue and response shape as path submission |
+| Item | `GET /nconvert/items/:id` — manifest, result links, L0 summary and bounded L1 preview |
+| Events | `GET /nconvert/events` — SSE: `queue.snapshot` on connect, then `job.queued` / `job.started` / `job.update` / `job.activity` / `job.done` / `job.failed` / `job.cancelled` frames |
 
-Progress is a **step model, not a percentage**: `converting → rendering →
-vision i/n (+ coverage) → retry → summarizing`. Jobs survive restarts
-(`data/nconvert/jobs.json`; interrupted `running` jobs re-queue). Cancel is
+Progress is a **step model plus a sequenced activity history**, not just a percentage:
+`converting → rendering → ocr/vision i/n (+ coverage) → retry → summarizing`. Steps
+carry start/finish timestamps and cumulative durations. Activity records carry
+`seq`, `at`, `level`, `kind` (`decision` / `problem` / `metric` / `event`), `code`,
+`message`, optional `pages`/`step`, and structured evidence (`data`). Every chunk's
+route choice, model completion, warning, summary and audit is therefore visible.
+Normal SSE job updates exclude the history; each `job.activity` frame carries one
+new record, avoiding quadratic traffic on long documents. Full history survives in
+`data/nconvert/jobs.json` and is available through MCP/REST after reconnect.
+
+Jobs survive restarts (interrupted `running` jobs re-queue). Cancel is
 cooperative — queued jobs immediately, running jobs at the next checkpoint
 (between steps or page chunks). History retention: newest 200 finished jobs.
+
+## NUI progress and result UI
+
+Open **`/nconvert`**. The same NUI surface covers:
+
+- **Source:** drag/drop or file-picker upload, server-path input, mechanical/deep
+  options, and recent jobs. Uploads are raw `application/octet-stream`, capped by
+  `maxInputMb`, written under `data/nconvert/uploads` and removed at completion.
+- **Progress:** timed steps, measured/OCR/vision page totals, provider-call count,
+  problems, cancellation, and a filterable live decision log. Jobs and items are
+  URL-addressable (`?job=…`, `?item=…`); refresh and SSE reconnect restore state.
+- **Result:** L0 summary, NUI-rendered L1 preview, provenance, warnings, statistics,
+  and links to document/mechanical/original/manifest/pages/assets. Preview media
+  resolve relative to the artefact. Large L1 previews are bounded; the full file is
+  one click away.
+
+`nconvert.convert` / `enqueue` return `jobId` where applicable, a structured result,
+and `ui: { label, url, mode: "preview" }`. Reused artefacts open the existing item
+without spending compute. `nconvert.job` returns the same UI action plus full or
+incremental activity. No separate UI tool or frontend framework is involved.
 
 ## PDF structure is measured, not guessed (Tier 1)
 
@@ -113,8 +161,8 @@ zero provider calls.
   advance on this corpus, so intra-word gaps sit at 0.00 em and space gaps at
   0.18–0.26 em; the threshold is 0.10 em (`probe_word_gap_distribution` records
   the histogram).
-- **PDFium is required** for this pass. Without `agents.nconvert.pdfiumPath` the
-  conversion falls back to flat plain-text extraction and says so with the
+- **PDFium is required** for this pass. Without the engine's PDFium installation
+  the conversion falls back to flat plain-text extraction and says so with the
   `pdf-layout-unavailable` warning.
 
 ## Deep conversion (spec §2.5) — measured first, vision on ambiguity
@@ -127,9 +175,9 @@ Mechanical conversion reads what a file *declares*. Born-digital PDFs already de
 2. **Measured:** no ambiguity trigger → the per-page `pdf_layout` sections ship directly, with no provider call and `derivedBy: "measured"`.
 3. **Vision:** any trigger → page images + authoritative text go to `visionModel` (default `badkid-llama-chat`) → text-coverage measurement (default 98 %, diagnostic only) → assembled MD-Blocks. The whole chunk takes this route if one page is ambiguous.
 
-**Vision triggers:** unavailable/inconsistent geometry; an embedded figure; or at least `agents.nconvert.visionPathSegments` vector path segments on one page (default **128**; `0` forces vision). PDFium counts segments per page, excluding text and raster images. On the 353-page GSB handbook, the threshold selects 40 pages; 64 would select 131 and incorrectly turn ordinary rules and borders into model work. Each `meta.json` vision chunk records its `triggers` and `pathSegments`.
+**Vision triggers:** unavailable/inconsistent geometry; an embedded figure; or at least `visionPathSegments` (engine) vector path segments on one page (default **128**; `0` forces vision). PDFium counts segments per page, excluding text and raster images. On the 353-page GSB handbook, the threshold selects 40 pages; 64 would select 131 and incorrectly turn ordinary rules and borders into model work. Each `meta.json` vision chunk records its `triggers` and `pathSegments`.
 
-Pages within a chunk fan out across the native process pool; rendered PNGs go directly from worker to artefact storage, so parent memory is bounded by the chunk rather than the whole PDF.
+Pages within a chunk fan out across the engine's worker processes; rendered PNGs go directly from worker to artefact storage, so memory is bounded by the chunk rather than the whole PDF.
 
 - **One vision target, no chain** (2026-11-08). `visionFallbackModels` defaults to
   `[]`: point `visionModel` at the local model *or* at a cloud model — a chain is an
@@ -151,7 +199,7 @@ Pages within a chunk fan out across the native process pool; rendered PNGs go di
   (DeepSeek even recovered `325,50 EUR` that the text layer had lost). With thinking
   off the ceiling is headroom, not a requirement — but a model that cannot switch
   thinking off still needs it to clear its reasoning. Configured as
-  `agents.nconvert.visionMaxTokens`; the same failure appears on text-only
+  `visionMaxTokens` (engine); the same failure appears on text-only
   prompts with a small cap, so blame the budget before the model.
 - The model **never writes MD-Blocks directives**; it emits
   `[[FIGURE:page-NNN.png|caption]]` markers the agent translates, so untrusted output
@@ -181,10 +229,11 @@ Pages within a chunk fan out across the native process pool; rendered PNGs go di
   never a fabricated 100 %.
 - **Never-destroy:** `document.mechanical.md` is always written beside the deep result.
 - Coverage or provider failure falls back per chunk — loudly, never silently.
-- **Renderer:** PDFium (Chrome's engine), dynamically loaded. `pdfium.dll` (~7 MB)
-  fetched by `node nConvert/napi/fetch-pdfium.js`; path in `agents.nconvert.pdfiumPath`.
-  PDFium is process-parallel, not thread-parallel: `nativeProcesses` (default 16)
-  persistent workers are started lazily, each with its own reusable PDFium binding.
+- **Renderer:** PDFium (Chrome's engine), dynamically loaded inside the engine's
+  convert workers (`nConvert/napi/fetch-pdfium.js` fetches `pdfium.dll`; the path
+  lives in nTeligence's `[convert] pdfium`). PDFium is process-parallel, not
+  thread-parallel: the service runs one conversion per worker process, each with
+  its own reusable binding (`processes` in `nteligence.toml`).
 
 Historical full-vision measurement (before conditional vision): 82 pages, ~210–240 s, 9/11 chunks structured, 99.8 % coverage,
 149 headings, 61 figure blocks, 89 table rows — including a specifications table
@@ -205,10 +254,10 @@ pages are read locally by two ONNX models instead of a vision model:
 
 - **Nothing leaves the machine.** No provider call, no GPU, no Python: the models run
   through `ort` inside the same Rust core (`nConvert/src/ocr.rs`) and are reached by the
-  agent as the native `ocr` operation in the process pool.
-- **Models** live under the storage root at `models/ocr` (`agents.nconvert.ocrModels`):
+  service as the native `ocr` operation in its worker processes.
+- **Models** live under the storage root at `models/ocr` (engine OCR model directory):
   `pp_doc_layoutv2.onnx`, `PP-OCRv6_det_small.onnx`, `PP-OCRv6_rec_small.onnx`.
-  Set `agents.nconvert.ocr: false` to fall back to the vision path for scans.
+  Disabling OCR in the engine falls back to the vision path for scans.
 - **Regions become structure**, not prose: a `table` region is rebuilt as a Markdown
   table (rows by y-cluster, columns by x-cluster, two-line headers merged), a
   `paragraph_title` becomes `## `, `header`/`footer`/`aside_text` are dropped.
@@ -225,8 +274,8 @@ pages are read locally by two ONNX models instead of a vision model:
 The deterministic guard measures what survived. It cannot say *what* is missing
 when the evidence itself is damaged, so there is an independent audit
 (`nconvert.verify`). It runs **on demand**, not after every ingest: one
-large-model call per document is not a routine cost (set
-`agents.nconvert.verify: true` to make deep ingests audit themselves):
+large-model call per document is not a routine cost (engine `verify: true` makes
+deep ingests audit themselves):
 
 - a large-context model (`verifyModel`, default `kimi-k31-chat`, fallback
   `deepseek-chat`) reads `document.md` beside the text layer, the mechanical
@@ -282,21 +331,20 @@ usually cannot exceed "medium", and its report says so.
   enforced per entry and in total), `maxOutputMb` 64, `maxTableRows` 10000 — breaches
   are hard errors.
 
-## Building
+## Running the service
 
-The engine is a **git submodule** (`nConvert/`, repo `herrbasan/nConvert`,
-MIT). After a fresh clone of this repo:
+The engine and its build live in `nteligence-server` (`D:\DEV\nTeligence`):
 
 ```
-git submodule update --init nConvert   # fetch the engine
-node nConvert/napi/fetch-pdfium.js     # renderer DLL (~7 MB, idempotent)
-npm run build:nconvert                 # Rust workspace + staged napi binary
-npm run test:nconvert                  # 79 core tests + agent smoke + 79-file corpus contract
+cd D:\DEV\nTeligence
+cargo run -p nteligence-server         # binds 127.0.0.1:3300 (nteligence.toml)
+cargo test -p nconvert                 # engine tests + corpus contract
+node nConvert/napi/setup.js            # rebuild the Node addon (print consumes it)
 ```
 
-Binaries are staged version-stamped; the loader picks the newest, so a rebuild
-never fights a running server. After a server restart, **reconnect clients** — a
-session connected before the restart answers "Unknown method" for new tools.
+`agents.nconvert.serviceUrl` in `config.json` is the only link between the repos.
+After a server restart, **reconnect clients** — a session connected before the
+restart answers "Unknown method" for new tools.
 
-The engine's own tests (`cargo test`, `nConvert/napi/test/bindings.mjs`) live in
-the submodule; `tests/nconvert-agent-smoke.mjs` here covers the host wiring.
+`npm run test:nconvert` here runs the proxy smoke test and the review-UI surface
+test, both against a live service.

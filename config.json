@@ -54,10 +54,12 @@
       "chromeGapMm": 8,
       "chromeInsetMm": 5,
       "maxChromeFraction": 0.35,
-      "pdfiumPath": "nConvert/napi/pdfium/bin",
+      "pdfiumModule": "D:\\DEV\\nTeligence\\nConvert\\napi\\index.js",
+      "pdfiumPath": "D:\\DEV\\nTeligence\\nConvert\\napi\\pdfium\\bin",
       "parentOrigins": ["http://localhost:8080", "http://192.168.0.100:8080", "https://nport.raum.com", "https://192.168.0.100"]
     },
     "nconvert": {
+      "serviceUrl": "http://127.0.0.1:3300",
       "folder": "ingest",
       "maxInputMb": 100,
       "maxExpandedMb": 500,

@@ -296,7 +296,10 @@ are attached inline unless `pages` selects others. `width` controls raster width
   100); `inlinePreviewLimit` defaults to 8; `previewTimeoutMs` defaults to
   120000. `chromeGapMm` defaults to 8, `chromeInsetMm` to 5, and
   `maxChromeFraction` to 0.35.
-  `pdfiumPath` uses the nConvert PDFium installation by default.
+  `pdfiumModule` and `pdfiumPath` name the PDFium addon and its DLL directory in
+  the nConvert engine installation. Both are required — the addon left this repo
+  with the engine (2026-11-11) — and a missing one fails print's startup with the
+  path in the message.
 
 ## Validation
 

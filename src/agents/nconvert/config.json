@@ -4,7 +4,7 @@
     "tools": [
         {
             "name": "nconvert_convert",
-            "description": "Ingest one file into a layered artefact under storage 'ingest/'. Produces original.<ext> (provenance copy), summary.md (L0 retrieval summary), document.md (L1 MD-Blocks + conversion frontmatter), meta.json (detection verdict, stats, all warnings), item.json (manifest), and assets/ when the format carries binaries. With depth 'deep' (PDF) it additionally renders every page to pages/ with PDFium and has a vision model reconstruct structure — headings, tables, figure placement — over the mechanically extracted text, keeping document.mechanical.md beside the result and validating text coverage per chunk. Detection is by magic bytes; the extension only breaks ties. Unknown formats, corrupt containers and limit breaches are hard errors carrying the diagnosis. Read the warnings in the response: they mark every absorbed variance.",
+            "description": "Ingest one file into a layered artefact under storage 'ingest/'. Produces original.<ext> (provenance copy), document.md (L1 MD-Blocks + conversion frontmatter), meta.json (detection verdict, stats, all warnings), item.json (manifest), and assets/ when the format carries binaries. Conversion runs in the nTeligence service; this tool proxies to it and fails loudly if the service is down. The MECHANICAL lane is live for every supported format. depth 'deep', OCR of scans/standalone images, summary generation and the independent audit are NOT available yet and answer with an explicit refusal — they never degrade silently to mechanical output. Detection is by magic bytes; the extension only breaks ties. Unknown formats, corrupt containers and limit breaches are hard errors carrying the diagnosis. Read the warnings in the response: they mark every absorbed variance. Repeat submits of the same bytes with the same settings reuse the existing item; pass force:true to reconvert.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -59,7 +59,7 @@
         },
         {
             "name": "nconvert_cancel",
-            "description": "Cancel a queued or running job. Queued jobs cancel immediately; running jobs stop at the next checkpoint (between steps or page chunks) — deep chunks are the natural boundaries.",
+            "description": "Cancel a job. Mechanical ingests run inside their own request and have no checkpoint to stop at, so cancelling a running job is refused with that reason rather than pretending a flag was set. Cancellation becomes real when the queued lanes land.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -88,7 +88,7 @@
         },
         {
             "name": "nconvert_fetch",
-            "description": "Read one layer of an ingested item. Layers, cheapest first: 'summary' (L0 retrieval summary — start here), 'document' (L1 full MD-Blocks text, or a single section with section:N), 'mechanical' (deterministic conversion for comparison), 'rejected' (legacy only: a vision reconstruction the old coverage guard refused, on items ingested before 2026-11-07 — the guard is a diagnostic now, so new items never carry this layer), 'page' (L2 rasterized page image path, page:N), 'asset' (L2 extracted image/attachment path, asset:\"name\"), 'original' (L3 byte-exact source path). Text layers return content; binary layers return a storage path and URL for the caller to open, attach, or ingest.",
+            "description": "Read one layer of an ingested item. Layers: 'document' (L1 full MD-Blocks text, or a single section with section:N) — start here; 'mechanical' (deterministic conversion kept beside a deep result); 'verification' (audit report, when one exists); 'page' (L2 rasterized page image path, page:N); 'asset' (L2 extracted image/attachment path, asset:\"name\"); 'original' (L3 byte-exact source path); 'summary' (L0 — not generated yet, the refusal names why). Text layers return content; binary layers return a storage path and URL for the caller to open, attach, or ingest.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -104,7 +104,7 @@
         },
         {
             "name": "nconvert_verify",
-            "description": "Independent audit of an already-ingested item: a large-context model reads the shipped document.md together with the text layer, the mechanical document and any refused readings, then reports what survived, what is at risk, whether the numbers are internally consistent, and — explicitly — what it could not check without the page images. The report lands as verification.md and the verdict (confidence: high|medium|low) is recorded in item.json. Deep ingests do not audit themselves (agents.nconvert.verify defaults to false — one large-model call per document), so run this when an item's trustworthiness matters or when re-checking an older or mechanical-only item.",
+            "description": "Independent audit of an already-ingested item — NOT AVAILABLE YET in the nTeligence service: it needs a large-context model through the Gateway, which arrives with Pass 2. Calling it returns an explicit refusal naming that reason; it does not silently degrade.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -117,7 +117,7 @@
         },
         {
             "name": "nconvert_summarize",
-            "description": "Rewrite the L0 retrieval summary of an already-ingested item without re-converting it. The repair path for an item whose summary failed or was skipped (provider unavailable, summarisation disabled), and the way to refresh a summary after summarisation improves: it reads document.md from the artefact, writes summary.md, and records the model and timestamp in item.json. Cheap — one model call over the shipped text, no PDFium, no vision, no OCR.",
+            "description": "Rewrite the L0 retrieval summary of an already-ingested item — NOT AVAILABLE YET in the nTeligence service: it needs the LLM Gateway client and tier routing that arrive with Pass 2. Calling it returns an explicit refusal naming that reason; use nconvert.fetch layer 'document' meanwhile.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

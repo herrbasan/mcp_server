@@ -24,7 +24,7 @@ import {
     contextAdd as notepadContextAdd, contexts as notepadContexts,
     contextRename as notepadContextRename, contextRemove as notepadContextRemove,
 } from './agents/notepad/index.js';
-import { getQueue as nconvertGetQueue, submitIngest as nconvertSubmit } from './agents/nconvert/index.js';
+import { submitIngest as nconvertSubmit, serviceCall as nconvertCall, uiJob, subscribeJobs } from './agents/nconvert/index.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = {
@@ -309,41 +309,42 @@ async function start() {
         }
     });
 
-    // ── nConvert ingest queue: REST + SSE ──
-    // One writer (the agent's job store at data/nconvert/jobs.json), three
-    // transports: MCP tools, REST for the admin dashboard, SSE for live
-    // progress. LAN-trust posture, same as /notepad/ and /storage/.
-    const nconvertReady = (req, res, next) => {
-        try { nconvertGetQueue(); next(); } catch { res.status(503).json({ error: 'nconvert agent not initialized' }); }
-    };
-    const nconvertQueueRoute = (fn) => (req, res) => {
-        try { res.json(fn(req)); } catch (e) { res.status(400).json({ error: e.message }); }
+    // ── nConvert ingest: REST + SSE, proxied to nTeligence ──
+    // The engine, job records and artefacts live in nteligence-server. These
+    // routes keep the URLs and payload shapes the admin dashboard and the review
+    // page already use; nothing here owns state. LAN-trust posture, same as
+    // /notepad/ and /storage/.
+    const nconvertRoute = (fn) => async (req, res) => {
+        try { res.json(await fn(req)); } catch (e) { res.status(502).json({ error: e.message }); }
     };
 
-    app.get('/nconvert/jobs', nconvertReady, nconvertQueueRoute((req) => {
-        const q = nconvertGetQueue();
-        return { jobs: q.list({ state: req.query.state ?? null, limit: Math.min(Number(req.query.limit ?? 50), 200) }) };
+    app.get('/nconvert/jobs', nconvertRoute(async (req) => {
+        // An absent filter must be *absent*: `?state=` would reach the service as
+        // a filter on the empty string and match nothing.
+        const params = new URLSearchParams();
+        if (req.query.state) params.set('state', req.query.state);
+        params.set('limit', String(Math.min(Number(req.query.limit ?? 50), 200)));
+        const payload = await nconvertCall('GET', `/api/jobs?${params.toString()}`);
+        return { jobs: (payload.jobs ?? []).map(uiJob) };
     }));
-    app.get('/nconvert/jobs/:id', nconvertReady, nconvertQueueRoute((req) => {
-        const job = nconvertGetQueue().get(req.params.id);
-        if (!job) throw new Error(`no such job: ${req.params.id}`);
-        return { job: nconvertGetQueue().publicJob(job) };
+    app.get('/nconvert/jobs/:id', nconvertRoute(async (req) => {
+        const suffix = req.query.since === undefined ? '' : `?since=${encodeURIComponent(req.query.since)}`;
+        const payload = await nconvertCall('GET', `/api/jobs/${encodeURIComponent(req.params.id)}${suffix}`);
+        return { job: uiJob(payload.job), activity: payload.activity };
     }));
-    app.post('/nconvert/jobs', nconvertReady, express.json({ limit: '64kb' }), async (req, res) => {
-        try {
-            res.json(await nconvertSubmit(req.body ?? {}));
-        } catch (e) {
-            res.status(400).json({ error: e.message });
-        }
+    app.post('/nconvert/jobs', express.json({ limit: '64kb' }), async (req, res) => {
+        try { res.json(await nconvertSubmit(req.body ?? {})); } catch (e) { res.status(400).json({ error: e.message }); }
     });
-    app.post('/nconvert/jobs/:id/cancel', nconvertReady, nconvertQueueRoute((req) => {
-        return { job: nconvertGetQueue().cancel(req.params.id) };
+    app.post('/nconvert/jobs/:id/cancel', nconvertRoute(async (req) => {
+        const payload = await nconvertCall('POST', `/api/jobs/${encodeURIComponent(req.params.id)}/cancel`);
+        return { job: uiJob(payload.job) };
     }));
 
-    // Live progress: SSE stream of job events (job.queued / job.started /
-    // job.update / job.done / job.failed / job.cancelled). Dashboards attach
-    // with EventSource and render the step model directly.
-    app.get('/nconvert/events', nconvertReady, (req, res) => {
+    // Live progress. The service emits one `job` event per change; the review UI
+    // listens for job.queued / started / update / done / failed / cancelled, so
+    // subscribeJobs translates. A snapshot is written first, so a late subscriber
+    // sees the current queue state.
+    app.get('/nconvert/events', async (req, res) => {
         res.writeHead(200, {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache, no-transform',
@@ -351,20 +352,25 @@ async function start() {
             'X-Accel-Buffering': 'no'
         });
         res.write(': connected\n\n');
-        const q = nconvertGetQueue();
-        // snapshot first, so a late subscriber sees the current queue state
-        res.write(`event: queue.snapshot\ndata: ${JSON.stringify({ jobs: q.list({ limit: 100 }) })}\n\n`);
-        const unsubscribe = q.subscribe((evt) => {
-            try {
-                res.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
-            } catch { /* connection already gone; unsubscribe below */ }
-        });
+        let close = () => {};
         const heartbeat = setInterval(() => {
-            try { res.write(': heartbeat\n\n'); } catch { /* noop */ }
+            try { res.write(': heartbeat\n\n'); } catch { /* connection gone */ }
         }, 25000);
+        try {
+            const snapshot = await nconvertCall('GET', '/api/jobs?limit=100');
+            res.write(`event: queue.snapshot\ndata: ${JSON.stringify({ jobs: (snapshot.jobs ?? []).map(uiJob) })}\n\n`);
+            close = await subscribeJobs(
+                (type, payload) => {
+                    try { res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`); } catch { /* gone */ }
+                },
+                { onError: (error) => { try { res.write(`event: job.stream-error\ndata: ${JSON.stringify({ error: error.message })}\n\n`); } catch { /* gone */ } } }
+            );
+        } catch (error) {
+            res.write(`event: job.stream-error\ndata: ${JSON.stringify({ error: error.message })}\n\n`);
+        }
         req.on('close', () => {
             clearInterval(heartbeat);
-            unsubscribe();
+            close();
         });
     });
 
@@ -820,60 +826,65 @@ model returning mixed candidates gets both treatments.
 
 
 ═══════════════════════════════════════════════════════════════
-NCONVERT — Universal document → Markdown (Rust core)
+NCONVERT — Universal document → Markdown (nTeligence service)
 ═══════════════════════════════════════════════════════════════
 
-Converts any document into a clean MD-Blocks Markdown file inside a
-self-contained ingest folder under storage converted/: original.<ext>
-(the provenance copy), document.md (the conversion), meta.json
-(detection verdict, stats, ALL warnings), assets/ (extracted images,
-audio, video, attachments when the format carries them). The folder
-relocates as a unit — everything the source knew is in it.
+The engine is no longer in this repo. nteligence-server
+(D:\DEV\nTeligence) owns conversion, job records and the artefact
+folders; these tools are thin proxies to it over HTTP and keep their
+names, arguments and response shapes. If the service is down every
+call fails loudly naming the URL — there is no local fallback.
+
+Converts a document into a self-contained item under storage
+ingest/<id>/: original.<ext> (provenance), document.md (L1 MD-Blocks),
+meta.json (detection verdict, stats, ALL warnings), item.json (manifest),
+assets/ (extracted images, audio, video, attachments). The folder
+relocates as a unit.
 
 Detection is by magic bytes; the extension only breaks ties. Unknown
-formats, corrupt containers and limit breaches are hard errors that
-name what was probed and why it was refused. Partial conversions
-succeed WITH warnings — read them, they mark every absorbed variance.
+formats, corrupt containers and limit breaches are hard errors naming
+what was probed; partial conversions succeed WITH warnings — read them,
+they mark every absorbed variance.
 
-  nconvert.convert — { path*, depth?, assets?, keepOriginal?, ocr?, name? }
-      Convert one file (storage path or absolute). depth 'mechanical'
-      (default) is deterministic text + embedded-image extraction; depth
-      'deep' (PDF) additionally renders every page with PDFium. Scan chunks
-      use local CPU OCR; unambiguous born-digital chunks keep measured glyph
-      structure; only embedded/vector figures or unavailable geometry call the
-      vision model (configurable vector threshold, default 128 segments). Deep
-      writes pages/page-NNN.png and keeps document.mechanical.md beside the
-      result; model-read chunks report text coverage without discarding the
-      reading. Live formats: txt/csv/tsv/md/json/yaml/toml/xml (M1)
-      and pdf (M4) with text, embedded images and AES-256/R6 decryption.
-      html (M2), office formats, e-books, mail (M3), OCR providers (M5)
-      are detected and reported with their milestone. md input is a
-      VALIDATED COPY — existing MD-Blocks directives survive verbatim.
-      Fast-lane queue: mechanical converts inline; depth 'deep' (or inputs
-      over ~25 MB) are QUEUED — one heavy job at a time — and convert
-      returns a job handle. Track with nconvert.job/jobs/events.
+WHAT IS LIVE TODAY: the mechanical lane, for every format the engine
+supports (txt/csv/tsv/md/json/yaml/toml/xml, pdf, docx, pptx, xlsx,
+xlsb, xls, odt, odp, ods, epub, eml, mbox, doc, rtf). PDFs keep measured
+layout when PDFium is configured.
 
-  nconvert.enqueue — { path*, depth?, assets?, keepOriginal?, name? }
-      Submit an ingest job. Identical routing to nconvert.convert (named
-      for clients expressing async intent): mechanical runs inline and
-      returns the full artefact report; deep/oversized input is queued and
-      returns { jobId, position }.
+NOT LIVE YET — these refuse with a precise reason instead of degrading:
+depth 'deep', OCR of scan-only PDFs and standalone images, summary
+generation (L0), and the independent audit. Until they land, the old
+Node deep path is gone, so treat deep ingest as unavailable rather than
+pretending mechanical output is a deep conversion.
+
+  nconvert.convert — { path*, depth?, assets?, keepOriginal?, ocr?, name?, force? }
+      Convert one file (storage-relative or absolute path). depth
+      'mechanical' (default) is deterministic text + embedded-image
+      extraction; 'deep' is refused for now. ocr and any other deep-lane
+      argument are refused, not ignored. name only renames the item
+      folder, never the source. Repeat submits of the same bytes with the
+      same engine and settings return the existing item (reused: true);
+      pass force:true to reconvert.
+
+  nconvert.enqueue — same arguments, same routing. Named for clients
+      expressing async intent; the mechanical lane answers inline, so the
+      response is the completed artefact, not a handle.
 
   nconvert.jobs — { state?, limit? }
-      The ingest queue + recent history, newest first. Running jobs show
-      their active step (rendering 4/82, vision 2/11 with coverage).
-
-  nconvert.job — { id* }
-      One job in detail: full step list with i/n progress, result or
-      error, cancellation state.
-
+      Job history, newest first, with the active step. Mechanical ingests
+      run inside their request, so a job is a report, not a queue position.
+  nconvert.job — { id*, since?, activityLimit? }
+      One job: step timings, result link, error. Structured activity
+      records land with the queued lanes; since is accepted for the
+      reconnect-safe contract and currently returns an empty page.
   nconvert.cancel — { id* }
-      Cancel a queued job immediately, or a running job at its next
-      checkpoint (between steps or page chunks).
+      Refused for running inline jobs: there is no checkpoint inside a
+      single request to stop at. Honest refusal, not a false "requested".
 
   nconvert.capabilities — {}
-      Live format matrix with phases, limits in force, converter
-      version. Call it before throwing an exotic file at convert.
+      Live format matrix, limits in force, converter version, and an
+      explicit statement of which lanes are unavailable. Call it before
+      throwing an exotic file at convert.
 
   nconvert.items — { limit? }
       The artefact registry, newest first: id, source, format, depth,
@@ -881,37 +892,24 @@ succeed WITH warnings — read them, they mark every absorbed variance.
 
   nconvert.fetch — { item*, layer?, section?, page?, asset?, maxChars? }
       Read ONE layer of an ingested item — progressive disclosure:
-        summary   (L0) retrieval summary; start here
         document  (L1) full MD-Blocks text, or one section via section:N
-        mechanical     deterministic conversion, for comparison
-        rejected  (legacy only) the reconstruction the old coverage guard
-                  refused, on items ingested before 2026-11-07 — the guard is
-                  a diagnostic now, so new items never carry this layer
+        mechanical     the deterministic conversion, when one is kept
+        verification   the audit report, when one exists
         page      (L2) rasterized page image: returns path + URL
         asset     (L2) extracted image/attachment: returns path + URL
         original  (L3) byte-exact source: returns path + URL
-      Binary layers return a path, not bytes — open, attach or ingest it
-      with the reader's own tool. Nothing is lost: every layer stays
-      addressable.
+        summary   (L0) not available yet — it names that reason
+      Binary layers return a path and URL, never inline bytes.
 
-  nconvert.verify — { item*, model?, force? }
-      Independent audit of an ingested item: a large-context model reads
-      the shipped document beside the text layer, the mechanical text and
-      any refused readings, then reports what survived, what is at risk,
-      whether the numbers are internally consistent, and what it could
-      NOT check without the page images. Writes verification.md and
-      records confidence (high|medium|low) in item.json. Deep ingests do
-      not audit themselves (agents.nconvert.verify defaults to false);
-      run it when an item's trustworthiness matters.
+  nconvert.verify — { item* }      Refused until the audit lane lands.
+  nconvert.summarize — { item* }   Refused until L0 generation lands.
 
-  nconvert.summarize — { item* }
-      Rewrite an item's L0 retrieval summary from its shipped document.md,
-      without re-converting. The repair path when a summary failed or was
-      skipped (provider down, summary disabled), and the way to refresh one
-      after summarisation improves. One model call; no PDFium, vision or OCR.
-
-Spec: docs/nconvert-spec.md. Engine: nConvert/ (Rust workspace +
-napi bindings, nDB pattern; own repo at spin-out).
+Spec: nTeligence docs/rust-backend-plan.md. Engine: nConvert, linked
+in-process by nteligence-convert-worker (the only process that loads
+PDFium). The review surface lives here: /nconvert (page), POST
+/nconvert/upload, GET /nconvert/events (SSE) and GET /files/<path>
+(the engine's artefact namespace, proxied). nconvert.capabilities
+advertises them under its "ui" field.
 
 ═══════════════════════════════════════════════════════════════
 PRINT — MD-Blocks → PDF + exact page review

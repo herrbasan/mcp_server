@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 
 process.once('message', async (job) => {
     try {
-        const native = require('../../../nConvert/napi/index.js');
+        const native = require(job.modulePath);
         const bytes = fs.readFileSync(job.pdfPath);
         const envelope = await native.renderPages(bytes, job.dllDir, job.width, job.limit, job.onlyPages);
         const rendered = JSON.parse(envelope).pages;

@@ -81,50 +81,50 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
 - `src/nCharts` — nCharts submodule (SVG diagrams).
 - `src/nui_wc2` — nui_wc2 submodule, canonical MD-Blocks renderer used by the print agent.
-- `nConvert/` — nConvert submodule (herrbasan/nConvert) — document → layered Markdown ingest engine (Rust + napi-rs). Spec: `nConvert/docs/SPEC.md`. Agent: `src/agents/nconvert/`; artefacts land in storage `ingest/`.
-
 ### nConvert (universal document ingest)
 
-Live formats: txt/csv/tsv/md (validated passthrough)/json/yaml/toml/xml, pdf
-(text + deep vision conversion), docx/doc, pptx, xlsx/xlsb/xls, odt/odp/ods,
-epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
+**The engine is not in this repo.** Conversion, job records and the artefact
+folders belong to `nteligence-server` (`D:\DEV\nTeligence`); the tools below are
+an HTTP proxy to it (`agents.nconvert.serviceUrl`, default
+`http://127.0.0.1:3300`) and keep their names, arguments and response shapes.
+The `nConvert/` submodule, its N-API build, the ingest queue and the native
+process pool were removed from mcp_server on 2026-11-11 — do not reintroduce
+them here. Engine spec: `nTeligence/nConvert/docs/SPEC.md`; backend plan:
+`nTeligence/docs/rust-backend-plan.md`.
 
-- **MCP tools**: `nconvert.convert` (mechanical inline; deep or >25 MB →
-  queued job handle), `nconvert.enqueue` (alias), `nconvert.jobs`,
-  `nconvert.job`, `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
-  `nconvert.fetch`, `nconvert.summarize` (rewrite L0 from the artefact),
-  `nconvert.verify` (on-demand audit).
-- **Scan path (M5, local ONNX)**: a page carrying its own image is a scan — its
-  embedded text layer is an older OCR and is discarded by policy. Such pages are
-  read by PP-DocLayout v2 + PP-OCRv6 in `nConvert/src/ocr.rs` (`ort`, CPU, ~1.2 s
-  per page, zero VRAM, no provider call), reached as the `ocr` native operation.
-  Regions become structure: `table` regions are rebuilt as Markdown tables,
-  `paragraph_title` becomes `## `, page numbers and decorative images are dropped
-  — no text is ever dropped. Models live under the storage root at `models/ocr`
-  (`agents.nconvert.ocrModels`); `agents.nconvert.ocr: false` falls back to the
-  vision path. Chunks report `derivedBy: "ocr"` and the frontmatter states
-  `derived-by: ocr | model | measured`.
-- **Conditional deep vision (2026-11-09)**: scan chunks use local OCR;
-  unambiguous born-digital chunks ship the measured `pdf_layout` sections
-  directly (`derivedBy: "measured"`, zero provider calls); vision runs only for
-  unavailable geometry, embedded figures, or pages reaching
-  `visionPathSegments` (default 128 PDFium path segments). Chunk reports carry
-  `triggers` and `pathSegments`. The whole chunk escalates when one page is
-  ambiguous.
-- **Ingest queue** (`src/agents/nconvert/queue.js`): bounded lanes — up to 16
-  small mechanical jobs, one deep/large job, and four summary calls by default.
-  Summaries and deep vision both run on the local model (`badkid-llama-chat`) with
-  no provider fallback chain (2026-11-08); a cloud model can be named instead, one
-  target at a time. Native conversion and PDFium rendering use a lazy persistent
-  process pool (`nativeProcesses: 16`); deep chunks fan out pages across
-  independent PDFium processes and write PNGs directly to artefact storage. Fast
-  lane — mechanical calls await their result; deep/large jobs return a queued
-  handle. Step-model progress (converting → rendering → ocr/vision i/n + coverage
-  → retry → summarizing), restart-safe FIFO (`data/nconvert/jobs.json`), sha256
-  dedup, cooperative cancel, REST + SSE.
+Lane status (2026-11-11): **mechanical is live** for every format the engine
+supports — txt/csv/tsv/md (validated passthrough), json/yaml/toml/xml, pdf text,
+docx/doc, pptx, xlsx/xlsb/xls, odt/odp/ods, epub, eml/mbox, rtf. `depth: "deep"`,
+OCR of scans/standalone images, `nconvert.summarize` (L0) and `nconvert.verify`
+(audit) are not implemented in the service yet: each answers with an explicit
+refusal naming what is missing, never a silent downgrade to mechanical output.
+An unreachable service is a loud error naming the URL and the start command.
+
+- **MCP tools**: `nconvert.convert` / `nconvert.enqueue` (mechanical inline;
+  identical bytes with the same settings reuse the item, `force: true`
+  reconverts), `nconvert.jobs`, `nconvert.job` (`since`, `activityLimit`),
+  `nconvert.cancel`, `nconvert.capabilities`, `nconvert.items`,
+  `nconvert.fetch`, `nconvert.summarize`, `nconvert.verify`.
+- **Artefact**: a self-contained item under storage `ingest/<id>/` —
+  `original.<ext>` (provenance), `document.md` (L1 MD-Blocks + conversion
+  frontmatter), `meta.json` (detection verdict, stats, ALL warnings),
+  `item.json` (manifest), `assets/` (extracted binaries). The folder relocates
+  as a unit.
+- **NUI UX** (`/nconvert`): source harness with drag/drop upload and server paths,
+  live route totals + timed steps + filterable decision log, and NUI-rendered
+  L0/L1 results with layer links. Uploads use raw octet-stream bodies under the
+  existing input cap and are cleaned at completion. MCP submit/job responses carry
+  structured `ui` actions (`/nconvert?job=…` or `?item=…`), so an LLM can open the
+  progress/result surface directly. Files: `ui-api.js`, `ui.html`, `ui.js`, `ui.css`.
 - **REST + SSE** (dashboard surface): `GET/POST /nconvert/jobs`,
-  `GET /nconvert/jobs/:id`, `POST /nconvert/jobs/:id/cancel`, and
-  `GET /nconvert/events` (SSE: `queue.snapshot` on connect, then `job.*`).
+  `GET /nconvert/jobs/:id` (`?since=N`), `POST /nconvert/jobs/:id/cancel`,
+  `POST /nconvert/upload`, `GET /nconvert/items/:id`,
+  `GET /nconvert/events` (SSE: `queue.snapshot` on connect, then `job.*`), and
+  `GET /files/<path>` — a proxy to the engine's artefact namespace, which stays
+  same-origin for the review UI (the service binds loopback).
+- **Tests**: `npm run test:nconvert` runs `nconvert-service-smoke.mjs` (the MCP
+  proxy against a live service) and `nconvert-ux-test.mjs` (page, upload, item
+  payload, `/files` proxy). Both require nTeligence to be running.
 - Operator doc: `documentation/tools/nconvert.md`; handover:
   `docs/nconvert-handover.md`. The MCP server is nPM service
   `agent_orchestrator` — restart via
@@ -137,6 +137,10 @@ epub, eml/mbox. Detected-but-pending formats fail loudly with their milestone.
 
 - **MCP tools**: `print.render` (NUI → Chromium PDF + exact PDFium page previews)
   and `print.preview` (rasterize selected pages of an existing PDF).
+- **PDFium** left this repo with the nConvert engine: `agents.print.pdfiumModule`
+  and `agents.print.pdfiumPath` name the addon and its DLLs inside the engine
+  installation. Both are required at startup, so a missing addon stops the agent
+  with the path in the message rather than failing the first preview.
 - **Visual page editor**: path-based `print.render` results advertise a structured
   `ui` action (`Edit page breaks`, `/print?path=…`, `mode: preview`) so chat can
   open the editor from the tool bubble; inline-markdown renders omit it. At

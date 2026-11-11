@@ -47,10 +47,15 @@ The MCP caller can force this section onto its own page by ID.
 fs.writeFileSync(sourcePath, source, 'utf8');
 fs.writeFileSync(path.join(root, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'));
 
+// PDFium lives with the nConvert engine installation now, so the agent has no
+// repo-relative default — take the paths from the real config the server uses.
+const repoPrint = JSON.parse(fs.readFileSync(new URL('../config.json', import.meta.url), 'utf8')).agents.print;
+const pdfiumModule = path.isAbsolute(repoPrint.pdfiumModule) ? repoPrint.pdfiumModule : path.resolve(repoPrint.pdfiumModule);
+
 let apiServer;
 try {
     const app = express();
-    await init({ config: { agents: { storage: { root }, print: { previewWidth: 900 } } }, app });
+    await init({ config: { agents: { storage: { root }, print: { ...repoPrint, previewWidth: 900 } } }, app });
     await new Promise((resolve, reject) => {
         apiServer = app.listen(0, '127.0.0.1', resolve);
         apiServer.once('error', reject);
@@ -66,7 +71,7 @@ try {
     check('default print profile is editorial', manifest.options.style === 'editorial');
     check('semantic targets come from NUI', manifest.targets.some((target) => target.id === 'second' && target.kind === 'section'));
     check('semantic targets map to exact PDF pages', manifest.targets.find((target) => target.id === 'first')?.page === 1 && manifest.targets.find((target) => target.id === 'second')?.page === 2, JSON.stringify(manifest.targets.map((target) => ({ id: target.id, page: target.page }))));
-    const native = require('../nConvert/napi/index.js');
+    const native = require(pdfiumModule);
     const cleanPdf = JSON.parse(await native.convert(fs.readFileSync(path.join(root, manifest.pdf)), 'document.pdf', '{}'));
     check('mapping markers are absent from the final PDF', !cleanPdf.page_texts.some((text) => text.includes('MBTARGET')));
     check('preview PNGs are written', manifest.previews.every((preview) => fs.existsSync(path.join(root, preview.path))));

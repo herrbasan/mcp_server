@@ -1,6 +1,13 @@
 # nConvert — current state
 
-**As of 2026-11-09 · engine 0.11.0 · conditional vision validated locally**
+**As of 2026-11-11 · engine 0.11.0 runs in `nteligence-server` · NUI UX live-verified**
+
+> **The engine moved (2026-11-11).** Conversion, job records and artefact folders
+> now live in `nteligence-server` (`D:\DEV\nTeligence`); mcp_server keeps only the
+> MCP/HTTP proxy and the `/nconvert` review surface. The `nConvert/` submodule,
+> its N-API build, the ingest queue (`queue.js`) and the native process pool were
+> removed from this repo. Everything below about engine internals describes
+> nTeligence's `nConvert/`; the proxy and UI sections are what this repo owns.
 
 Ingest makes **no cloud calls** in its default configuration: ordinary born-digital
 PDFs are read from glyph geometry without a model, scans by two ONNX models on the
@@ -13,13 +20,15 @@ traps are consolidated here.
 ## Verify first (2 minutes)
 
 ```bash
-npm run test:nconvert        # 84 Rust tests + 7 JS suites + 79-file Tika corpus
-node nConvert/napi/setup.js  # rebuild + stage the addon (see the EBUSY trap)
+npm run test:nconvert        # proxy smoke + review-UI surface (service must be running)
+curl http://127.0.0.1:3300/api/health
 ```
 
-Then over MCP: `nconvert.capabilities` should show `nconvert 0.11.0`,
-`deep.ocr: true`, `deep.conditionalVision: true`, `deep.visionPathSegments: 128`,
-`deep.visionFallbackModels: []`, `summary.models: ["badkid-llama-chat"]`.
+Then over MCP: `nconvert.capabilities` should show `nconvert 0.11.0`, the format
+matrix, `deep.available: false` with its reason, and the `ui` block naming
+`/nconvert`, the upload route, `/nconvert/events` and the `/files` proxy.
+Engine tests and corpus runs belong to nTeligence (`cargo test -p nconvert`,
+`nConvert/napi/setup.js`).
 `nconvert.items` reports the registry size, not the page size (fixed 2026-11-09).
 
 ## Three reading paths
@@ -36,22 +45,33 @@ of the same pixels and is discarded by policy.
 
 ## Architecture
 
+mcp_server (this repo) — proxy and review surface only:
+
 ```
-src/server.js                 HTTP + MCP (compact + SSE) + REST/SSE for the queue
-src/agent-loader.js           loads every src/agents/<name>/ with a config.json
+src/server.js                 MCP (compact + SSE) + REST/SSE for nconvert, proxied
 src/agents/nconvert/
-  index.js                    tools, deep pipeline, artefact assembly, reuse
-  queue.js                    bounded lanes, step model, restart-safe FIFO (data/nconvert/jobs.json)
-  native-process-pool.js      persistent worker processes (16), one task each
-  native-worker.js            runs convert | render | ocr in a worker
-nConvert/                     Rust core (git submodule)
-  src/convert.rs              dispatch, options, limits, envelope
-  src/pdf_layout.rs           measured structure + per-page vector path counts (no model)
-  src/ocr.rs                  scan path: regions + text over ort (CPU)
-  src/render.rs               PDFium rasterization + text search (page coordinates)
-  src/emit.rs                 the single MD-Blocks emitter
+  index.js                    tool handlers, service transport, ui/result envelopes
+  ui-api.js                   /nconvert page, raw upload, item payload, /files proxy
+  ui.html / ui.js / ui.css    source harness, live decisions, NUI result preview
+```
+
+nteligence-server (`D:\DEV\nTeligence`) — engine, jobs and artefacts:
+
+```
+src/                          axum service: /api/ingest, /api/jobs, /api/items,
+                              /api/events, /files; job records; storage ownership
+nConvert/src/convert.rs       dispatch, options, limits, envelope
+nConvert/src/pdf_layout.rs    measured structure + per-page vector path counts
+nConvert/src/ocr.rs           scan path: regions + text over ort (CPU)
+nConvert/src/render.rs        PDFium rasterization + text search (page coordinates)
+nConvert/src/emit.rs          the single MD-Blocks emitter
 nConvert/napi/src/lib.rs      AsyncTasks: convert, renderPages, searchText, ocrPage
 ```
+
+The service shares the storage root (`D:\MCP_Storage`), so item paths reported by
+the engine (`ingest/<id>/…`) mean the same thing to the browser, the MCP tools
+and the disk. The engine serves them at `/files`; mcp_server proxies that
+namespace so the review UI's links stay same-origin.
 
 Models live **outside the repo** under the storage root: `models/ocr/`
 (`pp_doc_layoutv2.onnx` 204 MB, `PP-OCRv6_det_small.onnx` 9.5 MB,
@@ -60,6 +80,13 @@ the classifier is staged but not wired).
 
 ## Decisions (date · decision · reason)
 
+- **2026-11-09 · NUI progress/result surface.** `/nconvert` combines upload/path
+  submission, recent jobs, timed steps, route totals and a live decision log with
+  NUI-rendered L0/L1 results. Jobs persist sequenced activity; SSE sends one small
+  `job.activity` record at a time, while MCP/REST `since` fills gaps after reconnect.
+  Every LLM submit returns a `ui` action. Raw uploads stay under the existing input
+  cap and are deleted at completion. Browser-verified: text path → summary/result;
+  DKV file picker → OCR (72 lines, 16 regions) → tax table; restart preserves both.
 - **2026-11-09 · conditional deep vision.** Ordinary born-digital chunks ship
   the measured `pdf_layout` sections directly; only unavailable geometry,
   embedded figures, or ≥128 PDFium vector path segments call the local VLM.
@@ -129,16 +156,24 @@ the classifier is staged but not wired).
 - Content-addressed reuse: an identical submit returns the existing item and spends no
   compute. Engine version or settings change invalidates it deliberately.
 - The step list tells the truth: a step this run does not need closes with a reason
-  ("not needed — pages read by OCR"), never stays `pending`.
+  ("not needed — pages read by OCR"), never stays `pending`. Steps carry timestamps
+  and cumulative durations.
+- Activity is append-only and sequenced: `kind` (`decision` / `problem` / `metric` /
+  `event`), `code`, `message`, optional pages/step and structured evidence. Job list
+  and ordinary SSE updates exclude the full array; `job.activity` carries increments.
 
 ## State
 
-- Corpus on disk: **74 items, 931 MB**.
+- Baseline corpus before UX smoke: **74 items, 931 MB**; `nconvert.items` is the live count.
 - Tests: 84 Rust unit + 1 OCR acceptance (`nConvert/tests/ocr_scan.rs`, skips without the
-  weights) + 7 JS suites + 79-file Tika corpus (39 converted, 40 correctly refused, 0
+  weights) + 8 JS suites + 79-file Tika corpus (39 converted, 40 correctly refused, 0
   failures).
 - Live 0.11.0 smoke: two born-digital pages in 2.2 s, 1/1 measured chunk,
   `model: null`, `pathSegments: 0`, both page sections preserved, zero warnings.
+- Live UX smoke: path-based text conversion and file-picker DKV deep upload both
+  reach NUI results; OCR logs 72 lines / 16 regions and the table keeps `325,50 EUR`.
+  Completed uploads leave `data/nconvert/uploads` empty; a restart retains the full
+  decision log and result. `tests/nconvert-ux-test.mjs` covers the backend contracts.
 - Repo state is not asserted here; see git status. The `nDB` submodule is detached at `v1.5.0-5-g37813f8` — pre-existing, invisible
   to VS Code's behind/ahead indicator.
 

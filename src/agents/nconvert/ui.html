@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nConvert — document ingest</title>
+<link rel="stylesheet" href="/nconvert/nui/css/nui-theme.css">
+<link rel="stylesheet" href="/nconvert/ui.css">
+</head>
+<body>
+<main>
+    <section id="source-view" class="source-view">
+        <div class="source-primary">
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a document">
+                <nui-icon name="upload_file"></nui-icon>
+                <h2>Drop a document</h2>
+                <p>Or click to choose a file</p>
+                <button id="choose-file" type="button" hidden>Choose a file</button>
+                <input id="file-input" type="file" hidden>
+                <span id="file-status" class="file-status"></span>
+            </div>
+
+            <form id="path-form" class="path-bar">
+                <nui-input>
+                    <input id="source-path" type="text" autocomplete="off" spellcheck="false"
+                           placeholder="Or paste a server path (storage/document.pdf)…" aria-label="Document path">
+                </nui-input>
+                <nui-button variant="primary">
+                    <button type="submit" id="convert-path">Open</button>
+                </nui-button>
+            </form>
+
+            <div class="source-controls">
+                <nui-select id="source-target-select" label="Target">
+                    <select id="target-preset" aria-label="Target">
+                        <option value="study/gsb-11-handbuch" selected>Target · GSB 11 Handbuch</option>
+                        <option value="case/miller-v-acme">Case · Miller v. Acme (Local)</option>
+                        <option value="project/materna-bav">Project · Materna BAV (EU)</option>
+                        <option value="study/eu-ai-act">Study · EU AI Act</option>
+                        <option value="custom">+ Custom Target…</option>
+                    </select>
+                </nui-select>
+                <nui-select id="depth-select" label="Mode">
+                    <select id="depth">
+                        <option value="deep" selected>Deep — pages + conditional vision</option>
+                        <option value="mechanical">Mechanical — fast text</option>
+                    </select>
+                </nui-select>
+                <nui-checkbox>
+                    <input id="auto-pass2" type="checkbox" checked>
+                    <label for="auto-pass2">Extract facts (Pass 2)</label>
+                </nui-checkbox>
+            </div>
+
+            <div class="quiet-options" aria-label="Conversion options" hidden>
+                <input id="target-input" type="text" value="study/gsb-11-handbuch">
+                <div id="target-custom-wrap" hidden></div>
+                <select id="workflow-mode"><option value="assisted" selected>assisted</option></select>
+                <select id="privacy-tier"><option value="cloud" selected>cloud</option><option value="local">local</option><option value="eu">eu</option></select>
+                <input id="keep-original" type="checkbox" checked>
+                <input id="extract-assets" type="checkbox" checked>
+                <input id="force-convert" type="checkbox">
+            </div>
+            <p id="source-error" class="source-error" role="alert"></p>
+
+            <div class="recent-strip">
+                <div class="recent-strip-head">
+                    <span>Recent</span>
+                    <button id="refresh-jobs" type="button" class="ghost-btn" aria-label="Refresh jobs">Refresh</button>
+                </div>
+                <div id="recent-jobs" class="recent-jobs"></div>
+            </div>
+        </div>
+    </section>
+
+    <section id="job-view" hidden>
+        <!-- Hidden compatibility hooks -->
+        <div hidden>
+            <div id="active-context-pills"><span id="pill-target"></span><span id="pill-tier"></span><span id="pill-mode"></span></div>
+            <span id="job-source"></span>
+            <span id="job-state"></span>
+            <span id="chat-scope-badge"></span>
+            <div id="chat-quick-prompts"></div>
+            <button id="peek-technical-btn" type="button"></button>
+            <span id="result-provenance"></span>
+            <div id="result-links"></div>
+            <div id="result-stats"></div>
+            <p id="facts-subtitle"></p>
+            <p id="original-subtitle"></p>
+            <select id="facts-filter"><option value="all" selected>all</option></select>
+            <button id="rerun-pass2-btn" type="button"></button>
+        </div>
+
+        <!-- FRAME 1: Minimal Stepwise Progress + Ambient Technical Bling -->
+        <section id="wizard-stage-progress" class="frame-progress">
+            <div class="doc-sheet-stack" id="wizard-doc-thumb">
+                <div class="sheet-lines"><span></span><span></span><span></span><span></span></div>
+                <span id="wizard-doc-ext" class="doc-ext">DOC</span>
+            </div>
+            <h2 id="job-name" class="doc-title"></h2>
+            <p id="wizard-doc-stats" hidden></p>
+
+            <div hidden>
+                <span id="wizard-progress-label"></span>
+                <span id="job-elapsed"></span>
+                <div id="job-progress-fill"></div>
+            </div>
+            <nui-progress id="job-progress" max="100" value="0" hide-text></nui-progress>
+
+            <div id="steps" class="pipeline-timeline"></div>
+
+            <!-- Ambient "Bling" ticker: atmospheric engine pulse, zero cognitive load -->
+            <div id="bling-ticker" class="bling-ticker" aria-hidden="true"></div>
+
+            <div class="frame-progress-actions">
+                <nui-button id="cancel-job-wrap"><button id="cancel-job" type="button">Cancel</button></nui-button>
+                <nui-button variant="primary" id="open-workspace-wrap"><button id="open-workspace-btn" type="button" hidden>Continue</button></nui-button>
+            </div>
+        </section>
+
+        <!-- FRAME 2: Resizable Split Workspace (Independent Scroll Containers) -->
+        <section id="result-panel" class="frame-workspace" hidden>
+            <div class="workspace-left" id="workspace-left">
+                <header class="workspace-header-fixed">
+                    <div class="workspace-nav">
+                        <div class="tab-strip" role="tablist">
+                            <button type="button" id="tab-btn-document" class="tab-btn active" data-tab="document">Document</button>
+                            <button type="button" id="tab-btn-facts" class="tab-btn" data-tab="facts">Categories &amp; Facts <span id="facts-count-Chip" class="tab-count"></span></button>
+                            <button type="button" id="tab-btn-original" class="tab-btn" data-tab="original">Original <span id="pages-count-chip" class="tab-count"></span></button>
+                            <button type="button" id="tab-btn-problems" class="tab-btn" data-tab="problems">Problems <span id="problems-count-chip" class="tab-count"></span></button>
+                            <button type="button" id="tab-btn-technical" class="tab-btn" data-tab="technical">Technical</button>
+                        </div>
+                        <div class="nav-right">
+                            <button id="toggle-stage-btn" type="button" class="ghost-btn">Steps</button>
+                            <button id="new-conversion" type="button" class="ghost-btn">New</button>
+                        </div>
+                    </div>
+
+                    <!-- Contextual hover/focus bar (shared safe zone, empty at rest) -->
+                    <div id="context-bar" class="context-bar" aria-live="polite"></div>
+                </header>
+
+                <div class="workspace-scroll" id="workspace-scroll">
+                    <!-- TAB 1: Document -->
+                    <section id="tab-panel-document" class="tab-surface">
+                        <h2 id="doc-view-title" class="surface-title"></h2>
+                        <div id="result-summary" class="doc-summary"></div>
+                        <p id="document-truncated" class="muted" hidden></p>
+                        <div id="result-document" class="doc-body"></div>
+                    </section>
+
+                    <!-- TAB 2: Categories & Facts (Top: guided categories; Below: pure concept -> expression facts) -->
+                    <section id="tab-panel-facts" class="tab-surface" hidden>
+                        <div id="categories-section" class="categories-section">
+                            <div id="doc-categories-list" class="categories-list"></div>
+                            <div class="category-adder">
+                                <input id="category-input" type="text" autocomplete="off" spellcheck="false"
+                                       placeholder="+ Add category…" aria-label="Add category">
+                                <div id="category-suggestions" class="category-suggestions" hidden></div>
+                            </div>
+                        </div>
+
+                        <div id="facts-list" class="facts-surface"></div>
+                        <div class="facts-bottom-bar">
+                            <nui-button><button id="add-fact-btn" type="button">+ Add fact</button></nui-button>
+                            <nui-button variant="primary"><button id="commit-facts-btn" type="button">Save</button></nui-button>
+                        </div>
+                    </section>
+
+                    <!-- TAB 3: Original (Page images / extracted visuals) -->
+                    <section id="tab-panel-original" class="tab-surface" hidden>
+                        <div class="original-bar">
+                            <button id="prev-page-btn" type="button" class="ghost-btn">←</button>
+                            <span id="page-indicator" class="page-indicator">1 / 1</span>
+                            <button id="next-page-btn" type="button" class="ghost-btn">→</button>
+                            <button id="toggle-page-grid-btn" type="button" class="ghost-btn">Grid</button>
+                            <span id="original-download-slot"></span>
+                        </div>
+                        <div id="original-viewer" class="original-viewer"></div>
+                    </section>
+
+                    <!-- TAB 4: Problems (Actionable issues + repair actions) -->
+                    <section id="tab-panel-problems" class="tab-surface" hidden>
+                        <div id="problems-list" class="problems-surface"></div>
+                    </section>
+
+                    <!-- TAB 5: Technical (See what the converter decided.) -->
+                    <section id="tab-panel-technical" class="tab-surface" hidden>
+                        <div class="technical-banner">
+                            <h3>See what the converter decided.</h3>
+                            <nui-badge id="connection-state" status="connecting">connecting</nui-badge>
+                        </div>
+                        <div id="route-stats" class="stat-grid">
+                            <div class="stat-card measured"><span>Measured</span><strong id="stat-measured">0</strong></div>
+                            <div class="stat-card ocr"><span>Local OCR</span><strong id="stat-ocr">0</strong></div>
+                            <div class="stat-card vision"><span>Vision</span><strong id="stat-vision">0</strong></div>
+                            <div class="stat-card"><span>Calls</span><strong id="stat-calls">0</strong></div>
+                            <div class="stat-card problems"><span>Problems</span><strong id="stat-problems">0</strong></div>
+                        </div>
+                        <div id="result-warnings" class="result-warnings"></div>
+                        <div id="job-columns" class="job-columns">
+                            <section class="activity-panel">
+                                <div class="panel-heading">
+                                    <span>Decision log</span>
+                                    <nui-select id="activity-filter-select" label="Filter">
+                                        <select id="activity-filter" aria-label="Filter activity">
+                                            <option value="all">All</option>
+                                            <option value="decision">Decisions</option>
+                                            <option value="problem">Problems</option>
+                                            <option value="metric">Metrics</option>
+                                        </select>
+                                    </nui-select>
+                                </div>
+                                <div id="activity" class="activity" aria-live="polite"></div>
+                            </section>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <!-- Draggable Split Handle -->
+            <div id="workspace-resizer" class="workspace-resizer" role="separator" aria-orientation="vertical" aria-label="Resize workspace and chat"></div>
+
+            <!-- RIGHT PANE: Context-Aware Chat (Independent Scroll Container) -->
+            <aside class="workspace-chat" id="workspace-chat" aria-label="Document chat">
+                <div id="chat-messages" class="chat-messages" aria-live="polite"></div>
+                <form id="chat-form" class="chat-form">
+                    <nui-input>
+                        <input id="chat-input" type="text" autocomplete="off"
+                               placeholder="Ask document or extract facts…" aria-label="Ask document">
+                    </nui-input>
+                </form>
+            </aside>
+        </section>
+    </section>
+</main>
+
+<footer id="status-bar" class="status-bar" hidden><span id="notice" role="status">Ready.</span></footer>
+<script type="module" src="/nconvert/ui.js"></script>
+</body>
+</html>

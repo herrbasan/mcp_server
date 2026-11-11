@@ -136,9 +136,19 @@ export async function init(context) {
         chromeGapMm: 8,
         chromeInsetMm: 5,
         maxChromeFraction: 0.35,
-        pdfiumPath: 'nConvert/napi/pdfium/bin',
         ...(context.config.agents?.print ?? {})
     };
+    // PDFium left this repo with the nConvert engine (2026-11-11): the addon and
+    // its DLLs are configured paths inside the engine installation. Missing config
+    // keys are a config error and stop startup; a missing addon file is an external
+    // dependency — it must not take the whole server down, so print fails per call
+    // with the path in the message (same posture as the nconvert service).
+    for (const key of ['pdfiumModule', 'pdfiumPath']) {
+        if (!conf[key]) throw new Error(`[print] config agents.print.${key} is required (PDFium ships with the nConvert engine)`);
+    }
+    if (!fs.existsSync(pdfiumModulePath())) {
+        console.warn(`[print] PDFium addon not found at ${pdfiumModulePath()} — print will fail until agents.print.pdfiumModule is corrected`);
+    }
     outputRoot = path.join(storageRoot, conf.folder);
     fs.mkdirSync(outputRoot, { recursive: true });
     const parentOrigins = (conf.parentOrigins ?? []).map((value) => {
@@ -231,10 +241,18 @@ function pdfiumDir() {
     return path.isAbsolute(conf.pdfiumPath) ? conf.pdfiumPath : path.resolve(PROJECT_ROOT, conf.pdfiumPath);
 }
 
+function pdfiumModulePath() {
+    const resolved = path.isAbsolute(conf.pdfiumModule) ? conf.pdfiumModule : path.resolve(PROJECT_ROOT, conf.pdfiumModule);
+    if (!fs.existsSync(resolved)) {
+        throw new Error(`[print] PDFium addon not found at ${resolved} — PDFium ships with the nConvert engine; set agents.print.pdfiumModule`);
+    }
+    return resolved;
+}
+
 async function rasterize(pdfPath, folder, pages, width) {
     const onlyPages = pages ? pages.map((page) => page - 1) : [];
     const limit = pages ? pages.length : conf.maxPages + 1;
-    const job = { pdfPath, outputDir: folder, dllDir: pdfiumDir(), width, limit, onlyPages };
+    const job = { pdfPath, outputDir: folder, dllDir: pdfiumDir(), modulePath: pdfiumModulePath(), width, limit, onlyPages };
     const rendered = await new Promise((resolve, reject) => {
         const child = fork(path.join(__dirname, 'pdfium-worker.js'), { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
         let stderr = '';
@@ -374,7 +392,7 @@ async function locateTargets(pdfBytes, targets) {
     const marked = targets.filter((target) => target.marker);
     if (!marked.length) return null;
 
-    const native = require('../../../nConvert/napi/index.js');
+    const native = require(pdfiumModulePath());
     if (process.env.PRINT_PROBE_PDF) fs.writeFileSync(process.env.PRINT_PROBE_PDF, pdfBytes);
     const found = JSON.parse(await native.searchText(
         pdfBytes,
