@@ -197,10 +197,11 @@ export async function image_generate(args) {
     if (args.model) body.model = args.model;
     if (args.size) body.size = args.size;
     if (args.aspect_ratio) body.aspect_ratio = args.aspect_ratio;
-    if (!args.size && !args.aspect_ratio) body.size = defaultSize;
+    const hasReferences = Array.isArray(args.references) && args.references.length > 0;
+    if (!args.size && !args.aspect_ratio && !hasReferences) body.size = defaultSize;
     if (args.seed != null) body.seed = args.seed;
     if (args.extra_body) body.extra_body = args.extra_body;
-    if (Array.isArray(args.references) && args.references.length > 0) {
+    if (hasReferences) {
         body.input_references = args.references.map(resolveReference);
     }
 
@@ -253,7 +254,31 @@ export async function image_generate(args) {
         const dir = path.join(storageRoot, imageDir);
         const files = {};
         let thumb = null;
-                let vector = false;
+        let vector = false;
+        let previewError = null;
+        const sidecarName = `${base}.json`;
+        const writeSidecar = (extra = {}) => {
+            const sidecar = {
+                name: base,
+                created: new Date().toISOString(),
+                prompt: args.prompt,
+                model: gen.model ?? args.model ?? null,
+                request: {
+                    size: args.size ?? null,
+                    aspect_ratio: args.aspect_ratio ?? null,
+                    seed: args.seed ?? null,
+                    extra_body: args.extra_body ?? null
+                },
+                references: args.references ?? [],
+                lineage: (args.references ?? []).filter(r => !/^https?:\/\//i.test(r)),
+                source: { media_type: mediaType, revised_prompt: img.revised_prompt ?? null },
+                usage: gen.usage ?? null,
+                cost: gen.usage?.cost ?? null,
+                ...extra,
+                files
+            };
+            fs.writeFileSync(path.join(dir, sidecarName), JSON.stringify(sidecar, null, 2));
+        };
 
         if (isSvgPayload(mediaType, raw)) {
             // Vector output: the SVG source IS the deliverable — the size-variant
@@ -261,19 +286,36 @@ export async function image_generate(args) {
             // replace the vector original with a raster copy. Persist the source
             // verbatim plus two raster derivatives for inline display.
             const svgBuf = Buffer.from(raw, 'base64');
-            const preview = await renderVariant(raw, 1280); // shrink-only → intrinsic size when smaller
-            const thumbRender = await renderVariant(raw, 180);
-            const previewName = `${base}_preview.webp`;
-            const thumbName = `${base}_thumb.webp`;
-            fs.writeFileSync(path.join(dir, `${base}.svg`), svgBuf);
-            fs.writeFileSync(path.join(dir, previewName), Buffer.from(preview.base64, 'base64'));
-            fs.writeFileSync(path.join(dir, thumbName), Buffer.from(thumbRender.base64, 'base64'));
+            const svgName = `${base}.svg`;
+            fs.writeFileSync(path.join(dir, svgName), svgBuf);
             const intrinsic = svgIntrinsicSize(svgBuf);
-                        files.svg = { path: `${imageDir}/${base}.svg`, width: intrinsic?.width ?? preview.width, height: intrinsic?.height ?? preview.height, bytes: svgBuf.length };
-                        files.preview = { path: `${imageDir}/${previewName}`, width: preview.width, height: preview.height, bytes: Buffer.from(preview.base64, 'base64').length };
-                        files.thumb = { path: `${imageDir}/${thumbName}`, width: thumbRender.width, height: thumbRender.height, bytes: Buffer.from(thumbRender.base64, 'base64').length };
-                        thumb = preview.base64;
-                        vector = true;
+            files.svg = { path: `${imageDir}/${svgName}`, width: intrinsic?.width ?? null, height: intrinsic?.height ?? null, bytes: svgBuf.length };
+            vector = true;
+
+            const validationError = !/<\/svg>\s*$/i.test(svgBuf.toString('utf8'))
+                ? 'vector output is not a complete, well-formed SVG (missing closing </svg>)'
+                : null;
+            if (validationError) {
+                writeSidecar({ validation: { ok: false, error: validationError } });
+                throw new Error(`image_generate: ${validationError}; generated source preserved at ${files.svg.path}, metadata at ${imageDir}/${sidecarName}`);
+            }
+
+            try {
+                const preview = await renderVariant(raw, 1280); // shrink-only → intrinsic size when smaller
+                const thumbRender = await renderVariant(raw, 180);
+                const previewName = `${base}_preview.webp`;
+                const thumbName = `${base}_thumb.webp`;
+                fs.writeFileSync(path.join(dir, previewName), Buffer.from(preview.base64, 'base64'));
+                fs.writeFileSync(path.join(dir, thumbName), Buffer.from(thumbRender.base64, 'base64'));
+                files.svg.width ??= preview.width;
+                files.svg.height ??= preview.height;
+                files.preview = { path: `${imageDir}/${previewName}`, width: preview.width, height: preview.height, bytes: Buffer.from(preview.base64, 'base64').length };
+                files.thumb = { path: `${imageDir}/${thumbName}`, width: thumbRender.width, height: thumbRender.height, bytes: Buffer.from(thumbRender.base64, 'base64').length };
+                thumb = preview.base64;
+            } catch (err) {
+                previewError = err.message;
+                logger.error(`[image] Preview render failed for ${files.svg.path}; SVG and sidecar preserved: ${previewError}`, null, 'Image');
+            }
         } else {
             const variants = await Promise.all(sizes.map(s => renderVariant(raw, s.maxDimension)));
             const original = await renderOriginal(raw);
@@ -293,35 +335,15 @@ export async function image_generate(args) {
             files.png = { path: `${imageDir}/${pngName}`, width: original.width, height: original.height, bytes: original.buf.length };
         }
 
-        const sidecar = {
-            name: base,
-            created: new Date().toISOString(),
-            prompt: args.prompt,
-            model: gen.model ?? args.model ?? null,
-            request: {
-                size: args.size ?? null,
-                aspect_ratio: args.aspect_ratio ?? null,
-                seed: args.seed ?? null,
-                extra_body: args.extra_body ?? null
-            },
-            references: args.references ?? [],
-            lineage: (args.references ?? []).filter(r => !/^https?:\/\//i.test(r)),
-            source: { media_type: mediaType, revised_prompt: img.revised_prompt ?? null },
-            usage: gen.usage ?? null,
-            cost: gen.usage?.cost ?? null,
-            files
-        };
-        const sidecarName = `${base}.json`;
-        fs.writeFileSync(path.join(dir, sidecarName), JSON.stringify(sidecar, null, 2));
-
-        outputs.push({ base, sidecar: `${imageDir}/${sidecarName}`, files, thumb, vector });
-                logger.info(`[image] Wrote ${base} (${vector ? 'svg source + preview/thumb raster' : `${sizes.length} webp sizes + png original`} + sidecar)`, null, 'Image');
+        writeSidecar({ preview: previewError ? { status: 'failed', error: previewError } : { status: 'rendered' } });
+        outputs.push({ base, sidecar: `${imageDir}/${sidecarName}`, files, thumb, vector, previewError });
+        logger.info(`[image] Wrote ${base} (${vector ? `svg source${previewError ? ' (preview failed)' : ' + preview/thumb raster'}` : `${sizes.length} webp sizes + png original`} + sidecar)`, null, 'Image');
     }
 
     // 3. Result: text file list + inline thumbnail of the first image
     const lines = outputs.map(o => {
         const fileLines = Object.entries(o.files)
-            .map(([size, f]) => `  ${size.padEnd(5)} ${f.width}x${f.height}  ${(f.bytes / 1024).toFixed(0).padStart(5)} KB  ${f.path}`)
+            .map(([size, f]) => `  ${size.padEnd(5)} ${f.width ?? '?'}x${f.height ?? '?'}  ${(f.bytes / 1024).toFixed(0).padStart(5)} KB  ${f.path}`)
             .join('\n');
         return `${o.base}\n${fileLines}\n  meta  ${o.sidecar}`;
     });
@@ -333,7 +355,11 @@ export async function image_generate(args) {
             : vectors === 0
                 ? 'Copy whichever sizes you need from storage (images/) — use the _full.png original for platforms that reject webp (YouTube et al.).'
                 : `Mixed output: ${vectors} vector and ${outputs.length - vectors} raster image${outputs.length - vectors > 1 ? 's' : ''}. The .svg files are losslessly scalable sources; the raster sets carry the webp sizes plus a _full.png original (for platforms that reject webp, e.g. YouTube).`;
-    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\n${guidance} Full prompt, parameters, usage and lineage are in the .json sidecar.${failed.length > 0 ? `\n\n${failed.length} of ${images.length} upstream slot(s) returned no image: ${failed.join('; ')}` : ''}`;
+    const previewFailures = outputs.filter((o) => o.previewError);
+    const previewWarning = previewFailures.length > 0
+        ? `\n\nPreview rendering failed for ${previewFailures.map((o) => o.base).join(', ')}. The generated SVG source and .json sidecar were preserved; the sidecar records the renderer error.`
+        : '';
+    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\n${guidance} Full prompt, parameters, usage and lineage are in the .json sidecar.${previewWarning}${failed.length > 0 ? `\n\n${failed.length} of ${images.length} upstream slot(s) returned no image: ${failed.join('; ')}` : ''}`;
 
     const content = [{ type: 'text', text }];
     if (outputs[0].thumb) {

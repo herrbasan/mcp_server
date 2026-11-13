@@ -36,9 +36,19 @@ function loadPrinciples(context) {
     return content.slice(start, end).trim();
 }
 
+const MAX_TIMEOUT_SECONDS = 600;
+
+export function timeoutToMs(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > MAX_TIMEOUT_SECONDS) {
+        throw new Error(`llm: timeout must be a number of seconds in (0, ${MAX_TIMEOUT_SECONDS}]`);
+    }
+    return Math.round(value * 1000);
+}
+
 export async function query_model(args, context) {
     const { gateway, prompts, progress } = context;
-    const { prompt, files = [], systemPrompt } = args;
+    const { prompt, files = [], systemPrompt, timeout } = args;
 
     let fileContext = '';
     for (const file of files) {
@@ -75,10 +85,12 @@ export async function query_model(args, context) {
         progress(message, lastPct, 100);
     }
 
+    const requestTimeoutMs = timeoutToMs(timeout);
     const response = await gateway.chat({
         task: 'query',
         messages: [{ role: 'user', content: finalPrompt }],
         systemPrompt: sysPrompt,
+        ...(requestTimeoutMs ? { timeoutMs: requestTimeoutMs } : {}),
         onProgress: (phase, ctx) => {
             logger.debug(`[LLM Tool] Progress phase: ${phase}`, { ctx });
             if (progress) {
@@ -167,13 +179,14 @@ function sessionSummary(session) {
         model: session.model,
         messages: session.messages.length,
         files_ingested: session.filesIngested,
+        timeout_seconds: session.timeoutMs ? session.timeoutMs / 1000 : null,
         age_minutes: Math.round((Date.now() - session.createdAt) / 60000),
         idle_minutes: Math.round((Date.now() - session.lastAccess) / 60000)
     };
 }
 
 export async function llm_session_create(args, context) {
-    const { model, files = [], systemPrompt } = args;
+    const { model, files = [], systemPrompt, timeout } = args;
     if (typeof model !== 'string' || model.trim() === '') {
         throw new Error('llm.session_create: model required — pin a chat model (discover with gateway listModels)');
     }
@@ -207,6 +220,7 @@ export async function llm_session_create(args, context) {
         model,
         systemPrompt: typeof systemPrompt === 'string' && systemPrompt.length > 0 ? systemPrompt : null,
         filesIngested: files.length,
+        timeoutMs: timeoutToMs(timeout),
         messages,
         createdAt: Date.now(),
         lastAccess: Date.now()
@@ -218,7 +232,7 @@ export async function llm_session_create(args, context) {
 }
 
 export async function llm_session_query(args, context) {
-    const { sessionId, prompt, model } = args;
+    const { sessionId, prompt, model, timeout } = args;
     if (typeof prompt !== 'string' || prompt.length === 0) {
         throw new Error('llm.session_query: prompt required');
     }
@@ -230,17 +244,26 @@ export async function llm_session_query(args, context) {
     // convention). The pin is never sent as a task — task would win over
     // model in gateway-client and silently break pinning.
     const pinned = typeof model === 'string' && model.length > 0 ? model : session.model;
+    const requestTimeoutMs = timeout === undefined ? session.timeoutMs : timeoutToMs(timeout);
 
-    session.messages.push({ role: 'user', content: prompt });
+    const userMessage = { role: 'user', content: prompt };
+    session.messages.push(userMessage);
     const chatArgs = { messages: session.messages };
     if (session.systemPrompt) chatArgs.systemPrompt = session.systemPrompt;
     chatArgs.model = pinned;
+    if (requestTimeoutMs) chatArgs.timeoutMs = requestTimeoutMs;
 
-    const response = await context.gateway.chat(chatArgs);
-    session.messages.push({ role: 'assistant', content: response.content });
-    session.lastAccess = Date.now();
-
-    return { content: [{ type: 'text', text: response.content }] };
+    try {
+        const response = await context.gateway.chat(chatArgs);
+        session.messages.push({ role: 'assistant', content: response.content });
+        session.lastAccess = Date.now();
+        return { content: [{ type: 'text', text: response.content }] };
+    } catch (err) {
+        const index = session.messages.lastIndexOf(userMessage);
+        if (index !== -1) session.messages.splice(index, 1);
+        session.lastAccess = Date.now();
+        throw err;
+    }
 }
 
 export async function llm_session_close(args, context) {

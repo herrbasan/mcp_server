@@ -79,7 +79,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
   consumes directly; `/nconvert/upload` reuses the same writer. Spec:
   `docs/upload-handoff-spec.md`, reference: `documentation/tools/upload.md`,
   tests: `npm run test:upload`.
-- `src/agents/codereview/` — Prime-Directive code review agent (spec: `docs/codereview-spec.md`, reference: `documentation/tools/codereview.md`). Tier-0 deterministic analysis + tier-1/tier-2 model pipeline with a bias validator; snapshots under `data/codereview/`; tests: `npm run test:codereview`.
+- `src/agents/codereview/` — Prime-Directive code review agent (spec: `docs/codereview-spec.md`, reference: `documentation/tools/codereview.md`). JavaScript AST + Rust structural tier-0 analysis; other source languages stay model-review eligible with explicitly reported generic tier-0 coverage. Tier-1/tier-2 model pipeline with a bias validator; snapshots under `data/codereview/`; automated acceptance gate is JavaScript-only and refuses other languages loudly; tests: `npm run test:codereview`.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
 - `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).
@@ -226,7 +226,10 @@ Current default ignores: `forge` (transient forge tool output), `temp` (fleeting
 
 **Scans must not block the event loop.** Enumeration is `fs.promises.readdir` (a
 recursive `readdirSync` over ~9.7k files stalled every HTTP request for ~20 s),
-and the hash/read path yields every `scanYieldBudgetMs` (50 ms). Compaction of the
+and the hash/read path yields every `scanYieldBudgetMs` (50 ms). Embedding
+persists each file as soon as all of its chunks complete, so a later batch
+failure cannot discard earlier files; failures name the pending file list.
+Compaction of the
 segment files runs **only when a scan produced tombstones** (`removed`/`updated`
 > 0), tracked by `data/nvdb/compaction-pending` so it survives a restart — an
 unconditional compact rewrote the 104 MB segment every five minutes for no

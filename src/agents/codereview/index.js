@@ -120,6 +120,9 @@ export async function codereview_accept(args, context) {
     if (!fileAbs.startsWith(snapshotRoot + path.sep)) {
         throw new Error(`codereview.accept: finding.file escapes the snapshot root: ${finding.file}`);
     }
+    if (!/\.(?:js|mjs|cjs)$/i.test(finding.file)) {
+        throw new Error(`codereview.accept: the automated acceptance gate currently supports JavaScript only; ${finding.file} requires the project's native test runner. The review finding is valid, but no language-mismatched Node test will be generated.`);
+    }
     const source = fs.readFileSync(fileAbs, 'utf8');
 
     const gateway = context.gateway;

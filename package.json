@@ -11,6 +11,7 @@
         "test:upload": "node tests/upload-smoke.mjs",
         "test:print": "node tests/print-agent-smoke.mjs",
         "test:codereview": "node tests/codereview-agent-test.mjs",
+        "test:image": "node tests/image-agent-test.mjs",
         "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build; nVDB: cd src/nVDB && npm run build)"
     },
     "dependencies": {

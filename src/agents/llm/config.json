@@ -10,7 +10,8 @@
                 "properties": {
                     "prompt": { "type": "string" },
                     "files": { "type": "array", "items": { "type": "string" } },
-                    "systemPrompt": { "type": "string", "description": "Optional system prompt. Overrides the default assistant prompt." }
+                    "systemPrompt": { "type": "string", "description": "Optional system prompt. Overrides the default assistant prompt." },
+                    "timeout": { "type": "number", "description": "Optional request timeout in seconds, >0 and ≤600" }
                 },
                 "required": ["prompt"]
             }
@@ -23,7 +24,8 @@
                 "properties": {
                     "model": { "type": "string", "description": "Chat model to pin (e.g. a cheap long-context model). Validated against the Gateway at create time." },
                     "files": { "type": "array", "items": { "type": "string" }, "description": "Absolute paths to ingest into the session context" },
-                    "systemPrompt": { "type": "string", "description": "Optional system prompt for the session" }
+                    "systemPrompt": { "type": "string", "description": "Optional system prompt for the session" },
+                    "timeout": { "type": "number", "description": "Default query timeout in seconds for this session, >0 and ≤600" }
                 },
                 "required": ["model"]
             }
@@ -36,7 +38,8 @@
                 "properties": {
                     "sessionId": { "type": "string", "description": "From llm_session_create" },
                     "prompt": { "type": "string" },
-                    "model": { "type": "string", "description": "Optional per-call model override (does not change the session pin)" }
+                    "model": { "type": "string", "description": "Optional per-call model override (does not change the session pin)" },
+                    "timeout": { "type": "number", "description": "Optional per-call timeout in seconds, >0 and ≤600; overrides the session default" }
                 },
                 "required": ["sessionId", "prompt"]
             }

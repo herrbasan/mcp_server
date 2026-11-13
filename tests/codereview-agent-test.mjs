@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(__dirname, '..', 'src', 'agents', 'codereview');
 const FIXTURE = path.join(__dirname, 'fixtures', 'codereview-corpus');
+const MIXED_FIXTURE = path.join(__dirname, 'fixtures', 'codereview-mixed');
 
 const { materializeSource, hashTree } = await import(`file://${path.join(AGENT, 'resolver.js').replaceAll('\\', '/')}`);
 const { analyzeSnapshot, computeBlastRadius, computeBlastRadiusWithDeletions } = await import(`file://${path.join(AGENT, 'analyzer.js').replaceAll('\\', '/')}`);
@@ -65,6 +66,57 @@ ok((analysis.graph.reverse['src/util.js'] ?? []).length === 2, 'fan-in of util.j
 const rankApi = analysis.ranked.find((r) => r.rel === 'src/api.js');
 const rankUtil = analysis.ranked.find((r) => r.rel === 'src/util.js');
 ok(rankApi.score > rankUtil.score, `ranking: api.js (${rankApi.score.toFixed(1)}) above util.js (${rankUtil.score.toFixed(1)})`);
+
+// ── Mixed-language analysis and coverage (issue #76) ───────────────────────
+console.log('\n[mixed JS/Rust/generic source]');
+const mixedSnap = await materializeSource(MIXED_FIXTURE, snapshotsRoot);
+ok(mixedSnap.exclusions.some((e) => e.rel === 'napi/pdfium' && e.reason.includes('directory')), 'vendored PDFium tree excluded and disclosed');
+const mixedAnalysis = await analyzeSnapshot(mixedSnap.snapshotDir);
+const mixedRanked = new Set(mixedAnalysis.ranked.map((r) => r.rel));
+ok(mixedAnalysis.rustFileCount === 2, 'Rust source files counted');
+ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py'].every((rel) => mixedRanked.has(rel)), 'JS, Rust, and generic source all ranked for review');
+ok(!mixedRanked.has('README.md') && !mixedRanked.has('LICENSE'), 'documentation and extensionless metadata are not ranked as source');
+ok(mixedAnalysis.files.find((f) => f.rel === 'src/engine.rs').lines > 0, 'Rust implementation has real size/line facts');
+ok(mixedAnalysis.graph.edges['src/lib.rs']?.includes('src/engine.rs'), 'Rust mod/use creates lib → engine graph edge');
+ok(mixedAnalysis.graph.reverse['src/engine.rs']?.includes('src/lib.rs'), 'Rust importer enters reverse graph for incremental blast radius');
+ok(mixedAnalysis.hunts.some((h) => h.file === 'src/engine.rs' && h.kind === 'discarded-result'), 'Rust discarded Result candidate found');
+ok(mixedAnalysis.hunts.some((h) => h.file === 'src/engine.rs' && h.kind === 'default-mask'), 'Rust environment default-mask candidate found');
+ok(mixedAnalysis.files.find((f) => f.rel === 'src/engine.rs').boundaries.includes('process'), 'Rust process boundary classified');
+ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').analysisMode === 'generic', 'Python remains model-review eligible with generic tier-0');
+ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').boundaries.includes('network'), 'generic Python network boundary classified');
+
+const { selectDigestTargets, renderReport } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
+const coldDigests = selectDigestTargets(mixedAnalysis, { blastRadius: null });
+ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py'].every((rel) => coldDigests.includes(rel)), 'cold review digests every source language, not just JS');
+const incrementalDigests = selectDigestTargets(mixedAnalysis, { blastRadius: new Set(['src/engine.rs', 'src/worker.py', 'README.md']) });
+ok(incrementalDigests.includes('src/engine.rs') && incrementalDigests.includes('src/worker.py') && !incrementalDigests.includes('README.md'), 'incremental digests retain Rust/generic source and exclude non-source');
+
+const mixedCoverage = {
+    divedCount: 1,
+    carriedCount: 0,
+    totalFiles: mixedAnalysis.files.length,
+    totalReviewable: mixedAnalysis.ranked.length,
+    totalJs: 1,
+    totalRust: 2,
+    totalGeneric: 1,
+    genericFiles: mixedAnalysis.genericFiles,
+    unreviewed: mixedAnalysis.ranked.filter((r) => r.rel !== 'src/engine.rs').map((r) => r.rel)
+};
+const mixedReport = renderReport({
+    reviewId: 'r_mixed_test',
+    snapshotMeta: { sourceLabel: 'mixed-fixture', treeHash: 'a'.repeat(64) },
+    modelPair: { grunt: 'grunt-test', orchestrator: 'orchestrator-test' },
+    state: { round: 0, stopReason: 'fixture', summary: '', findings: [], rejections: [] },
+    analysis: mixedAnalysis,
+    coverage: mixedCoverage,
+    exclusions: [],
+    digestGaps: [],
+    validatorStats: { blocklistCounts: {} },
+    incremental: null
+});
+ok(mixedReport.includes('2 rust') && mixedReport.includes('src/worker.py (python)'), 'coverage names Rust totals and generic-language files explicitly');
+ok(mixedReport.includes('no source is skipped because of its language'), 'coverage states that language is not a model-review exclusion');
+ok(!mixedReport.includes('- src/engine.rs (rust)'), 'Rust core source is not misreported as lacking a tier-0 adapter');
 
 // ── Validator ──────────────────────────────────────────────────────────────
 console.log('\n[validator]');

@@ -11,15 +11,42 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { parse as acornParse } from 'acorn';
 import { getLogger } from '../../utils/logger.js';
+import { analyzeRust } from './rust-analyzer.js';
 
 const logger = getLogger();
 
-const JS_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const LANGUAGE_BY_EXTENSION = new Map([
+    ['.js', 'javascript'], ['.mjs', 'javascript'], ['.cjs', 'javascript'],
+    ['.ts', 'typescript'], ['.tsx', 'typescript'], ['.jsx', 'javascript'],
+    ['.rs', 'rust'], ['.py', 'python'], ['.go', 'go'], ['.java', 'java'],
+    ['.c', 'c'], ['.h', 'c'], ['.cc', 'cpp'], ['.cpp', 'cpp'], ['.hpp', 'cpp'],
+    ['.cs', 'csharp'], ['.rb', 'ruby'], ['.php', 'php'], ['.swift', 'swift'],
+    ['.kt', 'kotlin'], ['.kts', 'kotlin'], ['.scala', 'scala'], ['.sh', 'shell'],
+    ['.ps1', 'powershell'], ['.sql', 'sql'], ['.lua', 'lua'], ['.dart', 'dart'],
+    ['.vue', 'vue'], ['.svelte', 'svelte']
+]);
+const NON_SOURCE_EXTENSIONS = new Set([
+    '.md', '.markdown', '.txt', '.json', '.jsonl', '.toml', '.yaml', '.yml',
+    '.xml', '.html', '.htm', '.css', '.csv', '.tsv', '.svg', '.lock', '.log'
+]);
+const NON_SOURCE_FILENAMES = new Set([
+    'license', 'copying', 'notice', 'version', 'authors', 'contributors',
+    'changelog', 'changes', 'code_of_conduct', 'contributing', 'security',
+    '.gitignore', '.editorconfig', '.npmrc', '.nvmrc'
+]);
+
+function describeLanguage(rel) {
+    const ext = path.posix.extname(rel).toLowerCase();
+    const language = LANGUAGE_BY_EXTENSION.get(ext) ?? (ext ? ext.slice(1) : 'text');
+    const analysisMode = language === 'javascript' && ext !== '.jsx' ? 'ast' : language === 'rust' ? 'structural' : 'generic';
+    const base = path.posix.basename(rel).toLowerCase();
+    return { language, analysisMode, reviewable: !NON_SOURCE_EXTENSIONS.has(ext) && !NON_SOURCE_FILENAMES.has(base) };
+}
 
 const BOUNDARY_PATTERNS = [
-    { kind: 'network', re: /\bfetch\s*\(|\bhttps?\b\s*\.\s*request|\bnet\.connect|\btls\.connect|new\s+WebSocket|\bws:\/\/|\bwss:\/\/|XMLHttpRequest|undici|axios|got\s*\(|node-fetch/ },
-    { kind: 'process', re: /child_process|\bexecSync?\s*\(|\bspawnSync?\s*\(|\bexecFile\b|\bfork\s*\(|worker_threads|\bcross-spawn\b/ },
-    { kind: 'fs', re: /\bfs\s*\.\s*\w+|\bfsPromises\s*\.\s*\w+|from\s+['"]fs|\breadFile|\bwriteFile|createReadStream|createWriteStream|\breaddir\b|\bmkdir\b/ }
+    { kind: 'network', re: /\bfetch\s*\(|\bhttps?\b\s*\.\s*request|\bnet\.connect|\btls\.connect|new\s+WebSocket|\bws:\/\/|\bwss:\/\/|XMLHttpRequest|undici|axios|got\s*\(|node-fetch|reqwest|TcpStream|TcpListener|UdpSocket|hyper::|tonic::|requests\.|urllib|http\.client/ },
+    { kind: 'process', re: /child_process|\bexecSync?\s*\(|\bspawnSync?\s*\(|\bexecFile\b|\bfork\s*\(|worker_threads|\bcross-spawn\b|std::process::Command|tokio::process::Command|subprocess\.|ProcessBuilder/ },
+    { kind: 'fs', re: /\bfs\s*\.\s*\w+|\bfsPromises\s*\.\s*\w+|from\s+['"]fs|\breadFile|\bwriteFile|createReadStream|createWriteStream|\breaddir\b|\bmkdir\b|std::fs|tokio::fs|File::open|OpenOptions|read_to_string|read_to_end/ }
 ];
 
 // Config-ish roots: defaults masking THESE are hiding configuration absence.
@@ -277,7 +304,9 @@ const BOUNDARY_WEIGHTS = { network: 3, process: 2, fs: 1 };
  * incremental reviews.
  */
 export async function analyzeSnapshot(snapshotDir) {
+    const sourceFiles = new Set();
     const jsFilesSet = new Set();
+    const rustFilesSet = new Set();
     const allFiles = [];
 
     async function collect(dir, relPrefix) {
@@ -291,7 +320,11 @@ export async function analyzeSnapshot(snapshotDir) {
     }
     await collect(snapshotDir, '');
     for (const rel of allFiles) {
-        if (JS_EXTENSIONS.has(path.posix.extname(rel))) jsFilesSet.add(rel);
+        const descriptor = describeLanguage(rel);
+        if (!descriptor.reviewable) continue;
+        sourceFiles.add(rel);
+        if (descriptor.analysisMode === 'ast') jsFilesSet.add(rel);
+        if (descriptor.analysisMode === 'structural') rustFilesSet.add(rel);
     }
 
     const fileInfo = new Map(); // rel → facts
@@ -302,8 +335,9 @@ export async function analyzeSnapshot(snapshotDir) {
     let processed = 0;
 
     for (const rel of allFiles) {
-        fileInfo.set(rel, { rel, size: 0, lines: 0, boundaries: [], parseError: null });
-        if (!jsFilesSet.has(rel)) continue;
+        const descriptor = describeLanguage(rel);
+        fileInfo.set(rel, { rel, size: 0, lines: 0, boundaries: [], parseError: null, ...descriptor });
+        if (!descriptor.reviewable) continue;
         processed++;
         if (processed % 50 === 0) await new Promise((r) => setImmediate(r));
 
@@ -314,23 +348,31 @@ export async function analyzeSnapshot(snapshotDir) {
         info.lines = source.split('\n').length;
         info.boundaries = classifyBoundaries(source);
 
-        const { ast, comments, parseError } = parseJs(rel, source);
-        if (parseError) {
-            info.parseError = parseError;
-            continue;
+        let edges = [];
+        let unresolved = [];
+        if (descriptor.analysisMode === 'ast') {
+            const { ast, comments, parseError } = parseJs(rel, source);
+            if (parseError) {
+                info.parseError = parseError;
+                continue;
+            }
+            ({ edges, unresolved } = collectImports(ast, rel, jsFilesSet));
+            hunts.push(...huntSwallowedCatch(ast, rel, source));
+            hunts.push(...huntDefaultMasks(ast, rel, source));
+            hunts.push(...huntEmptyErrorBranch(ast, rel, source));
+            hunts.push(...huntNarrationComments(comments, ast, rel, source));
+        } else if (descriptor.analysisMode === 'structural') {
+            const rust = analyzeRust(rel, source, rustFilesSet);
+            edges = rust.edges;
+            unresolved = rust.unresolved;
+            hunts.push(...rust.hunts);
         }
-        const { edges, unresolved } = collectImports(ast, rel, jsFilesSet);
         graphEdges.set(rel, new Set(edges));
         for (const target of edges) {
             if (!reverseEdges.has(target)) reverseEdges.set(target, new Set());
             reverseEdges.get(target).add(rel);
         }
         unresolvedEdges.push(...unresolved);
-
-        hunts.push(...huntSwallowedCatch(ast, rel, source));
-        hunts.push(...huntDefaultMasks(ast, rel, source));
-        hunts.push(...huntEmptyErrorBranch(ast, rel, source));
-        hunts.push(...huntNarrationComments(comments, ast, rel, source));
     }
 
     // Fan-in + hunt density + boundary weights → deterministic dive ranking.
@@ -338,7 +380,7 @@ export async function analyzeSnapshot(snapshotDir) {
     for (const hunt of hunts) huntCounts.set(hunt.file, (huntCounts.get(hunt.file) ?? 0) + 1);
 
     const ranked = [];
-    for (const rel of jsFilesSet) {
+    for (const rel of sourceFiles) {
         const info = fileInfo.get(rel);
         const fanIn = reverseEdges.get(rel)?.size ?? 0;
         const huntHits = huntCounts.get(rel) ?? 0;
@@ -358,7 +400,7 @@ export async function analyzeSnapshot(snapshotDir) {
         }
         score += Math.min(info.lines / 400, 2);
         if (info.parseError) reasons.push('parse-error');
-        ranked.push({ rel, score, fanIn, huntHits, boundaries: info.boundaries, reasons, lines: info.lines, parseError: info.parseError ?? null });
+        ranked.push({ rel, score, fanIn, huntHits, boundaries: info.boundaries, reasons, lines: info.lines, parseError: info.parseError ?? null, language: info.language, analysisMode: info.analysisMode });
     }
     ranked.sort((a, b) => b.score - a.score);
 
@@ -367,17 +409,39 @@ export async function analyzeSnapshot(snapshotDir) {
     for (const rel of allFiles) {
         const dir = path.posix.dirname(rel) === '.' ? '/' : path.posix.dirname(rel);
         const info = fileInfo.get(rel);
-        const mod = modules.get(dir) ?? { dir, fileCount: 0, totalLines: 0, boundaries: new Set(), jsCount: 0 };
+        const mod = modules.get(dir) ?? { dir, fileCount: 0, sourceCount: 0, totalLines: 0, boundaries: new Set(), jsCount: 0, rustCount: 0, genericCount: 0 };
         mod.fileCount++;
-        mod.totalLines += info.lines;
-        if (jsFilesSet.has(rel)) mod.jsCount++;
+        if (info.reviewable) {
+            mod.sourceCount++;
+            mod.totalLines += info.lines;
+            if (info.analysisMode === 'ast') mod.jsCount++;
+            else if (info.analysisMode === 'structural') mod.rustCount++;
+            else mod.genericCount++;
+        }
         for (const b of info.boundaries) mod.boundaries.add(b);
         modules.set(dir, mod);
     }
 
+    const languageCounts = {};
+    const analysisModeCounts = { ast: 0, structural: 0, generic: 0 };
+    const genericFiles = [];
+    for (const rel of sourceFiles) {
+        const info = fileInfo.get(rel);
+        languageCounts[info.language] = (languageCounts[info.language] ?? 0) + 1;
+        analysisModeCounts[info.analysisMode]++;
+        if (info.analysisMode === 'generic') {
+            genericFiles.push({ rel, language: info.language, reason: 'no language-specific tier-0 adapter; model digest/dive remains available' });
+        }
+    }
+
     const result = {
         fileCount: allFiles.length,
+        reviewableFileCount: sourceFiles.size,
         jsFileCount: jsFilesSet.size,
+        rustFileCount: rustFilesSet.size,
+        languageCounts,
+        analysisModeCounts,
+        genericFiles,
         files: [...fileInfo.values()],
         graph: {
             edges: Object.fromEntries([...graphEdges.entries()].map(([k, v]) => [k, [...v]])),
@@ -388,7 +452,7 @@ export async function analyzeSnapshot(snapshotDir) {
         ranked,
         modules: [...modules.values()].map((m) => ({ ...m, boundaries: [...m.boundaries] }))
     };
-    logger.info(`[codereview] tier-0 done: ${result.jsFileCount} js files, ${hunts.length} hunt candidates, ${unresolvedEdges.length} unresolved edges`, null, 'CodeReview');
+    logger.info(`[codereview] tier-0 done: ${sourceFiles.size} source files (${result.jsFileCount} js, ${result.rustFileCount} rust, ${analysisModeCounts.generic} generic), ${hunts.length} hunt candidates, ${unresolvedEdges.length} unresolved edges`, null, 'CodeReview');
     return result;
 }
 

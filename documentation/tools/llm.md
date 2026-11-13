@@ -13,9 +13,9 @@ architectural decisions, and meta-analysis.
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `llm.query` (`query_model`) | `prompt*`, `files?` (absolute paths, inlined as `--- File: <path> ---` blocks), `systemPrompt?` | One-shot gateway chat, task `query`, STREAMING with progress (phases: reasoning_started, routing, context_stats). Returns raw response text. |
-| `llm.session_create` | `model*`, `files?`, `systemPrompt?` | In-memory pinned session; files ingested once as user/assistant pairs. Model validated against `chat.models` — fail-fast with the valid-ID list. Returns `lls_<ts>_<rand>` id. |
-| `llm.session_query` | `sessionId*`, `prompt*`, `model?` (per-call override; pin unchanged) | Replays the FULL message array each call — the gateway is stateless; the session is client-side history. |
+| `llm.query` (`query_model`) | `prompt*`, `files?` (absolute paths, inlined as `--- File: <path> ---` blocks), `systemPrompt?`, `timeout?` | One-shot gateway chat, task `query`, STREAMING with progress (phases: reasoning_started, routing, context_stats). Returns raw response text. |
+| `llm.session_create` | `model*`, `files?`, `systemPrompt?`, `timeout?` | In-memory pinned session; files ingested once as user/assistant pairs. Model validated against `chat.models` — fail-fast with the valid-ID list. `timeout` is the session default. Returns `lls_<ts>_<rand>` id. |
+| `llm.session_query` | `sessionId*`, `prompt*`, `model?` (per-call override; pin unchanged), `timeout?` | Replays the FULL message array each call — the gateway is stateless; the session is client-side history. Per-call `timeout` overrides the session default. |
 | `llm.session_close` | `sessionId*` | Frees the session. |
 
 ## System-prompt resolution (llm.query)
@@ -36,6 +36,11 @@ Chain, first hit wins:
 - Max **8** concurrent sessions (sweep evicts expired first).
 - Pin routing: the pinned/override model is sent as `model`, never `task` —
   in the gateway client a `task` would win over `model`.
+- Optional `timeout` is in **seconds**, must be `> 0` and `≤ 600`, and maps to
+  the gateway client's `timeoutMs`. Available on one-shot queries, as a session
+  default, and as a per-query override.
+- A failed session query is removed from history before the error propagates,
+  so a timeout does not inflate or poison later replays.
 - Sessions are in-memory only — they die with the process (unlike chat-agent
   sessions, which persist to disk).
 

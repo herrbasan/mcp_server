@@ -7,6 +7,7 @@ import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { loadNvdb, isNvdbAvailable } from './nvdb-loader.js';
 import { makeChunker } from './chunker.js';
 import { createContextEnhancer } from './context-enhancer.js';
+import { embedGroupWithPersistence } from './embedding-persistence.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -334,7 +335,7 @@ async function embedBatchSplittable(batch) {
     }
 }
 
-async function embedInBatches(texts) {
+async function embedInBatches(texts, onBatch = null) {
     if (!GATEWAY) throw new Error('VDB: gateway not available');
     if (!Array.isArray(texts) || texts.length === 0) return [];
 
@@ -365,6 +366,7 @@ async function embedInBatches(texts) {
         logger.info(`[VDB] Embedding batch ${i + 1}/${batches.length} (${batch.length} texts, ~${tokens} tokens)`, null, 'VDB');
         const embeddings = await embedBatchSplittable(batch);
         allEmbeddings.push(...embeddings);
+        onBatch?.(allEmbeddings);
         if (CONFIG.batchDelayMs > 0 && i < batches.length - 1) {
             await sleep(CONFIG.batchDelayMs);
         }
@@ -695,40 +697,29 @@ async function scanCollection(collectionName, onPhase = null) {
         logger.info(`[VDB] ${collectionName}: indexing group ${groupNum}/${groupCount} (${group.length} files)`, null, 'VDB');
         onPhase?.(25 + Math.round((60 * groupNum) / Math.max(groupCount, 1)), `Scanning ${collectionName}: embedding group ${groupNum}/${groupCount}...`);
 
-        const allChunkTexts = [];
-        const chunkOffsets = [];
-        let offset = 0;
-        for (const prepared of group) {
-            const count = prepared.chunks.length;
-            chunkOffsets.push({ prepared, start: offset, count });
-            offset += count;
-            for (const chunk of prepared.chunks) allChunkTexts.push(chunk.text);
-        }
-
         try {
-            const allEmbeddings = await embedInBatches(allChunkTexts);
-            for (const { prepared, start, count } of chunkOffsets) {
-                const embeddings = allEmbeddings.slice(start, start + count);
-                insertPreparedFile(prepared, embeddings);
-            }
+            await embedGroupWithPersistence(group, embedInBatches, insertPreparedFile);
         } catch (e) {
+            const persisted = new Set(e.persistedFiles ?? []);
+            const remaining = group.filter((prepared) => !persisted.has(prepared.docBaseId));
             // Embedding provider unreachable: abort the scan instead of churning
-            // through every remaining group burning timeouts. Pending files
-            // re-embed on the next scan once the provider recovers.
+            // through every remaining group burning timeouts. Completed files
+            // have already been persisted by embedGroupWithPersistence.
             const isNetwork = e.name === 'AbortError'
                 || e.name === 'TimeoutError'
                 || e.name === 'TypeError'
                 || (e.message && (e.message.includes('timed out') || e.message.includes('ECONNRESET') || e.message.includes('ECONNREFUSED') || e.message.includes('fetch failed')));
             if (isNetwork) {
-                logger.error(`[VDB] ${collectionName}: embedding provider unreachable (${e.message}) — aborting scan after group ${groupNum}/${groupCount}, ${toIndex.length - (g + group.length)} file(s) pending`, null, 'VDB');
-                stats.errors += group.length;
-                stats.pending += (toIndex.length - g);
+                const pendingCount = toIndex.length - g - persisted.size;
+                logger.error(`[VDB] ${collectionName}: embedding provider unreachable (${e.message}) — aborting after group ${groupNum}/${groupCount}; ${persisted.size} file(s) persisted, ${pendingCount} pending: ${remaining.map((p) => p.relPath).join(', ')}`, null, 'VDB');
+                stats.errors += remaining.length;
+                stats.pending += pendingCount;
                 break;
             }
-            logger.error(`[VDB] Group embedding failed: ${e.message}`, null, 'VDB');
-            stats.errors += group.length;
-            stats.added = Math.max(0, stats.added - group.length);
-            stats.updated = Math.max(0, stats.updated - group.length);
+            logger.error(`[VDB] Group embedding failed after ${persisted.size} file(s) persisted: ${e.message}; unindexed: ${remaining.map((p) => p.relPath).join(', ')}`, null, 'VDB');
+            stats.errors += remaining.length;
+            stats.added = Math.max(0, stats.added - remaining.length);
+            stats.updated = Math.max(0, stats.updated - remaining.length);
         }
     }
 

@@ -110,7 +110,7 @@ YOUR JOB each round:
 
 FINDING SCHEMA (exact, one object per finding):
 {
-  "file": "snapshot-relative/path.js",
+  "file": "snapshot-relative/source-path",
   "lines": [startLine, endLine],
   "evidence": "verbatim quote from the file — must match the cited lines exactly",
   "failure_mode": "what breaks, when, in production shape",
@@ -186,14 +186,19 @@ function renderMap(analysis, digests, digestGaps, scope) {
     const lines = [];
     lines.push('## Modules');
     for (const mod of analysis.modules.slice(0, 40)) {
-        lines.push(`- ${mod.dir} — ${mod.fileCount} files (${mod.jsCount} js, ${mod.totalLines} loc)${mod.boundaries.length ? `, boundaries: ${mod.boundaries.join('+')}` : ''}`);
+        const languages = [
+            mod.jsCount ? `${mod.jsCount} js` : null,
+            mod.rustCount ? `${mod.rustCount} rust` : null,
+            mod.genericCount ? `${mod.genericCount} generic` : null
+        ].filter(Boolean).join(', ') || 'no reviewable source';
+        lines.push(`- ${mod.dir} — ${mod.fileCount} files (${languages}, ${mod.totalLines} loc)${mod.boundaries.length ? `, boundaries: ${mod.boundaries.join('+')}` : ''}`);
     }
 
-    lines.push('\n## Ranked files (top 60) — score | facts | digest');
+    lines.push('\n## Ranked files (top 60) — score | language/analysis | facts | digest');
     for (const r of analysis.ranked.slice(0, 60)) {
         const digest = digests.get(r.rel);
         const digestText = digest ? digest.role : (digestGaps.some((g) => g.file === r.rel) ? 'DIGEST GAP (unavailable)' : 'not digested');
-        lines.push(`- ${r.rel} [${r.score.toFixed(1)}] ${r.lines}loc ${r.reasons.join(',') || 'plain'} — ${digestText}`);
+        lines.push(`- ${r.rel} [${r.score.toFixed(1)}] ${r.language}/${r.analysisMode} ${r.lines}loc ${r.reasons.join(',') || 'plain'} — ${digestText}`);
         if (digest?.risks?.length) {
             for (const risk of digest.risks.slice(0, 3)) lines.push(`    risk: ${risk}`);
         }
@@ -293,7 +298,7 @@ Rules: first round has no dive sources — choose next_files from the ranked lis
                 emitProgress?.(`Orchestrator round ${state.round}/${maxRounds}...`, Math.min(10 + state.round * 7, 85));
                 const response = await callJsonWithRetry(gateway, orchestratorModel, systemPrompt, userPrompt);
 
-                const analysisSet = new Set(analysis.files.map((f) => f.rel));
+                const analysisSet = new Set(analysis.ranked.map((f) => f.rel));
                 let acceptedThisRound = 0;
                 for (const finding of Array.isArray(response.new_findings) ? response.new_findings : []) {
                     const check = await validateFinding(finding, snapshotDir, analysisSet);
@@ -371,7 +376,7 @@ async function computeIncremental({ fileHashes, analysis, priorReview, reviewsRo
 
 // ── Report rendering ───────────────────────────────────────────────────────
 
-function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, coverage, exclusions, digestGaps, validatorStats, incremental }) {
+export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, coverage, exclusions, digestGaps, validatorStats, incremental }) {
     const lines = [];
     lines.push(`# Code review — ${snapshotMeta.sourceLabel}`);
     lines.push(`review: ${reviewId} · tree: ${snapshotMeta.treeHash.slice(0, 16)} · models: ${modelPair.grunt} + ${modelPair.orchestrator} · rounds: ${state.round} (${state.stopReason})`);
@@ -404,7 +409,12 @@ function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, cove
     }
 
     lines.push(`\n## Coverage — never silent`);
-    lines.push(`Reviewed: ${coverage.divedCount} files dived + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} files (${coverage.totalJs} js)`);
+    lines.push(`Reviewed: ${coverage.divedCount} files dived + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} files · reviewable source: ${coverage.totalReviewable} (${coverage.totalJs} js, ${coverage.totalRust} rust, ${coverage.totalGeneric} generic)`);
+    lines.push(`Language-specific tier-0: JavaScript (AST) + Rust (structural). Other source languages remain digest/dive eligible with generic boundary analysis; no source is skipped because of its language.`);
+    if (coverage.genericFiles.length > 0) {
+        const shown = coverage.genericFiles.slice(0, 40);
+        lines.push(`\nNo language-specific tier-0 adapter (${coverage.genericFiles.length}) — these files ARE model-review eligible, but have generic deterministic analysis only:\n${shown.map((f) => `- ${f.rel} (${f.language})`).join('\n')}${coverage.genericFiles.length > shown.length ? `\n- ... and ${coverage.genericFiles.length - shown.length} more` : ''}`);
+    }
     if (coverage.unreviewed.length > 0) {
         const shown = coverage.unreviewed.slice(0, 40);
         lines.push(`Un-reviewed (${coverage.unreviewed.length}):\n${shown.map((f) => `- ${f}`).join('\n')}${coverage.unreviewed.length > shown.length ? `\n- ... and ${coverage.unreviewed.length - shown.length} more` : ''}`);
@@ -441,6 +451,17 @@ function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, cove
 
 // ── Entry point ────────────────────────────────────────────────────────────
 
+export function selectDigestTargets(scopedAnalysis, incremental) {
+    const targets = new Set();
+    if (incremental.blastRadius) {
+        for (const rel of incremental.blastRadius) targets.add(rel);
+    } else {
+        for (const r of scopedAnalysis.ranked.slice(0, 60)) targets.add(r.rel);
+    }
+    const reviewable = new Set(scopedAnalysis.ranked.map((r) => r.rel));
+    return [...targets].filter((rel) => reviewable.has(rel));
+}
+
 export async function runReview({ source, models, budget, scope, gateway, storageRoot, dataDir, emitProgress }) {
     const snapshotsRoot = path.join(dataDir, 'snapshots');
     const reviewsRoot = path.join(dataDir, 'reviews');
@@ -471,11 +492,22 @@ export async function runReview({ source, models, budget, scope, gateway, storag
             const exc = scope.exclude?.some((p) => rel.startsWith(p)) ?? false;
             return inc && !exc;
         };
+        const scopedFiles = analysis.files.filter((f) => inScope(f.rel));
+        const languageCounts = {};
+        const analysisModeCounts = { ast: 0, structural: 0, generic: 0 };
+        for (const file of scopedFiles) {
+            if (!file.reviewable) continue;
+            languageCounts[file.language] = (languageCounts[file.language] ?? 0) + 1;
+            analysisModeCounts[file.analysisMode]++;
+        }
         scopedAnalysis = {
             ...analysis,
-            files: analysis.files.filter((f) => inScope(f.rel)),
+            files: scopedFiles,
             ranked: analysis.ranked.filter((r) => inScope(r.rel)),
-            hunts: analysis.hunts.filter((h) => inScope(h.file))
+            hunts: analysis.hunts.filter((h) => inScope(h.file)),
+            genericFiles: analysis.genericFiles.filter((f) => inScope(f.rel)),
+            languageCounts,
+            analysisModeCounts
         };
     }
 
@@ -499,14 +531,9 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         ? incremental.priorFindings.filter((f) => f.status === 'new' && !incremental.blastRadius.has(f.file))
         : [];
 
-    // Digest set: blast radius + changed + top-ranked, capped.
-    const digestTargets = new Set();
-    if (incremental.blastRadius) {
-        for (const rel of incremental.blastRadius) digestTargets.add(rel);
-    } else {
-        for (const r of scopedAnalysis.ranked.slice(0, 60)) digestTargets.add(r.rel);
-    }
-    const digestList = [...digestTargets].filter((rel) => /\.m?js$/.test(rel) || /\.cjs$/.test(rel));
+    // Every reviewable source language is digest/dive eligible. Language-specific
+    // tier-0 depth is reported separately; extension never controls model access.
+    const digestList = selectDigestTargets(scopedAnalysis, incremental);
 
     emitProgress?.(`Tier-1 digests (${digestList.length} files)...`, 15);
     const { digests, gaps } = await runDigests(gateway, models.grunt, snapshotMeta.snapshotDir, digestList, scopedAnalysis);
@@ -561,14 +588,21 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         ...[...digests.values()].flatMap((d) => [d.role, ...(d.risks ?? [])])
     ]);
 
-    const totalJs = scopedAnalysis.ranked.length;
+    const totalReviewable = scopedAnalysis.ranked.length;
+    const totalJs = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'ast').length;
+    const totalRust = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'structural').length;
+    const totalGeneric = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'generic').length;
     const divedSet = new Set(state.dived);
     const unreviewed = scopedAnalysis.ranked.filter((r) => !divedSet.has(r.rel)).map((r) => r.rel);
     const coverage = {
         divedCount: state.dived.length,
         carriedCount: carried.length,
         totalFiles: scopedAnalysis.files.length,
+        totalReviewable,
         totalJs,
+        totalRust,
+        totalGeneric,
+        genericFiles: scopedAnalysis.genericFiles,
         unreviewed
     };
 

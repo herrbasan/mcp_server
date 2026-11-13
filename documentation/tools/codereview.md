@@ -32,20 +32,20 @@ model), then the **acceptance gate**: the test is executed in a sandbox and must
 **fail on the unpatched snapshot, pass on the patched one**. `failed-before` =
 bug not proven; `failed-after` = diff doesn't fix it; either blocks acceptance
 loudly with run output. Runtime-only bugs → `unprovable` (artifacts stored, no
-verification claim).
+verification claim). The automated gate currently supports **JavaScript only**;
+other languages are refused before generation so a Rust finding never receives
+a bogus Node test. Review and findings are language-general; use the project's
+native runner to verify non-JavaScript fixes.
 
 ## Pipeline
 
 1. **Snapshot** (resolver) — every source kind materializes to
    `data/codereview/snapshots/<treeHash16>/` + tree hash. Exclusions at copy
-   time (`.git`, `node_modules`, lock files, binaries, minified heuristic,
+   time (`.git`, `node_modules`, `vendor`/`third_party`/`external`/`pdfium`,
+   lock files, binaries, minified heuristic,
    **secrets — snapshots feed third-party gateways**), every exclusion listed
    in the report.
-2. **Tier 0** (analyzer, no model) — acorn parse → import graph (+ unresolved
-   edges recorded, never trusted), boundary classification (network/process/fs),
-   hunts (swallowed catch, empty error branch, `||`/`??` defaults on config
-   roots, optional chaining on config, narration comments), deterministic dive
-   ranking (boundary weight + fan-in + hunt density).
+2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus discarded-Result, empty-`Err`-branch, and config-default candidates. Both get boundary classification (network/process/fs) and deterministic dive ranking (boundary weight + fan-in + hunt density). Other source languages get generic boundary analysis and ranking and remain fully eligible for model digest/dive; documentation/data files are not ranked as source. Unresolved edges are recorded, never trusted.
 3. **Incremental** — prior review of the same source + model pair + validator
    version: changed files (per-file hashes) + **blast radius** (importers via
    the dependency graph) are re-digested; findings outside the radius are
@@ -61,8 +61,9 @@ verification claim).
    round. Stops on `done`, no-further-targets, two empty rounds, or budget.
 6. **Report** — rendered deterministically from validated findings (free wins
    first, then trade-off decisions as explicit either/or), coverage
-   (un-reviewed files listed — never silent), exclusions, digest gaps,
-   validator rejections, blocklist counter.
+   (un-reviewed files listed — never silent; JavaScript/Rust/generic source
+   totals; every generic-language file named with its reduced tier-0 depth),
+   exclusions, digest gaps, validator rejections, blocklist counter.
 
 ## Bias containment (validator, spec §3.2)
 

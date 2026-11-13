@@ -62,8 +62,12 @@ An exported internal `searchDocuments(...)` (not advertised as a tool) is what
    batches, 100 files per group. Degenerate-vector guards (non-finite /
    zero-norm² / duplicate first-8-dims within batch) reject. Network-class
    errors abort the scan (retry next cycle); others retry once with a
-   recursive half-split fallback.
-8. **Persist**: `coll.insert(docId, vector, payload)`. docId
+   recursive half-split fallback. After every successful batch, each file whose
+   complete chunk set has arrived is persisted immediately; a later network
+   failure therefore leaves earlier files indexed. The error names the exact
+   persisted count and pending file list instead of discarding the whole group.
+8. **Persist**: `coll.insert(docId, vector, payload)` per completed file, not
+   all-or-nothing per 100-file group. docId
    `<collection>:<relPath>` (+`#i` per chunk). Scan index at
    `data/nvdb/scan-index.json` records path, contentHash, mtime, size, chunk
    count, indexedAt, metadata per file.

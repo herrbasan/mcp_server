@@ -14,7 +14,7 @@ import { getLogger } from '../../utils/logger.js';
 
 const logger = getLogger();
 
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'vendor', 'coverage', '.cache', '__pycache__']);
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'vendor', 'third_party', 'third-party', 'external', 'pdfium', 'coverage', '.cache', '__pycache__']);
 const EXCLUDED_FILES = new Set([
     'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock',
     'composer.lock', 'poetry.lock', 'Gemfile.lock'
