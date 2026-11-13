@@ -32,7 +32,7 @@ const snapshotsRoot = path.join(tmpData, 'snapshots');
 const snap = await materializeSource(FIXTURE, snapshotsRoot);
 
 ok(snap.files.includes('src/api.js') && snap.files.includes('src/util.js'), 'fixture files copied');
-ok(!snap.files.includes('package-lock.json'), 'lock file excluded');
+ok(snap.files.includes('package-lock.json'), 'lock file retained as reviewable dependency configuration');
 ok(!snap.files.some((f) => f.startsWith('node_modules/')), 'node_modules excluded');
 ok(snap.exclusions.some((e) => e.rel === '.env' && e.reason.includes('secret')), '.env excluded as secret');
 ok(snap.exclusions.some((e) => e.rel === 'assets/logo.png' && e.reason === 'binary'), 'binary excluded');
@@ -40,7 +40,7 @@ ok(snap.treeHash.length === 64, `tree hash computed (${snap.treeHash.slice(0, 12
 const snap2 = await materializeSource(FIXTURE, snapshotsRoot);
 ok(snap2.treeHash === snap.treeHash, 'same tree → same hash (idempotent)');
 // Determinism of the exclusion listing — the review never saw these silently.
-ok(snap.exclusions.length >= 4, `all exclusions recorded (${snap.exclusions.length})`);
+ok(snap.exclusions.length === 3, `all exclusions recorded (${snap.exclusions.length})`);
 
 // ── Analyzer (tier 0) ──────────────────────────────────────────────────────
 console.log('\n[analyzer tier-0]');
@@ -74,8 +74,8 @@ ok(mixedSnap.exclusions.some((e) => e.rel === 'napi/pdfium' && e.reason.includes
 const mixedAnalysis = await analyzeSnapshot(mixedSnap.snapshotDir);
 const mixedRanked = new Set(mixedAnalysis.ranked.map((r) => r.rel));
 ok(mixedAnalysis.rustFileCount === 2, 'Rust source files counted');
-ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py'].every((rel) => mixedRanked.has(rel)), 'JS, Rust, and generic source all ranked for review');
-ok(!mixedRanked.has('README.md') && !mixedRanked.has('LICENSE'), 'documentation and extensionless metadata are not ranked as source');
+ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py', 'config/review.toml', 'README.md', 'LICENSE'].every((rel) => mixedRanked.has(rel)), 'code, config, docs, and extensionless text are all ranked for review');
+ok(mixedAnalysis.eligibleFileCount === mixedAnalysis.files.length, 'every snapshotted text file is review-eligible');
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/engine.rs').lines > 0, 'Rust implementation has real size/line facts');
 ok(mixedAnalysis.graph.edges['src/lib.rs']?.includes('src/engine.rs'), 'Rust mod/use creates lib → engine graph edge');
 ok(mixedAnalysis.graph.reverse['src/engine.rs']?.includes('src/lib.rs'), 'Rust importer enters reverse graph for incremental blast radius');
@@ -84,21 +84,21 @@ ok(mixedAnalysis.hunts.some((h) => h.file === 'src/engine.rs' && h.kind === 'def
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/engine.rs').boundaries.includes('process'), 'Rust process boundary classified');
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').analysisMode === 'generic', 'Python remains model-review eligible with generic tier-0');
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').boundaries.includes('network'), 'generic Python network boundary classified');
+ok(mixedAnalysis.files.find((f) => f.rel === 'config/review.toml').lines > 0, 'configuration receives real size/line/boundary facts');
 
 const { selectDigestTargets, renderReport } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
 const coldDigests = selectDigestTargets(mixedAnalysis, { blastRadius: null });
-ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py'].every((rel) => coldDigests.includes(rel)), 'cold review digests every source language, not just JS');
+ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py', 'config/review.toml', 'README.md', 'LICENSE'].every((rel) => coldDigests.includes(rel)), 'cold review digests every text file, including configuration and docs');
 const incrementalDigests = selectDigestTargets(mixedAnalysis, { blastRadius: new Set(['src/engine.rs', 'src/worker.py', 'README.md']) });
-ok(incrementalDigests.includes('src/engine.rs') && incrementalDigests.includes('src/worker.py') && !incrementalDigests.includes('README.md'), 'incremental digests retain Rust/generic source and exclude non-source');
+ok(incrementalDigests.includes('src/engine.rs') && incrementalDigests.includes('src/worker.py') && incrementalDigests.includes('README.md'), 'incremental digests retain Rust, generic code, and documentation');
 
 const mixedCoverage = {
     divedCount: 1,
     carriedCount: 0,
     totalFiles: mixedAnalysis.files.length,
-    totalReviewable: mixedAnalysis.ranked.length,
     totalJs: 1,
     totalRust: 2,
-    totalGeneric: 1,
+    totalGeneric: mixedAnalysis.analysisModeCounts.generic,
     genericFiles: mixedAnalysis.genericFiles,
     unreviewed: mixedAnalysis.ranked.filter((r) => r.rel !== 'src/engine.rs').map((r) => r.rel)
 };
@@ -115,7 +115,7 @@ const mixedReport = renderReport({
     incremental: null
 });
 ok(mixedReport.includes('2 rust') && mixedReport.includes('src/worker.py (python)'), 'coverage names Rust totals and generic-language files explicitly');
-ok(mixedReport.includes('no source is skipped because of its language'), 'coverage states that language is not a model-review exclusion');
+ok(mixedReport.includes('language never controls eligibility'), 'coverage states that file type and language never control review eligibility');
 ok(!mixedReport.includes('- src/engine.rs (rust)'), 'Rust core source is not misreported as lacking a tier-0 adapter');
 
 // ── Validator ──────────────────────────────────────────────────────────────

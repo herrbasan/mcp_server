@@ -15,10 +15,6 @@ import { getLogger } from '../../utils/logger.js';
 const logger = getLogger();
 
 const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'vendor', 'third_party', 'third-party', 'external', 'pdfium', 'coverage', '.cache', '__pycache__']);
-const EXCLUDED_FILES = new Set([
-    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'Cargo.lock',
-    'composer.lock', 'poetry.lock', 'Gemfile.lock'
-]);
 const SECRET_FILE_PATTERNS = [/^\.env(\..+)?$/, /\.pem$/, /\.key$/, /\.crt$/, /\.pfx$/, /\.p12$/, /^id_rsa/, /\.kdbx$/, /^credentials.*\.json$/];
 const BINARY_EXTENSIONS = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'pdf', 'zip', 'gz', 'tgz', 'bz2', '7z', 'rar',
@@ -105,10 +101,6 @@ export async function copyTreeFiltered(srcRoot, dstRoot) {
         }
         const rel = entry.rel;
         const base = path.posix.basename(rel);
-        if (EXCLUDED_FILES.has(base)) {
-            exclusions.push({ rel, reason: 'lock file' });
-            continue;
-        }
         if (isSecretName(base)) {
             exclusions.push({ rel, reason: 'secret — never enters a snapshot that feeds model gateways' });
             continue;

@@ -42,10 +42,10 @@ native runner to verify non-JavaScript fixes.
 1. **Snapshot** (resolver) — every source kind materializes to
    `data/codereview/snapshots/<treeHash16>/` + tree hash. Exclusions at copy
    time (`.git`, `node_modules`, `vendor`/`third_party`/`external`/`pdfium`,
-   lock files, binaries, minified heuristic,
+   binaries, minified heuristic,
    **secrets — snapshots feed third-party gateways**), every exclusion listed
    in the report.
-2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus discarded-Result, empty-`Err`-branch, and config-default candidates. Both get boundary classification (network/process/fs) and deterministic dive ranking (boundary weight + fan-in + hunt density). Other source languages get generic boundary analysis and ranking and remain fully eligible for model digest/dive; documentation/data files are not ranked as source. Unresolved edges are recorded, never trusted.
+2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus discarded-Result, empty-`Err`-branch, and config-default candidates. Both get boundary classification (network/process/fs) and deterministic dive ranking (boundary weight + fan-in + hunt density). **Every snapshotted text file is eligible**, including configuration, documentation, data, and extensionless files. Other languages and formats get generic boundary analysis and ranking; language controls deterministic depth only, never review eligibility. Unresolved edges are recorded, never trusted.
 3. **Incremental** — prior review of the same source + model pair + validator
    version: changed files (per-file hashes) + **blast radius** (importers via
    the dependency graph) are re-digested; findings outside the radius are
@@ -61,8 +61,8 @@ native runner to verify non-JavaScript fixes.
    round. Stops on `done`, no-further-targets, two empty rounds, or budget.
 6. **Report** — rendered deterministically from validated findings (free wins
    first, then trade-off decisions as explicit either/or), coverage
-   (un-reviewed files listed — never silent; JavaScript/Rust/generic source
-   totals; every generic-language file named with its reduced tier-0 depth),
+   (un-reviewed files listed — never silent; JavaScript/Rust/generic text
+   totals; every generic-analysis file named with its reduced tier-0 depth),
    exclusions, digest gaps, validator rejections, blocklist counter.
 
 ## Bias containment (validator, spec §3.2)

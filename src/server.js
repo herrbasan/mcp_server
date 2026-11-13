@@ -776,8 +776,9 @@ CODEREVIEW — Prime-Directive Code Review
 Reviews a codebase for reliability and performance optimization (most
 reliability at the lowest performance cost) under the workshop's coding
 maxims: fail fast, design failures away, NO defensive programming, NO
-clean-code ritual. JavaScript AST + Rust structural tier-0; other source
-languages stay model-review eligible with generic analysis explicitly reported.
+clean-code ritual. JavaScript AST + Rust structural tier-0; every other text
+file (config, docs, data, extensionless) stays review eligible with generic
+analysis explicitly reported.
 Tiered: dependency graphs, boundary classification, defensive-pattern hunts,
 tier-1 grunt digests, tier-2 orchestrator verification with a deterministic
 bias validator. Report-first; diffs/tests generate only on accept, gated by

@@ -190,7 +190,7 @@ function renderMap(analysis, digests, digestGaps, scope) {
             mod.jsCount ? `${mod.jsCount} js` : null,
             mod.rustCount ? `${mod.rustCount} rust` : null,
             mod.genericCount ? `${mod.genericCount} generic` : null
-        ].filter(Boolean).join(', ') || 'no reviewable source';
+        ].filter(Boolean).join(', ') || 'no files';
         lines.push(`- ${mod.dir} — ${mod.fileCount} files (${languages}, ${mod.totalLines} loc)${mod.boundaries.length ? `, boundaries: ${mod.boundaries.join('+')}` : ''}`);
     }
 
@@ -409,8 +409,8 @@ export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysi
     }
 
     lines.push(`\n## Coverage — never silent`);
-    lines.push(`Reviewed: ${coverage.divedCount} files dived + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} files · reviewable source: ${coverage.totalReviewable} (${coverage.totalJs} js, ${coverage.totalRust} rust, ${coverage.totalGeneric} generic)`);
-    lines.push(`Language-specific tier-0: JavaScript (AST) + Rust (structural). Other source languages remain digest/dive eligible with generic boundary analysis; no source is skipped because of its language.`);
+    lines.push(`Reviewed: ${coverage.divedCount} files dived + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} text files (${coverage.totalJs} js, ${coverage.totalRust} rust, ${coverage.totalGeneric} generic)`);
+    lines.push(`Language-specific tier-0: JavaScript (AST) + Rust (structural). Every other text file—including configuration and documentation—remains digest/dive eligible with generic boundary analysis; language never controls eligibility.`);
     if (coverage.genericFiles.length > 0) {
         const shown = coverage.genericFiles.slice(0, 40);
         lines.push(`\nNo language-specific tier-0 adapter (${coverage.genericFiles.length}) — these files ARE model-review eligible, but have generic deterministic analysis only:\n${shown.map((f) => `- ${f.rel} (${f.language})`).join('\n')}${coverage.genericFiles.length > shown.length ? `\n- ... and ${coverage.genericFiles.length - shown.length} more` : ''}`);
@@ -458,8 +458,8 @@ export function selectDigestTargets(scopedAnalysis, incremental) {
     } else {
         for (const r of scopedAnalysis.ranked.slice(0, 60)) targets.add(r.rel);
     }
-    const reviewable = new Set(scopedAnalysis.ranked.map((r) => r.rel));
-    return [...targets].filter((rel) => reviewable.has(rel));
+    const eligible = new Set(scopedAnalysis.ranked.map((r) => r.rel));
+    return [...targets].filter((rel) => eligible.has(rel));
 }
 
 export async function runReview({ source, models, budget, scope, gateway, storageRoot, dataDir, emitProgress }) {
@@ -496,7 +496,6 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         const languageCounts = {};
         const analysisModeCounts = { ast: 0, structural: 0, generic: 0 };
         for (const file of scopedFiles) {
-            if (!file.reviewable) continue;
             languageCounts[file.language] = (languageCounts[file.language] ?? 0) + 1;
             analysisModeCounts[file.analysisMode]++;
         }
@@ -531,8 +530,8 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         ? incremental.priorFindings.filter((f) => f.status === 'new' && !incremental.blastRadius.has(f.file))
         : [];
 
-    // Every reviewable source language is digest/dive eligible. Language-specific
-    // tier-0 depth is reported separately; extension never controls model access.
+    // Every snapshotted text file is digest/dive eligible. Language-specific
+    // tier-0 depth is reported separately; file type never controls model access.
     const digestList = selectDigestTargets(scopedAnalysis, incremental);
 
     emitProgress?.(`Tier-1 digests (${digestList.length} files)...`, 15);
@@ -588,7 +587,6 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         ...[...digests.values()].flatMap((d) => [d.role, ...(d.risks ?? [])])
     ]);
 
-    const totalReviewable = scopedAnalysis.ranked.length;
     const totalJs = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'ast').length;
     const totalRust = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'structural').length;
     const totalGeneric = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'generic').length;
@@ -598,7 +596,6 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         divedCount: state.dived.length,
         carriedCount: carried.length,
         totalFiles: scopedAnalysis.files.length,
-        totalReviewable,
         totalJs,
         totalRust,
         totalGeneric,

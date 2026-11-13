@@ -1,0 +1,4 @@
+[review]
+timeout_seconds = 120
+snapshot_root = "data/codereview"
+allow_remote_models = true

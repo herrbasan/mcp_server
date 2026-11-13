@@ -25,22 +25,12 @@ const LANGUAGE_BY_EXTENSION = new Map([
     ['.ps1', 'powershell'], ['.sql', 'sql'], ['.lua', 'lua'], ['.dart', 'dart'],
     ['.vue', 'vue'], ['.svelte', 'svelte']
 ]);
-const NON_SOURCE_EXTENSIONS = new Set([
-    '.md', '.markdown', '.txt', '.json', '.jsonl', '.toml', '.yaml', '.yml',
-    '.xml', '.html', '.htm', '.css', '.csv', '.tsv', '.svg', '.lock', '.log'
-]);
-const NON_SOURCE_FILENAMES = new Set([
-    'license', 'copying', 'notice', 'version', 'authors', 'contributors',
-    'changelog', 'changes', 'code_of_conduct', 'contributing', 'security',
-    '.gitignore', '.editorconfig', '.npmrc', '.nvmrc'
-]);
 
 function describeLanguage(rel) {
     const ext = path.posix.extname(rel).toLowerCase();
     const language = LANGUAGE_BY_EXTENSION.get(ext) ?? (ext ? ext.slice(1) : 'text');
     const analysisMode = language === 'javascript' && ext !== '.jsx' ? 'ast' : language === 'rust' ? 'structural' : 'generic';
-    const base = path.posix.basename(rel).toLowerCase();
-    return { language, analysisMode, reviewable: !NON_SOURCE_EXTENSIONS.has(ext) && !NON_SOURCE_FILENAMES.has(base) };
+    return { language, analysisMode };
 }
 
 const BOUNDARY_PATTERNS = [
@@ -321,7 +311,6 @@ export async function analyzeSnapshot(snapshotDir) {
     await collect(snapshotDir, '');
     for (const rel of allFiles) {
         const descriptor = describeLanguage(rel);
-        if (!descriptor.reviewable) continue;
         sourceFiles.add(rel);
         if (descriptor.analysisMode === 'ast') jsFilesSet.add(rel);
         if (descriptor.analysisMode === 'structural') rustFilesSet.add(rel);
@@ -337,7 +326,6 @@ export async function analyzeSnapshot(snapshotDir) {
     for (const rel of allFiles) {
         const descriptor = describeLanguage(rel);
         fileInfo.set(rel, { rel, size: 0, lines: 0, boundaries: [], parseError: null, ...descriptor });
-        if (!descriptor.reviewable) continue;
         processed++;
         if (processed % 50 === 0) await new Promise((r) => setImmediate(r));
 
@@ -409,15 +397,12 @@ export async function analyzeSnapshot(snapshotDir) {
     for (const rel of allFiles) {
         const dir = path.posix.dirname(rel) === '.' ? '/' : path.posix.dirname(rel);
         const info = fileInfo.get(rel);
-        const mod = modules.get(dir) ?? { dir, fileCount: 0, sourceCount: 0, totalLines: 0, boundaries: new Set(), jsCount: 0, rustCount: 0, genericCount: 0 };
+        const mod = modules.get(dir) ?? { dir, fileCount: 0, totalLines: 0, boundaries: new Set(), jsCount: 0, rustCount: 0, genericCount: 0 };
         mod.fileCount++;
-        if (info.reviewable) {
-            mod.sourceCount++;
-            mod.totalLines += info.lines;
-            if (info.analysisMode === 'ast') mod.jsCount++;
-            else if (info.analysisMode === 'structural') mod.rustCount++;
-            else mod.genericCount++;
-        }
+        mod.totalLines += info.lines;
+        if (info.analysisMode === 'ast') mod.jsCount++;
+        else if (info.analysisMode === 'structural') mod.rustCount++;
+        else mod.genericCount++;
         for (const b of info.boundaries) mod.boundaries.add(b);
         modules.set(dir, mod);
     }
@@ -436,7 +421,7 @@ export async function analyzeSnapshot(snapshotDir) {
 
     const result = {
         fileCount: allFiles.length,
-        reviewableFileCount: sourceFiles.size,
+        eligibleFileCount: sourceFiles.size,
         jsFileCount: jsFilesSet.size,
         rustFileCount: rustFilesSet.size,
         languageCounts,
@@ -452,7 +437,7 @@ export async function analyzeSnapshot(snapshotDir) {
         ranked,
         modules: [...modules.values()].map((m) => ({ ...m, boundaries: [...m.boundaries] }))
     };
-    logger.info(`[codereview] tier-0 done: ${sourceFiles.size} source files (${result.jsFileCount} js, ${result.rustFileCount} rust, ${analysisModeCounts.generic} generic), ${hunts.length} hunt candidates, ${unresolvedEdges.length} unresolved edges`, null, 'CodeReview');
+    logger.info(`[codereview] tier-0 done: ${sourceFiles.size} text files (${result.jsFileCount} js, ${result.rustFileCount} rust, ${analysisModeCounts.generic} generic), ${hunts.length} hunt candidates, ${unresolvedEdges.length} unresolved edges`, null, 'CodeReview');
     return result;
 }
 
