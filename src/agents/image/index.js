@@ -90,6 +90,51 @@ function stripDataUri(b64) {
     return m ? m[1] : b64;
 }
 
+// Most image upstreams inline the bytes as b64_json. MiniMax's H3 models default
+// to response_format "url" and hand back a CDN link instead, so a url is a valid
+// payload that simply has to be fetched before the renderer can touch it. Bounded
+// on both axes: an upstream that returns an unbounded body would otherwise land
+// in this process's memory.
+const REMOTE_IMAGE_MAX_BYTES = 64 * 1048576;
+const REMOTE_IMAGE_TIMEOUT_MS = 60000;
+
+async function fetchImageBytes(url) {
+    let res;
+    try {
+        res = await fetch(url, { signal: AbortSignal.timeout(REMOTE_IMAGE_TIMEOUT_MS) });
+    } catch (err) {
+        throw new Error(`image_generate: fetching the returned image failed: ${err.message} (${url})`);
+    }
+    if (!res.ok) throw new Error(`image_generate: fetching the returned image failed: ${res.status} ${res.statusText} (${url})`);
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > REMOTE_IMAGE_MAX_BYTES) {
+        throw new Error(`image_generate: returned image declares ${declared} bytes, over the ${REMOTE_IMAGE_MAX_BYTES / 1048576} MB cap (${url})`);
+    }
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length === 0) throw new Error(`image_generate: returned image URL served 0 bytes (${url})`);
+    if (buf.length > REMOTE_IMAGE_MAX_BYTES) {
+        throw new Error(`image_generate: returned image is ${buf.length} bytes, over the ${REMOTE_IMAGE_MAX_BYTES / 1048576} MB cap (${url})`);
+    }
+    return { b64: buf.toString('base64'), mediaType: res.headers.get('content-type')?.split(';')[0] ?? null };
+}
+
+// A 200 with a failed slot is normal for MiniMax: it reports per-image content
+// safety rejections in data[].error while the request itself succeeded. Skipping
+// the slot (and saying so) beats throwing away the images that did come back.
+async function resolveImageSlot(item, idx, failed) {
+    if (item && typeof item.b64_json === 'string' && item.b64_json.length > 0) {
+        return { raw: stripDataUri(item.b64_json), mediaType: item.media_type ?? null, item };
+    }
+    if (item && typeof item.url === 'string' && item.url.length > 0) {
+        const { b64, mediaType } = await fetchImageBytes(item.url);
+        return { raw: b64, mediaType: item.media_type ?? mediaType, item };
+    }
+    const reason = item?.error?.message ?? item?.error?.code ?? 'no b64_json and no url';
+    failed.push(`slot ${idx + 1}: ${reason}`);
+    logger.warn(`[image] Upstream returned no image for slot ${idx + 1}: ${reason}`, null, 'Image');
+    return null;
+}
+
 async function renderVariant(rawBase64, maxDimension) {
     const res = await fetch(`${nMediaUrl}/v1/process/image`, {
         method: 'POST',
@@ -183,26 +228,34 @@ export async function image_generate(args) {
         clearTimeout(timer);
     }
 
-    const images = gen?.data;
-    if (!Array.isArray(images) || images.length === 0 || !images[0].b64_json) {
+    const images = Array.isArray(gen?.data) ? gen.data : [];
+    if (images.length === 0) {
         throw new Error('image_generate: gateway returned no images');
+    }
+
+    const failed = [];
+    const resolved = [];
+    for (const [idx, item] of images.entries()) {
+        const slot = await resolveImageSlot(item, idx, failed);
+        if (slot) resolved.push(slot);
+    }
+    if (resolved.length === 0) {
+        throw new Error(`image_generate: ${images.length} image slot(s) came back but none carried bytes${failed.length > 0 ? ` — upstream: ${failed.join('; ')}` : ''}`);
     }
 
     // 2. Render variants + persist, one output set per returned image
     const slug = slugify(args.name ?? args.prompt);
     const outputs = [];
 
-    for (let idx = 0; idx < images.length; idx++) {
-        const img = images[idx];
-        if (!img.b64_json) throw new Error(`image_generate: image ${idx + 1} of ${images.length} has no b64_json`);
-        const raw = stripDataUri(img.b64_json);
-        const base = uniqueBase(images.length > 1 ? `${slug}-${idx + 1}` : slug);
+    for (let idx = 0; idx < resolved.length; idx++) {
+        const { raw, mediaType, item: img } = resolved[idx];
+        const base = uniqueBase(resolved.length > 1 ? `${slug}-${idx + 1}` : slug);
         const dir = path.join(storageRoot, imageDir);
         const files = {};
         let thumb = null;
                 let vector = false;
 
-        if (isSvgPayload(img.media_type, raw)) {
+        if (isSvgPayload(mediaType, raw)) {
             // Vector output: the SVG source IS the deliverable — the size-variant
             // set is meaningless (unbounded rescaling) and the PNG re-encode would
             // replace the vector original with a raster copy. Persist the source
@@ -253,7 +306,7 @@ export async function image_generate(args) {
             },
             references: args.references ?? [],
             lineage: (args.references ?? []).filter(r => !/^https?:\/\//i.test(r)),
-            source: { media_type: img.media_type ?? null, revised_prompt: img.revised_prompt ?? null },
+            source: { media_type: mediaType, revised_prompt: img.revised_prompt ?? null },
             usage: gen.usage ?? null,
             cost: gen.usage?.cost ?? null,
             files
@@ -280,7 +333,7 @@ export async function image_generate(args) {
             : vectors === 0
                 ? 'Copy whichever sizes you need from storage (images/) — use the _full.png original for platforms that reject webp (YouTube et al.).'
                 : `Mixed output: ${vectors} vector and ${outputs.length - vectors} raster image${outputs.length - vectors > 1 ? 's' : ''}. The .svg files are losslessly scalable sources; the raster sets carry the webp sizes plus a _full.png original (for platforms that reject webp, e.g. YouTube).`;
-    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\n${guidance} Full prompt, parameters, usage and lineage are in the .json sidecar.`;
+    const text = `Generated ${outputs.length} image${outputs.length > 1 ? 's' : ''} · model ${model}${cost}\n\n${lines.join('\n\n')}\n\n${guidance} Full prompt, parameters, usage and lineage are in the .json sidecar.${failed.length > 0 ? `\n\n${failed.length} of ${images.length} upstream slot(s) returned no image: ${failed.join('; ')}` : ''}`;
 
     const content = [{ type: 'text', text }];
     if (outputs[0].thumb) {
