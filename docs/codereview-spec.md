@@ -1,8 +1,105 @@
 # Code Review Agent — Design Spec
 
 **Date:** 2026-11-12 (draft, pre-implementation — bounced with David)
-**Status:** IMPLEMENTED 2026-11-13 — see `src/agents/codereview/`, `documentation/tools/codereview.md`, `npm run test:codereview`. Three live dogfood reviews of its own source shaped the final code (13 findings fixed, incl. an acorn ImportExpression miss, deletion-aware blast radius, cross-device staging, CJS comment duplication, CRLF diffs).
-**Home:** `src/agents/codereview/` (new agent, not an inspector profile)
+**Status:** IMPLEMENTED BUT OPERATIONALLY FAILED 2026-11-13 — the pipeline produced substantive findings, but its latency/token architecture is not viable. Do not treat this as a production-ready design. See **§0 Postmortem**.
+**Home:** `src/agents/codereview/` (experimental implementation retained for analysis, not a recommended production tool)
+
+---
+
+## 0. Postmortem — why this architecture failed
+
+This section is the current primary result. The rest of the document records the design as built, not a recommendation to build it again.
+
+### 0.1 Outcome
+
+The review core demonstrated real value:
+
+- Rust source selection worked after #76.
+- Models found concrete, source-verifiable bugs: malformed-input panics, non-BMP text corruption, unbounded decompression, lost hyperlinks/images, YAML type changes, and nondeterministic asset selection.
+- Evidence validation and structured findings were useful.
+- After #77, orchestrator failure produced an honest PARTIAL report instead of destroying completed findings.
+
+The surrounding architecture nevertheless failed operationally:
+
+- Reviews were slow, token-heavy, and vulnerable to sequential transport/model failures.
+- A small project did not complete within a reasonable interactive or batch-review budget.
+- David stopped further redesign (#78, not planned). The correct decision was to stop, not to keep hardening the pipeline.
+
+### 0.2 Measured evidence
+
+Reference run: `r_mwfekpnp_bm79`, source `D:\DEV\nTeligence\nConvert`, 2026-11-13.
+
+- Snapshot: **43 text files**, including **24 Rust** files — not a large project.
+- Result: **10 validated Rust findings across 15 reviewed files**, with four digest gaps and explicit incomplete coverage.
+- `state.json` created at **21:03:41**; final PARTIAL report written at **21:27:01**.
+- Elapsed: **23 minutes 20 seconds**.
+- Kimi disconnected during orchestrator round 4; three rounds completed.
+- The run performed **43 tier-1 digest calls** before the sequential orchestrator dives.
+- Other attempts failed on gateway timeout or malformed JSON. Those failures exposed result-preservation bugs, but fixing them did not fix the economics.
+
+No trustworthy per-call token/cost ledger existed. That absence is itself part of the failure: the design had no operational measurements capable of rejecting it early.
+
+### 0.3 Architectural root cause
+
+**Coordination and repeated context dominated the useful work.**
+
+The pipeline inserted two expensive coordination layers around the activity that actually produced value: a capable model reading real source.
+
+1. **All-file digest phase before review.** Every eligible text file could incur a model call even when that file was never dived. The digest map therefore spent tokens and wall time before any finding existed.
+2. **Sequential frontier-model rounds.** Dive rounds ran one after another. Total latency grew with the number of rounds rather than with the slowest independent target.
+3. **Stateless context replay.** Each round resent the rubric/system context, the map, accumulated finding summaries, and newly selected source. Round N repeated work already paid for in rounds 1…N−1.
+4. **Dynamic dive selection created a serial dependency.** The model chose the next files from the previous response, so the expensive dives could not be scheduled independently.
+5. **Every round enlarged the failure surface.** A disconnect or malformed response late in the chain could invalidate an otherwise useful run. PARTIAL reporting preserved data, but did not reduce time or tokens.
+6. **Retries multiplied already-expensive calls.** They improved resilience semantics while potentially repeating the same large prompt and generation cost.
+7. **Coverage expansion amplified the coordination cost.** Making config/docs/data eligible was correct, but the architecture responded by digesting them all instead of separating eligibility from budgeted target selection.
+8. **The budget unit was wrong.** `maxRounds` bounded neither elapsed time nor token spend. It limited loop count while allowing each round's input, output, timeout, and retries to dominate the review.
+
+### 0.4 Process failure behind the architecture
+
+This was a **collective design failure**, not a single implementation mistake.
+
+- Multiple models reviewed the design before implementation. We refined the rubric, validation, state persistence, and failure semantics together.
+- We treated multi-model agreement as evidence. It was only consensus around the same unmeasured assumptions.
+- We did not first establish the minimal baseline: **one capable model reviewing one real file**, with findings, elapsed time, input tokens, output tokens, and cost recorded.
+- We did not require each additional pipeline stage to prove a marginal recall/precision benefit worth its added latency and tokens.
+- We optimized for conceptual completeness before defining an operational acceptance budget.
+
+The lesson is not “use more models to review the next architecture.” It is **measure the core loop before designing infrastructure around it**.
+
+### 0.5 What was not the root cause
+
+- **Rust support:** worked and produced substantive findings.
+- **Model capability:** the models were capable of finding useful bugs.
+- **Malformed JSON alone:** a real reliability issue, fixed by schema guidance and PARTIAL reports, but not the economic root cause.
+- **Partial-report semantics:** preserved completed work successfully; again, mitigation rather than a cure.
+- **Configuration/docs being review-eligible:** appropriate review inputs. The mistake was an architecture that turned eligibility into blanket model processing.
+
+### 0.6 Questions for a future architectural exploration
+
+Do not answer these with another speculative pipeline. Answer them with measurements against the minimal direct-review baseline.
+
+- What is the smallest useful review unit: changed hunk, file, dependency cluster, or module?
+- Which context is actually required for cross-file findings, and when is it worth fetching?
+- Do maps and digests improve precision/recall enough to justify their calls? Compare directly against source-only review.
+- Can deterministic tier-0 candidates be reported without a model when no judgment is needed?
+- Should review be diff-first so unchanged files incur zero model work?
+- Can independent targets run concurrently with per-target idempotency and failure isolation?
+- What are the hard wall-clock, token, and monetary budgets, and what partial result is returned when each is exhausted?
+- What recall and precision does the system achieve per minute and per 1,000 tokens compared with one direct subagent reading the same targets?
+- Is a persistent agent pipeline justified at all, or is a direct targeted subagent the better interface?
+
+### 0.7 Acceptance criteria for any future design
+
+A future proposal must start with a real corpus and report:
+
+- End-to-end elapsed time and per-target latency.
+- Input/output tokens and cost per call and in total.
+- Validated findings, false-positive rate, and seeded-bug recall.
+- Comparison against one model reviewing the same files directly.
+- The marginal benefit of every extra model call or pipeline stage.
+- Behavior under one target's timeout/malformed response without retrying unrelated completed work.
+
+If these measurements are absent, the design is not ready for implementation.
 
 ---
 
