@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { getLogger } from '../../utils/logger.js';
+import { UPLOAD_ROOT } from '../../upload.js';
 
 const logger = getLogger();
 
@@ -31,13 +32,17 @@ export async function init(context) {
     return { status: 'initialized', nMediaUrl, timeoutMs };
 }
 
-function resolveInStorage(userPath, label) {
+function resolveInStorage(userPath, label, extraInputRoots = []) {
     if (typeof userPath !== 'string' || !userPath.trim()) {
         throw new Error(`media_process: "${label}" (storage path) is required`);
     }
     const abs = path.isAbsolute(userPath) ? path.resolve(userPath) : path.resolve(storageRoot, userPath);
-    if (!abs.startsWith(path.resolve(storageRoot))) {
-        throw new Error(`media_process: ${label} escapes storage root: ${userPath}`);
+    // Inputs may come from the upload handoff (src/upload.js) — bytes parked by
+    // a client that cannot write the disk. Outputs stay storage-confined.
+    const roots = [path.resolve(storageRoot), ...extraInputRoots.map((r) => path.resolve(r))];
+    const allowed = roots.some((root) => abs === root || abs.startsWith(root + path.sep));
+    if (!allowed) {
+        throw new Error(`media_process: ${label} resolves to ${abs}, outside the allowed roots (${roots.join(', ')})`);
     }
     return abs;
 }
@@ -54,6 +59,10 @@ function inferProcessor(filePath) {
     throw new Error(`media_process: cannot infer processor from extension "${ext}" — pass processor explicitly ("image" | "audio" | "video")`);
 }
 
+// nMedia wraps every response in { success, data } — unwrap once. Falling
+// back to the bare payload keeps an older envelope-less build answerable.
+const unwrap = (payload) => payload?.data ?? payload;
+
 async function postJob(body) {
     const res = await fetch(`${nMediaUrl}/v1/process`, {
         method: 'POST',
@@ -62,33 +71,36 @@ async function postJob(body) {
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`media_process: nMedia rejected the job (${res.status}): ${text}`);
-    let data;
+    let parsed;
     try {
-        data = JSON.parse(text);
+        parsed = JSON.parse(text);
     } catch {
         throw new Error(`media_process: nMedia returned non-JSON: ${text.slice(0, 200)}`);
     }
-    if (!data.jobId || !data.poll_url) {
-        throw new Error(`media_process: nMedia response missing jobId/poll_url: ${text.slice(0, 200)}`);
+    const job = unwrap(parsed);
+    const pollUrl = job.poll_url ?? job.progressUrl;
+    if ((!job.jobId && !job.id) || !pollUrl) {
+        throw new Error(`media_process: nMedia response missing jobId/progressUrl: ${text.slice(0, 200)}`);
     }
-    return data;
+    return { jobId: job.jobId ?? job.id, pollUrl };
 }
 
 async function pollJob(pollUrl, deadline) {
     for (;;) {
         const res = await fetch(`${nMediaUrl}${pollUrl}`);
         if (!res.ok) throw new Error(`media_process: job poll failed (${res.status}): ${await res.text()}`);
-        const job = await res.json();
+        const job = unwrap(await res.json());
+        const jobId = job.id ?? job.jobId;
         if (job.status === 'completed') {
             if (!job.assetId) throw new Error('media_process: job completed but produced no assetId');
             return job;
         }
         if (job.status === 'failed' || job.status === 'cancelled') {
-            throw new Error(`media_process: nMedia job ${job.jobId} ${job.status}: ${job.error || 'no error text'}`);
+            throw new Error(`media_process: nMedia job ${jobId} ${job.status}: ${job.error || 'no error text'}`);
         }
         if (Date.now() > deadline) {
-            throw new Error(`media_process: job ${job.jobId} did not finish within ${timeoutMs} ms (still ${job.status}). ` +
-                `Poll GET ${nMediaUrl}/v1/jobs/${job.jobId} — jobs and assets persist ~1 h.`);
+            throw new Error(`media_process: job ${jobId} did not finish within ${timeoutMs} ms (still ${job.status}). ` +
+                `Poll GET ${nMediaUrl}${pollUrl} — jobs and assets persist ~1 h.`);
         }
         await new Promise(r => setTimeout(r, pollIntervalMs));
     }
@@ -104,7 +116,7 @@ async function fetchAssetMeta(assetId) {
     const res = await fetch(`${nMediaUrl}/v1/assets/${assetId}/metadata`);
     if (!res.ok) return null;
     try {
-        return await res.json();
+        return unwrap(await res.json());
     } catch {
         return null;
     }
@@ -228,7 +240,7 @@ function blankImageCheck(bytes, mime) {
 
 export async function media_process(args) {
     const t0 = Date.now();
-    const inAbs = resolveInStorage(args?.in, 'in');
+    const inAbs = resolveInStorage(args?.in, 'in', [UPLOAD_ROOT]);
     if (!fs.existsSync(inAbs)) throw new Error(`media_process: input not found in storage: ${args.in}`);
     if (!fs.statSync(inAbs).isFile()) throw new Error(`media_process: input is not a file: ${args.in}`);
 
@@ -268,7 +280,7 @@ export async function media_process(args) {
     const body = { input_path: inAbs, processor, options };
     if (mode) body.mode = mode;
     const submitted = await postJob(body);
-    const job = await pollJob(submitted.poll_url, Date.now() + timeoutMs);
+    const job = await pollJob(submitted.pollUrl, Date.now() + timeoutMs);
 
     const meta = await fetchAssetMeta(job.assetId);
     const { buffer, mime } = await fetchAssetBytes(job.assetId);

@@ -38,6 +38,10 @@ try {
     });
     const base = `http://127.0.0.1:${server.address().port}`;
 
+    // The staging root is shared — leftovers from crashed runs must not fail
+    // this run's cleanup check, so only dirs created during the run count.
+    const stagingBefore = fs.existsSync(uploadRoot) ? new Set(fs.readdirSync(uploadRoot)) : new Set();
+
     const capabilities = JSON.parse((await agent.nconvert_capabilities()).content[0].text);
     check(
         'capabilities advertise the UI, upload and file surface',
@@ -68,8 +72,8 @@ try {
     check('upload keeps the Unicode filename as provenance', uploaded.result?.source === 'grüße.txt', JSON.stringify(uploaded.result?.source));
     check(
         'upload staging is cleaned up',
-        !fs.existsSync(uploadRoot) || fs.readdirSync(uploadRoot).length === 0,
-        fs.existsSync(uploadRoot) ? fs.readdirSync(uploadRoot).join(', ') : ''
+        !fs.existsSync(uploadRoot) || fs.readdirSync(uploadRoot).every((d) => stagingBefore.has(d)),
+        fs.existsSync(uploadRoot) ? fs.readdirSync(uploadRoot).filter((d) => !stagingBefore.has(d)).join(', ') : ''
     );
 
     const itemId = uploaded.result.id;

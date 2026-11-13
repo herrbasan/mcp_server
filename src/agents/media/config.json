@@ -8,7 +8,7 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "in": { "type": "string", "description": "Storage path of the source media file (required). Absolute paths under the storage root are accepted." },
+                    "in": { "type": "string", "description": "Storage path of the source media file (required). Absolute paths under the storage root or the upload handoff root (data/uploads — from POST /upload) are accepted." },
                     "out": { "type": "string", "description": "Storage path for the converted asset. Its extension selects the output format and must be valid for the processor (image: png/jpg/webp/avif/gif — audio: mp3/m4a/wav/flac/ogg/opus — video: mp4/webm/mkv). Default: temp/<input basename>.<png|mp3|mp4>." },
                     "processor": { "type": "string", "enum": ["image", "audio", "video"], "description": "nMedia processor. Inferred from the input extension when omitted." },
                     "mode": { "type": "string", "enum": ["extract_keyframes", "extract_audio", "transcode"], "description": "Video processor mode only. Default: extract_keyframes (returns the first frame as an image)." },

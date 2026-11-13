@@ -16,6 +16,12 @@
       "viewport": { "width": 1280, "height": 1800 },
       "userDataDir": "data/chrome-profile"
     },
+    "codereview": {
+      "models": {
+        "grunt": "deepseek-flash-chat",
+        "orchestrator": "kimi-k31-chat"
+      }
+    },
     "usage-monitor": {
       "intervalMinutes": 10,
       "autoStart": true,
@@ -39,7 +45,8 @@
       "sizes": [1920, 1280, 720, 180],
       "quality": 85,
       "timeoutMs": 300000,
-      "defaultSize": "1920x1440"
+      "defaultSize": "1920x1440",
+      "ingestRoots": ["D:\\DEV\\mcp_server\\data\\uploads"]
     },
     "chart": {
       "folder": "charts",
@@ -61,8 +68,8 @@
     "nconvert": {
       "serviceUrl": "http://127.0.0.1:3300",
       "folder": "ingest",
-      "maxInputMb": 100,
-      "maxExpandedMb": 500,
+      "maxInputMb": 4096,
+      "maxExpandedMb": 4096,
       "maxOutputMb": 64,
       "maxTableRows": 10000,
       "assets": true,
@@ -88,6 +95,12 @@
       "verifyModel": "kimi-k31-chat",
       "verifyFallbackModels": ["deepseek-chat"],
       "summary": true
+    },
+    "upload": {
+      "maxBytes": 4294967296,
+      "ttlHours": 24,
+      "minFreeGb": 20,
+      "sweepMinutes": 30
     },
     "media": {
       "timeoutMs": 120000,

@@ -2,17 +2,17 @@
 //
 // The engine and the artefacts live in nTeligence now, so this module owns only
 // what mcp_server still owns: serving the page and accepting an upload. Uploads
-// are handed to the service as an absolute path and deleted once the call
-// returns — the service runs the ingest inline, so there is nothing left to
-// track afterwards.
+// go through the shared upload handoff writer (src/upload.js) and are handed to
+// the service as an absolute path, deleted once the call returns — the service
+// runs the ingest inline, so there is nothing left to track afterwards.
 
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { fileURLToPath } from 'url';
 import express from 'express';
+import { receiveUpload, handleUploadError, uploadLimits } from '../../upload.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NUI_ROOT = path.resolve(__dirname, '..', '..', 'nui_wc2', 'NUI');
@@ -23,13 +23,6 @@ function booleanArg(value, fallback) {
     if (value === true || value === 'true' || value === '1') return true;
     if (value === false || value === 'false' || value === '0') return false;
     throw new Error(`expected a boolean, got ${value}`);
-}
-
-function uploadName(value) {
-    if (typeof value !== 'string' || !value.trim()) throw new Error('filename query parameter is required');
-    const name = path.basename(value).replace(/[^\p{L}\p{N}._ ()-]/gu, '_').trim();
-    if (!name || name === '.' || name === '..') throw new Error('filename is not usable');
-    return name;
 }
 
 function route(fn) {
@@ -84,37 +77,38 @@ export function initNconvertUi(context, deps) {
         }
     });
 
-    const raw = express.raw({ type: 'application/octet-stream', limit: deps.conf.maxInputMb * 1024 * 1024 });
-    app.post('/nconvert/upload', (req, res, next) => {
-        raw(req, res, (error) => {
-            if (!error) return next();
-            res.status(error.statusCode ?? 400).json({ error: error.message });
-        });
-    }, route(async (req) => {
-        if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-            throw new Error('upload a non-empty file as application/octet-stream');
-        }
-        const filename = uploadName(req.query.filename);
-        const directory = path.join(UPLOAD_ROOT, crypto.randomUUID());
-        // Cleanup deletes recursively — the escape check has to run before the
-        // write, not in the finally block where a throw would mask the result.
-        if (path.dirname(directory) !== UPLOAD_ROOT) throw new Error('upload directory escaped its root');
-        const file = path.join(directory, filename);
-        fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(file, req.body);
+    // Same streamed writer as POST /upload (src/upload.js) — one implementation
+    // so the two routes cannot drift on cap, cleanup or error behaviour. The
+    // body cap stays nconvert's maxInputMb; the copy dies with the ingest call,
+    // so the shared TTL lifecycle never actually applies here.
+    app.post('/nconvert/upload', async (req, res) => {
+        const maxMb = deps.conf.maxInputMb ?? 250;
+        let handle = null;
         try {
-            return await deps.submitIngest({
-                path: file,
-                depth: req.query.depth ?? 'mechanical',
-                keepOriginal: booleanArg(req.query.keepOriginal, deps.conf.keepOriginal),
-                assets: booleanArg(req.query.assets, deps.conf.assets),
-                force: booleanArg(req.query.force, false),
-                name: req.query.name
+            handle = await receiveUpload(req, {
+                root: UPLOAD_ROOT,
+                maxBytes: maxMb * 1024 * 1024,
+                capMessage: `upload exceeds maxInputMb=${maxMb} — raise agents.nconvert.maxInputMb`,
+                minFreeGb: uploadLimits(context.config).minFreeGb
             });
-        } finally {
-            fs.rmSync(directory, { recursive: true, force: true });
+            try {
+                const result = await deps.submitIngest({
+                    path: handle.path,
+                    depth: req.query.depth ?? 'mechanical',
+                    keepOriginal: booleanArg(req.query.keepOriginal, deps.conf.keepOriginal),
+                    assets: booleanArg(req.query.assets, deps.conf.assets),
+                    force: booleanArg(req.query.force, false),
+                    name: req.query.name
+                });
+                res.json(result);
+            } finally {
+                // The service ingests inline and has already copied what it keeps.
+                fs.rmSync(handle.directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+            }
+        } catch (error) {
+            handleUploadError(req, res, error, handle?.directory);
         }
-    }));
+    });
 }
 
 export function shutdownNconvertUi() {

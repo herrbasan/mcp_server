@@ -7,12 +7,15 @@
         "prestart": "node scripts/check-submodules.mjs",
         "start": "node src/server.js",
         "dev": "node --watch src/server.js",
-        "test:nconvert":  "node tests/nconvert-service-smoke.mjs && node tests/nconvert-ux-test.mjs",
+        "test:nconvert": "node tests/nconvert-service-smoke.mjs && node tests/nconvert-ux-test.mjs",
+        "test:upload": "node tests/upload-smoke.mjs",
         "test:print": "node tests/print-agent-smoke.mjs",
+        "test:codereview": "node tests/codereview-agent-test.mjs",
         "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build; nVDB: cd src/nVDB && npm run build)"
     },
     "dependencies": {
         "@mozilla/readability": "^0.6.0",
+        "acorn": "^8.19.0",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
         "express": "^5.2.1",

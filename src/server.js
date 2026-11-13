@@ -25,6 +25,7 @@ import {
     contextRename as notepadContextRename, contextRemove as notepadContextRemove,
 } from './agents/notepad/index.js';
 import { submitIngest as nconvertSubmit, serviceCall as nconvertCall, uiJob, subscribeJobs } from './agents/nconvert/index.js';
+import { initUploadRoutes } from './upload.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = {
@@ -373,6 +374,14 @@ async function start() {
             close();
         });
     });
+
+    // ── Upload handoff: bytes in, a path handle out ──
+    // POST /upload streams a raw body to data/uploads/<id>/<name> and returns
+    // the absolute path any path-taking tool consumes directly (nconvert,
+    // image.ingest, media.process, print.render, forge payloads, notepad.attach).
+    // Spec: docs/upload-handoff-spec.md. GET /upload/:id is metadata only —
+    // uploads are untrusted input and never served back from this origin.
+    const uploadRoutes = await initUploadRoutes(app, serverConfig, logger);
 
     // PATCH /api/config - deep-merge update config (persists to config.json)
     app.patch('/api/config', adminOnly, express.json({ limit: '300mb' }), (req, res) => {
@@ -758,6 +767,36 @@ explain architecture, or suggest improvements.
       Analyze existing code files iteratively. Finds bugs, explains
       architecture, or suggests improvements. File paths must be absolute.
       prompt: the review task/question for the model.
+
+
+═══════════════════════════════════════════════════════════════
+CODEREVIEW — Prime-Directive Code Review
+═══════════════════════════════════════════════════════════════
+
+Reviews a codebase for reliability and performance optimization (most
+reliability at the lowest performance cost) under the workshop's coding
+maxims: fail fast, design failures away, NO defensive programming, NO
+clean-code ritual. Tiered: deterministic tier-0 analysis (dep graph,
+boundary classification, defensive-pattern hunts), tier-1 grunt digests,
+tier-2 orchestrator verification with a deterministic bias validator.
+Report-first; diffs/tests generate only on accept, gated by execution
+(fail on unpatched snapshot, pass on patched).
+
+  codereview.review — { source*, models?, budget?, scope? }
+      Run a review. source: absolute local path, UNC path, owner/repo@ref
+      (GitHub), or .zip/.tar.gz archive. models: { grunt, orchestrator }
+      gateway model ids (defaults deepseek-flash-chat + kimi-k31-chat;
+      unknown ids fail loudly). budget: { maxRounds } (default 10).
+      scope: { include, exclude } path prefixes. Returns the report +
+      reviewId; report also written under data/codereview/reviews/<id>/.
+
+  codereview.findings — { reviewId?, status?, snapshotHash? }
+      List persisted findings (compact records: id, status, file, class).
+
+  codereview.accept — { findingId* }
+      Generate diff + test for a finding, then run the acceptance gate:
+      the test MUST fail on the unpatched snapshot and pass on the
+      patched one. Runtime-only bugs are marked unprovable, not verified.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1451,6 +1490,10 @@ IMPORTANT RULES
 
         "inspector.inspect_code": "inspect_code",
 
+        "codereview.review": "codereview_review",
+        "codereview.findings": "codereview_findings",
+        "codereview.accept": "codereview_accept",
+
         "git.read": "git_read_file", "git.tree": "git_list_tree", "git.log": "git_log",
         "git.commit": "git_get_commit", "git.diff": "git_diff", "git.branches": "git_list_branches",
         "git.repo_info": "git_repo_info", "git.search_repos": "git_search_repos",
@@ -1998,6 +2041,7 @@ IMPORTANT RULES
         isShuttingDown = true;
         logger.info(`Received ${signal}, exiting gracefully...`, null, 'SHUTDOWN');
         clearInterval(keepalive);
+        uploadRoutes.shutdown();
         server.close();
         for (const [, session] of sessions) session.res.end();
         sessions.clear();

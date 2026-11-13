@@ -34,6 +34,60 @@ here holds only `serviceUrl`, `folder`, `maxInputMb`, `maxExpandedMb`, `ignore`,
 | `nconvert.summarize` | `{ item* }` | **Not available yet** — returns the refusal naming the missing Gateway client (Pass 2). |
 | `nconvert.verify` | `{ item*, model?, force? }` | **Not available yet** — returns the refusal naming the missing audit lane. |
 
+## Getting large files in
+
+The engine only ever sees a **path**. Two ways to produce one, and the choice is
+about *where the caller runs*, not about size:
+
+| Caller | Route |
+|---|---|
+| Anything with a filesystem view of the service host (VS Code + local MCP, scripts) | `nconvert.convert({ path: "D:\\deck.pptx" })` — absolute paths are accepted and nothing is copied |
+| A browser or a remote client (the chat app) | `POST /nconvert/upload` on this server (port 3100), then act on the returned item |
+| A Copilot session whose host is *not* the service machine | It cannot push bytes — put the file on the service host (or upload it out of band), because a client path is resolved server-side |
+
+`node scripts/upload-to-nconvert.mjs <file> [--host ...] [--depth ...]` does the
+POST below with a streamed body and prints the resulting item id; it is the
+reference implementation for any other client.
+
+**Upload route** — `POST /nconvert/upload?filename=<name>` with
+`Content-Type: application/octet-stream` and the raw bytes as the body. Optional
+query: `depth`, `keepOriginal`, `assets`, `force`, `name` (all as on
+`nconvert.convert`). It writes a temp copy under
+`data/nconvert/uploads/<uuid>/<name>`, submits the ingest, deletes the copy as
+soon as the call returns (the service has already copied what it keeps), and
+returns exactly what `nconvert.convert` returns — job, result and manifest. The
+route runs on the shared upload-handoff writer (`src/upload.js`), so it carries
+the same streamed 4 GB behaviour, free-disk guard and abort cleanup as
+`POST /upload` (see [upload.md](upload.md)); its body cap stays
+`agents.nconvert.maxInputMb`. CORS allows every origin, so a browser can call
+it directly (preflight verified 2026-11-13).
+
+For files that only need parking for a path-taking tool — not an immediate
+ingest — use the generic `POST /upload` ([upload.md](upload.md)).
+
+**Both limits must agree**, and each is enforced in a different process:
+
+| Limit | Where | Value |
+|---|---|---|
+| Upload body cap | `agents.nconvert.maxInputMb` in this repo's `config.json` | 4096 MB |
+| Engine input cap | `[limits] max_input_mb` in `nteligence.toml` | 4096 MB |
+| Engine ZIP-expansion budget | `[limits] max_expanded_mb` in `nteligence.toml` | 4096 MB |
+
+Raising only the first gives a clean conversion error from the engine; raising
+only the second gives `413 {"error":"upload exceeds maxInputMb=…"}` before the
+bytes are read. Measured 2026-11-13: 101 MB under the old 100 MB cap → 413; 95 MB
+accepted in 3.8 s (≈25 MB/s, loopback).
+
+The body is **streamed straight to disk** with a counting cap, so a 4 GB upload
+never becomes a 4 GB Buffer in this process and the cap bites while the bytes are
+still arriving. Two ceilings remain in the engine, both worth knowing before a
+multi-GB deck is blamed on the transport: `max_expanded_mb` (the expanded size of
+a ZIP container — a media-heavy PPTX expands well past its file size) and
+`max_assets`/`max_cells` (per-item counts). The conversion worker also reads the
+whole input into memory once, so a 4 GB file costs 4 GB of RAM *there* by design.
+Nothing in front of port 3100 caps the body today; if a reverse proxy is ever
+placed there it carries its own limit.
+
 ## The artefact is a layered object (spec §2.6)
 
 *Nothing lost — layers added for discovery.* A reader answers from the cheapest
