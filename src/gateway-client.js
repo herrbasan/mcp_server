@@ -53,7 +53,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         return text.length > maxLength ? `${text.slice(0, maxLength)}... [${text.length} chars]` : text;
     }
 
-    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, enableThinking, reasoningEffort, onDelta, onProgress, stream = true, tools, timeoutMs, signal: externalSignal, clientSession }) {
+    async function chat({ task, model, messages, systemPrompt, maxTokens, temperature, responseFormat, schema, enableThinking, reasoningEffort, onDelta, onProgress, stream = true, tools, timeoutMs, signal: externalSignal, clientSession }) {
         const fullMessages = systemPrompt
             ? [{ role: 'system', content: systemPrompt }, ...messages]
             : messages;
@@ -76,6 +76,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
             if (maxTokens != null) body.max_tokens = maxTokens;
             if (temperature != null) body.temperature = temperature;
             if (responseFormat != null) body.response_format = responseFormat;
+            if (schema != null) body.schema = schema;
             if (enableThinking != null) body.enable_thinking = enableThinking;
             if (reasoningEffort != null) body.reasoning_effort = reasoningEffort;
             if (tools != null) body.tools = tools;
@@ -147,6 +148,7 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
         if (maxTokens != null) body.max_tokens = maxTokens;
         if (temperature != null) body.temperature = temperature;
         if (responseFormat != null) body.response_format = responseFormat;
+        if (schema != null) body.schema = schema;
         if (enableThinking != null) body.enable_thinking = enableThinking;
         if (reasoningEffort != null) body.reasoning_effort = reasoningEffort;
         if (task) body.task = task;

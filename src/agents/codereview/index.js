@@ -70,7 +70,7 @@ export async function codereview_review(args, context) {
     const pr = createProgressReporter(context.progress);
     pr.set('Starting review...', 2, true);
 
-    const { reviewId, report } = await runReview({
+    const { reviewId, report, partial } = await runReview({
         source,
         models,
         budget,
@@ -81,8 +81,8 @@ export async function codereview_review(args, context) {
         emitProgress: (message, pct) => pr.set(message, pct, true)
     });
 
-    pr.done('Review complete');
-    return { content: [{ type: 'text', text: report }], reviewId };
+    pr.done(partial ? 'Partial review returned — completed findings preserved' : 'Review complete');
+    return { content: [{ type: 'text', text: report }], reviewId, partial };
 }
 
 export async function codereview_findings(args) {

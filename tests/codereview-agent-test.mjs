@@ -86,7 +86,7 @@ ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').analysisMode === '
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').boundaries.includes('network'), 'generic Python network boundary classified');
 ok(mixedAnalysis.files.find((f) => f.rel === 'config/review.toml').lines > 0, 'configuration receives real size/line/boundary facts');
 
-const { selectDigestTargets, renderReport } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
+const { selectDigestTargets, renderReport, runReview } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
 const coldDigests = selectDigestTargets(mixedAnalysis, { blastRadius: null });
 ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py', 'config/review.toml', 'README.md', 'LICENSE'].every((rel) => coldDigests.includes(rel)), 'cold review digests every text file, including configuration and docs');
 const incrementalDigests = selectDigestTargets(mixedAnalysis, { blastRadius: new Set(['src/engine.rs', 'src/worker.py', 'README.md']) });
@@ -289,6 +289,66 @@ const sameSourceLater = await store.saveFinding({ reviewId: 'r_other_same_source
 ok(sameSourceLater.status === 'rejected', 'rejection from a prior review of the SAME source persists');
 const listed = await store.listFindings({ reviewId });
 ok(listed.length === 2, 'findings listed by review (cross-review findings excluded)');
+
+// ── Partial reports after orchestrator transport/JSON failure (issue #77) ────
+console.log('\n[partial review preservation]');
+const partialData = path.join(tmpData, 'partial-data');
+store.initStore(partialData);
+const partialFinding = {
+    file: 'src/engine.rs',
+    lines: [6, 6],
+    evidence: 'let _ = std::fs::write(output, b"review");',
+    failure_mode: 'Discarding the filesystem Result hides failed review output and leaves the caller believing the artifact was written.',
+    class: 'free-win',
+    suggestion: 'Propagate the write Result to the caller instead of assigning it to the discard binding.',
+    rung: null,
+    test_spec: { bug: 'failed output write is invisible to the caller', data_source: 'recorded-fixture', shape: 'write to an unwritable recorded target and assert the error reaches the caller', runtime: false }
+};
+
+async function runInterruptedReview(malformedPayload) {
+    const orchestratorCalls = [];
+    const gateway = {
+        listModels: async () => [{ id: 'grunt-fixture' }, { id: 'orchestrator-fixture' }],
+        chat: async (args) => {
+            if (args.model === 'grunt-fixture') {
+                return { content: JSON.stringify({ role: 'fixture file', boundaries: [], risks: [] }) };
+            }
+            orchestratorCalls.push(args);
+            if (orchestratorCalls.length === 1) {
+                return { content: JSON.stringify({ new_findings: [partialFinding], next_files: ['src/engine.rs'], done: false, summary: 'One completed round.' }) };
+            }
+            if (malformedPayload instanceof Error) throw malformedPayload;
+            return { content: malformedPayload };
+        }
+    };
+    const result = await runReview({
+        source: MIXED_FIXTURE,
+        models: { grunt: 'grunt-fixture', orchestrator: 'orchestrator-fixture' },
+        budget: { maxRounds: 4 },
+        gateway,
+        storageRoot: 'D:\\MCP_Storage',
+        dataDir: partialData
+    });
+    return { result, orchestratorCalls };
+}
+
+const truncated = await runInterruptedReview('{"new_findings": [], "next_files": [], "done": false, "summary": "unterminated');
+ok(truncated.result.partial === true && truncated.result.state.findings.length === 1, 'truncated JSON returns PARTIAL with the completed finding');
+ok(truncated.result.report.includes('PARTIAL REVIEW') && truncated.result.report.includes(truncated.result.state.interruption.message), 'partial report carries a loud interruption banner and exact parse error');
+ok(fs.existsSync(path.join(partialData, 'reviews', truncated.result.reviewId, 'report.md')), 'partial report.md is written normally');
+ok((await store.listFindings({ reviewId: truncated.result.reviewId })).length === 1, 'partial findings are persisted and accept-addressable');
+ok(truncated.result.state.completedRounds === 1 && truncated.result.state.interruption.round === 2, 'completed and interrupted round counts stay distinct');
+ok(truncated.orchestratorCalls.every((call) => call.maxTokens === 16000 && call.timeoutMs === 600000 && call.schema.properties.new_findings.maxItems === 5), 'orchestrator rounds are size-bounded and schema-guided');
+ok(await store.findLatestReviewForSource(path.resolve(MIXED_FIXTURE), 'grunt-fixture+orchestrator-fixture', validator.VALIDATOR_VERSION) === null, 'partial review is not treated as a completed incremental baseline');
+
+const overlongPayload = '{"new_findings": [], "next_files": [], "done": false, "summary": "' + 'x'.repeat(20000) + '}';
+const overlong = await runInterruptedReview(overlongPayload);
+ok(overlong.result.partial === true && overlong.result.state.findings.length === 1, 'overlong malformed JSON also preserves the completed finding');
+ok(overlong.result.report.includes('PARTIAL REVIEW') && overlong.result.report.includes('not a finished review'), 'overlong failure produces explicit incomplete-coverage report');
+
+const timedOut = await runInterruptedReview(new Error('Gateway chat timed out after 600000ms'));
+ok(timedOut.result.partial === true && timedOut.result.state.findings.length === 1, 'gateway timeout exhaustion also returns completed findings');
+ok(timedOut.result.report.includes('Gateway chat timed out after 600000ms'), 'partial report preserves the exact timeout error');
 
 // ── Gateway smoke (env-gated) ──────────────────────────────────────────────
 if (process.env.CODEVIEW_SMOKE === '1') {

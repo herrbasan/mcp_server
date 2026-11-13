@@ -791,6 +791,8 @@ execution (fail on unpatched snapshot, pass on patched).
       unknown ids fail loudly). budget: { maxRounds } (default 10).
       scope: { include, exclude } path prefixes. Returns the report +
       reviewId; report also written under data/codereview/reviews/<id>/.
+      Orchestrator timeout/JSON failure returns partial:true plus a PARTIAL
+      report containing every validated finding from completed rounds.
 
   codereview.findings — { reviewId?, status?, snapshotHash? }
       List persisted findings (compact records: id, status, file, class).

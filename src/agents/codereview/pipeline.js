@@ -29,13 +29,14 @@ function extractJson(text) {
     return JSON.parse(String(text).slice(first, last + 1));
 }
 
-async function callJson(gateway, model, systemPrompt, userPrompt, { maxTokens = 8000, timeoutMs = 300_000 } = {}) {
+async function callJson(gateway, model, systemPrompt, userPrompt, { maxTokens = 8000, timeoutMs = 300_000, schema = null } = {}) {
     const response = await gateway.chat({
         model,
         stream: false,
         maxTokens,
         timeoutMs,
         responseFormat: { type: 'json_object' },
+        ...(schema ? { schema } : {}),
         systemPrompt,
         messages: [{ role: 'user', content: userPrompt }]
     });
@@ -91,6 +92,19 @@ function loadPrinciples(storageRoot) {
     const end = content.indexOf('\n## ', start + 1);
     return (end === -1 ? content.slice(start) : content.slice(start, end)).trim();
 }
+
+const ORCHESTRATOR_ROUND_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+        new_findings: { type: 'array', maxItems: 5, items: { type: 'object' } },
+        next_files: { type: 'array', maxItems: 5, items: { type: 'string' } },
+        done: { type: 'boolean' },
+        summary: { type: 'string' }
+    },
+    required: ['new_findings', 'next_files', 'done', 'summary']
+};
+const ORCHESTRATOR_CALL_OPTIONS = { maxTokens: 16000, timeoutMs: 600_000, schema: ORCHESTRATOR_ROUND_SCHEMA };
 
 const ORCHESTRATOR_BRIEF = `
 You are the orchestrator of a code review. The maxims below are the rubric — they are not advice, they are the review criteria.
@@ -241,10 +255,12 @@ function renderSources(snapshotDir, files) {
 async function runOrchestratorLoop({ gateway, orchestratorModel, storageRoot, snapshotDir, analysis, digests, digestGaps, maxRounds, priorCarriedFindings }) {
     const state = {
         round: 0,
+        completedRounds: 0,
         dived: [],
         findings: [],
         rejections: [],
         stopReason: null,
+        interruption: null,
         summary: null
     };
     const principles = loadPrinciples(storageRoot);
@@ -255,10 +271,12 @@ async function runOrchestratorLoop({ gateway, orchestratorModel, storageRoot, sn
     const persist = async (reviewDir) => {
         const persistable = {
             round: state.round,
+            completedRounds: state.completedRounds,
             dived: state.dived,
             findings: state.findings,
             rejections: state.rejections,
             stopReason: state.stopReason,
+            interruption: state.interruption,
             summary: state.summary,
             remainingRounds: maxRounds - state.round,
             orchestratorModel
@@ -296,7 +314,7 @@ Respond with ONLY this JSON object:
 Rules: first round has no dive sources — choose next_files from the ranked list. done:true when another dive would not change the report. You have selected so far: ${state.dived.join(', ') || 'none'}.`;
 
                 emitProgress?.(`Orchestrator round ${state.round}/${maxRounds}...`, Math.min(10 + state.round * 7, 85));
-                const response = await callJsonWithRetry(gateway, orchestratorModel, systemPrompt, userPrompt);
+                const response = await callJsonWithRetry(gateway, orchestratorModel, systemPrompt, userPrompt, ORCHESTRATOR_CALL_OPTIONS);
 
                 const analysisSet = new Set(analysis.ranked.map((f) => f.rel));
                 let acceptedThisRound = 0;
@@ -314,6 +332,7 @@ Rules: first round has no dive sources — choose next_files from the ranked lis
                     .filter((f) => analysisSet.has(f) && !state.dived.includes(f))
                     .slice(0, 5);
                 state.dived.push(...nextFiles);
+                state.completedRounds = state.round;
                 await persist(reviewDir);
 
                 if (response.done === true || nextFiles.length === 0) {
@@ -332,6 +351,7 @@ Rules: first round has no dive sources — choose next_files from the ranked lis
                 state.stopReason = `round budget exhausted (${maxRounds})`;
             }
             state.summary = state.summary ?? '';
+            await persist(reviewDir);
             return state;
         },
         persist
@@ -378,8 +398,11 @@ async function computeIncremental({ fileHashes, analysis, priorReview, reviewsRo
 
 export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, coverage, exclusions, digestGaps, validatorStats, incremental }) {
     const lines = [];
-    lines.push(`# Code review — ${snapshotMeta.sourceLabel}`);
-    lines.push(`review: ${reviewId} · tree: ${snapshotMeta.treeHash.slice(0, 16)} · models: ${modelPair.grunt} + ${modelPair.orchestrator} · rounds: ${state.round} (${state.stopReason})`);
+    lines.push(`# Code review — ${snapshotMeta.sourceLabel}${state.interruption ? ' — PARTIAL' : ''}`);
+    lines.push(`review: ${reviewId} · tree: ${snapshotMeta.treeHash.slice(0, 16)} · models: ${modelPair.grunt} + ${modelPair.orchestrator} · rounds: ${state.completedRounds ?? state.round} completed (${state.stopReason})`);
+    if (state.interruption) {
+        lines.push(`\n> **PARTIAL REVIEW — orchestrator interrupted during round ${state.interruption.round}.** ${state.interruption.message}\n> The findings below were validated and persisted from completed rounds. Coverage is incomplete; this is not a finished review.`);
+    }
     if (state.summary) {
         lines.push(`\n**Posture:** ${state.summary}`);
     }
@@ -549,7 +572,22 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         maxRounds,
         priorCarriedFindings: carried
     });
-    const state = await loop.run(reviewDir, emitProgress);
+    const state = loop.state;
+    let partial = false;
+    try {
+        await loop.run(reviewDir, emitProgress);
+    } catch (err) {
+        // The orchestrator is an external boundary. Completed rounds already
+        // contain validated findings; failure must become a visible partial
+        // result, not destroy the report (issue #77).
+        partial = true;
+        const message = String(err.message ?? err).slice(0, 2000);
+        state.interruption = { stage: 'orchestrator', round: state.round, message };
+        state.stopReason = `orchestrator interrupted: ${message}`;
+        state.summary ??= '';
+        await loop.persist(reviewDir);
+        logger.error(`[codereview] review ${reviewId} interrupted after ${state.completedRounds} completed round(s): ${message}; returning ${state.findings.length} persisted finding(s) as PARTIAL`, null, 'CodeReview');
+    }
 
     // Persist analysis for the next incremental run (per-file hashes + graph).
     await fsp.writeFile(path.join(reviewDir, 'analysis.json'), JSON.stringify({
@@ -625,8 +663,9 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         snapshotHash: snapshotMeta.treeHash,
         modelPair: modelPairKey,
         validatorVersion: VALIDATOR_VERSION,
-        status: 'done',
-        rounds: state.round,
+        status: partial ? 'partial' : 'done',
+        rounds: state.completedRounds,
+        interruption: state.interruption,
         stopReason: state.stopReason,
         findingCount: state.findings.length,
         rejectionCount: state.rejections.length,
@@ -634,5 +673,5 @@ export async function runReview({ source, models, budget, scope, gateway, storag
     });
 
     logger.info(`[codereview] review ${reviewId} done: ${state.findings.length} findings, ${state.rejections.length} rejected, ${carried.length} carried`, null, 'CodeReview');
-    return { reviewId, report, state, coverage };
+    return { reviewId, report, state, coverage, partial };
 }

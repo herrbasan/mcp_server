@@ -56,9 +56,15 @@ native runner to verify non-JavaScript fixes.
    map.
 5. **Tier 2** (orchestrator model) — sees the map + digests + raw source of
    its own dive selections. System prompt = Prime Directive principles +
-   rubric. Stateless calls: full state (`map, verified_findings,
-   remaining_budget`) rebuilt each turn, persisted to `state.json` after every
-   round. Stops on `done`, no-further-targets, two empty rounds, or budget.
+   rubric. Round responses use a top-level JSON schema (≤5 findings, ≤5 next
+   files), a 16,000-token cap, and a 600 s transport timeout. Stateless calls:
+   full state (`map, verified_findings, remaining_budget`) rebuilt each turn,
+   persisted to `state.json` after every round. Stops on `done`,
+   no-further-targets, two empty rounds, or budget. If transport retries or the
+   malformed-JSON retry exhaust, the review returns **PARTIAL**: the error and
+   interrupted round are named, all completed findings are persisted, and the
+   report is written normally. A partial review is never used as a completed
+   incremental baseline.
 6. **Report** — rendered deterministically from validated findings (free wins
    first, then trade-off decisions as explicit either/or), coverage
    (un-reviewed files listed — never silent; JavaScript/Rust/generic text
@@ -108,3 +114,7 @@ rejected across snapshots as line numbers shift.
 - Static v1: cross-file/runtime bugs (the VDB-stall class) can appear as test
   *specs* but the sandbox may mark them `unprovable` — that is the honest
   scope, not a failure.
+- An orchestrator timeout or malformed response does **not** discard completed
+  work: `codereview.review` returns `partial: true`, a report with a PARTIAL
+  banner and exact interruption, and normal finding IDs. Only `done` reviews
+  qualify as incremental baselines.
