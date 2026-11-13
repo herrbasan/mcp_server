@@ -63,6 +63,17 @@ function inferProcessor(filePath) {
 // back to the bare payload keeps an older envelope-less build answerable.
 const unwrap = (payload) => payload?.data ?? payload;
 
+export function normalizeQueuedJob(payload) {
+    const job = unwrap(payload);
+    const jobId = job.jobId ?? job.id;
+    if (!jobId || !(job.poll_url ?? job.progressUrl)) {
+        throw new Error(`media_process: nMedia response missing jobId/progressUrl: ${JSON.stringify(payload).slice(0, 200)}`);
+    }
+    // progressUrl is SSE. JSON status polling lives at /v1/jobs/{id};
+    // older nMedia builds supplied poll_url explicitly.
+    return { jobId, pollUrl: job.poll_url ?? `/v1/jobs/${jobId}` };
+}
+
 async function postJob(body) {
     const res = await fetch(`${nMediaUrl}/v1/process`, {
         method: 'POST',
@@ -77,12 +88,7 @@ async function postJob(body) {
     } catch {
         throw new Error(`media_process: nMedia returned non-JSON: ${text.slice(0, 200)}`);
     }
-    const job = unwrap(parsed);
-    const pollUrl = job.poll_url ?? job.progressUrl;
-    if ((!job.jobId && !job.id) || !pollUrl) {
-        throw new Error(`media_process: nMedia response missing jobId/progressUrl: ${text.slice(0, 200)}`);
-    }
-    return { jobId: job.jobId ?? job.id, pollUrl };
+    return normalizeQueuedJob(parsed);
 }
 
 async function pollJob(pollUrl, deadline) {

@@ -19,7 +19,10 @@ cached asset, and writes it into storage.
 **Flow:** `POST /v1/process {input_path, processor, mode?, options}` →
 poll `GET /v1/jobs/:id` → `GET /v1/assets/:id/metadata` (dimensions) +
 `GET /v1/assets/:id` (bytes) → `fs.writeFileSync` into storage → re-stat
-verify. Jobs complete in ~0.3 s for SVG raster; the poll deadline is
+verify. The queued response may be bare or wrapped in `{ success, data }`;
+both are accepted. Its `progressUrl` is SSE and is **not** polled as JSON —
+the proxy derives the JSON status URL `/v1/jobs/<jobId>` (legacy `poll_url`
+is still honored). Jobs complete in ~0.3 s for SVG raster; the poll deadline is
 `agents.media.timeoutMs` (default 120 s) — on timeout the error names the job
 URL (jobs and assets persist ~1 h).
 
