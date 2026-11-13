@@ -1,0 +1,60 @@
+{
+    "agent": "codereview",
+    "description": "Prime-Directive code review agent. Reviews a codebase (local path, UNC path, owner/repo@ref, or archive) for reliability and performance optimization: most reliability at the lowest performance cost. Tiered pipeline: tier-0 deterministic analysis (acorn dep graph, boundary classification, defensive-pattern hunts, dive ranking), tier-1 grunt-model digests, tier-2 orchestrator verification. Findings are structured JSON with verbatim evidence, boundary-ladder documentation, and paired test specs; a deterministic validator gates every model output against the maxims (no defensive programming, no clean-code ritual). Report-first: diffs and executable tests are generated only on accept, and the acceptance gate executes the test (must fail on the unpatched snapshot, pass on the patched one). Findings persist in nDB keyed by snapshot hash + model pair.",
+    "tools": [
+        {
+            "name": "codereview_review",
+            "description": "Run a code review. source: absolute local path, UNC path (\\\\server\\share\\dir), 'owner/repo' or 'owner/repo@ref' (GitHub), or path to a .zip/.tar.gz archive. Optional models: { grunt, orchestrator } gateway model ids (defaults from config; unknown ids fail loudly). Optional budget: { maxRounds } dive-round cap (default 10). Optional scope: { include, exclude } — glob-ish path prefixes to narrow the review. Returns the full report and a reviewId; the report is also written under data/codereview/reviews/<reviewId>/report.md.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "Local path, UNC path, owner/repo[@ref], or archive file path" },
+                    "models": {
+                        "type": "object",
+                        "properties": {
+                            "grunt": { "type": "string" },
+                            "orchestrator": { "type": "string" }
+                        }
+                    },
+                    "budget": {
+                        "type": "object",
+                        "properties": {
+                            "maxRounds": { "type": "number", "description": "Max orchestrator dive rounds (default 10)" }
+                        }
+                    },
+                    "scope": {
+                        "type": "object",
+                        "properties": {
+                            "include": { "type": "array", "items": { "type": "string" }, "description": "Path prefixes to include (e.g. ['src/'])" },
+                            "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path prefixes to exclude" }
+                        }
+                    }
+                },
+                "required": ["source"]
+            }
+        },
+        {
+            "name": "codereview_findings",
+            "description": "List persisted findings. Filter by reviewId, status (new|accepted|rejected|unprovable), or snapshotHash. Returns compact records: id, file, lines, class, status, failure_mode. Full detail (evidence, rung, test_spec, suggestion) via the report or nDB directly.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reviewId": { "type": "string" },
+                    "status": { "type": "string", "enum": ["new", "accepted", "rejected", "unprovable"] },
+                    "snapshotHash": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "codereview_accept",
+            "description": "Accept a finding: generates the diff + executable test (orchestrator model), then runs the acceptance gate in a sandbox — the test MUST fail on the unpatched snapshot and pass on the patched one. Findings whose bug cannot be reproduced in a static sandbox are marked unprovable instead of verified. Returns verdict, diff, and test code.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "findingId": { "type": "string", "description": "Finding id from codereview.findings or the report" }
+                },
+                "required": ["findingId"]
+            }
+        }
+    ]
+}
