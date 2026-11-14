@@ -20,6 +20,7 @@ import fs from 'fs';
 import path from 'path';
 import { getLogger } from '../../utils/logger.js';
 import { audit, check, CONTRACT, variantSvg, resolve } from '../../nCharts/src/index.js';
+import { ICONS } from '../../nCharts/src/icons.js';
 import { sketchify } from './sketch.js';
 
 const logger = getLogger();
@@ -100,6 +101,25 @@ async function nmediaProcess(base64, { format, maxDimension, quality } = {}) {
 }
 
 export async function chart_guide(args) {
+    if (args?.icons !== undefined) {
+        const q = String(args.icons).trim().toLowerCase();
+        if (!q) throw new Error('chart_guide: "icons" query must be non-empty');
+        const names = Object.keys(ICONS);
+        const exact = names.filter((n) => n === q);
+        const prefix = names.filter((n) => n !== q && n.startsWith(q));
+        const sub = names.filter((n) => !n.startsWith(q) && n.includes(q));
+        const matches = [...exact, ...prefix, ...sub].slice(0, 40);
+        return {
+            content: [{
+                type: 'text',
+                text: matches.length
+                    ? `Icons matching "${q}" (${matches.length}${exact.length + prefix.length + sub.length > 40 ? '+' : ''}):\n${matches.join(', ')}`
+                    : `No Material icons matched "${q}". Try a broader keyword (e.g. "storage", "cloud", "arrow", "code").`
+            }],
+            isError: false
+        };
+    }
+
     const wanted = args?.example;
 
     if (wanted) {
@@ -184,7 +204,8 @@ export async function chart_render(args) {
     const lines = [
         `${base}`,
         `  svg      ${rel(svgPath)}`,
-        `  spec     ${rel(specPath)}`
+        `  spec     ${rel(specPath)}`,
+        `  canvas   ${Math.round(resolved.width)}x${Math.round(resolved.height)}`
     ];
     if (report.frame) {
         lines.push(`  frame    ${report.frame} · ${report.variant} · scale ${report.scale.toFixed(2)}x`);
@@ -195,15 +216,18 @@ export async function chart_render(args) {
         // nMedia is an outside service, and the diagram is already written. A
         // preview failure is reported in the result rather than thrown, so a
         // caller does not lose a good render because a rasterizer was down.
+        const maxDim = resolved.normalized.board
+            ? Math.max(previewSize, Math.min(2400, Math.round(Math.max(resolved.width, resolved.height))))
+            : previewSize;
         try {
             const raster = await nmediaProcess(Buffer.from(variantSvg(svg, args?.theme), 'utf8').toString('base64'), {
                 format: 'png',
-                maxDimension: previewSize
+                maxDimension: maxDim
             });
             previewPng = raster.buf;
             const previewWebp = await nmediaProcess(previewPng.toString('base64'), {
                 format: 'webp',
-                maxDimension: previewSize,
+                maxDimension: maxDim,
                 quality: 90
             });
             const previewPath = path.join(dir, `${base}_preview.webp`);

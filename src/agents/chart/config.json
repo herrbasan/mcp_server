@@ -8,7 +8,8 @@
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "example": { "type": "string", "description": "Name of a bundled example spec to return verbatim (e.g. 'flow-gateway', 'table-comparison', 'steps-ramp'). Omit to get the contract plus the list of available example names." }
+                    "example": { "type": "string", "description": "Name of a bundled example spec to return verbatim (e.g. 'flow-gateway', 'table-comparison', 'steps-ramp', 'board-architecture'). Omit to get the contract plus the list of available example names." },
+                    "icons": { "type": "string", "description": "Search the 2,191 bundled Material icon names by substring (e.g. 'storage', 'hub', 'lock'). Returns up to 40 matching icon names." }
                 }
             }
         },
