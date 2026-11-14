@@ -22,6 +22,9 @@
         "accept": "kimi-k31-chat"
       }
     },
+    "stylereview": {
+      "model": "deepseek-flash-chat"
+    },
     "usage-monitor": {
       "intervalMinutes": 10,
       "autoStart": true,

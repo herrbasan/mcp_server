@@ -1,0 +1,32 @@
+{
+    "agent": "stylereview",
+    "description": "[BETA] UX/UI, NUI-conformance, and chart/SVG style review agent. Runs deterministic Tier-0 geometry, spacing, typography, contrast, SVG-collision, and NUI-pattern probes in headless Chromium, followed by a single-pass LLM critique for UX flow, visual hierarchy, and taste.",
+    "tools": [
+        {
+            "name": "stylereview_review",
+            "description": "Review a live URL or local .html/.svg file for layout, spacing, typography, contrast, NUI pattern conformance, SVG/chart collisions, and UX clarity. target: http(s):// URL or absolute local file path. viewports: optional [{ name, width, height }] (defaults to desktop 1440x900 + mobile 390x844 for HTML, or 1280x900 for SVG). probeInteractions: boolean (default false) to click safe tabs/buttons and verify feedback. tier0Only: boolean (default false) to skip the LLM pass. model: optional gateway chat model id override.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": { "type": "string", "description": "http(s):// URL or absolute path to an .html or .svg file" },
+                    "viewports": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "width": { "type": "number" },
+                                "height": { "type": "number" }
+                            },
+                            "required": ["name", "width", "height"]
+                        }
+                    },
+                    "probeInteractions": { "type": "boolean", "description": "Click non-destructive tabs/buttons and check for DOM/URL/console feedback (default false)" },
+                    "tier0Only": { "type": "boolean", "description": "Run only deterministic Tier-0 checks without calling the LLM (default false)" },
+                    "model": { "type": "string", "description": "Optional gateway chat model id override" }
+                },
+                "required": ["target"]
+            }
+        }
+    ]
+}

@@ -12,7 +12,7 @@
 - **Entry point**: `src/server.js` — HTTP server on port 3100.
 - **Transport**: Per-session SSE mapped by `sessionId`.
 - **Gateway client**: `src/gateway-client.js` — WebSocket to central LLM Gateway at localhost:3400.
-- **Agents**: `src/agents/` — browser, chart, chat, codereview, dreaming, forge, github, harvest, image, inspector, llm, memory, nconvert, notepad, print, research, storage, telemetry, vision.
+- **Agents**: `src/agents/` — browser, chart, chat, codereview, dreaming, forge, github, harvest, image, inspector, llm, memory, nconvert, notepad, print, research, storage, stylereview, telemetry, vision.
 - **Loader**: `src/agent-loader.js` — loads agents and registers tools.
 - **Config**: `config.json` (non-sensitive) + `.env` (sensitive).
 
@@ -80,6 +80,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
   `docs/upload-handoff-spec.md`, reference: `documentation/tools/upload.md`,
   tests: `npm run test:upload`.
 - `src/agents/codereview/` — Prime-Directive code review agent (spec: `docs/codereview-spec.md`, reference: `documentation/tools/codereview.md`). JavaScript AST + Rust structural tier-0 analysis; **every snapshotted text file** (code, config, docs, data, extensionless) stays model-review eligible, with generic tier-0 coverage explicitly reported. Direct parallel pipeline: tier-0 ranks targets deterministically and dispatches isolated parallel per-file reviews with 1-hop context, hard file/time/token budgets, per-call telemetry ledger, and the deterministic bias validator; per-target failures or budget stops return a persisted PARTIAL report instead of discarding completed findings; snapshots under `data/codereview/`; automated acceptance gate is JavaScript-only and refuses other languages loudly; tests: `npm run test:codereview`.
+- `src/agents/stylereview/` — UX/UI, NUI-pattern, and SVG/chart style review agent. Tier-0 deterministic Chromium geometry/spacing/typography/contrast/SVG/NUI probe + single-pass LLM UX/taste critique (`stylereview.review`); tests: `npm run test:stylereview`.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
 - `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).

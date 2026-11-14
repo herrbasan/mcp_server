@@ -808,6 +808,21 @@ execution (fail on unpatched snapshot, pass on patched).
 
 
 ═══════════════════════════════════════════════════════════════
+STYLEREVIEW — UX/UI, NUI & Chart Style Review
+═══════════════════════════════════════════════════════════════
+
+Deterministic Tier-0 geometry, spacing, typography, contrast, NUI-pattern,
+and SVG/chart collision checks in headless Chromium, followed by a single-pass
+LLM critique for UX flow, hierarchy, and taste.
+
+  stylereview.review — { target*, viewports?, probeInteractions?, tier0Only?, model? }
+      target: http(s):// URL or absolute path to an .html or .svg file.
+      viewports: [{ name, width, height }] (defaults to desktop 1440x900 +
+      mobile 390x844 for HTML; 1280x900 for SVG). probeInteractions: click
+      safe controls to detect silent actions. tier0Only: skip LLM pass.
+
+
+═══════════════════════════════════════════════════════════════
 VISION — Image Analysis
 ═══════════════════════════════════════════════════════════════
 
@@ -1507,6 +1522,8 @@ IMPORTANT RULES
         "codereview.review": "codereview_review",
         "codereview.findings": "codereview_findings",
         "codereview.accept": "codereview_accept",
+
+        "stylereview.review": "stylereview_review",
 
         "git.read": "git_read_file", "git.tree": "git_list_tree", "git.log": "git_log",
         "git.commit": "git_get_commit", "git.diff": "git_diff", "git.branches": "git_list_branches",
