@@ -13,63 +13,66 @@ Opus 5.5); the spec is the contract.
 
 ## Tools
 
-**`codereview.review`** — `{ source*, models?, budget?, scope? }`
+**`codereview.review`** — `{ source*, model?, budget?, scope? }`
 
 Runs the pipeline. `source`: absolute local path, UNC path (`\\coolkid\Work\…`),
 `owner/repo[@ref]` (GitHub, shallow fetch via `GIT_TOKEN`), or a `.zip`/`.tar.gz`
-archive. `models`: `{ grunt, orchestrator }` gateway ids — defaults
-`deepseek-flash-chat` + `kimi-k31-chat` from `config.json`
-(`agents.codereview.models`); unknown ids fail loudly, never silently default.
-`budget.maxRounds` (default 10) caps orchestrator dive rounds. `scope`:
-`{ include, exclude }` snapshot-relative path prefixes. Returns the report +
-`reviewId`; report also on disk at `data/codereview/reviews/<id>/report.md`.
+archive. `model`: gateway chat model id — defaults to `deepseek-flash-chat` from
+`config.json` (`agents.codereview.models.reviewer`); unknown ids fail loudly.
+`budget`: `{ maxFiles, concurrency, maxDurationMs, maxTokens, perFileTimeoutMs }`
+(defaults: `12` files, `4` concurrent workers, `240000` ms wall clock, `400000`
+total tokens, `120000` ms per-file timeout). `scope`: `{ include, exclude }`
+snapshot-relative path prefixes. Returns the report (including a per-target
+telemetry/token/cost ledger) + `reviewId`; report also on disk at
+`data/codereview/reviews/<id>/report.md`.
 
 **`codereview.findings`** — `{ reviewId?, status?, snapshotHash? }` — compact
 persisted findings (id, status, file, class, failure mode).
 
-**`codereview.accept`** — `{ findingId* }` — generates diff + test (orchestrator
-model), then the **acceptance gate**: the test is executed in a sandbox and must
-**fail on the unpatched snapshot, pass on the patched one**. `failed-before` =
-bug not proven; `failed-after` = diff doesn't fix it; either blocks acceptance
-loudly with run output. Runtime-only bugs → `unprovable` (artifacts stored, no
-verification claim). The automated gate currently supports **JavaScript only**;
-other languages are refused before generation so a Rust finding never receives
-a bogus Node test. Review and findings are language-general; use the project's
-native runner to verify non-JavaScript fixes.
+**`codereview.accept`** — `{ findingId* }` — generates diff + test (`agents.codereview.models.accept`,
+default `kimi-k31-chat`), then the **acceptance gate**: the test is executed in
+a sandbox and must **fail on the unpatched snapshot, pass on the patched one**.
+`failed-before` = bug not proven; `failed-after` = diff doesn't fix it; either
+blocks acceptance loudly with run output. Runtime-only bugs → `unprovable`
+(artifacts stored, no verification claim). The automated gate currently supports
+**JavaScript only**; other languages are refused before generation so a Rust
+finding never receives a bogus Node test. Review and findings are
+language-general; use the project's native runner to verify non-JavaScript fixes.
 
 ## Pipeline
 
 1. **Snapshot** (resolver) — every source kind materializes to
    `data/codereview/snapshots/<treeHash16>/` + tree hash. Exclusions at copy
-   time (`.git`, `node_modules`, `vendor`/`third_party`/`external`/`pdfium`,
-   binaries, minified heuristic,
-   **secrets — snapshots feed third-party gateways**), every exclusion listed
-   in the report.
-2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus discarded-Result, empty-`Err`-branch, and config-default candidates. Both get boundary classification (network/process/fs) and deterministic dive ranking (boundary weight + fan-in + hunt density). **Every snapshotted text file is eligible**, including configuration, documentation, data, and extensionless files. Other languages and formats get generic boundary analysis and ranking; language controls deterministic depth only, never review eligibility. Unresolved edges are recorded, never trusted.
-3. **Incremental** — prior review of the same source + model pair + validator
-   version: changed files (per-file hashes) + **blast radius** (importers via
-   the dependency graph) are re-digested; findings outside the radius are
-   carried. Cache key includes model pair and validator version.
-4. **Tier 1** (grunt model) — one file per call, schema'd JSON digests
-   (`role`, `boundaries`, `risks`), 4 concurrent, retry once with the error
-   attached, then the gap is recorded and visible. Free prose never enters the
-   map.
-5. **Tier 2** (orchestrator model) — sees the map + digests + raw source of
-   its own dive selections. System prompt = Prime Directive principles +
-   rubric. Round responses use a top-level JSON schema (≤5 findings, ≤5 next
-   files), a 16,000-token cap, and a 600 s transport timeout. Stateless calls:
-   full state (`map, verified_findings, remaining_budget`) rebuilt each turn,
-   persisted to `state.json` after every round. Stops on `done`,
-   no-further-targets, two empty rounds, or budget. If transport retries or the
-   malformed-JSON retry exhaust, the review returns **PARTIAL**: the error and
-   interrupted round are named, all completed findings are persisted, and the
-   report is written normally. A partial review is never used as a completed
-   incremental baseline.
-6. **Report** — rendered deterministically from validated findings (free wins
-   first, then trade-off decisions as explicit either/or), coverage
-   (un-reviewed files listed — never silent; JavaScript/Rust/generic text
-   totals; every generic-analysis file named with its reduced tier-0 depth),
-   exclusions, digest gaps, validator rejections, blocklist counter.
+   time (`.git`, `node_modules`, `target`, `dist`, `build`, `logs`, `.test-output`,
+   `_Archive`, `vendor`/`third_party`/`external`/`pdfium`, binaries, minified
+   heuristic, **secrets — snapshots feed third-party gateways**), every exclusion
+   listed in the report.
+2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and
+   defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus
+   discarded-Result, empty-`Err`-branch, and config-default candidates. Both
+   get boundary classification (network/process/fs) and deterministic ranking
+   (boundary weight + fan-in + bug-hunt density, with passive prose/lock files
+   such as `.md`/`.svg`/`.lock` excluded from code boundary weights so they do
+   not crowd out source files). **Every snapshotted text file is eligible**,
+   including configuration, documentation, data, and extensionless files.
+   Unresolved edges are recorded, never trusted.
+3. **Incremental** — prior completed review of the same source + model +
+   validator version: changed files (per-file hashes) + **blast radius**
+   (importers via the dependency graph, including deletions) are re-reviewed
+   up to `maxFiles`; findings outside the radius are carried. Unchanged trees
+   make zero model calls.
+4. **Parallel isolated target reviews** — selected top-ranked targets run
+   concurrently (`concurrency` workers, `stream: false`, `maxTokens: 16000`,
+   schema-guided JSON). Each call sees ONLY that file's numbered source, Tier-0
+   hunt candidates, and 1-hop imports/importers — no upfront digest phase, no
+   sequential map replay. Failures are isolated per target; budget exhaustion
+   or per-target failure marks remaining/failed targets and returns `partial: true`
+   with a PARTIAL report preserving all validated findings.
+5. **Report** — rendered deterministically from validated findings (free wins
+   first, then trade-off decisions as explicit either/or), per-target telemetry
+   and token/cost ledger, coverage (un-reviewed files listed — never silent;
+   JavaScript/Rust/generic text totals), exclusions, validator rejections,
+   blocklist counter.
 
 ## Bias containment (validator, spec §3.2)
 

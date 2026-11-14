@@ -18,8 +18,8 @@
     },
     "codereview": {
       "models": {
-        "grunt": "deepseek-flash-chat",
-        "orchestrator": "kimi-k31-chat"
+        "reviewer": "deepseek-flash-chat",
+        "accept": "kimi-k31-chat"
       }
     },
     "usage-monitor": {

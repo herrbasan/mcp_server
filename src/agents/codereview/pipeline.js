@@ -1,9 +1,8 @@
-// Review pipeline — tier-1 grunt digests, tier-2 orchestrator loop, state
-// persistence, report rendering (spec §4). The orchestrator never sees the
-// whole codebase: it sees the map and digests, plus raw source of the dive
-// targets it selects. State is a structured object resent in full each turn
-// and persisted to disk after every round — crash survival is only real if
-// it's on disk (§7.4).
+// Review pipeline — direct parallel target review (spec §0 / §4).
+// Tier-0 ranks targets deterministically; selected targets are reviewed once
+// in parallel, isolated calls with 1-hop dependency context and Tier-0 hunts.
+// Zero upfront digest pass, zero sequential multi-round context replay, hard
+// file/time/token budgets, and a per-call telemetry ledger.
 
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -12,24 +11,78 @@ import crypto from 'crypto';
 import { getLogger } from '../../utils/logger.js';
 import { computeBlastRadiusWithDeletions } from './analyzer.js';
 import {
-    VALIDATOR_VERSION, validateFinding, validateDigest, validateTestSpec,
-    countBlocklist, findingFingerprint
+    VALIDATOR_VERSION, validateFinding, countBlocklist, findingFingerprint
 } from './validator.js';
 import * as store from './store.js';
 
 const logger = getLogger();
 
+const DEFAULT_MAX_FILES = 12;
+const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_MAX_DURATION_MS = 240_000;
+const DEFAULT_MAX_TOKENS = 400_000;
+const DEFAULT_PER_FILE_TIMEOUT_MS = 120_000;
+const MAX_SOURCE_CHARS = 100_000;
+
 // ── Model call helpers ─────────────────────────────────────────────────────
 
-function extractJson(text) {
+export function extractJson(text) {
     if (typeof text === 'object' && text !== null) return text;
-    const first = String(text ?? '').indexOf('{');
-    const last = String(text ?? '').lastIndexOf('}');
-    if (first === -1 || last <= first) throw new Error('no JSON object in model output');
-    return JSON.parse(String(text).slice(first, last + 1));
+    const raw = String(text ?? '');
+    let start = raw.indexOf('{');
+    if (start === -1) throw new Error('no JSON object in model output');
+    let lastErr = null;
+    while (start !== -1) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        let close = -1;
+        for (let i = start; i < raw.length; i++) {
+            const ch = raw[i];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (ch === '\\') escaped = true;
+                else if (ch === '"') inString = false;
+                continue;
+            }
+            if (ch === '"') { inString = true; continue; }
+            if (ch === '{') depth++;
+            else if (ch === '}') {
+                depth--;
+                if (depth === 0) { close = i; break; }
+            }
+        }
+        if (close === -1) {
+            try {
+                return JSON.parse(raw.slice(start));
+            } catch (err) {
+                throw lastErr ?? err;
+            }
+        }
+        try {
+            return JSON.parse(raw.slice(start, close + 1));
+        } catch (err) {
+            lastErr = err;
+            start = raw.indexOf('{', start + 1);
+        }
+    }
+    throw lastErr ?? new Error('no JSON object in model output');
 }
 
-async function callJson(gateway, model, systemPrompt, userPrompt, { maxTokens = 8000, timeoutMs = 300_000, schema = null } = {}) {
+function addUsage(acc, usage) {
+    if (!usage || typeof usage !== 'object') return;
+    const prompt = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
+    const completion = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
+    const total = Number(usage.total_tokens ?? (prompt + completion));
+    if (Number.isFinite(prompt)) acc.promptTokens += prompt;
+    if (Number.isFinite(completion)) acc.completionTokens += completion;
+    if (Number.isFinite(total)) acc.totalTokens += total;
+    if (typeof usage.cost === 'number' && Number.isFinite(usage.cost)) {
+        acc.cost = (acc.cost ?? 0) + usage.cost;
+    }
+}
+
+async function callJson(gateway, model, systemPrompt, userPrompt, { maxTokens = 16000, timeoutMs = DEFAULT_PER_FILE_TIMEOUT_MS, schema = null } = {}) {
     const response = await gateway.chat({
         model,
         stream: false,
@@ -40,12 +93,19 @@ async function callJson(gateway, model, systemPrompt, userPrompt, { maxTokens = 
         systemPrompt,
         messages: [{ role: 'user', content: userPrompt }]
     });
-    return extractJson(response.content);
+    if (response.finish_reason === 'length' && !response.content) {
+        const err = new Error(`model hit maxTokens (${maxTokens}) before emitting JSON (finish_reason=length)`);
+        err.usage = response.usage ?? null;
+        throw err;
+    }
+    try {
+        return { parsed: extractJson(response.content), usage: response.usage ?? null };
+    } catch (err) {
+        err.usage = response.usage ?? null;
+        throw err;
+    }
 }
 
-// The gateway client wraps transport failures as plain Errors ("Gateway
-// connection failed: fetch failed", timeouts) — classify by message, not by
-// error class, or wrapped connection deaths take the malformed-JSON path.
 function isConnectionError(err) {
     const message = String(err?.message ?? '');
     if (/^Gateway connection failed/.test(message)) return true;
@@ -54,18 +114,15 @@ function isConnectionError(err) {
     return false;
 }
 
-// A gateway call is a boundary we don't control. Two distinct failure shapes,
-// two distinct ladders (spec §4.1 — the pipeline climbs its own):
-// - Connection-level failures (undici keep-alive socket death: the gateway
-//   closes idle pooled sockets and a reused POST can die mid-flight) → retry
-//   the SAME prompt, up to twice, 1.5 s apart. Visible in the log each time.
-// - Malformed model output → ONE retry with the parse error attached, then loud.
-// Neither path ever degrades silently: exhaustion throws.
 async function callJsonWithRetry(gateway, model, systemPrompt, userPrompt, opts) {
+    const usageTotal = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: null };
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
-            return await callJson(gateway, model, systemPrompt, userPrompt, opts);
+            const res = await callJson(gateway, model, systemPrompt, userPrompt, opts);
+            addUsage(usageTotal, res.usage);
+            return { parsed: res.parsed, usage: usageTotal };
         } catch (err) {
+            addUsage(usageTotal, err.usage);
             if (isConnectionError(err) && attempt < 2) {
                 logger.warn(`[codereview] gateway connection died (attempt ${attempt + 1}/3, ${err.cause?.message ?? 'no cause'}); retrying same prompt`, null, 'CodeReview');
                 await new Promise((r) => setTimeout(r, 1500));
@@ -74,15 +131,26 @@ async function callJsonWithRetry(gateway, model, systemPrompt, userPrompt, opts)
             if (!isConnectionError(err)) {
                 const retryPrompt = `${userPrompt}\n\n--- Your previous reply was not valid JSON for the schema: ${err.message}\nReply again with ONLY the JSON object. ---`;
                 logger.warn(`[codereview] model ${model} returned malformed JSON (${err.message}); retrying once with error attached`, null, 'CodeReview');
-                return callJson(gateway, model, systemPrompt, retryPrompt, opts);
+                try {
+                    const retryRes = await callJson(gateway, model, systemPrompt, retryPrompt, opts);
+                    addUsage(usageTotal, retryRes.usage);
+                    return { parsed: retryRes.parsed, usage: usageTotal };
+                } catch (retryErr) {
+                    addUsage(usageTotal, retryErr.usage);
+                    retryErr.usageTotal = usageTotal;
+                    throw retryErr;
+                }
             }
+            err.usageTotal = usageTotal;
             throw err;
         }
     }
-    throw new Error(`codereview: gateway connection failed 3× for model ${model} — gateway unreachable from this process`);
+    const exhausted = new Error(`codereview: gateway connection failed 3× for model ${model} — gateway unreachable from this process`);
+    exhausted.usageTotal = usageTotal;
+    throw exhausted;
 }
 
-// ── System prompts ─────────────────────────────────────────────────────────
+// ── System prompt & schema ─────────────────────────────────────────────────
 
 function loadPrinciples(storageRoot) {
     const primePath = path.resolve(storageRoot, 'documentation', 'Workshop', 'Agents_Prime.md');
@@ -93,268 +161,282 @@ function loadPrinciples(storageRoot) {
     return (end === -1 ? content.slice(start) : content.slice(start, end)).trim();
 }
 
-const ORCHESTRATOR_ROUND_SCHEMA = {
+const FILE_REVIEW_SCHEMA = {
     type: 'object',
     additionalProperties: false,
     properties: {
-        new_findings: { type: 'array', maxItems: 5, items: { type: 'object' } },
-        next_files: { type: 'array', maxItems: 5, items: { type: 'string' } },
-        done: { type: 'boolean' },
-        summary: { type: 'string' }
+        findings: { type: 'array', maxItems: 5, items: { type: 'object' } },
+        note: { type: 'string' }
     },
-    required: ['new_findings', 'next_files', 'done', 'summary']
+    required: ['findings', 'note']
 };
-const ORCHESTRATOR_CALL_OPTIONS = { maxTokens: 16000, timeoutMs: 600_000, schema: ORCHESTRATOR_ROUND_SCHEMA };
 
-const ORCHESTRATOR_BRIEF = `
-You are the orchestrator of a code review. The maxims below are the rubric — they are not advice, they are the review criteria.
+const FILE_REVIEW_BRIEF = `
+You are reviewing ONE source file under the Prime Directive maxims.
 
-Goal: the most reliability at the lowest performance cost. Anti-goals: defensive-programming bloat, error-reporting ritual, clean-code conventions. The aim is architectures that cannot fail; if code CAN fail, the suggestion is to change it so it cannot — not to handle the failure.
+Goal: the most reliability at the lowest performance cost. Anti-goals: defensive-programming bloat, error-reporting ritual, clean-code conventions. The aim is architectures that cannot fail; if code CAN fail, change it so it cannot — do not add defensive handling.
 
 BOUNDARY LADDER — every external dependency is judged on three rungs, in order:
-1. ELIMINATE: why does this dependency exist at all? Local copy, precomputed data, in-process call. The best failure handling is the request not existing.
-2. SHRINK BLAST RADIUS: what happens to the process when it fails? Consequence classes: corrupts-state/wrong-answer > feature-degrades > cosmetic. Redesign until it drops a class. Strong pattern: design the failure into the contract — failure as data (Result-style return), not a control-flow hijack.
+1. ELIMINATE: why does this dependency exist at all? Local copy, precomputed data, in-process call.
+2. SHRINK BLAST RADIUS: failure as data (Result-style return), not control-flow hijack. Consequence classes: corrupts-state/wrong-answer > feature-degrades > cosmetic.
 3. TOLERATE VISIBLY: only what survives 1-2 earns a handler, and it must leave a trace.
-A handler that exists without having climbed the ladder is the smell. Throwing guards (fail-fast assertions) are ALWAYS legal and prescribed. Degrading guards (fallback defaults, swallowed catches) are only legal with documented ladder analysis.
+Throwing guards (fail-fast assertions) are ALWAYS legal. Degrading guards (fallback defaults, swallowed catches) require documented ladder analysis ("rung").
 
-YOUR JOB each round:
-- You receive a MAP of the codebase (modules, ranked files with facts and digests, hunt candidates from deterministic analysis) and, from round 2 on, the RAW SOURCE (with line numbers) of files you selected.
-- Judge hunt candidates against the rubric. Read dive sources for verification and for finding issues grep cannot see (cross-file contract breaks, race shapes, wrong failure-consequence class).
-- Emit findings ONLY where you can quote the file VERBATIM. No generic advice — a finding without a reproducible failure mode is noise.
-
-FINDING SCHEMA (exact, one object per finding):
+FINDING SCHEMA (exact, max 5 high-signal findings; empty array when nothing real):
 {
-  "file": "snapshot-relative/source-path",
+  "file": "<the exact relative file path given>",
   "lines": [startLine, endLine],
-  "evidence": "verbatim quote from the file — must match the cited lines exactly",
-  "failure_mode": "what breaks, when, in production shape",
+  "evidence": "verbatim quote from the file — MUST match cited lines character-for-character; NEVER include the '<num> | ' line-number prefix",
+  "failure_mode": "concrete bug or failure mode — what breaks, when, in production shape",
   "class": "free-win" | "trade-off",
-  "suggestion": "the change to make; include a diff-style code block when concrete. free-win = improves reliability AND performance. trade-off = reliability vs performance genuinely opposed (surface the either/or, do not pick silently).",
-  "rung": null | { "dependency": "...", "rejected_elimination": "why rung 1 fails", "consequence_before": "...", "consequence_after": "..." }  // REQUIRED non-null if the suggestion adds a degrading guard
-  "test_spec": { "bug": "the concrete bug this test proves", "data_source": "production-replay" | "recorded-fixture" | "calibrated-generated", "shape": "the load shape (concurrency, volume, skew) — a number tests nothing", "runtime": true|false }  // runtime:true when the bug needs live runtime conditions a static sandbox cannot reproduce
+  "suggestion": "the concrete fix (include a diff-style code block when helpful). free-win = reliability AND performance. trade-off = genuine either/or.",
+  "rung": null | { "dependency": "...", "rejected_elimination": "why rung 1 fails", "consequence_before": "...", "consequence_after": "..." },
+  "test_spec": { "bug": "concrete bug proved", "data_source": "production-replay" | "recorded-fixture" | "calibrated-generated", "shape": "load shape (concurrency, volume, skew — never placeholder foo/bar)", "runtime": true|false }
 }
 
 RULES:
-- Max 5 findings per round. Depth beats volume.
-- Evidence must be copied character-for-character from the file, inside the lines you cite.
-- Never suggest adding try/catch, null guards, fallbacks, or validation layers unless you document the ladder AND boundary validation genuinely cannot eliminate the input.
+- Judge every Tier-0 hunt candidate listed for this file; emit only real findings.
+- Never suggest adding try/catch, null guards, or fallback defaults unless boundary validation cannot eliminate the input AND you document "rung".
 - Prefer deleting defensive code over adding handling.
-- test_spec is mandatory. If you cannot name the bug a test would catch, you have no finding.
+- "lines" are 1-based integers matching the numbered source. "evidence" MUST NOT contain the "<num> | " prefix.
+- Reply with ONLY the JSON object. No markdown fences, no commentary before or after.
 `;
 
-const GRUNT_BRIEF = `
-You are the digest writer in a code-review pipeline. Factual, terse, no advice.
-Given one source file, reply with ONLY this JSON object:
-{ "file": "<the relative path you were given>", "role": "what this module actually does — 1-2 sentences, factual", "boundaries": ["network"|"process"|"fs" — external systems this file touches"], "risks": ["judgment-level observations grep cannot make: inconsistent error philosophy, surprising coupling, misleading names. NO style nits, NO clean-code advice, NO 'consider adding' phrasing. Empty array when nothing real."] }
-State facts. Do not recommend. Do not mention error handling unless the file's error philosophy is internally inconsistent.
-`;
+// ── Per-target prompt builder ──────────────────────────────────────────────
 
-// ── Tier 1: digests ────────────────────────────────────────────────────────
-
-async function runDigests(gateway, gruntModel, snapshotDir, filesToDigest, analysis) {
-    const digests = new Map();
-    const gaps = [];
-    const concurrency = 4;
-    const queue = [...filesToDigest];
-    const analyzedSet = new Set(analysis.files.map((f) => f.rel));
-
-    async function worker() {
-        while (queue.length > 0) {
-            const rel = queue.shift();
-            if (!analyzedSet.has(rel)) continue;
-            const abs = path.join(snapshotDir, ...rel.split('/'));
-            let source;
-            try {
-                source = await fsp.readFile(abs, 'utf8');
-            } catch (err) {
-                gaps.push({ file: rel, reason: `unreadable: ${err.message}` });
-                continue;
-            }
-            if (source.length > 120_000) source = source.slice(0, 120_000) + '\n// [truncated for digest]';
-            try {
-                const digest = await callJsonWithRetry(gateway, gruntModel, GRUNT_BRIEF, `File: ${rel}\n\n\`\`\`\n${source}\n\`\`\``, { maxTokens: 2000 });
-                // The caller asked for THIS file — a model-echoed path with a
-                // different prefix is variance, not identity. Normalize the
-                // trivial shape variants (risks as string, objects with text);
-                // anything past that still fails and becomes a visible gap.
-                digest.file = rel;
-                if (typeof digest.risks === 'string') digest.risks = [digest.risks];
-                if (Array.isArray(digest.risks)) {
-                    digest.risks = digest.risks.map((r) => (typeof r === 'object' && r !== null && typeof (r.text ?? r.risk ?? r.message) === 'string' ? (r.text ?? r.risk ?? r.message) : r));
-                }
-                const check = validateDigest(digest, analyzedSet);
-                if (!check.ok) throw new Error(check.reason);
-                digests.set(rel, digest);
-            } catch (err) {
-                gaps.push({ file: rel, reason: `digest failed validation twice: ${err.message}` });
-            }
-        }
+function formatNumberedSource(source) {
+    let body = source;
+    let truncatedNote = '';
+    const totalLines = source.split('\n').length;
+    if (body.length > MAX_SOURCE_CHARS) {
+        const cut = body.lastIndexOf('\n', MAX_SOURCE_CHARS);
+        const end = cut > 0 ? cut : MAX_SOURCE_CHARS;
+        const shownLines = body.slice(0, end).split('\n').length;
+        body = body.slice(0, end);
+        truncatedNote = `\n// [truncated at line ${shownLines} of ${totalLines} for context budget]`;
     }
-    await Promise.all(Array.from({ length: concurrency }, worker));
-    return { digests, gaps };
+    const numbered = body.split('\n').map((line, i) => `${i + 1} | ${line}`).join('\n');
+    return `${numbered}${truncatedNote}`;
 }
 
-// ── Map rendering (what the orchestrator sees) ─────────────────────────────
+function buildFilePrompt(target, analysis, snapshotDir) {
+    const abs = path.join(snapshotDir, ...target.rel.split('/'));
+    const source = fs.readFileSync(abs, 'utf8');
+    const importers = (analysis.graph.reverse[target.rel] ?? []).slice(0, 15);
+    const imports = (analysis.graph.edges[target.rel] ?? []).slice(0, 15);
+    const unresolved = analysis.graph.unresolved.filter((e) => e.from === target.rel).slice(0, 10);
+    const hunts = analysis.hunts.filter((h) => h.file === target.rel);
 
-function renderMap(analysis, digests, digestGaps, scope) {
-    const lines = [];
-    lines.push('## Modules');
-    for (const mod of analysis.modules.slice(0, 40)) {
-        const languages = [
-            mod.jsCount ? `${mod.jsCount} js` : null,
-            mod.rustCount ? `${mod.rustCount} rust` : null,
-            mod.genericCount ? `${mod.genericCount} generic` : null
-        ].filter(Boolean).join(', ') || 'no files';
-        lines.push(`- ${mod.dir} — ${mod.fileCount} files (${languages}, ${mod.totalLines} loc)${mod.boundaries.length ? `, boundaries: ${mod.boundaries.join('+')}` : ''}`);
-    }
-
-    lines.push('\n## Ranked files (top 60) — score | language/analysis | facts | digest');
-    for (const r of analysis.ranked.slice(0, 60)) {
-        const digest = digests.get(r.rel);
-        const digestText = digest ? digest.role : (digestGaps.some((g) => g.file === r.rel) ? 'DIGEST GAP (unavailable)' : 'not digested');
-        lines.push(`- ${r.rel} [${r.score.toFixed(1)}] ${r.language}/${r.analysisMode} ${r.lines}loc ${r.reasons.join(',') || 'plain'} — ${digestText}`);
-        if (digest?.risks?.length) {
-            for (const risk of digest.risks.slice(0, 3)) lines.push(`    risk: ${risk}`);
-        }
-    }
-
-    lines.push('\n## Hunt candidates (deterministic tier-0 output — judge each against the rubric)');
-    const huntByFile = new Map();
-    for (const hunt of analysis.hunts) {
-        if (!huntByFile.has(hunt.file)) huntByFile.set(hunt.file, []);
-        huntByFile.get(hunt.file).push(hunt);
-    }
-    for (const [file, hunts] of huntByFile) {
-        for (const hunt of hunts) {
-            lines.push(`- ${file}:${hunt.line} [${hunt.kind}] ${hunt.snippet}`);
-        }
-    }
-
-    if (analysis.graph.unresolved.length > 0) {
-        lines.push(`\n## Unresolved dependency edges (${analysis.graph.unresolved.length}) — reachable-via-these files are NOT claimed as covered`);
-        for (const edge of analysis.graph.unresolved.slice(0, 30)) {
-            lines.push(`- ${edge.from} → ${edge.specifier} (${edge.kind})`);
-        }
-    }
-    return lines.join('\n');
-}
-
-function renderSources(snapshotDir, files) {
     const parts = [];
-    for (const rel of files) {
-        const abs = path.join(snapshotDir, ...rel.split('/'));
-        const source = fs.readFileSync(abs, 'utf8');
-        const numbered = source.split('\n').map((line, i) => `${i + 1} ${line}`).join('\n');
-        parts.push(`### ${rel}\n\`\`\`\n${numbered}\n\`\`\``);
+    parts.push(`FILE: ${target.rel}`);
+    parts.push(`TYPE: ${target.language}/${target.analysisMode} · ${target.lines} lines · score ${target.score.toFixed(1)} · boundaries: ${target.boundaries.join(', ') || 'none'}`);
+    parts.push(`1-HOP CONTEXT:`);
+    parts.push(`- Imported by (${importers.length}): ${importers.join(', ') || 'none'}`);
+    parts.push(`- Imports (${imports.length}): ${imports.join(', ') || 'none'}`);
+    if (unresolved.length > 0) {
+        parts.push(`- Unresolved edges: ${unresolved.map((u) => `${u.specifier} (${u.kind})`).join(', ')}`);
     }
-    return parts.join('\n\n');
+    if (hunts.length > 0) {
+        parts.push(`\nTIER-0 HUNT CANDIDATES (${hunts.length} — verify each against the rubric):`);
+        for (const h of hunts) parts.push(`- line ${h.line} [${h.kind}] ${h.snippet}`);
+    } else {
+        parts.push(`\nTIER-0 HUNT CANDIDATES: none`);
+    }
+    parts.push(`\nRAW SOURCE (do NOT copy the "<line> | " prefix into "evidence"):\n\`\`\`\n${formatNumberedSource(source)}\n\`\`\``);
+    return parts.join('\n');
 }
 
-// ── Tier 2: orchestrator loop ──────────────────────────────────────────────
+// ── Parallel isolated target review ────────────────────────────────────────
 
-async function runOrchestratorLoop({ gateway, orchestratorModel, storageRoot, snapshotDir, analysis, digests, digestGaps, maxRounds, priorCarriedFindings }) {
+async function runParallelTargets({ gateway, model, storageRoot, snapshotDir, analysis, targets, budget }) {
+    const startedAt = Date.now();
+    const principles = loadPrinciples(storageRoot);
+    const systemPrompt = `${principles}\n${FILE_REVIEW_BRIEF}`;
+    const analysisSet = new Set(analysis.ranked.map((r) => r.rel));
+    const scoreByFile = new Map(analysis.ranked.map((r) => [r.rel, r.score]));
+
     const state = {
-        round: 0,
-        completedRounds: 0,
-        dived: [],
+        targetsSelected: targets.length,
+        reviewedFiles: [],
+        failedTargets: [],
+        skippedTargets: [],
         findings: [],
         rejections: [],
-        stopReason: null,
-        interruption: null,
-        summary: null
+        notes: [],
+        ledger: [],
+        totals: { elapsedMs: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: null },
+        stopReason: null
     };
-    const principles = loadPrinciples(storageRoot);
-    const systemPrompt = `${principles}\n${ORCHESTRATOR_BRIEF}`;
-    let consecutiveEmpty = 0;
-    let nextFiles = [];
 
-    const persist = async (reviewDir) => {
-        const persistable = {
-            round: state.round,
-            completedRounds: state.completedRounds,
-            dived: state.dived,
-            findings: state.findings,
-            rejections: state.rejections,
-            stopReason: state.stopReason,
-            interruption: state.interruption,
-            summary: state.summary,
-            remainingRounds: maxRounds - state.round,
-            orchestratorModel
-        };
-        await fsp.writeFile(path.join(reviewDir, 'state.json'), JSON.stringify(persistable, null, 2));
+    const seenFingerprints = new Set();
+    let nextIndex = 0;
+    let budgetStopReason = null;
+
+    const checkBudget = () => {
+        if (budgetStopReason) return budgetStopReason;
+        if (Date.now() - startedAt >= budget.maxDurationMs) {
+            budgetStopReason = `wall-clock budget exhausted (${budget.maxDurationMs}ms)`;
+        } else if (state.totals.totalTokens >= budget.maxTokens) {
+            budgetStopReason = `token budget exhausted (${state.totals.totalTokens}/${budget.maxTokens})`;
+        }
+        return budgetStopReason;
     };
 
     return {
         state,
         async run(reviewDir, emitProgress) {
-            const mapText = renderMap(analysis, digests, digestGaps);
-            const carriedNote = priorCarriedFindings.length > 0
-                ? `\n${priorCarriedFindings.length} findings from the previous review of unchanged files are carried forward (outside the blast radius of this diff) — do NOT re-emit them.\n`
-                : '';
+            let persistChain = Promise.resolve();
+            const persist = () => {
+                const payload = {
+                    model,
+                    budget,
+                    targetsSelected: state.targetsSelected,
+                    reviewedFiles: state.reviewedFiles,
+                    failedTargets: state.failedTargets,
+                    skippedTargets: state.skippedTargets,
+                    findings: state.findings,
+                    rejections: state.rejections,
+                    ledger: state.ledger,
+                    totals: { ...state.totals, elapsedMs: Date.now() - startedAt },
+                    stopReason: state.stopReason
+                };
+                persistChain = persistChain.then(() =>
+                    fsp.writeFile(path.join(reviewDir, 'state.json'), JSON.stringify(payload, null, 2))
+                );
+                return persistChain;
+            };
 
-            while (state.round < maxRounds) {
-                state.round++;
-                const remaining = maxRounds - state.round;
-                let userPrompt = `REVIEW STATE (round ${state.round} of ${maxRounds}, ${remaining} after this one)\n\n## Verified findings so far: ${state.findings.length}\n`;
-                for (const f of state.findings) {
-                    userPrompt += `- ${f.file}:${f.lines[0]} (${f.class}) ${f.failure_mode}\n`;
-                }
-                userPrompt += `${carriedNote}\n## MAP\n${mapText}\n`;
-                if (nextFiles.length > 0) {
-                    userPrompt += `\n## DIVE SOURCES (your selections from last round)\n${renderSources(snapshotDir, nextFiles)}\n`;
-                }
-                userPrompt += `
-Respond with ONLY this JSON object:
-{
-  "new_findings": [ <finding objects per the schema; empty array if none> ],
-  "next_files": [ "up to 5 snapshot-relative files to read next round — empty if nothing is worth reading" ],
-  "done": true|false,
-  "summary": "one paragraph: the codebase's overall reliability/performance posture"
-}
-Rules: first round has no dive sources — choose next_files from the ranked list. done:true when another dive would not change the report. You have selected so far: ${state.dived.join(', ') || 'none'}.`;
+            const worker = async () => {
+                while (true) {
+                    const reason = checkBudget();
+                    const idx = nextIndex++;
+                    if (idx >= targets.length) break;
+                    const target = targets[idx];
 
-                emitProgress?.(`Orchestrator round ${state.round}/${maxRounds}...`, Math.min(10 + state.round * 7, 85));
-                const response = await callJsonWithRetry(gateway, orchestratorModel, systemPrompt, userPrompt, ORCHESTRATOR_CALL_OPTIONS);
-
-                const analysisSet = new Set(analysis.ranked.map((f) => f.rel));
-                let acceptedThisRound = 0;
-                for (const finding of Array.isArray(response.new_findings) ? response.new_findings : []) {
-                    const check = await validateFinding(finding, snapshotDir, analysisSet);
-                    if (check.ok) {
-                        state.findings.push(finding);
-                        acceptedThisRound++;
-                    } else {
-                        state.rejections.push({ file: finding?.file ?? '?', reason: check.reason });
+                    if (reason) {
+                        state.skippedTargets.push({ file: target.rel, reason });
+                        state.ledger.push({
+                            file: target.rel,
+                            score: target.score,
+                            status: 'skipped-budget',
+                            elapsedMs: 0,
+                            promptTokens: 0,
+                            completionTokens: 0,
+                            totalTokens: 0,
+                            cost: null,
+                            findingsAccepted: 0,
+                            findingsRejected: 0,
+                            error: reason
+                        });
+                        await persist();
+                        continue;
                     }
-                }
 
-                nextFiles = (Array.isArray(response.next_files) ? response.next_files : [])
-                    .filter((f) => analysisSet.has(f) && !state.dived.includes(f))
-                    .slice(0, 5);
-                state.dived.push(...nextFiles);
-                state.completedRounds = state.round;
-                await persist(reviewDir);
+                    const fileStart = Date.now();
+                    emitProgress?.(`Reviewing ${target.rel} (${idx + 1}/${targets.length})...`, Math.min(18 + Math.round(((idx + 1) / Math.max(targets.length, 1)) * 70), 90));
+                    try {
+                        const userPrompt = buildFilePrompt(target, analysis, snapshotDir);
+                        const { parsed, usage } = await callJsonWithRetry(gateway, model, systemPrompt, userPrompt, {
+                            maxTokens: 16000,
+                            timeoutMs: budget.perFileTimeoutMs,
+                            schema: FILE_REVIEW_SCHEMA
+                        });
+                        const elapsedMs = Date.now() - fileStart;
+                        state.totals.promptTokens += usage.promptTokens;
+                        state.totals.completionTokens += usage.completionTokens;
+                        state.totals.totalTokens += usage.totalTokens;
+                        if (usage.cost != null) {
+                            state.totals.cost = (state.totals.cost ?? 0) + usage.cost;
+                        }
 
-                if (response.done === true || nextFiles.length === 0) {
-                    state.stopReason = response.done === true ? 'orchestrator done' : 'no further dive targets';
-                    state.summary = response.summary ?? '';
-                    break;
+                        let accepted = 0;
+                        let rejected = 0;
+                        const rawFindings = Array.isArray(parsed.findings) ? parsed.findings : [];
+                        for (const raw of rawFindings) {
+                            // Anchor file to the exact target we sent if omitted, never letting a
+                            // file-scoped review cite an unrelated path.
+                            const finding = raw && typeof raw === 'object' ? { ...raw, file: raw.file || target.rel } : raw;
+                            if (finding && typeof finding === 'object' && finding.file !== target.rel) {
+                                state.rejections.push({ file: target.rel, reason: `finding cited '${finding.file}' instead of target '${target.rel}'` });
+                                rejected++;
+                                continue;
+                            }
+                            const check = await validateFinding(finding, snapshotDir, analysisSet);
+                            if (check.ok) {
+                                const fp = findingFingerprint(finding);
+                                if (!seenFingerprints.has(fp)) {
+                                    seenFingerprints.add(fp);
+                                    state.findings.push(finding);
+                                    accepted++;
+                                }
+                            } else {
+                                state.rejections.push({ file: finding?.file ?? target.rel, reason: check.reason });
+                                rejected++;
+                            }
+                        }
+                        if (typeof parsed.note === 'string' && parsed.note.trim()) {
+                            state.notes.push({ file: target.rel, note: parsed.note.trim() });
+                        }
+                        state.reviewedFiles.push(target.rel);
+                        state.ledger.push({
+                            file: target.rel,
+                            score: target.score,
+                            status: 'done',
+                            elapsedMs,
+                            promptTokens: usage.promptTokens,
+                            completionTokens: usage.completionTokens,
+                            totalTokens: usage.totalTokens,
+                            cost: usage.cost,
+                            findingsAccepted: accepted,
+                            findingsRejected: rejected,
+                            error: null
+                        });
+                    } catch (err) {
+                        const elapsedMs = Date.now() - fileStart;
+                        const usage = err.usageTotal ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: null };
+                        state.totals.promptTokens += usage.promptTokens;
+                        state.totals.completionTokens += usage.completionTokens;
+                        state.totals.totalTokens += usage.totalTokens;
+                        if (usage.cost != null) {
+                            state.totals.cost = (state.totals.cost ?? 0) + usage.cost;
+                        }
+                        const message = String(err?.message ?? err).slice(0, 1000);
+                        logger.warn(`[codereview] target ${target.rel} failed: ${message}`, null, 'CodeReview');
+                        state.failedTargets.push({ file: target.rel, reason: message });
+                        state.ledger.push({
+                            file: target.rel,
+                            score: target.score,
+                            status: 'failed',
+                            elapsedMs,
+                            promptTokens: usage.promptTokens,
+                            completionTokens: usage.completionTokens,
+                            totalTokens: usage.totalTokens,
+                            cost: usage.cost,
+                            findingsAccepted: 0,
+                            findingsRejected: 0,
+                            error: message
+                        });
+                    }
+                    await persist();
                 }
-                consecutiveEmpty = acceptedThisRound === 0 ? consecutiveEmpty + 1 : 0;
-                if (consecutiveEmpty >= 2) {
-                    state.stopReason = 'two consecutive rounds with no new verified findings';
-                    state.summary = response.summary ?? '';
-                    break;
-                }
-            }
-            if (state.round >= maxRounds && !state.stopReason) {
-                state.stopReason = `round budget exhausted (${maxRounds})`;
-            }
-            state.summary = state.summary ?? '';
-            await persist(reviewDir);
+            };
+
+            const workers = Array.from({ length: Math.min(budget.concurrency, Math.max(targets.length, 1)) }, worker);
+            await Promise.all(workers);
+
+            state.totals.elapsedMs = Date.now() - startedAt;
+            state.findings.sort((a, b) => {
+                if (a.class !== b.class) return a.class === 'free-win' ? -1 : 1;
+                const scoreDiff = (scoreByFile.get(b.file) ?? 0) - (scoreByFile.get(a.file) ?? 0);
+                if (scoreDiff !== 0) return scoreDiff;
+                return (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0);
+            });
+            state.stopReason = targets.length === 0
+                ? 'no targets to review (unchanged tree or empty scope)'
+                : budgetStopReason ?? (state.failedTargets.length > 0 ? `${state.failedTargets.length} target(s) failed` : 'all selected targets reviewed');
+            await persist();
             return state;
-        },
-        persist
+        }
     };
 }
 
@@ -367,8 +449,12 @@ async function sha256File(abs) {
 
 async function computeIncremental({ fileHashes, analysis, priorReview, reviewsRoot }) {
     if (!priorReview) return { changedFiles: null, blastRadius: null, priorFindings: [] };
-    const priorAnalysisPath = path.join(reviewsRoot, priorReview._id, 'analysis.json');
-    if (!fs.existsSync(priorAnalysisPath)) return { changedFiles: null, blastRadius: null, priorFindings: [] };
+    const priorDirId = priorReview.reviewId ?? priorReview._id;
+    const priorAnalysisPath = path.join(reviewsRoot, priorDirId, 'analysis.json');
+    if (!fs.existsSync(priorAnalysisPath)) {
+        logger.warn(`[codereview] prior review ${priorDirId} has no analysis.json; falling back to cold target selection`, null, 'CodeReview');
+        return { changedFiles: null, blastRadius: null, priorFindings: [] };
+    }
     const priorAnalysis = JSON.parse(fs.readFileSync(priorAnalysisPath, 'utf8'));
 
     const changed = [];
@@ -382,7 +468,7 @@ async function computeIncremental({ fileHashes, analysis, priorReview, reviewsRo
         if (!currentRels.has(rel)) deleted.push(rel); // deletion changes the behavior of every importer
     }
     if (changed.length === 0 && deleted.length === 0) {
-        return { changedFiles: [], blastRadius: new Set(), priorFindings: await store.listFindings({ reviewId: priorReview._id }) };
+        return { changedFiles: [], blastRadius: new Set(), priorFindings: await store.listFindings({ reviewId: priorDirId }) };
     }
 
     // Blast radius from the CURRENT graph covers modified files. Deleted files
@@ -390,21 +476,29 @@ async function computeIncremental({ fileHashes, analysis, priorReview, reviewsRo
     // that no longer exists, so their importers are only recorded in the PRIOR
     // graph — traversing it is the only way deletion invalidates them.
     const blast = computeBlastRadiusWithDeletions(analysis, changed, deleted, priorAnalysis.graphEdges);
-    const priorFindings = await store.listFindings({ reviewId: priorReview._id });
+    const priorFindings = await store.listFindings({ reviewId: priorDirId });
     return { changedFiles: [...changed, ...deleted.map((d) => `${d} (deleted)`)], blastRadius: blast, priorFindings };
 }
 
 // ── Report rendering ───────────────────────────────────────────────────────
 
-export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysis, coverage, exclusions, digestGaps, validatorStats, incremental }) {
+function formatCost(cost) {
+    if (typeof cost !== 'number' || !Number.isFinite(cost)) return 'n/a';
+    return `$${cost.toFixed(4)}`;
+}
+
+export function renderReport({ reviewId, snapshotMeta, model, state, analysis, coverage, exclusions, validatorStats, incremental }) {
+    const partial = state.failedTargets.length > 0 || state.skippedTargets.length > 0;
+    const elapsedSec = (state.totals.elapsedMs / 1000).toFixed(1);
     const lines = [];
-    lines.push(`# Code review — ${snapshotMeta.sourceLabel}${state.interruption ? ' — PARTIAL' : ''}`);
-    lines.push(`review: ${reviewId} · tree: ${snapshotMeta.treeHash.slice(0, 16)} · models: ${modelPair.grunt} + ${modelPair.orchestrator} · rounds: ${state.completedRounds ?? state.round} completed (${state.stopReason})`);
-    if (state.interruption) {
-        lines.push(`\n> **PARTIAL REVIEW — orchestrator interrupted during round ${state.interruption.round}.** ${state.interruption.message}\n> The findings below were validated and persisted from completed rounds. Coverage is incomplete; this is not a finished review.`);
-    }
-    if (state.summary) {
-        lines.push(`\n**Posture:** ${state.summary}`);
+    lines.push(`# Code review — ${snapshotMeta.sourceLabel}${partial ? ' — PARTIAL' : ''}`);
+    lines.push(`review: ${reviewId} · tree: ${snapshotMeta.treeHash.slice(0, 16)} · model: ${model} · targets: ${state.reviewedFiles.length}/${state.targetsSelected} completed · elapsed: ${elapsedSec}s · tokens: ${state.totals.totalTokens} · cost: ${formatCost(state.totals.cost)} (${state.stopReason})`);
+
+    if (partial) {
+        const failedPart = state.failedTargets.length > 0 ? `${state.failedTargets.length} failed` : null;
+        const skippedPart = state.skippedTargets.length > 0 ? `${state.skippedTargets.length} skipped (budget)` : null;
+        const details = [...state.failedTargets, ...state.skippedTargets].slice(0, 10).map((t) => `${t.file} (${t.reason})`).join('; ');
+        lines.push(`\n> **PARTIAL REVIEW — ${[failedPart, skippedPart].filter(Boolean).join(', ')}.** ${details}\n> Completed findings below were validated and persisted; incomplete targets mean this is not a finished baseline.`);
     }
 
     const freeWins = state.findings.filter((f) => f.class === 'free-win');
@@ -428,12 +522,21 @@ export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysi
         lines.push(`**Test:** ${finding.test_spec.shape} (data: ${finding.test_spec.data_source}) — proves: ${finding.test_spec.bug}`);
     }
     if (state.findings.length === 0) {
-        lines.push('\n_No verified findings. Rejected candidates below may explain why._');
+        lines.push('\n_No verified findings. Rejected candidates or telemetry below may explain why._');
+    }
+
+    if (state.ledger.length > 0) {
+        lines.push(`\n## Telemetry & cost`);
+        lines.push(`Total: ${elapsedSec}s wall clock · ${state.totals.promptTokens} input + ${state.totals.completionTokens} output = ${state.totals.totalTokens} tokens · cost: ${formatCost(state.totals.cost)}`);
+        for (const row of state.ledger) {
+            const ms = `${(row.elapsedMs / 1000).toFixed(1)}s`;
+            lines.push(`- ${row.file} [${row.status}] ${ms} · ${row.totalTokens} tok (${formatCost(row.cost)}) · +${row.findingsAccepted}/-${row.findingsRejected}${row.error ? ` · ${row.error}` : ''}`);
+        }
     }
 
     lines.push(`\n## Coverage — never silent`);
-    lines.push(`Reviewed: ${coverage.divedCount} files dived + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} text files (${coverage.totalJs} js, ${coverage.totalRust} rust, ${coverage.totalGeneric} generic)`);
-    lines.push(`Language-specific tier-0: JavaScript (AST) + Rust (structural). Every other text file—including configuration and documentation—remains digest/dive eligible with generic boundary analysis; language never controls eligibility.`);
+    lines.push(`Reviewed: ${coverage.reviewedCount} targets + ${coverage.carriedCount} carried from prior review · tree: ${coverage.totalFiles} text files (${coverage.totalJs} js, ${coverage.totalRust} rust, ${coverage.totalGeneric} generic)`);
+    lines.push(`Language-specific tier-0: JavaScript (AST) + Rust (structural). Every other text file—including configuration and documentation—remains model-review eligible with generic boundary analysis; language never controls eligibility.`);
     if (coverage.genericFiles.length > 0) {
         const shown = coverage.genericFiles.slice(0, 40);
         lines.push(`\nNo language-specific tier-0 adapter (${coverage.genericFiles.length}) — these files ARE model-review eligible, but have generic deterministic analysis only:\n${shown.map((f) => `- ${f.rel} (${f.language})`).join('\n')}${coverage.genericFiles.length > shown.length ? `\n- ... and ${coverage.genericFiles.length - shown.length} more` : ''}`);
@@ -452,10 +555,6 @@ export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysi
         for (const ex of exclusions.slice(0, 30)) lines.push(`- ${ex.rel} — ${ex.reason}`);
         if (exclusions.length > 30) lines.push(`- ... and ${exclusions.length - 30} more`);
     }
-    if (digestGaps.length > 0) {
-        lines.push(`\n## Digest gaps (${digestGaps.length}) — tier-1 output failed validation twice`);
-        for (const gap of digestGaps) lines.push(`- ${gap.file} — ${gap.reason}`);
-    }
     if (state.rejections.length > 0 || Object.keys(validatorStats.blocklistCounts).length > 0) {
         lines.push(`\n## Validator — ${state.rejections.length} findings rejected`);
         for (const rejection of state.rejections) lines.push(`- ${rejection.file}: ${rejection.reason}`);
@@ -472,20 +571,43 @@ export function renderReport({ reviewId, snapshotMeta, modelPair, state, analysi
     return lines.join('\n');
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────
+// ── Target selection & budget ──────────────────────────────────────────────
 
-export function selectDigestTargets(scopedAnalysis, incremental) {
-    const targets = new Set();
-    if (incremental.blastRadius) {
-        for (const rel of incremental.blastRadius) targets.add(rel);
-    } else {
-        for (const r of scopedAnalysis.ranked.slice(0, 60)) targets.add(r.rel);
+export function resolveBudget(budget = {}) {
+    if (budget != null && typeof budget !== 'object') {
+        throw new Error('codereview: budget must be an object');
     }
-    const eligible = new Set(scopedAnalysis.ranked.map((r) => r.rel));
-    return [...targets].filter((rel) => eligible.has(rel));
+    const checkPosInt = (name, value, fallback) => {
+        if (value == null) return fallback;
+        if (!Number.isInteger(value) || value <= 0) {
+            throw new Error(`codereview: budget.${name} must be a positive integer (got ${value})`);
+        }
+        return value;
+    };
+    return {
+        maxFiles: checkPosInt('maxFiles', budget.maxFiles, DEFAULT_MAX_FILES),
+        concurrency: Math.min(checkPosInt('concurrency', budget.concurrency, DEFAULT_CONCURRENCY), 8),
+        maxDurationMs: checkPosInt('maxDurationMs', budget.maxDurationMs, DEFAULT_MAX_DURATION_MS),
+        maxTokens: checkPosInt('maxTokens', budget.maxTokens, DEFAULT_MAX_TOKENS),
+        perFileTimeoutMs: checkPosInt('perFileTimeoutMs', budget.perFileTimeoutMs, DEFAULT_PER_FILE_TIMEOUT_MS)
+    };
 }
 
-export async function runReview({ source, models, budget, scope, gateway, storageRoot, dataDir, emitProgress }) {
+export function selectReviewTargets(scopedAnalysis, incremental, maxFiles = DEFAULT_MAX_FILES) {
+    if (incremental.blastRadius) {
+        if (incremental.blastRadius.size === 0) return [];
+        return scopedAnalysis.ranked.filter((r) => incremental.blastRadius.has(r.rel)).slice(0, maxFiles);
+    }
+    return scopedAnalysis.ranked.slice(0, maxFiles);
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────
+
+export async function runReview({ source, model, budget: rawBudget, scope, gateway, storageRoot, dataDir, emitProgress }) {
+    if (!model || typeof model !== 'string') {
+        throw new Error('codereview: model must be a non-empty string');
+    }
+    const budget = resolveBudget(rawBudget);
     const snapshotsRoot = path.join(dataDir, 'snapshots');
     const reviewsRoot = path.join(dataDir, 'reviews');
     await fsp.mkdir(snapshotsRoot, { recursive: true });
@@ -494,12 +616,9 @@ export async function runReview({ source, models, budget, scope, gateway, storag
     // Model validation — unknown ids fail loudly, never a silent default (§4.2).
     const available = await gateway.listModels('chat');
     const availableIds = new Set(available.map((m) => m.id));
-    for (const [role, model] of Object.entries(models)) {
-        if (!availableIds.has(model)) {
-            throw new Error(`codereview: ${role} model '${model}' is not a gateway chat model. Known: ${[...availableIds].join(', ')}`);
-        }
+    if (!availableIds.has(model)) {
+        throw new Error(`codereview: model '${model}' is not a gateway chat model. Known: ${[...availableIds].join(', ')}`);
     }
-    const modelPairKey = `${models.grunt}+${models.orchestrator}`;
 
     emitProgress?.('Materializing snapshot...', 3);
     const snapshotMeta = await (await import('./resolver.js')).materializeSource(source, snapshotsRoot);
@@ -533,61 +652,37 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         };
     }
 
-    const maxRounds = budget?.maxRounds ?? 10;
     const reviewId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     const reviewDir = path.join(reviewsRoot, reviewId);
     await fsp.mkdir(reviewDir, { recursive: true });
 
     emitProgress?.('Hashing snapshot files...', 12);
-    // Hashed ONCE here and reused by both the incremental diff and analysis.json —
-    // hashing per consumer doubled disk reads and SHA-256 work per review.
     const fileHashes = {};
     for (const f of scopedAnalysis.files) {
         fileHashes[f.rel] = await sha256File(path.join(snapshotMeta.snapshotDir, ...f.rel.split('/')));
     }
 
     emitProgress?.('Checking for prior review (incremental)...', 14);
-    const priorReview = await store.findLatestReviewForSource(snapshotMeta.sourceLabel, modelPairKey, VALIDATOR_VERSION);
+    const priorReview = await store.findLatestReviewForSource(snapshotMeta.sourceLabel, model, VALIDATOR_VERSION);
     const incremental = await computeIncremental({ fileHashes, analysis: scopedAnalysis, priorReview, reviewsRoot });
     const carried = incremental.blastRadius
         ? incremental.priorFindings.filter((f) => f.status === 'new' && !incremental.blastRadius.has(f.file))
         : [];
 
-    // Every snapshotted text file is digest/dive eligible. Language-specific
-    // tier-0 depth is reported separately; file type never controls model access.
-    const digestList = selectDigestTargets(scopedAnalysis, incremental);
+    const targets = selectReviewTargets(scopedAnalysis, incremental, budget.maxFiles);
+    emitProgress?.(`Reviewing ${targets.length} target(s) in parallel (concurrency ${budget.concurrency})...`, 16);
 
-    emitProgress?.(`Tier-1 digests (${digestList.length} files)...`, 15);
-    const { digests, gaps } = await runDigests(gateway, models.grunt, snapshotMeta.snapshotDir, digestList, scopedAnalysis);
-
-    emitProgress?.('Tier-2 orchestrator loop...', 30);
-    const loop = await runOrchestratorLoop({
+    const runner = await runParallelTargets({
         gateway,
-        orchestratorModel: models.orchestrator,
+        model,
         storageRoot,
         snapshotDir: snapshotMeta.snapshotDir,
         analysis: scopedAnalysis,
-        digests,
-        digestGaps: gaps,
-        maxRounds,
-        priorCarriedFindings: carried
+        targets,
+        budget
     });
-    const state = loop.state;
-    let partial = false;
-    try {
-        await loop.run(reviewDir, emitProgress);
-    } catch (err) {
-        // The orchestrator is an external boundary. Completed rounds already
-        // contain validated findings; failure must become a visible partial
-        // result, not destroy the report (issue #77).
-        partial = true;
-        const message = String(err.message ?? err).slice(0, 2000);
-        state.interruption = { stage: 'orchestrator', round: state.round, message };
-        state.stopReason = `orchestrator interrupted: ${message}`;
-        state.summary ??= '';
-        await loop.persist(reviewDir);
-        logger.error(`[codereview] review ${reviewId} interrupted after ${state.completedRounds} completed round(s): ${message}; returning ${state.findings.length} persisted finding(s) as PARTIAL`, null, 'CodeReview');
-    }
+    const state = await runner.run(reviewDir, emitProgress);
+    const partial = state.failedTargets.length > 0 || state.skippedTargets.length > 0;
 
     // Persist analysis for the next incremental run (per-file hashes + graph).
     await fsp.writeFile(path.join(reviewDir, 'analysis.json'), JSON.stringify({
@@ -597,7 +692,6 @@ export async function runReview({ source, models, budget, scope, gateway, storag
     }, null, 2));
 
     // Persist findings.
-    const analysisSet = new Set(scopedAnalysis.files.map((f) => f.rel));
     const savedIds = [];
     for (const finding of state.findings) {
         const fingerprint = findingFingerprint(finding);
@@ -614,24 +708,23 @@ export async function runReview({ source, models, budget, scope, gateway, storag
             suggestion: finding.suggestion,
             rung: finding.rung ?? null,
             test_spec: finding.test_spec,
-            modelPair: modelPairKey
+            modelPair: model
         });
         savedIds.push(id);
     }
 
-    // Validator stats for the report.
     const blocklistCounts = countBlocklist([
         ...state.findings.flatMap((f) => [f.suggestion, f.failure_mode]),
-        ...[...digests.values()].flatMap((d) => [d.role, ...(d.risks ?? [])])
+        ...state.notes.map((n) => n.note)
     ]);
 
     const totalJs = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'ast').length;
     const totalRust = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'structural').length;
     const totalGeneric = scopedAnalysis.ranked.filter((r) => r.analysisMode === 'generic').length;
-    const divedSet = new Set(state.dived);
-    const unreviewed = scopedAnalysis.ranked.filter((r) => !divedSet.has(r.rel)).map((r) => r.rel);
+    const reviewedSet = new Set(state.reviewedFiles);
+    const unreviewed = scopedAnalysis.ranked.filter((r) => !reviewedSet.has(r.rel)).map((r) => r.rel);
     const coverage = {
-        divedCount: state.dived.length,
+        reviewedCount: state.reviewedFiles.length,
         carriedCount: carried.length,
         totalFiles: scopedAnalysis.files.length,
         totalJs,
@@ -644,12 +737,11 @@ export async function runReview({ source, models, budget, scope, gateway, storag
     const report = renderReport({
         reviewId,
         snapshotMeta,
-        modelPair: models,
+        model,
         state,
         analysis: scopedAnalysis,
         coverage,
         exclusions: snapshotMeta.exclusions,
-        digestGaps: gaps,
         validatorStats: { blocklistCounts },
         incremental: incremental.changedFiles ? { changedFiles: incremental.changedFiles, blastRadius: incremental.blastRadius, carriedCount: carried.length } : null
     });
@@ -661,17 +753,22 @@ export async function runReview({ source, models, budget, scope, gateway, storag
         sourceLabel: snapshotMeta.sourceLabel,
         sourceKind: snapshotMeta.sourceKind,
         snapshotHash: snapshotMeta.treeHash,
-        modelPair: modelPairKey,
+        modelPair: model,
         validatorVersion: VALIDATOR_VERSION,
         status: partial ? 'partial' : 'done',
-        rounds: state.completedRounds,
-        interruption: state.interruption,
+        targetsSelected: state.targetsSelected,
+        targetsCompleted: state.reviewedFiles.length,
+        targetsFailed: state.failedTargets.length,
+        targetsSkipped: state.skippedTargets.length,
+        elapsedMs: state.totals.elapsedMs,
+        totalTokens: state.totals.totalTokens,
+        cost: state.totals.cost,
         stopReason: state.stopReason,
         findingCount: state.findings.length,
         rejectionCount: state.rejections.length,
         carriedCount: carried.length
     });
 
-    logger.info(`[codereview] review ${reviewId} done: ${state.findings.length} findings, ${state.rejections.length} rejected, ${carried.length} carried`, null, 'CodeReview');
+    logger.info(`[codereview] review ${reviewId} done in ${(state.totals.elapsedMs / 1000).toFixed(1)}s: ${state.reviewedFiles.length}/${state.targetsSelected} targets, ${state.findings.length} findings, ${state.rejections.length} rejected, ${state.totals.totalTokens} tokens`, null, 'CodeReview');
     return { reviewId, report, state, coverage, partial };
 }

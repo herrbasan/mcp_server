@@ -1,25 +1,23 @@
 {
     "agent": "codereview",
-    "description": "Prime-Directive code review agent. Reviews a codebase (local path, UNC path, owner/repo@ref, or archive) for reliability and performance optimization: most reliability at the lowest performance cost. Language coverage: JavaScript AST + Rust structural tier-0 analysis; every snapshotted text file (including config, docs, data, and extensionless files) remains model digest/dive eligible, with generic analysis and explicit reduced-coverage reporting. Tiered pipeline: deterministic dependency graphs, boundary classification, defensive-pattern hunts and dive ranking; tier-1 grunt-model digests; tier-2 orchestrator verification. Findings are structured JSON with verbatim evidence, boundary-ladder documentation, and paired test specs; a deterministic validator gates every model output against the maxims (no defensive programming, no clean-code ritual). Report-first: diffs and executable tests are generated only on accept. The automated acceptance gate is JavaScript-only and refuses other languages rather than generating mismatched Node tests. Findings persist in nDB keyed by snapshot hash + model pair.",
+    "description": "Prime-Directive code review agent. Reviews a codebase (local path, UNC path, owner/repo@ref, or archive) for reliability and performance optimization: most reliability at the lowest performance cost. Language coverage: JavaScript AST + Rust structural tier-0 analysis; every snapshotted text file (including config, docs, data, and extensionless files) remains model-review eligible, with generic analysis and explicit reduced-coverage reporting. Direct parallel pipeline: deterministic dependency graphs, boundary classification, defensive-pattern hunts, and target ranking; top-ranked targets are reviewed in parallel isolated calls with 1-hop context and a deterministic bias validator. Report-first: diffs and executable tests are generated only on accept. The automated acceptance gate is JavaScript-only and refuses other languages rather than generating mismatched Node tests. Findings persist in nDB keyed by snapshot hash + model.",
     "tools": [
         {
             "name": "codereview_review",
-            "description": "Run a code review. source: absolute local path, UNC path (\\\\server\\share\\dir), 'owner/repo' or 'owner/repo@ref' (GitHub), or path to a .zip/.tar.gz archive. JavaScript and Rust receive language-specific tier-0 analysis; every other text file (including config and docs) remains digest/dive eligible with generic analysis and explicit coverage disclosure. Optional models: { grunt, orchestrator } gateway model ids (defaults from config; unknown ids fail loudly). Optional budget: { maxRounds } dive-round cap (default 10). Optional scope: { include, exclude } — glob-ish path prefixes to narrow the review. Returns the full report and a reviewId; the report is also written under data/codereview/reviews/<reviewId>/report.md. If the orchestrator fails after completed rounds, returns partial:true and a PARTIAL report with all validated interim findings instead of discarding them.",
+            "description": "Run a code review. source: absolute local path, UNC path (\\\\server\\share\\dir), 'owner/repo' or 'owner/repo@ref' (GitHub), or path to a .zip/.tar.gz archive. JavaScript and Rust receive language-specific tier-0 analysis; every other text file (including config and docs) remains review eligible with generic analysis and explicit coverage disclosure. Optional model: gateway model id (default from config; unknown id fails loudly). Optional budget: { maxFiles, concurrency, maxDurationMs, maxTokens, perFileTimeoutMs } (defaults: 12 files, 4 concurrent, 240s wall clock, 400k tokens, 120s/file). Optional scope: { include, exclude } — snapshot-relative path prefixes to narrow the review. Returns the full report (with per-target token/cost/latency ledger) and a reviewId; the report is also written under data/codereview/reviews/<reviewId>/report.md. If individual targets fail or budget stops early, returns partial:true and a PARTIAL report preserving completed findings.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "source": { "type": "string", "description": "Local path, UNC path, owner/repo[@ref], or archive file path" },
-                    "models": {
-                        "type": "object",
-                        "properties": {
-                            "grunt": { "type": "string" },
-                            "orchestrator": { "type": "string" }
-                        }
-                    },
+                    "model": { "type": "string", "description": "Optional gateway chat model id override" },
                     "budget": {
                         "type": "object",
                         "properties": {
-                            "maxRounds": { "type": "number", "description": "Max orchestrator dive rounds (default 10)" }
+                            "maxFiles": { "type": "number", "description": "Max ranked files to review (default 12)" },
+                            "concurrency": { "type": "number", "description": "Parallel review workers, 1-8 (default 4)" },
+                            "maxDurationMs": { "type": "number", "description": "Hard wall-clock budget in ms (default 240000)" },
+                            "maxTokens": { "type": "number", "description": "Total token budget across calls (default 400000)" },
+                            "perFileTimeoutMs": { "type": "number", "description": "Per-target gateway timeout in ms (default 120000)" }
                         }
                     },
                     "scope": {

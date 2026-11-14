@@ -1,12 +1,20 @@
 # Code Review Agent — Design Spec
 
-**Date:** 2026-11-12 (draft, pre-implementation — bounced with David)
-**Status:** IMPLEMENTED BUT OPERATIONALLY FAILED 2026-11-13 — the pipeline produced substantive findings, but its latency/token architecture is not viable. Do not treat this as a production-ready design. See **§0 Postmortem**.
-**Home:** `src/agents/codereview/` (experimental implementation retained for analysis, not a recommended production tool)
+**Date:** 2026-11-12 (original); **Rewritten 2026-11-13 (v2 — Direct Parallel Pipeline)**
+**Status:** ACTIVE (v2) — Tier-1 digests and sequential multi-round orchestrator loop replaced on 2026-11-13 with direct parallel per-file reviews driven by Tier-0 ranking and hard budgets. Original v1 postmortem retained in §0.
+**Home:** `src/agents/codereview/`
+
+### Measured v2 benchmark (2026-11-13, `D:\DEV\nTeligence`, `r_mwfhuj1b_dgi0`)
+
+- Tree: **644 snapshotted text files** (71 JS, 92 Rust, 481 generic); exclusions (`target/`, `_Archive/`, `.git`, `.test-output`, binaries) disclosed.
+- Pipeline: `deepseek-flash-chat`, `maxFiles: 12`, `concurrency: 4`, `maxTokens: 400k` (no Tier-1 digests, no multi-round loop).
+- Result: **12/12 targets completed in 219.6s (3m40s)**, **419,215 tokens** (16k output cap, per-call ledger), **41 validated findings** (31 free wins, 10 trade-offs), 2 rejected by validator.
+- Seeded corpus smoke (`CODEVIEW_SMOKE=1`): **6/6 files in 34.9s**, **23,461 tokens**, 7 findings, 0 rejected.
+- Contrast with v1 (`r_mwfekpnp_bm79` on `nConvert`, 43 files): **23m20s** PARTIAL (10 findings, interrupted at round 4).
 
 ---
 
-## 0. Postmortem — why this architecture failed
+## 0. Postmortem — why v1 failed (historical)
 
 This section is the current primary result. The rest of the document records the design as built, not a recommendation to build it again.
 

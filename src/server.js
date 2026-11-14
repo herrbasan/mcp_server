@@ -779,20 +779,23 @@ maxims: fail fast, design failures away, NO defensive programming, NO
 clean-code ritual. JavaScript AST + Rust structural tier-0; every other text
 file (config, docs, data, extensionless) stays review eligible with generic
 analysis explicitly reported.
-Tiered: dependency graphs, boundary classification, defensive-pattern hunts,
-tier-1 grunt digests, tier-2 orchestrator verification with a deterministic
+Direct parallel pipeline: dependency graphs, boundary classification,
+defensive-pattern hunts, and deterministic target ranking, followed by
+isolated parallel per-file reviews with 1-hop context and a deterministic
 bias validator. Report-first; diffs/tests generate only on accept, gated by
 execution (fail on unpatched snapshot, pass on patched).
 
-  codereview.review — { source*, models?, budget?, scope? }
+  codereview.review — { source*, model?, budget?, scope? }
       Run a review. source: absolute local path, UNC path, owner/repo@ref
-      (GitHub), or .zip/.tar.gz archive. models: { grunt, orchestrator }
-      gateway model ids (defaults deepseek-flash-chat + kimi-k31-chat;
-      unknown ids fail loudly). budget: { maxRounds } (default 10).
-      scope: { include, exclude } path prefixes. Returns the report +
-      reviewId; report also written under data/codereview/reviews/<id>/.
-      Orchestrator timeout/JSON failure returns partial:true plus a PARTIAL
-      report containing every validated finding from completed rounds.
+      (GitHub), or .zip/.tar.gz archive. model: gateway chat model id
+      (default deepseek-flash-chat; unknown ids fail loudly).
+      budget: { maxFiles, concurrency, maxDurationMs, maxTokens, perFileTimeoutMs }
+      (defaults: 12 files, 4 concurrent, 240s wall clock, 400k tokens, 120s/file).
+      scope: { include, exclude } path prefixes. Returns the report (with
+      per-target token/cost/latency ledger) + reviewId; report also written
+      under data/codereview/reviews/<id>/. Individual target failures or
+      budget stops return partial:true plus a PARTIAL report preserving all
+      completed findings.
 
   codereview.findings — { reviewId?, status?, snapshotHash? }
       List persisted findings (compact records: id, status, file, class).

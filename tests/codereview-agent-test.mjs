@@ -86,14 +86,19 @@ ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').analysisMode === '
 ok(mixedAnalysis.files.find((f) => f.rel === 'src/worker.py').boundaries.includes('network'), 'generic Python network boundary classified');
 ok(mixedAnalysis.files.find((f) => f.rel === 'config/review.toml').lines > 0, 'configuration receives real size/line/boundary facts');
 
-const { selectDigestTargets, renderReport, runReview } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
-const coldDigests = selectDigestTargets(mixedAnalysis, { blastRadius: null });
-ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py', 'config/review.toml', 'README.md', 'LICENSE'].every((rel) => coldDigests.includes(rel)), 'cold review digests every text file, including configuration and docs');
-const incrementalDigests = selectDigestTargets(mixedAnalysis, { blastRadius: new Set(['src/engine.rs', 'src/worker.py', 'README.md']) });
-ok(incrementalDigests.includes('src/engine.rs') && incrementalDigests.includes('src/worker.py') && incrementalDigests.includes('README.md'), 'incremental digests retain Rust, generic code, and documentation');
+const { selectReviewTargets, renderReport, runReview, resolveBudget, extractJson } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
+ok(extractJson('{"findings":[],"note":"if (a) { b } \\"c\\""}\nTrailing note: fn foo() { return 1; }').note.includes('"c"'), 'extractJson stops at first balanced JSON object despite trailing braces');
+ok(extractJson('Note {ignored} before:\n```json\n{"findings":[],"note":"ok"}\n```').note === 'ok', 'extractJson skips invalid brace snippets before the real JSON object');
+const coldTargets = selectReviewTargets(mixedAnalysis, { blastRadius: null }, 12);
+ok(['src/api.js', 'src/lib.rs', 'src/engine.rs', 'src/worker.py', 'config/review.toml', 'README.md', 'LICENSE'].every((rel) => coldTargets.some((t) => t.rel === rel)), 'cold review targets include code, config, and docs when within maxFiles');
+const cappedTargets = selectReviewTargets(mixedAnalysis, { blastRadius: null }, 3);
+ok(cappedTargets.length === 3, 'selectReviewTargets caps targets by maxFiles');
+const incrementalTargets = selectReviewTargets(mixedAnalysis, { blastRadius: new Set(['src/engine.rs', 'src/worker.py', 'README.md']) }, 12);
+ok(['src/engine.rs', 'src/worker.py', 'README.md'].every((rel) => incrementalTargets.some((t) => t.rel === rel)), 'incremental targets retain Rust, generic code, and documentation');
+ok(selectReviewTargets(mixedAnalysis, { blastRadius: new Set() }, 12).length === 0, 'empty blast radius produces 0 targets');
 
 const mixedCoverage = {
-    divedCount: 1,
+    reviewedCount: 1,
     carriedCount: 0,
     totalFiles: mixedAnalysis.files.length,
     totalJs: 1,
@@ -105,18 +110,42 @@ const mixedCoverage = {
 const mixedReport = renderReport({
     reviewId: 'r_mixed_test',
     snapshotMeta: { sourceLabel: 'mixed-fixture', treeHash: 'a'.repeat(64) },
-    modelPair: { grunt: 'grunt-test', orchestrator: 'orchestrator-test' },
-    state: { round: 0, stopReason: 'fixture', summary: '', findings: [], rejections: [] },
+    model: 'reviewer-test',
+    state: {
+        targetsSelected: 1,
+        reviewedFiles: ['src/engine.rs'],
+        failedTargets: [],
+        skippedTargets: [],
+        findings: [],
+        rejections: [],
+        ledger: [],
+        totals: { elapsedMs: 1200, promptTokens: 100, completionTokens: 50, totalTokens: 150, cost: 0.0001 },
+        stopReason: 'all selected targets reviewed'
+    },
     analysis: mixedAnalysis,
     coverage: mixedCoverage,
     exclusions: [],
-    digestGaps: [],
     validatorStats: { blocklistCounts: {} },
     incremental: null
 });
 ok(mixedReport.includes('2 rust') && mixedReport.includes('src/worker.py (python)'), 'coverage names Rust totals and generic-language files explicitly');
 ok(mixedReport.includes('language never controls eligibility'), 'coverage states that file type and language never control review eligibility');
 ok(!mixedReport.includes('- src/engine.rs (rust)'), 'Rust core source is not misreported as lacking a tier-0 adapter');
+
+// Resolver excludes Rust target/ and logs/ directories loudly, and passive .md does not steal code boundary scores.
+const noiseTmp = path.join(tmpData, 'noise-tree');
+await fsp.mkdir(path.join(noiseTmp, 'target', 'debug'), { recursive: true });
+await fsp.mkdir(path.join(noiseTmp, 'logs'), { recursive: true });
+await fsp.writeFile(path.join(noiseTmp, 'target', 'debug', 'generated.rs'), 'fn main() {}\n');
+await fsp.writeFile(path.join(noiseTmp, 'logs', 'run.log'), 'fetch("http://x")\n');
+await fsp.writeFile(path.join(noiseTmp, 'README.md'), 'Uses fetch("http://example.com") and child_process and fs.readFileSync\n');
+await fsp.writeFile(path.join(noiseTmp, 'main.rs'), 'pub fn run() { let _ = std::fs::read("x"); }\n');
+const noiseSnap = await materializeSource(noiseTmp, snapshotsRoot);
+ok(noiseSnap.exclusions.some((e) => e.rel === 'target' && e.reason.includes('directory')), 'target/ excluded and disclosed');
+ok(noiseSnap.exclusions.some((e) => e.rel === 'logs' && e.reason.includes('directory')), 'logs/ excluded and disclosed');
+const noiseAnalysis = await analyzeSnapshot(noiseSnap.snapshotDir);
+ok(noiseAnalysis.files.find((f) => f.rel === 'README.md').boundaries.length === 0, 'passive markdown doc does not receive code boundary weights');
+ok(noiseAnalysis.ranked[0].rel === 'main.rs', 'real code file ranks ahead of passive README.md');
 
 // ── Validator ──────────────────────────────────────────────────────────────
 console.log('\n[validator]');
@@ -290,11 +319,11 @@ ok(sameSourceLater.status === 'rejected', 'rejection from a prior review of the 
 const listed = await store.listFindings({ reviewId });
 ok(listed.length === 2, 'findings listed by review (cross-review findings excluded)');
 
-// ── Partial reports after orchestrator transport/JSON failure (issue #77) ────
-console.log('\n[partial review preservation]');
+// ── Parallel failure isolation, budget caps & telemetry ledger ─────────────
+console.log('\n[parallel isolation, budget & telemetry]');
 const partialData = path.join(tmpData, 'partial-data');
 store.initStore(partialData);
-const partialFinding = {
+const engineFinding = {
     file: 'src/engine.rs',
     lines: [6, 6],
     evidence: 'let _ = std::fs::write(output, b"review");',
@@ -305,62 +334,106 @@ const partialFinding = {
     test_spec: { bug: 'failed output write is invisible to the caller', data_source: 'recorded-fixture', shape: 'write to an unwritable recorded target and assert the error reaches the caller', runtime: false }
 };
 
-async function runInterruptedReview(malformedPayload) {
-    const orchestratorCalls = [];
+async function runWithTargetFault(faultPayload) {
+    const calls = [];
     const gateway = {
-        listModels: async () => [{ id: 'grunt-fixture' }, { id: 'orchestrator-fixture' }],
+        listModels: async () => [{ id: 'reviewer-fixture' }],
         chat: async (args) => {
-            if (args.model === 'grunt-fixture') {
-                return { content: JSON.stringify({ role: 'fixture file', boundaries: [], risks: [] }) };
+            calls.push(args);
+            const user = args.messages[0].content;
+            const fileMatch = /^FILE:\s+(.+)$/m.exec(user);
+            const targetFile = fileMatch ? fileMatch[1].trim() : '';
+            if (targetFile === 'src/engine.rs') {
+                return {
+                    content: JSON.stringify({ findings: [engineFinding], note: 'Found discarded Result.' }),
+                    usage: { prompt_tokens: 400, completion_tokens: 120, total_tokens: 520, cost: 0.0005 }
+                };
             }
-            orchestratorCalls.push(args);
-            if (orchestratorCalls.length === 1) {
-                return { content: JSON.stringify({ new_findings: [partialFinding], next_files: ['src/engine.rs'], done: false, summary: 'One completed round.' }) };
+            if (targetFile === 'src/api.js') {
+                if (faultPayload instanceof Error) throw faultPayload;
+                return { content: faultPayload, usage: { prompt_tokens: 200, completion_tokens: 40, total_tokens: 240 } };
             }
-            if (malformedPayload instanceof Error) throw malformedPayload;
-            return { content: malformedPayload };
+            return {
+                content: JSON.stringify({ findings: [], note: 'Clean.' }),
+                usage: { prompt_tokens: 150, completion_tokens: 30, total_tokens: 180, cost: 0.0002 }
+            };
         }
     };
     const result = await runReview({
         source: MIXED_FIXTURE,
-        models: { grunt: 'grunt-fixture', orchestrator: 'orchestrator-fixture' },
-        budget: { maxRounds: 4 },
+        model: 'reviewer-fixture',
+        budget: { maxFiles: 4, concurrency: 2 },
         gateway,
         storageRoot: 'D:\\MCP_Storage',
         dataDir: partialData
     });
-    return { result, orchestratorCalls };
+    return { result, calls };
 }
 
-const truncated = await runInterruptedReview('{"new_findings": [], "next_files": [], "done": false, "summary": "unterminated');
-ok(truncated.result.partial === true && truncated.result.state.findings.length === 1, 'truncated JSON returns PARTIAL with the completed finding');
-ok(truncated.result.report.includes('PARTIAL REVIEW') && truncated.result.report.includes(truncated.result.state.interruption.message), 'partial report carries a loud interruption banner and exact parse error');
+const truncated = await runWithTargetFault('{"findings": [], "note": "unterminated');
+ok(truncated.result.partial === true && truncated.result.state.findings.length === 1, 'one target failing JSON returns PARTIAL while preserving completed targets');
+ok(truncated.result.state.failedTargets.length === 1 && truncated.result.state.failedTargets[0].file === 'src/api.js', 'only the failing target is marked failed');
+ok(truncated.result.state.reviewedFiles.includes('src/engine.rs') && truncated.result.state.reviewedFiles.length === 3, 'healthy targets complete independently without retrying completed work');
+ok(truncated.result.report.includes('PARTIAL REVIEW') && truncated.result.report.includes('## Telemetry & cost'), 'partial report carries banner and telemetry ledger');
+ok(truncated.result.state.totals.totalTokens > 0 && truncated.result.state.totals.cost > 0, 'token and cost ledger aggregated from gateway usage');
 ok(fs.existsSync(path.join(partialData, 'reviews', truncated.result.reviewId, 'report.md')), 'partial report.md is written normally');
 ok((await store.listFindings({ reviewId: truncated.result.reviewId })).length === 1, 'partial findings are persisted and accept-addressable');
-ok(truncated.result.state.completedRounds === 1 && truncated.result.state.interruption.round === 2, 'completed and interrupted round counts stay distinct');
-ok(truncated.orchestratorCalls.every((call) => call.maxTokens === 16000 && call.timeoutMs === 600000 && call.schema.properties.new_findings.maxItems === 5), 'orchestrator rounds are size-bounded and schema-guided');
-ok(await store.findLatestReviewForSource(path.resolve(MIXED_FIXTURE), 'grunt-fixture+orchestrator-fixture', validator.VALIDATOR_VERSION) === null, 'partial review is not treated as a completed incremental baseline');
+ok(truncated.calls.every((call) => call.maxTokens === 16000 && call.timeoutMs === 120000 && call.schema.properties.findings.maxItems === 5), 'per-target calls are size-bounded and schema-guided');
+ok(await store.findLatestReviewForSource(path.resolve(MIXED_FIXTURE), 'reviewer-fixture', validator.VALIDATOR_VERSION) === null, 'partial review is not treated as a completed incremental baseline');
 
-const overlongPayload = '{"new_findings": [], "next_files": [], "done": false, "summary": "' + 'x'.repeat(20000) + '}';
-const overlong = await runInterruptedReview(overlongPayload);
-ok(overlong.result.partial === true && overlong.result.state.findings.length === 1, 'overlong malformed JSON also preserves the completed finding');
-ok(overlong.result.report.includes('PARTIAL REVIEW') && overlong.result.report.includes('not a finished review'), 'overlong failure produces explicit incomplete-coverage report');
+const timedOut = await runWithTargetFault(new Error('Gateway chat timed out after 90000ms'));
+ok(timedOut.result.partial === true && timedOut.result.state.findings.length === 1, 'per-target gateway timeout preserves completed targets');
+ok(timedOut.result.report.includes('Gateway chat timed out after 90000ms'), 'partial report preserves the exact timeout error');
 
-const timedOut = await runInterruptedReview(new Error('Gateway chat timed out after 600000ms'));
-ok(timedOut.result.partial === true && timedOut.result.state.findings.length === 1, 'gateway timeout exhaustion also returns completed findings');
-ok(timedOut.result.report.includes('Gateway chat timed out after 600000ms'), 'partial report preserves the exact timeout error');
+// Token budget cap stops remaining targets cleanly as skipped-budget.
+const budgetCalls = [];
+const budgetGateway = {
+    listModels: async () => [{ id: 'reviewer-fixture' }],
+    chat: async (args) => {
+        budgetCalls.push(args);
+        return {
+            content: JSON.stringify({ findings: [], note: 'Clean.' }),
+            usage: { prompt_tokens: 500, completion_tokens: 100, total_tokens: 600 }
+        };
+    }
+};
+const budgetStopped = await runReview({
+    source: MIXED_FIXTURE,
+    model: 'reviewer-fixture',
+    budget: { maxFiles: 5, concurrency: 1, maxTokens: 600 },
+    gateway: budgetGateway,
+    storageRoot: 'D:\\MCP_Storage',
+    dataDir: partialData
+});
+ok(budgetCalls.length === 1 && budgetStopped.result?.partial !== false && budgetStopped.partial === true && budgetStopped.state.skippedTargets.length === 4, 'token budget stops dispatching further targets cleanly');
+
+// Clean completed review becomes incremental baseline; unchanged second run makes 0 model calls.
+const cleanData = path.join(tmpData, 'clean-data');
+store.initStore(cleanData);
+let cleanCallCount = 0;
+const cleanGateway = {
+    listModels: async () => [{ id: 'reviewer-fixture' }],
+    chat: async () => {
+        cleanCallCount++;
+        return { content: JSON.stringify({ findings: [], note: 'Clean.' }), usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } };
+    }
+};
+const firstClean = await runReview({ source: MIXED_FIXTURE, model: 'reviewer-fixture', budget: { maxFiles: 3, concurrency: 2 }, gateway: cleanGateway, storageRoot: 'D:\\MCP_Storage', dataDir: cleanData });
+ok(firstClean.partial === false && cleanCallCount === 3, 'completed review runs exact maxFiles targets');
+cleanCallCount = 0;
+const secondClean = await runReview({ source: MIXED_FIXTURE, model: 'reviewer-fixture', budget: { maxFiles: 3, concurrency: 2 }, gateway: cleanGateway, storageRoot: 'D:\\MCP_Storage', dataDir: cleanData });
+ok(secondClean.partial === false && cleanCallCount === 0, 'unchanged incremental review makes 0 model calls');
 
 // ── Gateway smoke (env-gated) ──────────────────────────────────────────────
 if (process.env.CODEVIEW_SMOKE === '1') {
-    console.log('\n[gateway smoke — full pipeline against the seeded corpus]');
+    console.log('\n[gateway smoke — direct parallel pipeline against the seeded corpus]');
     const { createGatewayClient } = await import(`file://${path.join(__dirname, '..', 'src', 'gateway-client.js').replaceAll('\\', '/')}`);
     const gateway = createGatewayClient(null, 'http://localhost:3400', 'someKey33!!', { embed: async () => { throw new Error('no embeds in smoke test'); } });
-    const { runReview } = await import(`file://${path.join(AGENT, 'pipeline.js').replaceAll('\\', '/')}`);
     const storageRoot = 'D:\\MCP_Storage';
     const result = await runReview({
         source: FIXTURE,
-        models: { grunt: 'deepseek-flash-chat', orchestrator: 'kimi-k31-chat' },
-        budget: { maxRounds: 4 },
+        model: 'deepseek-flash-chat',
+        budget: { maxFiles: 10, concurrency: 4 },
         gateway,
         storageRoot,
         dataDir: path.join(tmpData, 'smoke-data'),
@@ -379,7 +452,7 @@ if (process.env.CODEVIEW_SMOKE === '1') {
         if (found) hits++;
         console.log(`    recall: ${found ? 'HIT ' : 'miss'} — ${label}`);
     }
-    console.log(`    recall ${hits}/${seeded.length}, findings ${result.state.findings.length}, rejected ${result.state.rejections.length}`);
+    console.log(`    recall ${hits}/${seeded.length}, findings ${result.state.findings.length}, rejected ${result.state.rejections.length}, elapsed ${(result.state.totals.elapsedMs / 1000).toFixed(1)}s, tokens ${result.state.totals.totalTokens}`);
     console.log(`    report: ${path.join(tmpData, 'smoke-data', 'reviews', result.reviewId, 'report.md')}`);
     ok(result.report.includes('## Coverage'), 'report has coverage section');
     ok(result.state.findings.length > 0, 'smoke run produced findings');

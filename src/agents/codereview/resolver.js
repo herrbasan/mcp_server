@@ -14,7 +14,7 @@ import { getLogger } from '../../utils/logger.js';
 
 const logger = getLogger();
 
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'vendor', 'third_party', 'third-party', 'external', 'pdfium', 'coverage', '.cache', '__pycache__']);
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', 'vendor', 'third_party', 'third-party', 'external', 'pdfium', 'coverage', '.cache', '__pycache__', 'target', 'dist', 'build', 'logs', '.test-output', '_Archive', '.archive']);
 const SECRET_FILE_PATTERNS = [/^\.env(\..+)?$/, /\.pem$/, /\.key$/, /\.crt$/, /\.pfx$/, /\.p12$/, /^id_rsa/, /\.kdbx$/, /^credentials.*\.json$/];
 const BINARY_EXTENSIONS = new Set([
     'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'pdf', 'zip', 'gz', 'tgz', 'bz2', '7z', 'rar',

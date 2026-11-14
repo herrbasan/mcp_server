@@ -134,7 +134,14 @@ function collectImports(ast, fromRel, jsFilesSet) {
     return { edges: [...new Set(edges)], unresolved };
 }
 
-function classifyBoundaries(source) {
+const PASSIVE_TEXT_EXTENSIONS = new Set(['.md', '.txt', '.svg', '.lock', '.csv', '.tsv', '.log']);
+
+function isPassiveText(rel) {
+    return PASSIVE_TEXT_EXTENSIONS.has(path.posix.extname(rel).toLowerCase());
+}
+
+function classifyBoundaries(source, rel) {
+    if (rel && isPassiveText(rel)) return [];
     const kinds = new Set();
     const lines = source.split('\n');
     for (const line of lines) {
@@ -334,7 +341,7 @@ export async function analyzeSnapshot(snapshotDir) {
         const info = fileInfo.get(rel);
         info.size = source.length;
         info.lines = source.split('\n').length;
-        info.boundaries = classifyBoundaries(source);
+        info.boundaries = classifyBoundaries(source, rel);
 
         let edges = [];
         let unresolved = [];
@@ -365,13 +372,19 @@ export async function analyzeSnapshot(snapshotDir) {
 
     // Fan-in + hunt density + boundary weights → deterministic dive ranking.
     const huntCounts = new Map();
-    for (const hunt of hunts) huntCounts.set(hunt.file, (huntCounts.get(hunt.file) ?? 0) + 1);
+    const narrationCounts = new Map();
+    for (const hunt of hunts) {
+        if (hunt.kind === 'narration-comment') narrationCounts.set(hunt.file, (narrationCounts.get(hunt.file) ?? 0) + 1);
+        else huntCounts.set(hunt.file, (huntCounts.get(hunt.file) ?? 0) + 1);
+    }
 
     const ranked = [];
     for (const rel of sourceFiles) {
         const info = fileInfo.get(rel);
         const fanIn = reverseEdges.get(rel)?.size ?? 0;
-        const huntHits = huntCounts.get(rel) ?? 0;
+        const bugHuntHits = huntCounts.get(rel) ?? 0;
+        const narrationHits = narrationCounts.get(rel) ?? 0;
+        const huntHits = bugHuntHits + narrationHits;
         let score = 0;
         const reasons = [];
         for (const b of info.boundaries) {
@@ -382,11 +395,15 @@ export async function analyzeSnapshot(snapshotDir) {
             score += Math.min(fanIn, 10) * 1.5;
             reasons.push(`fan-in:${fanIn}`);
         }
-        if (huntHits > 0) {
-            score += huntHits * 2.5;
-            reasons.push(`hunts:${huntHits}`);
+        if (bugHuntHits > 0) {
+            score += bugHuntHits * 2.5;
+            reasons.push(`hunts:${bugHuntHits}`);
         }
-        score += Math.min(info.lines / 400, 2);
+        if (narrationHits > 0) {
+            score += Math.min(narrationHits * 0.25, 1.5);
+            reasons.push(`comments:${narrationHits}`);
+        }
+        score += isPassiveText(rel) ? Math.min(info.lines / 1600, 0.25) : Math.min(info.lines / 400, 2);
         if (info.parseError) reasons.push('parse-error');
         ranked.push({ rel, score, fanIn, huntHits, boundaries: info.boundaries, reasons, lines: info.lines, parseError: info.parseError ?? null, language: info.language, analysisMode: info.analysisMode });
     }

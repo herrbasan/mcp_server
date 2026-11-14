@@ -8,7 +8,7 @@ import fsp from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { getLogger } from '../../utils/logger.js';
-import { runReview } from './pipeline.js';
+import { runReview, extractJson } from './pipeline.js';
 import * as store from './store.js';
 import { runAcceptanceGate, validateArtifacts, logGateVerdict } from './sandbox.js';
 
@@ -34,14 +34,14 @@ export async function init(context) {
     STORAGE_ROOT = context.config.agents?.storage?.root;
     if (!STORAGE_ROOT) throw new Error('[codereview] config agents.storage.root is required — missing from config.json');
     const conf = context.config.agents?.codereview;
-    if (!conf?.models?.grunt || !conf?.models?.orchestrator) {
-        throw new Error('[codereview] config agents.codereview.models.{grunt,orchestrator} is required — missing from config.json');
+    if (!conf?.models?.reviewer || !conf?.models?.accept) {
+        throw new Error('[codereview] config agents.codereview.models.{reviewer,accept} is required — missing from config.json');
     }
     DEFAULT_MODELS = conf.models;
     DATA_DIR = path.resolve(__dirname, '..', '..', '..', 'data', 'codereview');
     fs.mkdirSync(DATA_DIR, { recursive: true });
     initStoreChecked(context);
-    logger.info(`[codereview] initialized — data ${DATA_DIR}, models ${DEFAULT_MODELS.grunt} + ${DEFAULT_MODELS.orchestrator}`, null, 'CodeReview');
+    logger.info(`[codereview] initialized — data ${DATA_DIR}, reviewer ${DEFAULT_MODELS.reviewer}, accept ${DEFAULT_MODELS.accept}`, null, 'CodeReview');
 }
 
 function initStoreChecked(context) {
@@ -51,28 +51,25 @@ function initStoreChecked(context) {
     context.codereviewStore = store;
 }
 
-function resolveModels(override) {
-    const models = {
-        grunt: override?.grunt ?? DEFAULT_MODELS.grunt,
-        orchestrator: override?.orchestrator ?? DEFAULT_MODELS.orchestrator
-    };
-    if (typeof models.grunt !== 'string' || typeof models.orchestrator !== 'string') {
-        throw new Error('codereview: models.grunt and models.orchestrator must be strings');
+function resolveReviewerModel(override) {
+    const model = override ?? DEFAULT_MODELS.reviewer;
+    if (typeof model !== 'string' || !model.trim()) {
+        throw new Error('codereview: model must be a non-empty string');
     }
-    return models;
+    return model;
 }
 
 export async function codereview_review(args, context) {
-    const { source, models: modelOverride, budget, scope } = args;
+    const { source, model: modelOverride, budget, scope } = args;
     if (!source) throw new Error('codereview.review: source is required');
-    const models = resolveModels(modelOverride);
+    const model = resolveReviewerModel(modelOverride);
 
     const pr = createProgressReporter(context.progress);
     pr.set('Starting review...', 2, true);
 
     const { reviewId, report, partial } = await runReview({
         source,
-        models,
+        model,
         budget,
         scope,
         gateway: context.gateway,
@@ -81,7 +78,7 @@ export async function codereview_review(args, context) {
         emitProgress: (message, pct) => pr.set(message, pct, true)
     });
 
-    pr.done(partial ? 'Partial review returned — completed findings preserved' : 'Review complete');
+    pr.done(partial ? 'Partial review returned — completed targets preserved' : 'Review complete');
     return { content: [{ type: 'text', text: report }], reviewId, partial };
 }
 
@@ -127,7 +124,7 @@ export async function codereview_accept(args, context) {
 
     const gateway = context.gateway;
     const response = await gateway.chat({
-        model: DEFAULT_MODELS.orchestrator,
+        model: DEFAULT_MODELS.accept,
         stream: false,
         maxTokens: 8000,
         systemPrompt: ACCEPT_BRIEF,
@@ -138,10 +135,7 @@ export async function codereview_accept(args, context) {
     });
     let artifacts;
     try {
-        const text = String(response.content ?? '');
-        const first = text.indexOf('{');
-        const last = text.lastIndexOf('}');
-        artifacts = JSON.parse(text.slice(first, last + 1));
+        artifacts = extractJson(response.content);
     } catch (err) {
         throw new Error(`codereview.accept: orchestrator did not return valid JSON: ${err.message}`);
     }

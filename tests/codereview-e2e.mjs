@@ -35,7 +35,7 @@ console.log(`reviewing: ${SOURCE}`);
 const started = Date.now();
 const result = await rpc('tools/call', {
     name: 'tools',
-    arguments: { method: 'codereview.review', payload: { source: SOURCE, budget: { maxRounds: 4 } } }
+    arguments: { method: 'codereview.review', payload: { source: SOURCE, budget: { maxFiles: 10 } } }
 });
 const isError = result?.result?.isError === true;
 const text = result?.result?.content?.[0]?.text ?? JSON.stringify(result).slice(0, 400);
