@@ -174,7 +174,7 @@ const FILE_REVIEW_SCHEMA = {
 const FILE_REVIEW_BRIEF = `
 You are reviewing ONE source file under the Prime Directive maxims.
 
-Goal: the most reliability at the lowest performance cost. Anti-goals: defensive-programming bloat, error-reporting ritual, clean-code conventions. The aim is architectures that cannot fail; if code CAN fail, change it so it cannot — do not add defensive handling.
+Goal: excellence = the fastest operation ensured reliability permits, using the least resources. Reliability outranks speed; speed is a first-class finding category, not polish. Anti-goals: defensive-programming bloat, error-reporting ritual, clean-code conventions. The aim is architectures that cannot fail; if code CAN fail, change it so it cannot — do not add defensive handling.
 
 BOUNDARY LADDER — every external dependency is judged on three rungs, in order:
 1. ELIMINATE: why does this dependency exist at all? Local copy, precomputed data, in-process call.
@@ -182,13 +182,26 @@ BOUNDARY LADDER — every external dependency is judged on three rungs, in order
 3. TOLERATE VISIBLY: only what survives 1-2 earns a handler, and it must leave a trace.
 Throwing guards (fail-fast assertions) are ALWAYS legal. Degrading guards (fallback defaults, swallowed catches) require documented ladder analysis ("rung").
 
+PERFORMANCE LENS — hunt for work the machine does that the problem does not require:
+- Hot-path waste: sync I/O (fs/exec *Sync) or large JSON.parse on a per-request / per-item path; regexes, indexes, or datasets rebuilt inside loops; repeated reads of immutable data; O(n²) scans where a Map or index makes them O(n).
+- Serialized I/O: awaits inside loops whose operations are independent — batch or parallelize, but ONLY when order truly does not matter.
+- Memory: JSON.parse(JSON.stringify(...)) deep clones (structuredClone or a targeted copy); unbounded growth (caches/maps/arrays never pruned); whole-file buffering where a stream fits.
+- Footprint: eager init of rarely-used state; heavyweight dependencies doing a trivial job.
+Judge every perf:* tier-0 candidate in this file. A candidate on a cold path (startup, CLI, one-shot script) is often correct as-is — say so in the note instead of forcing a finding.
+
+MEASUREMENT REGIME — every performance finding MUST carry "measure", the test regime that proves the claim:
+{ "metric": "p95 latency | ops/s | peak RSS | CPU time | wall clock per op", "workload": "real-shape load (volume, concurrency, skew — never synthetic uniform)", "threshold": "the number that counts as improved (before → after)" }
+A perf claim without a measurement plan is opinion — the validator rejects it. For performance findings: category="performance", measure filled; test_spec.bug names the waste MECHANICALLY (e.g. "config.json re-read per request"), never "it's slow" — test_spec is the correctness guard for the change, measure is the benchmark for the gain. Never trade reliability for speed silently: caching, concurrency, or laziness that can produce a wrong answer or lose data is class "trade-off" and must name what is risked.
+
 FINDING SCHEMA (exact, max 5 high-signal findings; empty array when nothing real):
 {
   "file": "<the exact relative file path given>",
   "lines": [startLine, endLine],
   "evidence": "verbatim quote from the file — MUST match cited lines character-for-character; NEVER include the '<num> | ' line-number prefix",
-  "failure_mode": "concrete bug or failure mode — what breaks, when, in production shape",
+  "failure_mode": "concrete bug, failure mode, or resource waste — what breaks or what the machine pays, when, in production shape",
   "class": "free-win" | "trade-off",
+  "category": "reliability" | "performance",
+  "measure": null | { "metric": "...", "workload": "...", "threshold": "..." },
   "suggestion": "the concrete fix (include a diff-style code block when helpful). free-win = reliability AND performance. trade-off = genuine either/or.",
   "rung": null | { "dependency": "...", "rejected_elimination": "why rung 1 fails", "consequence_before": "...", "consequence_after": "..." },
   "test_spec": { "bug": "concrete bug proved", "data_source": "production-replay" | "recorded-fixture" | "calibrated-generated", "shape": "load shape (concurrency, volume, skew — never placeholder foo/bar)", "runtime": true|false }
@@ -198,6 +211,7 @@ RULES:
 - Judge every Tier-0 hunt candidate listed for this file; emit only real findings.
 - Never suggest adding try/catch, null guards, or fallback defaults unless boundary validation cannot eliminate the input AND you document "rung".
 - Prefer deleting defensive code over adding handling.
+- "measure" is required for category="performance" and must be null otherwise.
 - "lines" are 1-based integers matching the numbered source. "evidence" MUST NOT contain the "<num> | " prefix.
 - Reply with ONLY the JSON object. No markdown fences, no commentary before or after.
 `;
@@ -503,23 +517,26 @@ export function renderReport({ reviewId, snapshotMeta, model, state, analysis, c
 
     const freeWins = state.findings.filter((f) => f.class === 'free-win');
     const tradeOffs = state.findings.filter((f) => f.class === 'trade-off');
-    lines.push(`\n**${freeWins.length} free wins** (reliability AND performance) · **${tradeOffs.length} trade-off decisions** (yours to make) · ${state.rejections.length} rejected by validator`);
+    const perfFindings = state.findings.filter((f) => f.category === 'performance');
+    lines.push(`\n**${freeWins.length} free wins** (reliability AND performance) · **${tradeOffs.length} trade-off decisions** (yours to make) · **${perfFindings.length} performance findings** (each with a measurement regime) · ${state.rejections.length} rejected by validator`);
 
     let index = 0;
     for (const finding of freeWins) {
         index++;
-        lines.push(`\n### F${index} · free-win · ${finding.file}:${finding.lines[0]}-${finding.lines[1]}`);
+        lines.push(`\n### F${index} · free-win${finding.category === 'performance' ? ' · performance' : ''} · ${finding.file}:${finding.lines[0]}-${finding.lines[1]}`);
         lines.push(`**What:** ${finding.failure_mode}`);
         lines.push(`**Next action:** ${finding.suggestion}`);
         lines.push(`**Test:** ${finding.test_spec.shape} (data: ${finding.test_spec.data_source}) — proves: ${finding.test_spec.bug}`);
+        if (finding.category === 'performance') lines.push(`**Bench:** ${finding.measure.metric} — ${finding.measure.workload}; improved = ${finding.measure.threshold}`);
         if (finding.test_spec.runtime) lines.push(`_Runtime-dependent bug: acceptance gate will mark it unprovable, not verified._`);
     }
     for (const finding of tradeOffs) {
         index++;
-        lines.push(`\n### F${index} · trade-off · ${finding.file}:${finding.lines[0]}-${finding.lines[1]}`);
+        lines.push(`\n### F${index} · trade-off${finding.category === 'performance' ? ' · performance' : ''} · ${finding.file}:${finding.lines[0]}-${finding.lines[1]}`);
         lines.push(`**Decision:** ${finding.failure_mode}`);
         lines.push(`**Either/or:** ${finding.suggestion}`);
         lines.push(`**Test:** ${finding.test_spec.shape} (data: ${finding.test_spec.data_source}) — proves: ${finding.test_spec.bug}`);
+        if (finding.category === 'performance') lines.push(`**Bench:** ${finding.measure.metric} — ${finding.measure.workload}; improved = ${finding.measure.threshold}`);
     }
     if (state.findings.length === 0) {
         lines.push('\n_No verified findings. Rejected candidates or telemetry below may explain why._');

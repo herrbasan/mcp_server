@@ -290,6 +290,88 @@ function huntEmptyErrorBranch(ast, rel, source) {
     return hits;
 }
 
+// ── Performance hunts ──────────────────────────────────────────────────────
+// Same contract as the defensive hunts: candidates, never findings. perf:*
+// kinds rank lower than bug hunts — they steer the model's performance lens,
+// they are not bug-density signals.
+
+const SYNC_IO_NAMES = new Set([
+    'readFileSync', 'writeFileSync', 'appendFileSync', 'readdirSync',
+    'statSync', 'lstatSync', 'mkdirSync', 'rmSync', 'copyFileSync',
+    'renameSync', 'execSync', 'execFileSync', 'spawnSync'
+]);
+
+function calleeName(node) {
+    const c = node.callee;
+    if (c?.type === 'Identifier') return c.name;
+    if (c?.type === 'MemberExpression' && c.property?.type === 'Identifier') return c.property.name;
+    return null;
+}
+
+function huntSyncIo(ast, rel, source) {
+    const hits = [];
+    walk(ast, (node) => {
+        if (node.type !== 'CallExpression') return;
+        if (!SYNC_IO_NAMES.has(calleeName(node))) return;
+        hits.push({ kind: 'perf:sync-io', file: rel, line: lineAt(source, node.start), snippet: source.slice(node.start, node.end).slice(0, 120) });
+    });
+    return hits;
+}
+
+function huntJsonClone(ast, rel, source) {
+    const hits = [];
+    walk(ast, (node) => {
+        if (node.type !== 'CallExpression' || node.callee?.type !== 'MemberExpression') return;
+        if (node.callee.object?.name !== 'JSON' || node.callee.property?.name !== 'parse') return;
+        const arg = node.arguments?.[0];
+        const inner = arg?.callee;
+        if (arg?.type === 'CallExpression' && inner?.type === 'MemberExpression' && inner.object?.name === 'JSON' && inner.property?.name === 'stringify') {
+            hits.push({ kind: 'perf:json-clone', file: rel, line: lineAt(source, node.start), snippet: source.slice(node.start, node.end).slice(0, 120) });
+        }
+    });
+    return hits;
+}
+
+const LOOP_TYPES = new Set(['ForStatement', 'ForOfStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement']);
+const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+function containsAwaitOutsideFunctions(node) {
+    let found = false;
+    (function scan(n) {
+        if (found || !n || typeof n.type !== 'string') return;
+        if (n.type === 'AwaitExpression') { found = true; return; }
+        if (FUNCTION_TYPES.has(n.type)) return;
+        for (const key of Object.keys(n)) {
+            if (key === 'type' || key === 'start' || key === 'end' || key === 'loc') continue;
+            const value = n[key];
+            if (Array.isArray(value)) {
+                for (const child of value) if (child && typeof child.type === 'string') scan(child);
+            } else if (value && typeof value.type === 'string') {
+                scan(value);
+            }
+        }
+    })(node);
+    return found;
+}
+
+function huntSerialAwait(ast, rel, source) {
+    const matched = [];
+    walk(ast, (node) => {
+        if (!LOOP_TYPES.has(node.type)) return;
+        if (containsAwaitOutsideFunctions(node.body)) matched.push(node);
+    });
+    // Innermost loop only: an enclosing loop sees the same await and would
+    // double-report the candidate and double-count its ranking weight.
+    return matched
+        .filter((loop) => !matched.some((other) => other !== loop && other.start < loop.start && other.end > loop.end))
+        .map((loop) => ({
+            kind: 'perf:serial-await',
+            file: rel,
+            line: lineAt(source, loop.start),
+            snippet: source.slice(loop.start, Math.min(loop.body?.start ?? loop.end, loop.start + 120)).replace(/\s+/g, ' ')
+        }));
+}
+
 // ── Ranking ────────────────────────────────────────────────────────────────
 
 const BOUNDARY_WEIGHTS = { network: 3, process: 2, fs: 1 };
@@ -356,6 +438,9 @@ export async function analyzeSnapshot(snapshotDir) {
             hunts.push(...huntDefaultMasks(ast, rel, source));
             hunts.push(...huntEmptyErrorBranch(ast, rel, source));
             hunts.push(...huntNarrationComments(comments, ast, rel, source));
+            hunts.push(...huntSyncIo(ast, rel, source));
+            hunts.push(...huntJsonClone(ast, rel, source));
+            hunts.push(...huntSerialAwait(ast, rel, source));
         } else if (descriptor.analysisMode === 'structural') {
             const rust = analyzeRust(rel, source, rustFilesSet);
             edges = rust.edges;
@@ -373,8 +458,10 @@ export async function analyzeSnapshot(snapshotDir) {
     // Fan-in + hunt density + boundary weights → deterministic dive ranking.
     const huntCounts = new Map();
     const narrationCounts = new Map();
+    const perfCounts = new Map();
     for (const hunt of hunts) {
-        if (hunt.kind === 'narration-comment') narrationCounts.set(hunt.file, (narrationCounts.get(hunt.file) ?? 0) + 1);
+        if (hunt.kind.startsWith('perf:')) perfCounts.set(hunt.file, (perfCounts.get(hunt.file) ?? 0) + 1);
+        else if (hunt.kind === 'narration-comment') narrationCounts.set(hunt.file, (narrationCounts.get(hunt.file) ?? 0) + 1);
         else huntCounts.set(hunt.file, (huntCounts.get(hunt.file) ?? 0) + 1);
     }
 
@@ -402,6 +489,11 @@ export async function analyzeSnapshot(snapshotDir) {
         if (narrationHits > 0) {
             score += Math.min(narrationHits * 0.25, 1.5);
             reasons.push(`comments:${narrationHits}`);
+        }
+        const perfHits = perfCounts.get(rel) ?? 0;
+        if (perfHits > 0) {
+            score += Math.min(perfHits, 3);
+            reasons.push(`perf:${perfHits}`);
         }
         score += isPassiveText(rel) ? Math.min(info.lines / 1600, 0.25) : Math.min(info.lines / 400, 2);
         if (info.parseError) reasons.push('parse-error');

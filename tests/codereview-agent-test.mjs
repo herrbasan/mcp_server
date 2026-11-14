@@ -42,6 +42,24 @@ ok(snap2.treeHash === snap.treeHash, 'same tree → same hash (idempotent)');
 // Determinism of the exclusion listing — the review never saw these silently.
 ok(snap.exclusions.length === 3, `all exclusions recorded (${snap.exclusions.length})`);
 
+// Regression (2026-11-14 disk bomb): reviewing a tree that CONTAINS the
+// snapshots root must not copy its own staging dir — two concurrent
+// self-reviews recursed into each other to 127 GB before this exclusion.
+// Top-level data/ is runtime state (never source); nested src/data/ stays.
+const bombTmp = path.join(tmpData, 'bomb-tree');
+await fsp.mkdir(path.join(bombTmp, 'src', 'data'), { recursive: true });
+await fsp.mkdir(path.join(bombTmp, 'data'), { recursive: true });
+await fsp.writeFile(path.join(bombTmp, 'src', 'index.js'), 'export const x = 1;\n');
+await fsp.writeFile(path.join(bombTmp, 'src', 'data', 'schema.json'), '{"type":"object"}\n');
+await fsp.writeFile(path.join(bombTmp, 'data', 'runtime-state.jsonl'), '{"n":1}\n');
+const bombSnapsRoot = path.join(bombTmp, 'var', 'snapshots'); // storage INSIDE the reviewed tree, outside data/
+const bombSnap = await materializeSource(bombTmp, bombSnapsRoot);
+ok(bombSnap.files.includes('src/index.js') && bombSnap.files.includes('src/data/schema.json'), 'nested src/data stays reviewable');
+ok(bombSnap.exclusions.some((e) => e.rel === 'data' && e.reason.includes('runtime data')), 'top-level data/ excluded as runtime state');
+ok(bombSnap.exclusions.some((e) => e.rel === 'var/snapshots' && e.reason.includes('self-copy recursion')), 'snapshot storage inside the source tree is excluded (self-copy recursion)');
+ok(!bombSnap.files.some((f) => f.startsWith('data/') || f.startsWith('var/')), 'neither runtime data/ nor snapshot storage entered the snapshot');
+ok(bombSnap.files.length === 2, `only real source files copied (${bombSnap.files.length})`);
+
 // ── Analyzer (tier 0) ──────────────────────────────────────────────────────
 console.log('\n[analyzer tier-0]');
 const analysis = await analyzeSnapshot(snap.snapshotDir);
@@ -54,6 +72,29 @@ ok(analysis.hunts.some((h) => h.file === 'src/store.js' && h.kind === 'nullish-d
 ok(analysis.hunts.some((h) => h.kind === 'narration-comment' && h.file === 'src/util.js'), 'narration comment candidate found in util.js');
 const narration = analysis.hunts.find((h) => h.kind === 'narration-comment');
 ok(Number.isInteger(narration.line), `narration hunt line is a number, not a Position object (got ${JSON.stringify(narration?.line)})`);
+
+// Performance hunts (perf lens): sync I/O, JSON deep clone, serial awaits.
+ok(analysis.hunts.some((h) => h.file === 'src/perf.js' && h.kind === 'perf:sync-io'), 'perf:sync-io candidate found in perf.js (readFileSync)');
+ok(analysis.hunts.some((h) => h.file === 'src/perf.js' && h.kind === 'perf:json-clone'), 'perf:json-clone candidate found in perf.js');
+ok(analysis.hunts.some((h) => h.file === 'src/perf.js' && h.kind === 'perf:serial-await'), 'perf:serial-await candidate found in perf.js');
+const perfRank = analysis.ranked.find((r) => r.rel === 'src/perf.js');
+ok(perfRank.reasons.includes('perf:3'), `perf hunt density enters ranking at lower weight (${perfRank.reasons.join(', ')})`);
+
+// Negative: an await inside a nested function in a loop is concurrency, not serial I/O.
+const perfNegTmp = path.join(tmpData, 'perf-neg');
+await fsp.mkdir(perfNegTmp, { recursive: true });
+await fsp.writeFile(path.join(perfNegTmp, 'neg.js'), [
+    'export async function batch(items) {',
+    '    const out = [];',
+    '    for (const item of items) {',
+    '        out.push(item.map(async (x) => await transform(x)));',
+    '    }',
+    '    return Promise.all(out.flat());',
+    '}',
+    'async function transform(x) { return x; }'
+].join('\n'));
+const negAnalysis = await analyzeSnapshot(perfNegTmp);
+ok(!negAnalysis.hunts.some((h) => h.kind === 'perf:serial-await'), 'await inside a nested function in a loop is NOT a serial-await candidate');
 
 const apiInfo = analysis.files.find((f) => f.rel === 'src/api.js');
 ok(apiInfo.boundaries.includes('network'), 'api.js classified network boundary');
@@ -196,6 +237,75 @@ ok(tg.ok, 'throwing guard with || inside the if-condition is legal without ladde
 const placeholder = { ...goodFinding, test_spec: { bug: 'returns null on failure', data_source: 'calibrated-generated', shape: 'call with foo and bar values' } };
 const ph = validator.validateTestSpec(placeholder.test_spec);
 ok(!ph.ok && ph.reason.includes('placeholder'), 'placeholder test data rejected');
+
+// Performance findings: measure regime required and validated.
+const perfFinding = {
+    file: 'src/perf.js',
+    lines: [10, 10],
+    evidence: 'JSON.parse(JSON.stringify(state))',
+    failure_mode: 'snapshot() deep-clones via serialize/parse round-trip — drops Dates and undefined fields (silent data loss) and allocates the full JSON string per call',
+    class: 'free-win',
+    category: 'performance',
+    suggestion: 'Use structuredClone(state): no string allocation, and Dates survive.',
+    measure: { metric: 'ops/s of snapshot()', workload: '1000 clones of a 10k-key nested state object', threshold: '>= 2x ops/s vs JSON round-trip on the same object' },
+    test_spec: { bug: 'snapshot() silently turns Date values into ISO strings and drops undefined fields', data_source: 'calibrated-generated', shape: 'state with Date fields and sparse undefined slots, cloned and deep-compared' }
+};
+const perfOk = await validator.validateFinding(perfFinding, snap.snapshotDir, fileSet);
+ok(perfOk.ok, `performance finding with measure passes${perfOk.ok ? '' : ` — ${perfOk.reason}`}`);
+
+const perfNoMeasure = { ...perfFinding, measure: null };
+const pnm = await validator.validateFinding(perfNoMeasure, snap.snapshotDir, fileSet);
+ok(!pnm.ok && pnm.reason.includes('measure'), 'performance finding without measure rejected (a perf claim without a measurement regime is opinion)');
+
+const perfThinMeasure = { ...perfFinding, measure: { metric: 'ops/s', workload: 'fast', threshold: 'better' } };
+const ptm = await validator.validateFinding(perfThinMeasure, snap.snapshotDir, fileSet);
+ok(!ptm.ok && ptm.reason.includes('measure.workload'), 'measure with a non-descriptive workload rejected');
+
+const perfPlaceholderMeasure = { ...perfFinding, measure: { metric: 'ops/s', workload: 'foo and bar data', threshold: '2x faster' } };
+const ppm = await validator.validateFinding(perfPlaceholderMeasure, snap.snapshotDir, fileSet);
+ok(!ppm.ok && ppm.reason.includes('placeholder'), 'measure with placeholder workload rejected');
+
+const measureOnReliability = { ...goodFinding, measure: { metric: 'ops/s', workload: '1000 calls of fetchUser', threshold: '2x' } };
+const mor = await validator.validateFinding(measureOnReliability, snap.snapshotDir, fileSet);
+ok(!mor.ok && mor.reason.includes('only valid on category'), 'measure on a reliability finding rejected (category mismatch)');
+
+const badCategory = { ...goodFinding, category: 'speed' };
+const bc = await validator.validateFinding(badCategory, snap.snapshotDir, fileSet);
+ok(!bc.ok && bc.reason.includes('category'), 'invalid category rejected');
+
+const perfReport = renderReport({
+    reviewId: 'r_perf_test',
+    snapshotMeta: { sourceLabel: 'perf-fixture', treeHash: 'c'.repeat(64) },
+    model: 'reviewer-test',
+    state: {
+        targetsSelected: 1,
+        reviewedFiles: ['src/perf.js'],
+        failedTargets: [],
+        skippedTargets: [],
+        findings: [perfFinding],
+        rejections: [],
+        ledger: [],
+        totals: { elapsedMs: 900, promptTokens: 100, completionTokens: 50, totalTokens: 150, cost: 0.0001 },
+        stopReason: 'all selected targets reviewed'
+    },
+    analysis,
+    coverage: {
+        reviewedCount: 1,
+        carriedCount: 0,
+        totalFiles: analysis.files.length,
+        totalJs: analysis.jsFileCount,
+        totalRust: analysis.rustFileCount,
+        totalGeneric: analysis.analysisModeCounts.generic,
+        genericFiles: analysis.genericFiles,
+        unreviewed: []
+    },
+    exclusions: [],
+    validatorStats: { blocklistCounts: {} },
+    incremental: null
+});
+ok(perfReport.includes('1 performance findings'), 'report tallies performance findings');
+ok(perfReport.includes('**Bench:** ops/s of snapshot()'), 'report renders the measurement regime (Bench line)');
+ok(perfReport.includes('free-win · performance · src/perf.js:10'), 'finding heading marks performance category');
 
 const counts = validator.countBlocklist(['this is best practice', 'add defensive programming', 'removes defensive fallback']);
 ok(counts['best practice'] === 1 && counts['defensive programming'] === 1, 'blocklist counts, never rejects (defensive fallback not counted)');

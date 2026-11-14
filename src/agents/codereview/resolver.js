@@ -63,7 +63,7 @@ function run(cmd, args, opts = {}) {
     });
 }
 
-async function* walkFiles(root, relPrefix = '') {
+async function* walkFiles(root, relPrefix = '', containmentRoots = []) {
     const entries = await fsp.readdir(path.join(root, relPrefix), { withFileTypes: true });
     for (const entry of entries) {
         const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
@@ -73,7 +73,24 @@ async function* walkFiles(root, relPrefix = '') {
                 yield { rel, isDir: true, reason: `directory: ${entry.name}` };
                 continue;
             }
-            yield* walkFiles(root, rel);
+            // Top-level runtime state (never review source) — root level only,
+            // a nested src/data/ or test fixture dir stays reviewable.
+            if (!relPrefix && entry.name === 'data') {
+                yield { rel, isDir: true, reason: 'runtime data (top-level data/ — mutable state, not source)' };
+                continue;
+            }
+            // The codereview snapshot storage itself: reviewing a tree that
+            // CONTAINS snapshotsRoot must not copy its own growing staging
+            // dir (measured 2026-11-14: two concurrent self-reviews copied
+            // each other and themselves to 127 GB before being killed).
+            if (containmentRoots.length > 0) {
+                const abs = path.resolve(root, ...rel.split('/'));
+                if (containmentRoots.some((c) => abs === c || abs.startsWith(c + path.sep))) {
+                    yield { rel, isDir: true, reason: 'codereview snapshot storage — self-copy recursion excluded' };
+                    continue;
+                }
+            }
+            yield* walkFiles(root, rel, containmentRoots);
         } else if (entry.isFile()) {
             yield { rel, isDir: false };
         }
@@ -85,13 +102,15 @@ async function* walkFiles(root, relPrefix = '') {
 /**
  * Copy a tree into dst applying exclusion rules. Returns { copied, exclusions }
  * where each exclusion is { rel, reason } — the report lists every one.
+ * opts.containmentRoots: absolute paths never descended into (snapshot storage).
  */
-export async function copyTreeFiltered(srcRoot, dstRoot) {
+export async function copyTreeFiltered(srcRoot, dstRoot, opts = {}) {
     await fsp.mkdir(dstRoot, { recursive: true });
+    const containmentRoots = (opts.containmentRoots ?? []).map((p) => path.resolve(p));
     const copied = [];
     const exclusions = [];
     let processed = 0;
-    for await (const entry of walkFiles(srcRoot)) {
+    for await (const entry of walkFiles(srcRoot, '', containmentRoots)) {
         processed++;
         if (processed % 200 === 0) await new Promise((r) => setImmediate(r)); // never block the loop
 
@@ -178,18 +197,50 @@ async function fetchGitHubTree(owner, repo, ref, tmpDir) {
 }
 
 /**
+ * Sweep staging dirs abandoned by aborted runs (client disconnect mid-copy).
+ * A LIVE staging has a fresh mtime (files land in it constantly); only dirs
+ * untouched for STAGING_MAX_AGE_MS are removed. Filesystem boundary —
+ * failures are logged and skipped, never fatal to the review.
+ */
+const STAGING_MAX_AGE_MS = 60 * 60 * 1000;
+
+async function sweepStaleStaging(snapshotsRoot) {
+    let entries;
+    try {
+        entries = await fsp.readdir(snapshotsRoot, { withFileTypes: true });
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !entry.name.startsWith('.staging-')) continue;
+        const abs = path.join(snapshotsRoot, entry.name);
+        try {
+            const st = await fsp.stat(abs);
+            if (Date.now() - st.mtimeMs > STAGING_MAX_AGE_MS) {
+                await fsp.rm(abs, { recursive: true, force: true });
+                logger.warn(`[codereview] swept stale staging ${entry.name} (leaked by an aborted run)`, null, 'CodeReview');
+            }
+        } catch (err) {
+            logger.warn(`[codereview] stale-staging sweep skipped ${entry.name}: ${err.message}`, null, 'CodeReview');
+        }
+    }
+}
+
+/**
  * Materialize any supported source into data/codereview/snapshots/<hash16>/.
  * Returns { snapshotDir, treeHash, files, exclusions, sourceKind, sourceLabel }.
  */
 export async function materializeSource(source, snapshotsRoot) {
     if (!source || typeof source !== 'string') throw new Error('codereview: source is required');
     await fsp.mkdir(snapshotsRoot, { recursive: true });
+    await sweepStaleStaging(snapshotsRoot);
     const classified = classifySource(source);
 
     let stagingRoot = null;
     let cleanupStaging = null;
     let sourceKind;
     let sourceLabel;
+    let containmentRoots = [];
 
     if (classified.kind === 'github') {
         sourceKind = 'github';
@@ -209,6 +260,7 @@ export async function materializeSource(source, snapshotsRoot) {
             sourceKind = 'directory';
             sourceLabel = abs;
             stagingRoot = abs;
+            containmentRoots = [snapshotsRoot]; // a local tree may contain the snapshot storage itself
         } else {
             const ext = path.extname(abs).toLowerCase();
             if (!['.zip', '.tar', '.gz', '.tgz'].includes(ext)) {
@@ -230,7 +282,7 @@ export async function materializeSource(source, snapshotsRoot) {
         // exactly that; staging location eliminates the failure mode.)
         const stagingSnapshot = path.join(snapshotsRoot, `.staging-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`);
         try {
-            const { copied, exclusions } = await copyTreeFiltered(stagingRoot, stagingSnapshot);
+            const { copied, exclusions } = await copyTreeFiltered(stagingRoot, stagingSnapshot, { containmentRoots });
             if (copied.length === 0) {
                 throw new Error(`codereview: snapshot is empty after exclusions (${exclusions.length} files excluded) — nothing to review`);
             }

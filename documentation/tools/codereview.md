@@ -5,11 +5,16 @@
 `npm run test:codereview` (offline tier; `CODEVIEW_SMOKE=1` adds the live-gateway
 seeded-corpus recall run)
 
-Reviews a codebase for reliability and performance optimization — the most
-reliability at the lowest performance cost — under the workshop's coding maxims
-(fail fast, design failures away, **no defensive programming**, no clean-code
-ritual). Two adversarial review rounds shaped the design (Gemini Argon, Claude
-Opus 5.5); the spec is the contract.
+Reviews a codebase for reliability and performance optimization — excellence
+is **the fastest operation ensured reliability permits, using the least
+resources** — under the workshop's coding maxims (fail fast, design failures
+away, **no defensive programming**, no clean-code ritual). Performance is a
+first-class finding category: the review hunts work the machine does that the
+problem does not require, and every performance finding carries a
+**measurement regime** (metric · real-shape workload · threshold) — the
+testing loop that proves an optimization actually optimized. Two adversarial
+review rounds shaped the design (Gemini Argon, Claude Opus 5.5); the spec is
+the contract.
 
 ## Tools
 
@@ -27,7 +32,7 @@ telemetry/token/cost ledger) + `reviewId`; report also on disk at
 `data/codereview/reviews/<id>/report.md`.
 
 **`codereview.findings`** — `{ reviewId?, status?, snapshotHash? }` — compact
-persisted findings (id, status, file, class, failure mode).
+persisted findings (id, status, class, performance marker, file, failure mode).
 
 **`codereview.accept`** — `{ findingId* }` — generates diff + test (`agents.codereview.models.accept`,
 default `kimi-k31-chat`), then the **acceptance gate**: the test is executed in
@@ -45,17 +50,24 @@ language-general; use the project's native runner to verify non-JavaScript fixes
    `data/codereview/snapshots/<treeHash16>/` + tree hash. Exclusions at copy
    time (`.git`, `node_modules`, `target`, `dist`, `build`, `logs`, `.test-output`,
    `_Archive`, `vendor`/`third_party`/`external`/`pdfium`, binaries, minified
-   heuristic, **secrets — snapshots feed third-party gateways**), every exclusion
-   listed in the report.
-2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph and
-   defensive-pattern hunts. Rust: structural `mod`/`use`/`include!` graph plus
-   discarded-Result, empty-`Err`-branch, and config-default candidates. Both
-   get boundary classification (network/process/fs) and deterministic ranking
-   (boundary weight + fan-in + bug-hunt density, with passive prose/lock files
-   such as `.md`/`.svg`/`.lock` excluded from code boundary weights so they do
-   not crowd out source files). **Every snapshotted text file is eligible**,
-   including configuration, documentation, data, and extensionless files.
-   Unresolved edges are recorded, never trusted.
+   heuristic, **secrets — snapshots feed third-party gateways**, top-level
+   `data/` = runtime state, and the codereview snapshot storage itself when it
+   lives inside the reviewed tree — self-copy recursion containment), every
+   exclusion listed in the report. Aborted runs leak staging dirs; a sweep at
+   snapshot start removes `.staging-*` untouched for over an hour.
+2. **Tier 0** (analyzer, no model) — JavaScript: acorn parse → import graph,
+   defensive-pattern hunts, and performance hunts (`perf:sync-io` sync fs/exec
+   on any path, `perf:json-clone` JSON round-trip deep clones,
+   `perf:serial-await` awaits in loops outside nested functions). Rust:
+   structural `mod`/`use`/`include!` graph plus discarded-Result,
+   empty-`Err`-branch, config-default, and `perf:blocking-io` (std::fs inside
+   an `async fn` file) candidates. Both get boundary classification
+   (network/process/fs) and deterministic ranking (boundary weight + fan-in +
+   bug-hunt density + perf-hunt density at lower weight, with passive
+   prose/lock files such as `.md`/`.svg`/`.lock` excluded from code boundary
+   weights so they do not crowd out source files). **Every snapshotted text
+   file is eligible**, including configuration, documentation, data, and
+   extensionless files. Unresolved edges are recorded, never trusted.
 3. **Incremental** — prior completed review of the same source + model +
    validator version: changed files (per-file hashes) + **blast radius**
    (importers via the dependency graph, including deletions) are re-reviewed
@@ -69,7 +81,9 @@ language-general; use the project's native runner to verify non-JavaScript fixes
    or per-target failure marks remaining/failed targets and returns `partial: true`
    with a PARTIAL report preserving all validated findings.
 5. **Report** — rendered deterministically from validated findings (free wins
-   first, then trade-off decisions as explicit either/or), per-target telemetry
+   first, then trade-off decisions as explicit either/or; performance findings
+   marked and tallied, each with a **Bench** line — its measurement regime:
+   metric, real-shape workload, improvement threshold), per-target telemetry
    and token/cost ledger, coverage (un-reviewed files listed — never silent;
    JavaScript/Rust/generic text totals), exclusions, validator rejections,
    blocklist counter.
@@ -81,6 +95,13 @@ that. Every generative output crosses a deterministic gate:
 
 - Findings are structured JSON; `evidence` must quote the snapshot verbatim
   (CRLF-normalized) **and** fall inside the cited line range.
+- **Performance findings are gated by their measurement regime**:
+  `category:"performance"` without a complete `measure`
+  (`{ metric, workload, threshold }`) is rejected — a perf claim without a
+  measurement plan is opinion; a `measure` on a reliability finding is
+  rejected as inconsistent; placeholder load shapes fail like placeholder test
+  data. At `accept`, perf tests assert the mechanism (I/O call counts, cache
+  hits, work eliminated), never sandbox wall-clock timing.
 - Rung fields are structured (dependency, rejected elimination, consequence
   before/after). **Throwing guards are always legal** (fail-fast is
   prescribed); **degrading guards** (fallback defaults, swallowed catches)

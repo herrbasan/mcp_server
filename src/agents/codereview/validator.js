@@ -10,7 +10,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 
-export const VALIDATOR_VERSION = 'codereview-validator-1';
+export const VALIDATOR_VERSION = 'codereview-validator-2';
 
 const DATA_SOURCES = new Set(['production-replay', 'recorded-fixture', 'calibrated-generated']);
 const PLACEHOLDER_RE = /\b(foo|bar|baz|asdf|hello world|test123|lorem ipsum|example data|dummy)\b/i;
@@ -108,6 +108,28 @@ export function validateTestSpec(testSpec) {
     return { ok: true };
 }
 
+/**
+ * Validate a measurement regime. Performance findings carry "measure" — the
+ * benchmark that proves the claim: what to measure, under what real-shape
+ * load, and the number that counts as improved. A perf claim without a
+ * measurement plan is opinion, so the bar mirrors validateTestSpec: every
+ * field must be a non-trivial string and placeholder load shapes fail.
+ */
+export function validateMeasure(measure) {
+    if (!measure || typeof measure !== 'object') return { ok: false, reason: 'measure missing' };
+    const MEASURE_MIN = { metric: 3, workload: 8, threshold: 8 };
+    for (const [field, min] of Object.entries(MEASURE_MIN)) {
+        const value = measure[field];
+        if (!value || typeof value !== 'string' || value.trim().length < min) {
+            return { ok: false, reason: `measure.${field} missing or too short — a performance claim needs a full measurement regime (metric, workload, threshold)` };
+        }
+    }
+    if (PLACEHOLDER_RE.test(`${measure.workload} ${measure.threshold}`)) {
+        return { ok: false, reason: `measure names placeholder load (${PLACEHOLDER_RE.exec(`${measure.workload} ${measure.threshold}`)?.[0]}) — real shape or nothing` };
+    }
+    return { ok: true };
+}
+
 function validateRung(rung) {
     if (rung == null) return { ok: true, present: false };
     if (typeof rung !== 'object') return { ok: false, reason: 'rung must be an object' };
@@ -137,7 +159,7 @@ function extractCodeBlocks(suggestion) {
  */
 export async function validateFinding(finding, snapshotDir, analysisFileSet) {
     if (!finding || typeof finding !== 'object') return { ok: false, reason: 'finding is not an object' };
-    const { file, lines, evidence, failure_mode, class: findingClass, suggestion, test_spec, rung } = finding;
+    const { file, lines, evidence, failure_mode, class: findingClass, suggestion, test_spec, rung, category, measure } = finding;
 
     if (!file || typeof file !== 'string') return { ok: false, reason: 'file missing' };
     if (!Array.isArray(lines) || lines.length !== 2 || !Number.isInteger(lines[0]) || !Number.isInteger(lines[1]) || lines[0] < 1 || lines[1] < lines[0]) {
@@ -149,6 +171,16 @@ export async function validateFinding(finding, snapshotDir, analysisFileSet) {
     if (!failure_mode || typeof failure_mode !== 'string') return { ok: false, reason: 'failure_mode missing — a finding without a named failure mode is generic advice' };
     if (findingClass !== 'free-win' && findingClass !== 'trade-off') return { ok: false, reason: `class must be 'free-win' or 'trade-off', got '${findingClass}'` };
     if (!suggestion || typeof suggestion !== 'string') return { ok: false, reason: 'suggestion missing' };
+
+    if (category != null && category !== 'reliability' && category !== 'performance') {
+        return { ok: false, reason: `category must be 'reliability' or 'performance', got '${category}'` };
+    }
+    if (category === 'performance') {
+        const measureCheck = validateMeasure(measure);
+        if (!measureCheck.ok) return { ok: false, reason: measureCheck.reason };
+    } else if (measure != null) {
+        return { ok: false, reason: 'measure is only valid on category="performance" findings — reliability findings carry no benchmark' };
+    }
 
     const testSpecCheck = validateTestSpec(test_spec);
     if (!testSpecCheck.ok) return { ok: false, reason: testSpecCheck.reason };

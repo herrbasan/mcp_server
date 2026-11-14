@@ -113,9 +113,9 @@ If these measurements are absent, the design is not ready for implementation.
 
 ## 1. Purpose
 
-An agent that reviews a codebase — local, remote, or transmitted — and produces **optimization suggestions for reliability and performance, weighted against each other**: the most reliability at the lowest performance cost.
+An agent that reviews a codebase — local, remote, or transmitted — and produces **optimization suggestions for reliability and performance, weighted against each other**. Excellence is defined as: **the fastest operation ensured reliability permits, using the least resources.** Reliability outranks speed; performance is a first-class finding category, not polish — the review exists as much to find wasted work as to find failure modes.
 
-The review applies the Prime Directive's coding maxims mechanically. The rubric is not invented here; it is `Agents_Prime.md` § "Principles — Coding Maxims" encoded as review criteria.
+The review applies the Prime Directive's coding maxims mechanically. The rubric is not invented here; it is `Agents_Prime.md` § "Principles — Coding Maxims" encoded as review criteria. A second job of the report: **teach the model that reads it how to think about the project** — every finding carries the reasoning discipline (ladder, measurement regime), not just the verdict.
 
 **Anti-goal:** bloating code with try/catches, error-reporting ritual, and "clean code" conventions. The aim is architectures that cannot fail. If code *can* fail, the suggestion is to change it so it can't — not to handle the failure. No defensive programming.
 
@@ -130,6 +130,7 @@ The reviewer judges code against these rules (from the Prime Directive):
 - **Hunt defensive patterns** — swallowed try/catches, fallback defaults masking missing config, optional chaining on invariants, `||` defaults, silent degradation paths.
 - **Comments** — narration comments are a finding; only load-bearing comments (fixed-bug history, non-obvious external behavior, hard constraints) survive.
 - **Zero-dependency bias** — each external dependency must justify itself against a hand-built alternative.
+- **Performance lens** (§2.2) — hunt work the machine does that the problem does not require; every perf claim carries a measurement regime.
 
 ### 2.1 The boundary ladder
 
@@ -145,6 +146,27 @@ The reviewer judges code against these rules (from the Prime Directive):
 - **Every finding names its rung.** "This try/catch is hiding a rung-1 question" is actionable; "consider adding error handling" never is.
 - A handler that exists without having climbed the ladder first is the smell.
 
+### 2.2 The performance lens
+
+Performance findings hunt **work the machine does that the problem does not require**. Categories (each maps to a deterministic tier-0 hunt where one exists):
+
+| Category | Hunt | Tier-0 candidate |
+|----------|------|------------------|
+| Hot-path waste | sync I/O (`*Sync` fs/exec) or large `JSON.parse` on a per-request/per-item path; regexes/indexes rebuilt inside loops; repeated reads of immutable data; O(n²) scans where a Map fits | `perf:sync-io` |
+| Serialized I/O | `await` inside a loop whose operations are independent — batch or parallelize, only when order truly doesn't matter | `perf:serial-await` |
+| Memory | `JSON.parse(JSON.stringify(...))` deep clones (→ `structuredClone`); unbounded growth (caches/maps never pruned); whole-file buffering where a stream fits | `perf:json-clone` |
+| Footprint | eager init of rarely-used state; heavyweight dependencies doing a trivial job | — (model judgment) |
+| Blocking in async (Rust) | `std::fs::*` blocking calls inside an `async fn` file | `perf:blocking-io` |
+
+Rules:
+
+- **Cold-path candidates are often correct as-is.** Sync I/O at startup or in a CLI is not a finding; the reviewer says so in the note instead of forcing one.
+- **Every performance finding carries a `measure` spec** — the testing regime that proves the claim: `metric` (p95 / ops-per-sec / peak RSS / CPU / wall clock), `workload` (real-shape load: volume, concurrency, skew), `threshold` (the number that counts as improved). A perf claim without a measurement plan is opinion; the validator rejects it (§3.2).
+- **The measure is the optimization loop.** Run the benchmark before the change, apply, run after — the threshold decides whether the "optimization" actually optimized. This regime is how the review teaches lean operation: no change ships as "faster" without the number.
+- **Never trade reliability for speed silently.** Caching, concurrency, or laziness that can produce a wrong answer or lose data is class **trade-off** and names what is risked.
+- `test_spec` remains the *correctness guard* for the change; `measure` is the *benchmark for the gain*. For perf findings `test_spec.bug` names the waste mechanically ("config.json re-read per request"), never "it's slow".
+- The acceptance gate (§6.1) proves perf fixes by **mechanism** (I/O call counts, cache hits, work eliminated) — never sandbox wall-clock timing, which is noise.
+
 ---
 
 ## 3. Findings contract
@@ -154,6 +176,7 @@ The reviewer judges code against these rules (from the Prime Directive):
 - **Classify:**
   - **Free win** — improves reliability *and* performance (most findings: deleting a swallowed catch is both safer and faster). Rank these first.
   - **Trade-off** — reliability vs performance genuinely opposed (retry = reliability but latency; cache = speed but invalidation failure modes). Surfaced as an explicit either/or decision for the human, never auto-suggested, never scored by formula.
+- **Categorize:** `reliability` (default) or `performance`. Performance findings additionally require the `measure` regime (§2.2) — metric, workload, threshold — and their `test_spec.bug` names the waste mechanically.
 - **Report-first.** The tool never modifies code. Diffs are generated only for findings the user accepts.
 - **Report format** (per David's reading preference): what the finding is, actual risk/decision, suggested next action. No architectural jargon walls.
 
@@ -174,7 +197,8 @@ Test realism rules (the hierarchy names the *ideal* source; what is actually ava
 
 Every model in the pipeline was trained on human code where defensive programming is the norm: the rubric's anti-goals are each model's training prior. Prompting suppresses the reflex; it does not remove it. Conventions smuggle back in as "consider adding", as guard-wrapped diffs, as mock-heavy tests. The philosophy is therefore enforced by a **deterministic gate, not requested from the models** — the same principle as tier-0 owning the mechanical hunts: what can be checked mechanically is never left to model judgment. Never a model as the only judge of model output.
 
-- **Findings are structured JSON, not prose**: `{ file, lines, evidence, failure_mode, rung, class, test_spec }`. The `evidence` field must quote the snapshot **verbatim** (string-match verified by tier 0, whitespace/CRLF-normalized) **and fall inside the cited `lines` range** — a real quote attached to generic advice still fails the range check.
+- **Findings are structured JSON, not prose**: `{ file, lines, evidence, failure_mode, rung, class, category, measure, test_spec }`. The `evidence` field must quote the snapshot **verbatim** (string-match verified by tier 0, whitespace/CRLF-normalized) **and fall inside the cited `lines` range** — a real quote attached to generic advice still fails the range check.
+- **Performance claims are gated by their measurement regime**: `category:"performance"` without a complete `measure` `{ metric, workload, threshold }` is rejected (§2.2 — a perf claim without a measurement plan is opinion); a `measure` on a reliability finding is rejected as inconsistent; placeholder load shapes fail exactly like placeholder test data.
 - **Ladder fields are structured, not prose** — "rung 1: necessary" boilerplate is the ritual the rule would create. Rung documentation must name: the dependency, the rejected elimination and why, the consequence class before and after. Field *presence* is checked mechanically; field *truth* cannot be — that limit goes to tier-2 adjudication, and the spec states plainly: past the validator, a biased model is back in the loop. The validator is a floor, not a judge.
 - **Throwing guards ≠ degrading guards.** The validator classifies the branch action of any added check: `throw`/`exit`/`process.abort` = fail-fast assertion (prescribed by §2 — always legal) vs. return-a-default/continue = degradation (needs the ladder). A blanket "no null-checks" rule would reject the rubric's own prescriptions.
 - **Boundary validation is not a handler.** §2 prescribes validating inputs at boundaries so invalid data never enters — that is design-away, not rung-3 tolerance, and needs no ladder license. The validator's handler rule targets degrading fallbacks, not input validation at tier-0-classified boundaries.
@@ -201,7 +225,7 @@ Two passes, never a cold whole-codebase review (that degenerates into generic ad
 
 | Tier | Executor | Cost | Work |
 |------|----------|------|------|
-| 0 | Deterministic (grep/AST), no model | free | Structure extraction, dependency graph, boundary classification (which files touch network/disk/other processes), swallowed-catch hunt, comment-narration candidates. |
+| 0 | Deterministic (grep/AST), no model | free | Structure extraction, dependency graph, boundary classification (which files touch network/disk/other processes), swallowed-catch hunt, comment-narration candidates, and the performance hunts (§2.2): `perf:sync-io`, `perf:json-clone`, `perf:serial-await` (JS AST) and `perf:blocking-io` (Rust structural) — perf hunt density ranks files at lower weight than bug density. |
 | 1 | Grunt model | cheap | File digests, module summaries ("what does this actually do"), judgment-level observations grep can't make. **Mechanical pattern hunts (swallowed catches, `\|\|` defaults, narration comments) are Tier-0 only** — anything deterministic stays deterministic; a missed grep result is a bug in the hunt list, not model variance. |
 | 2 | Orchestrator model | expensive | Sees the **map and digests** for the whole tree, plus **raw source of the dive targets it selects** (verification and exact line citations require reading the real code — digests alone cannot support either). Chooses dive targets, judges the ladder, adjudicates trade-offs, **verifies tier-1 findings are real** (kills hallucinated findings), writes the final report. |
 
@@ -261,7 +285,8 @@ All four **materialize to a local snapshot** under the agent's data dir, plus a 
 
 **Snapshot hygiene** (without it, snapshots blow up disk and Tier-0 chokes on vendor bundles):
 
-- Exclusions at copy time: `.git`, `node_modules`, binary files, minified/vendor bundles, **secrets — `.env*`, key/cert/credential patterns**. Lock files, configuration, documentation, and data are retained: they can carry reliability- and security-relevant behavior. Snapshots feed third-party model gateways; a secret in a snapshot leaves the lab.
+- Exclusions at copy time: `.git`, `node_modules`, binary files, minified/vendor bundles, **secrets — `.env*`, key/cert/credential patterns**, plus two structural guards (added 2026-11-14 after a measured disk bomb — two concurrent self-reviews of the mcp_server tree copied the snapshot storage into itself recursively, 127 GB before being killed): a **top-level `data/` directory** (runtime state, never review source — nested `src/data/` stays reviewable) and **the codereview snapshot storage itself** when it lives inside the reviewed tree (self-copy recursion containment). Lock files, configuration, documentation, and project data directories below the root are retained: they can carry reliability- and security-relevant behavior. Snapshots feed third-party model gateways; a secret in a snapshot leaves the lab.
+- Aborted runs leak staging dirs; a sweep at snapshot start removes `.staging-*` untouched for over an hour (a live staging has a fresh mtime and is never touched).
 - **Every exclusion is listed in the report** — heuristic exclusion (minified detection) silently dropping a relevant file is the same sin as silent degradation. The user sees what the review never saw.
 - GC: keep the N newest snapshots per source path + any snapshot with un-disposed findings **or accepted-but-unapplied diffs** (they anchor to the snapshot); older ones deleted on a schedule.
 

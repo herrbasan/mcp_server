@@ -118,6 +118,7 @@ function huntRust(code, original, rel) {
     const hunts = [];
     const lines = code.split('\n');
     const originalLines = original.split('\n');
+    const isAsyncFile = /\basync\s+fn\b/.test(code);
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const snippet = originalLines[i]?.trim().slice(0, 140) ?? '';
@@ -126,6 +127,9 @@ function huntRust(code, original, rel) {
         }
         if (/(?:std::env::var|env::var|config|cfg|settings)/.test(line) && /\.unwrap_or(?:_default|_else)?\s*\(/.test(line)) {
             hunts.push({ kind: 'default-mask', file: rel, line: i + 1, snippet });
+        }
+        if (isAsyncFile && /\bstd::fs::(?:read_to_string|read_to_end|read|write|remove_file|File::open|File::create)\s*\(/.test(line)) {
+            hunts.push({ kind: 'perf:blocking-io', file: rel, line: i + 1, snippet });
         }
     }
     const emptyError = /\bErr\s*\([^)]*\)\s*=>\s*(?:\{\s*\}|\(\s*\))/g;

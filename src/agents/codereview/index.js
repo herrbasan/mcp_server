@@ -25,6 +25,7 @@ Rules:
 - The diff targets exactly the finding's file and is anchored to the snapshot content given to you. Unified diff format with @@ hunks.
 - The test is a plain Node script (node:assert + node:node:test are available; NO test framework deps, NO mocks of the system under test — fault injection at real boundaries only). It must FAIL when the bug is present and PASS after the diff.
 - Real data shapes, never placeholder data. If the bug needs live runtime conditions a static run cannot reproduce, set runtime_provable: false.
+- For performance findings (category "performance"), the test must assert the MECHANISM the diff changes — I/O call counts, cache hits, work eliminated — never wall-clock timing. Timing belongs to the finding's measure regime (the benchmark), not to the gate; sandbox timing is noise.
 - Do NOT add defensive handling to the diff. Fix the failure mode itself (eliminate it, shrink it, or per the finding's documented ladder).
 Reply with ONLY this JSON:
 { "diff": "--- a/<file>\\n+++ b/<file>\\n@@ ...", "test_rel": "test/<name>.test.mjs", "test_code": "...", "runtime_provable": true|false, "needs_install": true|false, "notes": "..." }
@@ -89,7 +90,7 @@ export async function codereview_findings(args) {
         return { content: [{ type: 'text', text: 'No findings match the filter.' }] };
     }
     const lines = findings.map((f) =>
-        `${f._id} · ${f.status} · ${f.class} · ${f.file}:${f.lines?.[0] ?? '?'} · ${f.failure_mode?.slice(0, 120)}`
+        `${f._id} · ${f.status} · ${f.class}${f.category === 'performance' ? ' · performance' : ''} · ${f.file}:${f.lines?.[0] ?? '?'} · ${f.failure_mode?.slice(0, 120)}`
     );
     return { content: [{ type: 'text', text: lines.join('\n') }] };
 }
@@ -130,7 +131,7 @@ export async function codereview_accept(args, context) {
         systemPrompt: ACCEPT_BRIEF,
         messages: [{
             role: 'user',
-            content: `FINDING (${finding.class})\nfile: ${finding.file}\nlines: ${finding.lines.join('-')}\nfailure mode: ${finding.failure_mode}\nsuggestion: ${finding.suggestion}\nladder: ${finding.rung ? JSON.stringify(finding.rung) : 'none'}\ntest spec: ${JSON.stringify(finding.test_spec)}\n\nCURRENT FILE CONTENT:\n${source}`
+            content: `FINDING (${finding.class}${finding.category === 'performance' ? ', performance' : ''})\nfile: ${finding.file}\nlines: ${finding.lines.join('-')}\nfailure mode: ${finding.failure_mode}\nsuggestion: ${finding.suggestion}\nladder: ${finding.rung ? JSON.stringify(finding.rung) : 'none'}\ntest spec: ${JSON.stringify(finding.test_spec)}\nmeasure: ${finding.measure ? JSON.stringify(finding.measure) : 'none'}\n\nCURRENT FILE CONTENT:\n${source}`
         }]
     });
     let artifacts;
