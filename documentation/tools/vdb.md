@@ -1,16 +1,19 @@
 # VDB — Vector Database agent (nVDB)
 
 Reference documentation for semantic indexing and search. Last verified
-2026-09-22 against `src/agents/vdb/index.js`, `chunker.js`,
+2026-11-19 against `src/agents/vdb/index.js`, `chunker.js`,
 `context-enhancer.js`, `nvdb-loader.js`, and root `config.json`.
 
 ## What it is
 
 Embedded vector search over storage files and memories, backed by the nVDB
-native module (Rust, submodule `nVDB/`). Watches the storage root, chunks
-text files, enriches them with LLM-generated metadata, embeds them through
-the gateway, and serves cosine similarity search. Also owns the `memory`
-collection the memory agent writes into.
+native module (Rust, submodule `nVDB/`). In its default mode it watches the
+storage root, chunks text files, enriches them with LLM-generated metadata,
+embeds them through the gateway, and serves cosine similarity search. It also
+owns the `memory` collection the memory agent writes into.
+
+**Production mode (2026-11-19) is a snapshot index with hybrid retrieval and a
+reranker** — see *Production retrieval* below. Scanning is off there.
 
 ## Tools
 
@@ -59,8 +62,13 @@ An exported internal `searchDocuments(...)` (not advertised as a tool) is what
 7. **Embed in batches**: via `gateway.embedBatchBackground` (background tier).
    Batches capped by `batchTokenLimit` 29 000 est. tokens (len/2.5) and
    `maxBatchTexts: 4` (config override; code default 32), 100 ms delay between
-   batches, 100 files per group. Degenerate-vector guards (non-finite /
-   zero-norm² / duplicate first-8-dims within batch) reject. Network-class
+   batches, 100 files per group. The shared embed client rejects non-finite /
+   zero-norm vectors and byte-identical vectors reused for different inputs,
+   including across separate single/batch requests and against vectors already
+   stored for active scan-index chunks; existing inputs are reconstructed lazily
+   from the configured storage root on a collision. Batch responses are mapped
+   by their required OpenAI `index`. The VDB adds a duplicate first-8-dims
+   within-batch guard. Network-class
    errors abort the scan (retry next cycle); others retry once with a
    recursive half-split fallback. After every successful batch, each file whose
    complete chunk set has arrived is persisted immediately; a later network
@@ -79,32 +87,91 @@ An exported internal `searchDocuments(...)` (not advertised as a tool) is what
 
 ## Search mechanics
 
-Query embedded foreground (dim validated 2560) → per-collection cosine search
-with over-fetch `fetchK = max(top_k × 3, 30)` → **min-max score normalization
-per collection** before merging (cross-collection comparability) → dedup by id
-and by `contentHash#splitIdx`, per-file cap 3 chunks → sort by
-normalizedScore → cut at `top_k`.
+Query embedded foreground (dim validated 2560) → per-collection search with
+over-fetch `fetchK = max(top_k × 3, 30)` → **min-max score normalization per
+collection** before merging (cross-collection comparability) → dedup by id and
+by `contentHash#splitIdx`, per-file cap 3 chunks → sort by normalizedScore →
+cut at `top_k`.
+
+## Production retrieval — snapshot index, hybrid, rerank
+
+`agents.vdb.dbPath` points at a fixed candidate index
+(`data/candidates/wizkid-hybrid-rerank/nvdb`). Three config switches make it
+what it is:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `snapshot` | `true` | No scanner, no initial scan, no compaction, no `__enhancement_cache`, no context enhancer. The index is a fixed artifact; `vdb.trigger_scan` refuses with an explanation instead of re-embedding it. |
+| `embeddingPath` | `/v1/embeddings/wizkid` | Every embed this agent issues (query, batch, background) goes to that Gateway route. The index's vectors came from it; another route is a different vector space. |
+| `hybrid` | see below | Dense + BM25 lanes fused by RRF, per-document diversity. |
+| `rerank` | see below | ONNX cross-encoder over the hybrid shortlist. |
+
+```json
+"hybrid": { "enabled": true, "rrfK": 10, "candidateK": 200, "vectorWeight": 1.0,
+            "lexicalWeight": 1.0, "diversityField": "path", "maxPerDocument": 2 },
+"rerank": { "enabled": true, "modelPath": "...\\atelasi-multilingual-reranker-small\\model.onnx",
+            "tokenizerPath": "...\\tokenizer.json", "textField": "content",
+            "maxLength": 64, "batchSize": 10, "shortlist": 10, "weight": 0.2 }
+```
+
+- **Reranker fails loudly at startup.** A missing `model.onnx`/`tokenizer.json`,
+  or an addon built without `--features rerank-onnx` (no `Reranker` export),
+  aborts `vdb.init` with the path or the feature name. Serving without the
+  reranker would be a different, unmeasured system.
+- **Ordering is the native call's.** `hybridSearchReranked` returns the
+  reranked head first and the unscored tail after it, but the tail keeps its
+  larger raw RRF score — so `searchDocuments` must NOT re-sort by raw score in
+  hybrid mode. It derives `normalizedScore` from rank position instead;
+  re-sorting by score promoted the tail over the head (caught by the golden
+  gate, 2026-11-19).
+- **Snapshot payload schema is the builder's**, not the scanner's:
+  `{ path, title, content }` per chunk (memory: `{ id, description, data,
+  content }`). Consequences:
+  - `include_content` returns `payload.content` (the exact embedded chunk).
+  - `absolutePath` is resolved from `payload.path` under `agents.storage.root`.
+  - `splitIdx` comes from the `#N` id suffix.
+  - `folder` / `extension` filters cannot use an nVDB payload filter (those
+    fields do not exist) — they are applied client-side over the over-fetched
+    result set.
+- **Known upstream shape**, left as is: reranked `score` is a fusion against
+  nVDB's fixed k=60, while lane fusion uses `rrfK`, and results past the
+  rerank shortlist keep their lane score. Raw scores are therefore **not
+  monotonic across the shortlist boundary** — never sort or threshold on them.
+  `normalizedScore` and memory's recall percentage both come from rank position.
 
 ## Config (effective, `agents.vdb`)
 
-`enabled: true`, `dbPath: 'data/nvdb'`, `scanIntervalMinutes: 5`,
-`scanTimeoutMinutes: 30`, `embeddingDim: 2560`, `chunkMaxTokens: 1024`,
-`chunkOverlapTokens: 128`, `chunkTokCharsRatio: 2.5`,
+`enabled: true`, `dbPath: 'data/candidates/wizkid-hybrid-rerank/nvdb'`,
+`indexPath: null`, `snapshot: true`, `embeddingPath: '/v1/embeddings/wizkid'`,
+`scanIntervalMinutes: 5`, `scanTimeoutMinutes: 30`, `embeddingDim: 2560`,
+`chunkMaxTokens: 1024`, `chunkOverlapTokens: 128`, `chunkTokCharsRatio: 2.5`,
 `maxFileSizeBytes: 10 MB`, `batchTokenLimit: 29000`, `maxBatchTexts: 4`,
 `filesPerGroup: 100`, `maxRetries: 1`, `batchDelayMs: 100`,
 `ignore: ["forge","temp","_trash",".backups"]`,
 `contextEnhancement: { enabled, task: 'local', maxInputChars: 60000,
 maxOutputTokens: 1536, temperature: 0.3, truncation: 'headmidtail' }`,
-`watch.storage.enabled: true`.
+`watch.storage.enabled: true` (search target only — no scan in snapshot mode).
+
+Rollback index: `data/nvdb` (old `.node` + old config paths).
 
 ## Binary loading
 
-`nvdb-loader.js` searches `nVDB/target/release/`, then `nVDB/napi/`, then a
-dev fallback path; platform map win32/darwin/linux × x64/arm64; stages the
-binary into `nVDB/napi/` (including the legacy `index.<platform>.node` name).
+`nvdb-loader.js` resolves the addon and `require`s it **directly** — it no
+longer copies anything into `nVDB/napi/` (that copy silently replaced a staged
+binary, and would have destroyed a rollback file at startup). Search order:
+
+1. `NODE_NVDB_NATIVE_PATH` (explicit override; a missing file is an error)
+2. `src/nVDB/target/release/nvdb-node.<platform>.node`
+3. `src/nVDB/napi/nvdb-node.<platform>.node`
+4. `D:\SRV\LLM-Gateway-Chat\lib\nvdb\napi\nvdb-node.<platform>.node`
+
+It exports `Database`, `Collection`, `FilterBuilder`, `Reranker` (null when the
+addon lacks the feature) and `nativePath`. `vdb.status` reports the loaded
+`nativePath` — that is how you tell which binary the service actually has.
 
 ## Consumers
 
 - `storage.search` — semantic file content search (`storage` collection).
-- memory agent — `dependsOn: "vdb"`, uses `getCollection('memory')` +
-  `embeddingDim` for its recall leg.
+- memory agent — `dependsOn: "vdb"`, uses `getCollection('memory')`,
+  `embeddingDim`, `embeddingPath`, `reranker`, `hybrid` and `rerank` for its
+  recall leg (vector-only and hybrid both supported).

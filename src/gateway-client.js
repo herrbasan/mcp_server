@@ -410,12 +410,12 @@ export function createGatewayClient(_wsUrl, httpUrl, accessKey, embedClient) {
 
         // Background embeds (store/heal): generous deadlock-guard timeout — let
         // the wrapper queue work them off instead of aborting at the foreground cap.
-        async embedBackground(text) {
-            return embedClient.embed(text, { background: true });
+        async embedBackground(text, opts) {
+            return embedClient.embed(text, { ...opts, background: true });
         },
 
-        async embedBatchBackground(texts) {
-            return embedClient.embedBatch(texts, { background: true });
+        async embedBatchBackground(texts, opts) {
+            return embedClient.embedBatch(texts, { ...opts, background: true });
         },
 
         async listModels(type) {

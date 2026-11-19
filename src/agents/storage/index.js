@@ -753,8 +753,14 @@ export async function storage_search(args, context) {
     });
     pr.done('Search complete');
 
-    const formatted = results.map(r => {
-        const line = `[${r.path}] score: ${r.score.toFixed(4)}${r.folder ? ` folder:${r.folder}` : ''}`;
+    const formatted = results.map((r, i) => {
+        // Hybrid scores are rank-fusion values, not similarities, and the
+        // reranked head scores BELOW the unscored tail — print the rank instead
+        // of a number that reads backwards.
+        const score = r.rrfScore === undefined
+            ? `score: ${r.score.toFixed(4)}`
+            : `rank: ${i + 1}, rrf: ${r.rrfScore.toFixed(4)}${r.rerankScore !== null && r.rerankScore !== undefined ? `, rerank: ${r.rerankScore.toFixed(3)}` : ''}`;
+        const line = `[${r.path}] ${score}${r.folder ? ` folder:${r.folder}` : ''}`;
         if (include_content && r.content) {
             return `${line}\n--- snippet ---\n${r.content.slice(0, 500)}${r.content.length > 500 ? '...' : ''}`;
         }

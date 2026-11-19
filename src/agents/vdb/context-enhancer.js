@@ -48,6 +48,23 @@ function truncateMiddle(content, maxChars) {
     return content.slice(0, half) + '\n\n[... middle truncated ...]\n\n' + content.slice(-half);
 }
 
+// The exact header text prepended to every chunk's embedding input. Exported
+// because the stored-vector guard must rebuild a chunk's embedding input from
+// its nVDB payload — a second copy of this formatter would drift and silently
+// produce wrong input hashes.
+export function formatContextHeader(meta) {
+    const keywords = Array.isArray(meta.keywords) ? meta.keywords.join(', ') : '';
+    const entities = Array.isArray(meta.entities) ? meta.entities.join(', ') : '';
+    const parts = [
+        meta.docType ? `Type: ${meta.docType}` : '',
+        keywords ? `Keywords: ${keywords}` : '',
+        entities ? `Entities: ${entities}` : '',
+        meta.summary ? `Summary: ${meta.summary}` : ''
+    ].filter(Boolean);
+    if (parts.length === 0) return '';
+    return `[${parts.join(' | ')}]\n\n`;
+}
+
 const TRUNCATORS = {
     head: truncateHead,
     headtail: truncateHeadTail,
@@ -104,19 +121,6 @@ export function createContextEnhancer(config, gateway, logger, cache = null) {
         return promptTemplate
             .replace('{path}', filePath)
             .replace('{content}', truncateContent(content));
-    }
-
-    function formatHeader(meta) {
-        const keywords = Array.isArray(meta.keywords) ? meta.keywords.join(', ') : '';
-        const entities = Array.isArray(meta.entities) ? meta.entities.join(', ') : '';
-        const parts = [
-            meta.docType ? `Type: ${meta.docType}` : '',
-            keywords ? `Keywords: ${keywords}` : '',
-            entities ? `Entities: ${entities}` : '',
-            meta.summary ? `Summary: ${meta.summary}` : ''
-        ].filter(Boolean);
-        if (parts.length === 0) return '';
-        return `[${parts.join(' | ')}]\n\n`;
     }
 
     function applyHeaderAndMetadata(preparedFile, meta, header) {
@@ -198,7 +202,7 @@ export function createContextEnhancer(config, gateway, logger, cache = null) {
                 throw new Error(`Local model returned non-object metadata: ${typeof meta}`);
             }
 
-            const header = formatHeader(meta);
+            const header = formatContextHeader(meta);
             if (cache && contentHash) {
                 cache.set(contentHash, { meta, header });
             }

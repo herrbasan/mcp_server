@@ -20,7 +20,21 @@ const PLATFORM_BINARIES = {
     }
 };
 
+// Search order: explicit override, submodule release build, staged napi copy,
+// the chat app's prebuilt copy.
+//
+// The module loads the chosen file DIRECTLY. It used to copy it into the napi
+// directory first, which silently replaced a staged binary on every load — and
+// would have destroyed a rollback copy the moment the service started.
 function findNativeBinary() {
+    const override = process.env.NODE_NVDB_NATIVE_PATH;
+    if (override) {
+        if (!fs.existsSync(override)) {
+            throw new Error(`nVDB: NODE_NVDB_NATIVE_PATH points at a missing file: ${override}`);
+        }
+        return path.resolve(override);
+    }
+
     const platform = process.platform;
     const arch = process.arch;
     const binaryName = PLATFORM_BINARIES[platform]?.[arch];
@@ -28,19 +42,18 @@ function findNativeBinary() {
         throw new Error(`nVDB: unsupported platform ${platform}/${arch}`);
     }
 
-    // 1. Submodule build output (release)
-    const releasePath = path.resolve(__dirname, '..', '..', 'nVDB', 'target', 'release', binaryName);
-    if (fs.existsSync(releasePath)) return releasePath;
+    const candidates = [
+        path.resolve(__dirname, '..', '..', 'nVDB', 'target', 'release', binaryName),
+        path.resolve(__dirname, '..', '..', 'nVDB', 'napi', binaryName)
+    ];
+    if (platform === 'win32') {
+        candidates.push(`D:\\SRV\\LLM-Gateway-Chat\\lib\\nvdb\\napi\\${binaryName}`);
+    }
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
 
-    // 2. Submodule napi directory
-    const napiPath = path.resolve(__dirname, '..', '..', 'nVDB', 'napi', binaryName);
-    if (fs.existsSync(napiPath)) return napiPath;
-
-    // 3. Development fallback: chat app's prebuilt copy (same machine only)
-    const chatFallback = `D:\\SRV\\LLM-Gateway-Chat\\lib\\nvdb\\napi\\${binaryName}`;
-    if (process.platform === 'win32' && fs.existsSync(chatFallback)) return chatFallback;
-
-    throw new Error(`nVDB native binary not found for ${platform}/${arch}. Run 'cd src/nVDB/napi && node setup.js' to build.`);
+    throw new Error(`nVDB: native binary ${binaryName} not found. Searched:\n${candidates.map(c => `  - ${c}`).join('\n')}\nRun 'cd src/nVDB/napi && node setup.js' to build.`);
 }
 
 let cachedModule = null;
@@ -49,25 +62,25 @@ export function loadNvdb() {
     if (cachedModule) return cachedModule;
 
     const binaryPath = findNativeBinary();
-    const napiDir = path.resolve(__dirname, '..', '..', 'nVDB', 'napi');
-    const binaryName = path.basename(binaryPath);
-    const expectedInNapi = path.join(napiDir, binaryName);
-
-    // Ensure the binary is present in the submodule napi directory so require() resolves it.
-    if (binaryPath !== expectedInNapi) {
-        fs.mkdirSync(napiDir, { recursive: true });
-        fs.copyFileSync(binaryPath, expectedInNapi);
+    let native;
+    try {
+        native = require(binaryPath);
+    } catch (e) {
+        throw new Error(`nVDB: failed to load native module from ${binaryPath}: ${e.message}`);
+    }
+    if (typeof native.Database !== 'function') {
+        throw new Error(`nVDB: ${binaryPath} does not export Database — not an nVDB addon`);
     }
 
-    // napi/index.js also checks for the legacy 'index.<platform>.node' filename.
-    const legacyName = `index.${process.platform === 'win32' ? 'win32-x64-msvc' : process.platform === 'darwin' ? 'darwin-x64' : 'linux-x64-gnu'}.node`;
-    const legacyPath = path.join(napiDir, legacyName);
-    if (!fs.existsSync(legacyPath)) {
-        fs.copyFileSync(binaryPath, legacyPath);
-    }
-
-    const { Database, FilterBuilder } = require(path.join(napiDir, 'index.js'));
-    cachedModule = { Database, FilterBuilder };
+    cachedModule = {
+        Database: native.Database,
+        Collection: native.Collection,
+        FilterBuilder: native.FilterBuilder,
+        // Absent unless the addon was built with the rerank-onnx feature.
+        // Callers that need reranking must check and fail loudly.
+        Reranker: native.Reranker ?? null,
+        nativePath: binaryPath
+    };
     return cachedModule;
 }
 

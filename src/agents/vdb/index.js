@@ -6,8 +6,9 @@ import { getLogger } from '../../utils/logger.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { loadNvdb, isNvdbAvailable } from './nvdb-loader.js';
 import { makeChunker } from './chunker.js';
-import { createContextEnhancer } from './context-enhancer.js';
+import { createContextEnhancer, formatContextHeader } from './context-enhancer.js';
 import { embedGroupWithPersistence } from './embedding-persistence.js';
+import { createStoredVectorGuard } from '../../embed-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -29,7 +30,33 @@ const DEFAULTS = {
     maxRetries: 1,
     batchDelayMs: 100,
     textExtensions: ['.md', '.txt', '.json', '.js', '.mjs', '.css', '.html', '.htm', '.log', '.yaml', '.yml', '.xml', '.csv', '.tsv', '.sql'],
-    ignore: []
+    ignore: [],
+    // A snapshot index is a fixed, externally built collection set: no watch,
+    // no scan, no compaction. Its payload schema is the builder's, not this
+    // agent's (see searchDocuments).
+    snapshot: false,
+    // Route that produced the index's vectors. Mixing routes mixes vector
+    // spaces and produces confident nonsense.
+    embeddingPath: null,
+    hybrid: {
+        enabled: false,
+        rrfK: 10,
+        candidateK: 200,
+        vectorWeight: 1.0,
+        lexicalWeight: 1.0,
+        diversityField: null,
+        maxPerDocument: 2
+    },
+    rerank: {
+        enabled: false,
+        modelPath: null,
+        tokenizerPath: null,
+        textField: 'content',
+        maxLength: 64,
+        batchSize: 10,
+        shortlist: 10,
+        weight: 0.2
+    }
 };
 
 const COLLECTIONS = {
@@ -45,11 +72,18 @@ let SCAN_TIMER = null;
 let IS_SCANNING = false;
 let SCAN_STARTED_AT = null;
 let LAST_SCAN_AT = null;
+let LAST_SCAN_ERROR = null;
 let SCAN_STATS = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0 };
 let GATEWAY = null;
 let STORAGE_ROOT = null;
 let CHUNKER = null;
 let CONTEXT_ENHANCER = null;
+let RERANKER = null;
+// Stored-vector guard for every chunk vector this agent writes (see
+// createStoredVectorGuard). Built from the live index in init(): the
+// process-local guard inside embed-client cannot see vectors that an earlier
+// process stored for different text.
+let STORED_VECTOR_GUARD = null;
 // Set when a scan produces tombstones; cleared by a successful compaction. The
 // marker file makes that survive a restart, so a clean boot does not force a
 // 100 MB segment rewrite (which stalled unrelated requests for ~20 s).
@@ -223,7 +257,7 @@ function createEnhancementCache() {
 
 async function embedText(text) {
     if (!GATEWAY) throw new Error('VDB: gateway not available');
-    const embedding = await GATEWAY.embed(text);
+    const embedding = await GATEWAY.embed(text, { path: CONFIG.embeddingPath });
     if (!Array.isArray(embedding) || embedding.length !== CONFIG.embeddingDim) {
         throw new Error(`VDB: expected embedding dim ${CONFIG.embeddingDim}, got ${Array.isArray(embedding) ? embedding.length : typeof embedding}`);
     }
@@ -256,7 +290,7 @@ async function embedViaGateway(texts, retries) {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const embeddings = await GATEWAY.embedBatchBackground(texts);
+            const embeddings = await GATEWAY.embedBatchBackground(texts, { path: CONFIG.embeddingPath });
             if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
                 throw new Error(`VDB: expected ${texts.length} embeddings, got ${Array.isArray(embeddings) ? embeddings.length : typeof embeddings}`);
             }
@@ -284,7 +318,7 @@ async function embedViaGateway(texts, retries) {
                 for (let i = 0; i < embeddings.length; i++) {
                     const key = embeddings[i].slice(0, 8).join(',');
                     const first = seen.get(key);
-                    if (first !== undefined) {
+                    if (first !== undefined && texts[first] !== texts[i]) {
                         throw new Error(`VDB: duplicate embedding for distinct texts (batch items ${first} and ${i} identical in first 8 dims) — refusing to persist batch`);
                     }
                     seen.set(key, i);
@@ -424,6 +458,102 @@ async function prepareFileForIndexing(collectionName, absolutePath, sourceRoot, 
     return prepared;
 }
 
+// ── Stored-vector guard ──────────────────────────────────────────────
+// Chunk ids are stable (`<collection>:<relPath>` or `…#<i>`), so one guard can
+// cover every collection this agent indexes. Vector hashes must come from the
+// stored vectors themselves; a file's contentHash is NOT enough because each
+// chunk embeds a different slice (plus the enhancement header).
+//
+// The existing input for a stored chunk is rebuilt lazily — only when a fresh
+// vector collides — from the chunk's payload coordinates read out of the
+// current source file, with the same context header the enhancer applied. If
+// the source no longer matches the payload's contentHash the reconstruction
+// would be a guess, so it fails loud instead of comparing the wrong text.
+export function storedChunkInput({ coll, chunkId, storageRoot }) {
+    if (!coll || !chunkId) throw new Error('VDB: storedChunkInput needs coll and chunkId');
+    const stored = coll.get(chunkId);
+    if (!stored || stored.payload === undefined || stored.payload === null) {
+        throw new Error(`VDB: stored vector ${chunkId} has no payload — cannot resolve its embedding input`);
+    }
+    const payload = JSON.parse(stored.payload);
+    if (!Number.isInteger(payload.charOffset) || !Number.isInteger(payload.charLen)) {
+        throw new Error(`VDB: stored vector ${chunkId} has no chunk coordinates (legacy payload) — re-index this file before it can be verified`);
+    }
+    // Prefer the configured storage root: payload.path is relative to it and is
+    // where the index reads from, while payload.absolutePath can be a copy/lab
+    // path that no longer holds the indexed bytes. The contentHash check still
+    // decides whether the bytes are the ones that produced the stored vector.
+    const candidates = [
+        payload.path && storageRoot ? path.join(storageRoot, payload.path) : null,
+        payload.absolutePath
+    ].filter(Boolean);
+    const sourcePath = candidates.find((p) => fs.existsSync(p));
+    if (!sourcePath) {
+        throw new Error(`VDB: stored vector ${chunkId} source file is missing (${candidates.join(', ') || 'no path in payload'}) — cannot resolve its embedding input`);
+    }
+    const content = fs.readFileSync(sourcePath, 'utf-8');
+    if (payload.contentHash && hashContent(content) !== payload.contentHash) {
+        throw new Error(`VDB: stored vector ${chunkId} was built from different content (${payload.path} changed since it was indexed) — re-index required before it can be verified`);
+    }
+    const chunkText = content.slice(payload.charOffset, payload.charOffset + payload.charLen);
+    const header = payload.contextEnhanced ? formatContextHeader(payload) : '';
+    return header + chunkText;
+}
+
+export function buildChunkVectorGuard({ collections, storageRoot }) {
+    if (!Array.isArray(collections)) throw new Error('VDB: buildChunkVectorGuard needs a collections array');
+    const guard = createStoredVectorGuard('vdb');
+    const stats = { registered: 0, missing: 0 };
+    for (const { name, coll, index } of collections) {
+        for (const [docBaseId, entry] of Object.entries(index?.files || {})) {
+            if (entry.collection !== name) continue;
+            // Alias entries (content-hash duplicates) hold no vectors.
+            if (!entry.chunks) continue;
+            for (let i = 0; i < entry.chunks; i++) {
+                const chunkId = entry.chunks === 1 ? docBaseId : `${docBaseId}#${i}`;
+                const stored = coll.get(chunkId);
+                if (!stored || !stored.vector) {
+                    stats.missing++;
+                    continue;
+                }
+                guard.register(chunkId, stored.vector, () => storedChunkInput({ coll, chunkId, storageRoot }));
+                stats.registered++;
+            }
+        }
+    }
+    return { guard, ...stats };
+}
+
+// Assert EVERY chunk vector before the caller inserts any of them: a batch that
+// reuses one stored vector must leave the file untouched, not half indexed.
+export function assertPreparedChunkVectors(guard, prepared, embeddings) {
+    if (!guard) throw new Error('VDB: stored-vector guard is not initialized — refusing to insert embeddings');
+    if (!Array.isArray(embeddings) || embeddings.length !== prepared.chunks.length) {
+        throw new Error(`VDB: ${prepared.docBaseId} has ${prepared.chunks.length} chunk(s) but ${Array.isArray(embeddings) ? embeddings.length : typeof embeddings} embedding(s)`);
+    }
+    guard.assertMany(prepared.chunks.map((chunk, i) => ({
+        id: chunk.docId,
+        vector: embeddings[i],
+        input: chunk.text,
+        where: `VDB ${prepared.collectionName}:${prepared.relPath} chunk ${i}`
+    })));
+}
+
+export function registerPreparedChunkVectors(guard, prepared, embeddings) {
+    if (!guard) throw new Error('VDB: stored-vector guard is not initialized — refusing to track embeddings');
+    for (let i = 0; i < prepared.chunks.length; i++) {
+        guard.register(prepared.chunks[i].docId, embeddings[i], prepared.chunks[i].text);
+    }
+}
+
+export function releaseDocumentVectors(guard, docBaseId, chunkCount) {
+    if (!guard) throw new Error('VDB: stored-vector guard is not initialized — refusing to release vectors');
+    if (!chunkCount) return;
+    for (let i = 0; i < chunkCount; i++) {
+        guard.remove(chunkCount === 1 ? docBaseId : `${docBaseId}#${i}`);
+    }
+}
+
 function deleteExistingChunks(docBaseId) {
     const index = loadIndex();
     const existing = index.files[docBaseId];
@@ -437,6 +567,7 @@ function deleteExistingChunks(docBaseId) {
             logger.warn(`[VDB] deleteExistingChunks: failed to delete ${chunkId}: ${e.message}`, null, 'VDB');
         }
     }
+    releaseDocumentVectors(STORED_VECTOR_GUARD, docBaseId, existing.chunks);
 }
 
 // ── Content-hash dedup ───────────────────────────────────────────────
@@ -471,10 +602,13 @@ function unregisterHash(index, contentHash) {
     }
 }
 
-function insertPreparedFile(prepared, embeddings) {
-    const coll = getCollection(prepared.collectionName);
-    const { docBaseId, relPath, absolutePath, contentHash, extension, metadata } = prepared;
-
+// Assert → insert → register for one prepared file. Split out of
+// insertPreparedFile so the ordering (nothing inserted when any chunk collides)
+// is a single, testable step.
+export function insertPreparedVectors({ coll, guard, prepared, embeddings }) {
+    if (!coll) throw new Error('VDB: insertPreparedVectors needs a collection');
+    assertPreparedChunkVectors(guard, prepared, embeddings);
+    const { relPath, absolutePath, contentHash, extension, metadata } = prepared;
     for (let i = 0; i < prepared.chunks.length; i++) {
         const chunk = prepared.chunks[i];
         const payload = {
@@ -492,6 +626,14 @@ function insertPreparedFile(prepared, embeddings) {
         };
         coll.insert(chunk.docId, embeddings[i], JSON.stringify(payload));
     }
+    registerPreparedChunkVectors(guard, prepared, embeddings);
+}
+
+function insertPreparedFile(prepared, embeddings) {
+    const coll = getCollection(prepared.collectionName);
+    const { docBaseId, relPath, absolutePath, contentHash, metadata } = prepared;
+
+    insertPreparedVectors({ coll, guard: STORED_VECTOR_GUARD, prepared, embeddings });
 
     const index = loadIndex();
     const fileStat = fs.statSync(absolutePath);
@@ -529,6 +671,7 @@ function deleteFileFromIndex(docBaseId) {
                 logger.warn(`[VDB] deleteFileFromIndex: failed to delete ${chunkId}: ${e.message}`, null, 'VDB');
             }
         }
+        releaseDocumentVectors(STORED_VECTOR_GUARD, docBaseId, existing.chunks);
         unregisterHash(index, existing.contentHash);
     }
     delete index.files[docBaseId];
@@ -664,6 +807,7 @@ async function scanCollection(collectionName, onPhase = null) {
                     metadata,
                     duplicateOf: dupOf
                 };
+                saveIndex(index);
                 continue;
             }
 
@@ -787,6 +931,7 @@ async function runScan(onProgress = null) {
 
     IS_SCANNING = true;
     SCAN_STARTED_AT = Date.now();
+    LAST_SCAN_ERROR = null;
     const totalStats = { added: 0, updated: 0, removed: 0, errors: 0, skipped: 0, pending: 0 };
 
     const scanTimeoutMs = (CONFIG.scanTimeoutMinutes ?? DEFAULTS.scanTimeoutMinutes) * 60 * 1000;
@@ -818,6 +963,9 @@ async function runScan(onProgress = null) {
     } catch (e) {
         logger.error(`[VDB] Scan failed: ${e.message}`, null, 'VDB');
         totalStats.errors++;
+        LAST_SCAN_ERROR = e.message;
+        // Snapshot: a timed-out scan keeps running and still mutates totalStats.
+        SCAN_STATS = { ...totalStats };
     } finally {
         IS_SCANNING = false;
         SCAN_STARTED_AT = null;
@@ -850,6 +998,54 @@ function buildFilter(collectionName, folder, extension) {
 // Stops one long/broad document from filling all result slots.
 const MAX_CHUNKS_PER_FILE = 3;
 
+// Hybrid search is a different score space: dense and lexical lanes are fused
+// by reciprocal rank, so `score` is ~1/(rrfK+1), not a cosine similarity.
+// Normalizing against the best achievable fused score keeps downstream
+// thresholds (memory's confidence weighting, vdb's normalized ranking) and the
+// rendered percentages meaningful. The reranked pass fuses against nVDB's fixed
+// k=60 (DEFAULT_RRF_K in the Rust core), not the configurable lane rrfK.
+function hybridScoreCeiling() {
+    if (RERANKER) return 1 / 61;
+    const weights = CONFIG.hybrid.vectorWeight + CONFIG.hybrid.lexicalWeight;
+    return weights / (CONFIG.hybrid.rrfK + 1);
+}
+
+async function runHybridSearch(coll, { vector, text, fetchK, filter }) {
+    const options = {
+        vector,
+        text,
+        topK: fetchK,
+        candidateK: Math.max(CONFIG.hybrid.candidateK, fetchK),
+        distance: 'cosine',
+        rrfK: CONFIG.hybrid.rrfK,
+        vectorWeight: CONFIG.hybrid.vectorWeight,
+        lexicalWeight: CONFIG.hybrid.lexicalWeight,
+        ...(CONFIG.hybrid.diversityField
+            ? { groupBy: CONFIG.hybrid.diversityField, maxPerDocument: CONFIG.hybrid.maxPerDocument }
+            : {}),
+        ...(filter ? { filter } : {})
+    };
+    if (RERANKER) {
+        return coll.hybridSearchReranked(options, RERANKER, CONFIG.rerank.textField, CONFIG.rerank.weight, CONFIG.rerank.shortlist);
+    }
+    return coll.hybridSearch(options);
+}
+
+function collectionHasPayloadFields(collectionName) {
+    // The live index is written by this agent's scanner (absolutePath, folder,
+    // contentHash, folder, charOffset…). A snapshot index is written by its
+    // builder and carries only path/title/content per chunk. An index filter on
+    // a field the snapshot does not have matches NOTHING — silently.
+    return !CONFIG.snapshot && collectionName === 'storage';
+}
+
+function chunkIndexFromId(id) {
+    const hash = id.lastIndexOf('#');
+    if (hash === -1) return 0;
+    const parsed = Number.parseInt(id.slice(hash + 1), 10);
+    return Number.isInteger(parsed) ? parsed : 0;
+}
+
 export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, onProgress = null } = {}) {
     if (!DATABASE) throw new Error('VDB agent is not initialized or nVDB is unavailable. Check logs.');
     if (!query) throw new Error('searchDocuments: query is required');
@@ -865,11 +1061,11 @@ export async function searchDocuments({ query, collections, folder, extension, t
     onProgress?.('Searching collections...', 40);
 
     // Per-collection search with min-max score normalization.
-    // Raw cosine scores are NOT comparable across collections (different content
-    // types cluster in different regions of the embedding space with different
-    // score ranges). We normalize each collection's scores to [0,1] before
-    // merging, so a memory match at 0.55 (near that collection's max)
-    // can compete with a storage match at 0.95.
+    // Raw scores are NOT comparable across collections (different content types
+    // cluster in different regions of the embedding space with different score
+    // ranges). We normalize each collection's scores to [0,1] before merging,
+    // so a memory match near that collection's max can compete with a storage
+    // match near its max.
     //
     // We over-fetch per collection (top_k * 3) so the diversity cap and
     // dedup have headroom to work with.
@@ -878,45 +1074,82 @@ export async function searchDocuments({ query, collections, folder, extension, t
     for (let ci = 0; ci < targetCollections.length; ci++) {
         const collectionName = targetCollections[ci];
         const coll = getCollection(collectionName);
-        const filter = buildFilter(collectionName, folder, extension);
+        const indexFiltered = collectionHasPayloadFields(collectionName);
+        // A filter on fields the snapshot payload does not have would match
+        // nothing — silently. Apply it to the mapped results instead.
+        const clientFiltered = Boolean(folder || extension) && !indexFiltered;
+        const indexFilter = indexFiltered ? buildFilter(collectionName, folder, extension) : null;
         const fetchK = Math.max(top_k * 3, 30);
-        const searchResults = await coll.search({
-            vector: queryEmbedding,
-            topK: fetchK,
-            distance: 'cosine',
-            approximate,
-            ...(filter ? { filter } : {})
-        });
+        const searchResults = CONFIG.hybrid.enabled
+            ? await runHybridSearch(coll, { vector: queryEmbedding, text: query, fetchK, filter: indexFilter })
+            : await coll.search({
+                vector: queryEmbedding,
+                topK: fetchK,
+                distance: 'cosine',
+                approximate,
+                ...(indexFilter ? { filter: indexFilter } : {})
+            });
 
         if (searchResults.length === 0) continue;
 
-        // Min-max normalize scores within this collection.
-        const scores = searchResults.map(r => r.score);
-        const min = Math.min(...scores);
-        const max = Math.max(...scores);
-        const range = max - min || 1; // avoid divide-by-zero when all scores equal
-
+        const matches = [];
         for (const match of searchResults) {
             const payload = JSON.parse(match.payload || '{}');
+            const relPath = payload.path ?? null;
             const result = {
                 collection: collectionName,
                 id: match.id,
                 score: match.score,
-                normalizedScore: (match.score - min) / range,
-                path: payload.path,
-                absolutePath: payload.absolutePath,
+                path: relPath,
+                title: payload.title,
+                absolutePath: payload.absolutePath
+                    ?? (relPath && STORAGE_ROOT ? path.resolve(STORAGE_ROOT, relPath) : undefined),
                 folder: payload.folder,
                 domain: payload.domain,
                 contentHash: payload.contentHash,
-                splitIdx: payload.splitIdx,
+                splitIdx: payload.splitIdx ?? chunkIndexFromId(match.id),
                 charOffset: payload.charOffset,
                 tokEst: payload.tokEst
             };
-            if (include_content) {
-                result.content = readChunkContent(payload, CHUNKER);
+            if (CONFIG.hybrid.enabled) {
+                result.rrfScore = match.rrfScore;
+                result.rerankScore = match.rerankScore ?? null;
+                result.vectorRank = match.vectorRank ?? null;
+                result.lexicalRank = match.lexicalRank ?? null;
             }
-            perCollection.push(result);
+            if (clientFiltered) {
+                if (folder && !(relPath || '').toLowerCase().startsWith(`${folder.toLowerCase()}/`)) continue;
+                if (extension && path.extname(relPath || '').toLowerCase() !== `.${extension.toLowerCase()}`) continue;
+            }
+            if (include_content) {
+                result.content = payload.content ?? readChunkContent(payload, CHUNKER);
+            }
+            matches.push(result);
         }
+
+        if (matches.length === 0) continue;
+
+        // Score normalization. Vector-only: min-max over the collection's
+        // similarities. Hybrid: RRF is a RANK fusion, and the native call
+        // already returns the intended order (reranked head first) — its raw
+        // scores are not monotonic across the rerank shortlist boundary, so
+        // re-sorting by them would promote the unscored tail over the ranked
+        // head. Rank position is the comparable signal, so encode that.
+        if (CONFIG.hybrid.enabled) {
+            const last = matches.length - 1;
+            matches.forEach((result, index) => {
+                result.normalizedScore = last === 0 ? 1 : 1 - index / last;
+            });
+        } else {
+            const scores = matches.map(r => r.score);
+            const min = Math.min(...scores);
+            const max = Math.max(...scores);
+            const range = max - min || 1; // avoid divide-by-zero when all scores equal
+            for (const result of matches) {
+                result.normalizedScore = (result.score - min) / range;
+            }
+        }
+        perCollection.push(...matches);
         onProgress?.(`Searched ${collectionName} (${ci + 1}/${targetCollections.length})`, 40 + Math.round((60 * (ci + 1)) / targetCollections.length));
     }
 
@@ -1063,9 +1296,12 @@ export async function vdb_search(args, context) {
     const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
     pr.done('Search complete');
 
-    const summary = top.map(r =>
-        `[${r.collection}] ${r.path} (score: ${r.score.toFixed(4)}, norm: ${r.normalizedScore?.toFixed(3) ?? 'n/a'})${r.folder ? ` [folder:${r.folder}]` : ''}${r.domain ? ` [domain:${r.domain}]` : ''}${r.splitIdx > 0 ? ` chunk:${r.splitIdx}` : ''}`
-    ).join('\n');
+    const summary = top.map((r, i) => {
+        const detail = r.rrfScore === undefined
+            ? `score: ${r.score.toFixed(4)}, norm: ${r.normalizedScore?.toFixed(3) ?? 'n/a'}`
+            : `rrf: ${r.rrfScore.toFixed(4)}${r.rerankScore !== null && r.rerankScore !== undefined ? `, rerank: ${r.rerankScore.toFixed(3)}` : ''}, vec#${r.vectorRank ?? '-'}/lex#${r.lexicalRank ?? '-'}`;
+        return `${i + 1}. [${r.collection}] ${r.path} (${detail})${r.folder ? ` [folder:${r.folder}]` : ''}${r.domain ? ` [domain:${r.domain}]` : ''}${r.splitIdx > 0 ? ` chunk:${r.splitIdx}` : ''}`;
+    }).join('\n');
 
     return {
         content: [{
@@ -1083,16 +1319,22 @@ export async function vdb_status(args, context) {
         config: {
             enabled: CONFIG?.enabled,
             dbPath: CONFIG?.dbPath,
+            snapshot: CONFIG?.snapshot,
+            embeddingPath: CONFIG?.embeddingPath,
             scanIntervalMinutes: CONFIG?.scanIntervalMinutes,
             embeddingDim: CONFIG?.embeddingDim,
             chunkMaxTokens: CONFIG?.chunkMaxTokens,
             chunkOverlapTokens: CONFIG?.chunkOverlapTokens,
             batchDelayMs: CONFIG?.batchDelayMs,
-            contextEnhancement: CONFIG?.contextEnhancement
+            contextEnhancement: CONFIG?.contextEnhancement,
+            hybrid: CONFIG?.hybrid,
+            rerank: CONFIG?.rerank ? { ...CONFIG.rerank, loaded: RERANKER !== null } : null,
+            nativePath: DATABASE ? loadNvdb().nativePath : null
         },
         collections: {},
         lastScanAt: LAST_SCAN_AT,
         isScanning: IS_SCANNING,
+        lastScanError: LAST_SCAN_ERROR,
         lastScanStats: SCAN_STATS
     };
 
@@ -1120,6 +1362,9 @@ export async function vdb_status(args, context) {
 
 export async function vdb_trigger_scan(args, context) {
     if (!DATABASE) throw new Error('VDB agent is not initialized');
+    if (CONFIG.snapshot) {
+        throw new Error(`VDB: ${CONFIG.dbPath} is a fixed snapshot index — scanning would re-embed and mutate it. Define a delta/ingest path before enabling scans.`);
+    }
     const pr = createProgressReporter(context?.progress);
     const result = await runScan((msg, pct) => pr.set(msg, pct));
     if (result.alreadyRunning) {
@@ -1187,7 +1432,11 @@ export async function init(context) {
         ignore: agentConfig.ignore ?? DEFAULTS.ignore,
         watchFolders: agentConfig.watchFolders ?? null,
         watch: agentConfig.watch || { storage: true },
-        contextEnhancement: agentConfig.contextEnhancement || { enabled: false }
+        contextEnhancement: agentConfig.contextEnhancement || { enabled: false },
+        snapshot: agentConfig.snapshot ?? DEFAULTS.snapshot,
+        embeddingPath: agentConfig.embeddingPath ?? DEFAULTS.embeddingPath,
+        hybrid: { ...DEFAULTS.hybrid, ...(agentConfig.hybrid || {}) },
+        rerank: { ...DEFAULTS.rerank, ...(agentConfig.rerank || {}) }
     };
 
     GATEWAY = context.gateway;
@@ -1210,13 +1459,19 @@ export async function init(context) {
         return { enabled: false, error: 'nVDB native module not available' };
     }
 
-    const { Database, FilterBuilder } = loadNvdb();
+    const { Database, FilterBuilder, Reranker, nativePath } = loadNvdb();
     FILTER_BUILDER = FilterBuilder;
+    logger.info(`[VDB] nVDB addon: ${nativePath}`, null, 'VDB');
+
+    if (CONFIG.rerank.enabled) {
+        RERANKER = createReranker({ Reranker, config: CONFIG.rerank });
+        logger.info(`[VDB] Reranker active: ${CONFIG.rerank.modelPath} (shortlist=${CONFIG.rerank.shortlist}, weight=${CONFIG.rerank.weight}, textField=${CONFIG.rerank.textField})`, null, 'VDB');
+    }
 
     const dbPath = path.resolve(PROJECT_ROOT, CONFIG.dbPath);
     fs.mkdirSync(dbPath, { recursive: true });
     DATABASE = new Database(dbPath);
-    compactionDirty = fs.existsSync(COMPACTION_FLAG());
+    compactionDirty = CONFIG.snapshot ? false : fs.existsSync(COMPACTION_FLAG());
     if (compactionDirty) logger.info('[VDB] Tombstones pending from a previous run — the next scan will compact', null, 'VDB');
 
     // Pre-open configured collections so stats work
@@ -1224,25 +1479,76 @@ export async function init(context) {
         if (Object.keys(COLLECTIONS).includes(name)) getCollection(name);
     }
 
-    const enhancementCache = createEnhancementCache();
-    CONTEXT_ENHANCER = createContextEnhancer(CONFIG.contextEnhancement, GATEWAY, logger, enhancementCache);
-    if (CONTEXT_ENHANCER) {
-        logger.info(`[VDB] Context enhancement enabled (task=${CONFIG.contextEnhancement.task || 'local'})`, null, 'VDB');
+    if (CONFIG.snapshot) {
+        // The snapshot's collections carry lexical fields and a payload schema
+        // this agent did not write. Creating derived collections or running a
+        // scan would mutate a fixed index and invalidate the vectors.
+        CONTEXT_ENHANCER = null;
+        STORED_VECTOR_GUARD = createStoredVectorGuard('vdb');
+        logger.info('[VDB] Snapshot index: scanning, compaction and context enhancement are disabled', null, 'VDB');
+    } else {
+        const enhancementCache = createEnhancementCache();
+        CONTEXT_ENHANCER = createContextEnhancer(CONFIG.contextEnhancement, GATEWAY, logger, enhancementCache);
+        if (CONTEXT_ENHANCER) {
+            logger.info(`[VDB] Context enhancement enabled (task=${CONFIG.contextEnhancement.task || 'local'})`, null, 'VDB');
+        }
+
+        // Build the stored-vector guard from what is actually in the index BEFORE
+        // any scan runs: a vector stored by an earlier process is invisible to the
+        // process-local guard, and the first scan must not be able to write a
+        // reused one. Only vector hashes are computed here; each chunk's input hash
+        // stays lazy (it re-reads its source only when a candidate collides).
+        const watchedCollections = Object.keys(CONFIG.watch || {}).filter(name =>
+            Object.keys(COLLECTIONS).includes(name) && CONFIG.watch[name]?.enabled !== false
+        );
+        const scanIndex = loadIndex();
+        const built = buildChunkVectorGuard({
+            collections: watchedCollections.map(name => ({ name, coll: getCollection(name), index: scanIndex })),
+            storageRoot: STORAGE_ROOT
+        });
+        STORED_VECTOR_GUARD = built.guard;
+        logger.info(`[VDB] Stored-vector guard: ${built.registered} chunk vector(s) tracked${built.missing ? `, ${built.missing} chunk id(s) in the scan index have no stored vector` : ''}`, null, 'VDB');
+
+        startScanner();
+
+        // Run an initial scan soon after startup (don't block init)
+        setTimeout(() => runScan().catch(e => logger.error(`[VDB] Initial scan failed: ${e.message}`, null, 'VDB')), 2000);
     }
 
-    startScanner();
-
-    // Run an initial scan soon after startup (don't block init)
-    setTimeout(() => runScan().catch(e => logger.error(`[VDB] Initial scan failed: ${e.message}`, null, 'VDB')), 2000);
-
-    logger.info(`[VDB] Initialized at ${dbPath}`, null, 'VDB');
+    logger.info(`[VDB] Initialized at ${dbPath}${CONFIG.hybrid.enabled ? ` (hybrid: rrfK=${CONFIG.hybrid.rrfK}, lexicalWeight=${CONFIG.hybrid.lexicalWeight}, diversity=${CONFIG.hybrid.diversityField ?? 'off'})` : ' (vector only)'}`, null, 'VDB');
     return {
         enabled: true,
         dbPath,
         // Expose collection access for other agents (e.g. memory agent uses the 'memory' collection)
         getCollection: (name) => getCollection(name),
-        embeddingDim: CONFIG.embeddingDim
+        embeddingDim: CONFIG.embeddingDim,
+        embeddingPath: CONFIG.embeddingPath,
+        reranker: RERANKER,
+        hybrid: CONFIG.hybrid,
+        rerank: CONFIG.rerank,
+        snapshot: CONFIG.snapshot
     };
+}
+
+// A reranker that cannot load is a startup failure, not a degraded mode: the
+// index was chosen and measured with reranking on, so silently serving
+// without it would be a different (unmeasured) system.
+function createReranker({ Reranker, config }) {
+    if (typeof Reranker !== 'function') {
+        throw new Error('VDB: agents.vdb.rerank.enabled is true but the loaded nVDB addon exports no Reranker — rebuild with --features rerank-onnx');
+    }
+    if (typeof config.modelPath !== 'string' || !fs.existsSync(config.modelPath)) {
+        throw new Error(`VDB: rerank model not found: ${config.modelPath}`);
+    }
+    if (typeof config.tokenizerPath !== 'string' || !fs.existsSync(config.tokenizerPath)) {
+        throw new Error(`VDB: rerank tokenizer not found: ${config.tokenizerPath}`);
+    }
+    return new Reranker({
+        modelPath: config.modelPath,
+        tokenizerPath: config.tokenizerPath,
+        maxLength: config.maxLength,
+        batchSize: config.batchSize
+    });
 }
 
 export async function shutdown() {

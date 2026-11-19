@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getLogger } from './utils/logger.js';
 
 const logger = getLogger();
@@ -36,17 +37,238 @@ const EMBED_BATCH_TIMEOUT_MS = 30000;
 // "lost". Prevents the pending->heal->retry churn from premature aborts.
 const EMBED_BACKGROUND_TIMEOUT_MS = 300000; // 5 min
 
+// ── Embedding-integrity guard ────────────────────────────────────────────
+// The provider can return byte-identical vectors for DIFFERENT inputs, and it
+// does so across separate requests (seen across both memory and storage
+// collections, not just within one batch). Two consequences drove this guard:
+//   1. The per-batch duplicate check in the VDB agent only sees one response at
+//      a time, so a duplicate produced by two separate calls slips through — a
+//      single-text embed had no check at all.
+//   2. When a batch is rejected, the VDB bisection fallback retries subsets in
+//      NEW requests. Without cross-request memory, a duplicate pair split
+//      across those requests becomes acceptable and gets persisted.
+// So the mapping lives here, process-local, shared by every client instance and
+// both entry points: vectorHash -> inputHash. An identical vector for an
+// identical input is legitimate (cache/warm path, repeated query). An identical
+// vector for a different input cannot be produced by a real embedder and is a
+// provider fault, so it throws — and the rejected mapping is never recorded.
+// Bounded so a long-running process cannot grow without limit; the window only
+// needs to span the requests around one provider episode.
+const MAX_REMEMBERED_VECTORS = 4096;
+const vectorOwners = new Map(); // vectorHash -> inputHash (insertion order = LRU order)
+
+// Thrown when a vector cannot legitimately belong to the input it arrived for.
+// Named so callers can classify it — it is NOT a network fault and must never
+// be retried as one.
+export class EmbeddingIntegrityError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'EmbeddingIntegrityError';
+    }
+}
+
+export function hashInput(text) {
+    return createHash('sha256').update(text, 'utf8').digest('base64');
+}
+
+export function hashVector(vector) {
+    const floats = new Float64Array(vector.length);
+    for (let i = 0; i < vector.length; i++) {
+        const v = vector[i];
+        // Collapse -0 onto 0: the sign bit must not hide a duplicate.
+        floats[i] = v === 0 ? 0 : v;
+    }
+    return createHash('sha256').update(new Uint8Array(floats.buffer)).digest('base64');
+}
+
+function assertVector(vector, where) {
+    const isArray = Array.isArray(vector);
+    const isTyped = ArrayBuffer.isView(vector) && !(vector instanceof DataView);
+    if (!isArray && !isTyped) {
+        throw new Error(`${where}: embedding is not an array or typed array (got ${vector === null ? 'null' : typeof vector})`);
+    }
+    if (vector.length === 0) {
+        throw new Error(`${where}: embedding is empty`);
+    }
+    let sq = 0;
+    for (let i = 0; i < vector.length; i++) {
+        const v = vector[i];
+        if (!Number.isFinite(v)) {
+            throw new Error(`${where}: embedding dim ${i} is not a finite number (${String(v)})`);
+        }
+        sq += v * v;
+    }
+    if (!Number.isFinite(sq)) {
+        throw new Error(`${where}: embedding has non-finite norm — refusing to use it`);
+    }
+    if (sq === 0) {
+        throw new Error(`${where}: embedding has zero norm — refusing to use it`);
+    }
+    return vector;
+}
+
+function acceptVector(inputText, vector, where) {
+    const inputHash = hashInput(inputText);
+    const vectorHash = hashVector(vector);
+    const owner = vectorOwners.get(vectorHash);
+    if (owner !== undefined && owner !== inputHash) {
+        // No content in the message — request context only.
+        throw new EmbeddingIntegrityError(`${where}: provider returned a byte-identical embedding for a different input (vector ${vectorHash.slice(0, 12)}…) — refusing duplicate vector`);
+    }
+    if (owner !== undefined) vectorOwners.delete(vectorHash);
+    vectorOwners.set(vectorHash, inputHash);
+    if (vectorOwners.size > MAX_REMEMBERED_VECTORS) {
+        vectorOwners.delete(vectorOwners.keys().next().value);
+    }
+    return vector;
+}
+
+// ── Stored-vector guard ──────────────────────────────────────────────────
+// The map above only knows vectors THIS process has seen. A freshly returned
+// vector can be byte-identical to one stored in the index by an earlier run for
+// different text, and nothing process-local can tell — the stored vector was
+// never part of this process's request history. So a second guard tracks the
+// vectors that are actually STORED: vectorHash -> { docId -> inputHash }, built
+// from the live index at startup and updated as documents are inserted/removed.
+//
+// Rules:
+//   - identical input for the same vector is legitimate (re-index, duplicates,
+//     repeated chunk text) → allowed.
+//   - a vector stored for a different input/entity is a provider fault → throws
+//     EmbeddingIntegrityError before the caller writes anything.
+//   - re-inserting the same document detaches its previous vector, so replacing
+//     an entity's embedding never trips over its own stale record: a candidate
+//     is never checked against the record owned by its own id.
+//
+// Deliberately NOT bounded and NOT evicting: one record per active document
+// (memory) or chunk (collection), so the bound is the corpus itself — the same
+// order as the index it mirrors. Evicting a record would turn a real collision
+// into a silent accept, and a wrong vector in the index is unrecoverable without
+// a re-index. Correctness for active entities beats a memory ceiling here.
+//
+// The input hash is resolved LAZILY: pass a function instead of the text and it
+// runs only when a candidate vector actually collides, so startup does not
+// re-read every source file. The resolved hash is cached on the record.
+export function createStoredVectorGuard(label) {
+    if (!label) throw new Error('createStoredVectorGuard: label is required');
+    const byVector = new Map(); // vectorHash -> Map<docId, { input: string|fn|null, inputHash: string|null }>
+    const byDoc = new Map();    // docId -> vectorHash
+
+    function resolveInputHash(record, docId, vectorHash) {
+        if (record.inputHash !== null) return record.inputHash;
+        if (typeof record.input !== 'function') {
+            throw new Error(`${label}: stored vector ${vectorHash.slice(0, 12)}… (doc ${docId}) has no input to resolve`);
+        }
+        const input = record.input();
+        if (typeof input !== 'string') {
+            throw new Error(`${label}: input resolver for doc ${docId} returned ${input === null ? 'null' : typeof input}, expected string`);
+        }
+        record.inputHash = hashInput(input);
+        record.input = null;
+        return record.inputHash;
+    }
+
+    function detach(docId) {
+        const previous = byDoc.get(docId);
+        if (previous === undefined) return;
+        byDoc.delete(docId);
+        const owners = byVector.get(previous);
+        if (!owners) return;
+        owners.delete(docId);
+        if (owners.size === 0) byVector.delete(previous);
+    }
+
+    function register(docId, vector, input) {
+        if (typeof docId !== 'string' || docId.length === 0) throw new Error(`${label}: register needs a non-empty doc id`);
+        const vectorHash = hashVector(assertVector(vector, `${label}.register(${docId})`));
+        let record;
+        if (typeof input === 'string') record = { input: null, inputHash: hashInput(input) };
+        else if (typeof input === 'function') record = { input, inputHash: null };
+        else throw new Error(`${label}: register(${docId}) needs the input text or a resolver (got ${input === null ? 'null' : typeof input})`);
+        detach(docId);
+        let owners = byVector.get(vectorHash);
+        if (!owners) {
+            owners = new Map();
+            byVector.set(vectorHash, owners);
+        }
+        owners.set(docId, record);
+        byDoc.set(docId, vectorHash);
+    }
+
+    function assertMany(candidates) {
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            throw new Error(`${label}: assertMany needs a non-empty candidate array`);
+        }
+        // Staged hashes make the batch check itself: two different inputs that
+        // embed identically must fail before ANY of them is inserted.
+        const staged = new Map(); // vectorHash -> inputHash
+        for (const candidate of candidates) {
+            const where = candidate.where || `${label} doc ${candidate.id}`;
+            if (typeof candidate.id !== 'string' || candidate.id.length === 0) throw new Error(`${where}: candidate id must be a non-empty string`);
+            if (typeof candidate.input !== 'string') throw new Error(`${where}: candidate input must be a string (got ${candidate.input === null ? 'null' : typeof candidate.input})`);
+            const vectorHash = hashVector(assertVector(candidate.vector, where));
+            const inputHash = hashInput(candidate.input);
+            const owners = byVector.get(vectorHash);
+            if (owners) {
+                for (const [ownerId, record] of owners) {
+                    // The candidate's OWN record is not a collision: replacing an
+                    // entity's embedding detaches that record on register. Two
+                    // cases need this — a legitimately new vector, and text that
+                    // changed only past the embedding cap so the provider
+                    // correctly returns the same vector for the same embedded
+                    // input. Any OTHER owner still fails.
+                    if (ownerId === candidate.id) continue;
+                    const ownerHash = resolveInputHash(record, ownerId, vectorHash);
+                    if (ownerHash !== inputHash) {
+                        throw new EmbeddingIntegrityError(`${where}: vector ${vectorHash.slice(0, 12)}… is already stored for a different input (doc ${ownerId}) — refusing a reused embedding`);
+                    }
+                }
+            }
+            const earlier = staged.get(vectorHash);
+            if (earlier !== undefined && earlier !== inputHash) {
+                throw new EmbeddingIntegrityError(`${where}: two different inputs in this batch embed to the same vector ${vectorHash.slice(0, 12)}… — refusing a reused embedding`);
+            }
+            staged.set(vectorHash, inputHash);
+        }
+    }
+
+    return {
+        label,
+        register,
+        assert(docId, vector, input, where) {
+            assertMany([{ id: docId, vector, input, where }]);
+        },
+        assertMany,
+        remove: detach,
+        size: () => byDoc.size,
+        vectorCount: () => byVector.size
+    };
+}
+
 export function createEmbedClient(embedUrl, accessKey = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
     const baseUrl = embedUrl.replace(/\/+$/, '');
     const headers = { 'Content-Type': 'application/json' };
     if (accessKey) headers['Authorization'] = `Bearer ${accessKey}`;
 
-    async function post(body, timeoutMs) {
+    // An index lives in exactly one vector space, so the route that produced
+    // its vectors must be selected explicitly. The Gateway serves one route per
+    // embedding model (`/v1/embeddings/wizkid`); anything else is a typo, not a
+    // fallback. No model is sent either way — each route owns its upstream model.
+    const DEFAULT_EMBED_PATH = '/v1/embeddings';
+    function resolvePath(opts) {
+        const value = opts?.path ?? DEFAULT_EMBED_PATH;
+        if (typeof value !== 'string' || !value.startsWith('/v1/embeddings')) {
+            throw new TypeError(`embed: path must be a /v1/embeddings… route (got ${String(value)})`);
+        }
+        return value;
+    }
+
+    async function post(body, timeoutMs, embedPath) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), timeoutMs);
         try {
-            const res = await fetch(`${baseUrl}/v1/embeddings`, {
+            const res = await fetch(`${baseUrl}${embedPath}`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(body),
@@ -66,17 +288,72 @@ export function createEmbedClient(embedUrl, accessKey = null) {
 
     return {
         async embed(text, opts) {
+            if (typeof text !== 'string') throw new TypeError(`embed: text must be a string (got ${typeof text})`);
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_TIMEOUT_MS;
-            // No model sent — the gateway resolves its default embed model.
-            const data = await post({ input: text }, timeout);
-            return data.data[0].embedding;
+            // No model sent — the gateway resolves the route's embed model.
+            const data = await post({ input: text }, timeout, resolvePath(opts));
+            if (!data || !Array.isArray(data.data)) {
+                throw new Error(`embed: provider response has no data array (got ${data === null ? 'null' : typeof data?.data})`);
+            }
+            if (data.data.length !== 1) {
+                throw new Error(`embed: provider returned ${data.data.length} items for a single input — expected exactly 1`);
+            }
+            const item = data.data[0];
+            if (item === null || typeof item !== 'object') {
+                throw new Error(`embed: provider response item is not an object (got ${item === null ? 'null' : typeof item})`);
+            }
+            if ('index' in item && item.index !== 0) {
+                throw new Error(`embed: provider returned index ${String(item.index)} for a single input — expected 0`);
+            }
+            const vector = assertVector(item.embedding, 'embed');
+            acceptVector(text, vector, 'embed (single request)');
+            return vector;
         },
 
         async embedBatch(texts, opts) {
+            if (!Array.isArray(texts) || texts.length === 0) {
+                throw new TypeError(`embedBatch: texts must be a non-empty array (got ${Array.isArray(texts) ? 'empty array' : typeof texts})`);
+            }
+            for (let i = 0; i < texts.length; i++) {
+                if (typeof texts[i] !== 'string') throw new TypeError(`embedBatch: texts[${i}] is not a string (got ${typeof texts[i]})`);
+            }
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_BATCH_TIMEOUT_MS;
-            // No model sent — the gateway resolves its default embed model.
-            const data = await post({ input: texts }, timeout);
-            return data.data.map(d => d.embedding);
+            // No model sent — the gateway resolves the route's embed model.
+            const data = await post({ input: texts }, timeout, resolvePath(opts));
+            if (!data || !Array.isArray(data.data)) {
+                throw new Error(`embedBatch: provider response has no data array (got ${data === null ? 'null' : typeof data?.data})`);
+            }
+            if (data.data.length !== texts.length) {
+                throw new Error(`embedBatch: expected ${texts.length} embeddings, got ${data.data.length}`);
+            }
+            // Responses are placed by their declared index, never by array
+            // position — the provider is not required to answer in order.
+            const out = new Array(texts.length);
+            const seen = new Set();
+            for (let pos = 0; pos < data.data.length; pos++) {
+                const item = data.data[pos];
+                if (item === null || typeof item !== 'object') {
+                    throw new Error(`embedBatch: provider response item at position ${pos} is not an object (got ${item === null ? 'null' : typeof item})`);
+                }
+                if (!Number.isInteger(item.index)) {
+                    throw new Error(`embedBatch: provider response item at position ${pos} has no integer index (got ${String(item.index)})`);
+                }
+                if (item.index < 0 || item.index >= texts.length) {
+                    throw new Error(`embedBatch: provider response index ${item.index} is out of range 0..${texts.length - 1}`);
+                }
+                if (seen.has(item.index)) {
+                    throw new Error(`embedBatch: provider response repeats index ${item.index} (position ${pos})`);
+                }
+                seen.add(item.index);
+                out[item.index] = assertVector(item.embedding, `embedBatch (response index ${item.index})`);
+            }
+            // length === texts.length + all indices in range + no repeats means
+            // every index was supplied; the guard runs in input order so the
+            // reported context names the caller's own index.
+            for (let i = 0; i < texts.length; i++) {
+                acceptVector(texts[i], out[i], `embedBatch (input ${i} of ${texts.length})`);
+            }
+            return out;
         }
     };
 }

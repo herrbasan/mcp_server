@@ -80,7 +80,7 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
   `docs/upload-handoff-spec.md`, reference: `documentation/tools/upload.md`,
   tests: `npm run test:upload`.
 - `src/agents/codereview/` — Prime-Directive code review agent (spec: `docs/codereview-spec.md`, reference: `documentation/tools/codereview.md`). JavaScript AST + Rust structural tier-0 analysis; **every snapshotted text file** (code, config, docs, data, extensionless) stays model-review eligible, with generic tier-0 coverage explicitly reported. Direct parallel pipeline: tier-0 ranks targets deterministically and dispatches isolated parallel per-file reviews with 1-hop context, hard file/time/token budgets, per-call telemetry ledger, and the deterministic bias validator; per-target failures or budget stops return a persisted PARTIAL report instead of discarding completed findings; snapshots under `data/codereview/`; automated acceptance gate is JavaScript-only and refuses other languages loudly; tests: `npm run test:codereview`.
-- `src/agents/stylereview/` — UX/UI, NUI-pattern, and SVG/chart style review agent. Tier-0 deterministic Chromium geometry/spacing/typography/contrast/SVG/NUI probe + single-pass LLM UX/taste critique (`stylereview.review`); tests: `npm run test:stylereview`.
+- `src/agents/stylereview/` — UX/UI, NUI-pattern, and SVG/chart style review agent. Tier-0 deterministic Chromium geometry/spacing/typography/contrast/SVG/NUI probe + single-pass LLM UX/taste critique (`stylereview.review`). NUI pages inject the complete nui_wc2 registry, LLM cheatsheet, and component/addon docs; deterministic checks distinguish definite contract misuse from component opportunities and flag bespoke inline/stylesheet overrides on NUI components and their documented native children. The full-DOM audit includes dormant controls, and `probeInteractions` follows bounded multi-step usage flows while avoiding submit/destructive actions; reference: `documentation/tools/stylereview.md`; tests: `npm run test:stylereview`.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
 - `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
 - `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).
@@ -216,7 +216,9 @@ delivered only via `notepad.get`.
   active session. Stale pins are surfaced, never auto-archived.
 - Details: `documentation/tools/notepad.md` (spec: `scratch/notepad-proposal.md`).
 
-## VDB Indexing
+## VDB Retrieval
+
+**Production retrieval is a fixed snapshot index with hybrid search and a reranker** (2026-11-19). `agents.vdb.dbPath` = `data/candidates/wizkid-hybrid-rerank/nvdb`, `snapshot: true` (no scan, no compaction — `vdb.trigger_scan` refuses), `embeddingPath: /v1/embeddings/wizkid`, dense+BM25 fused by RRF (`rrfK` 10, lexical weight 1.0, `diversity('path', 2)`), then the Apache-2.0 `atelasi/multilingual-reranker-small` cross-encoder over the top 10 on payload field `content` (fusion weight 0.2). Memory recall uses the same index, route and reranker. A missing addon feature or model file aborts startup — serving without the reranker is a different, unmeasured system. Gate: `npm run gate:nvdb`. Indexing below describes the rollback mode (`data/nvdb`, non-snapshot).
 
 The `vdb` agent indexes text files from the storage root (`agents.storage.root`, which includes `documentation/`) for semantic search. Exclusions work at two levels:
 

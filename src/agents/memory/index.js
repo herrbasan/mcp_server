@@ -5,6 +5,7 @@ import { getLogger } from '../../utils/logger.js';
 import { loadNdb } from './ndb-loader.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
+import { createStoredVectorGuard } from '../../embed-client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -16,9 +17,14 @@ const PROJECT_ROOT = resolve(__dirname, '..', '..', '..');
 let DB = null;            // nDB Database instance
 let VDB_AGENT = null;     // VDB agent instance (for nVDB collection access)
 let MEM_COLL = null;      // nVDB 'memory' collection
+let MEM_VECTOR_GUARD = null; // stored-vector guard for MEM_COLL (see createStoredVectorGuard)
 let GATEWAY = null;       // LLM Gateway client
 let CONFIG = null;        // Memory agent config
 let EMBEDDING_DIM = 2560; // Must match VDB agent + gateway model
+let EMBED_PATH = null;    // Vector-space route shared with the index (agents.vdb.embeddingPath)
+let RERANKER = null;      // nVDB Reranker owned by the VDB agent (null when disabled)
+let HYBRID = { enabled: false }; // agents.vdb.hybrid — lane tuning shared with the index
+let RERANK = null;        // agents.vdb.rerank — shortlist/weight/textField
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -27,16 +33,105 @@ function serializeData(data) {
     return typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 }
 
-function embedText(gateway, description, data, maxChars, opts) {
+// The exact text a memory embeds: description + data, capped at maxMemoryChars.
+// Exported because the stored-vector guard rebuilds it lazily to verify that a
+// stored vector still belongs to the memory's current text.
+export function memoryVectorInput(description, data, maxChars) {
+    if (typeof description !== 'string') throw new Error(`memory: description must be a string (got ${description === null ? 'null' : typeof description})`);
     const parts = [description];
     if (data) parts.push(serializeData(data));
     const combined = parts.join(' ');
-    const safe = combined.length > maxChars ? combined.slice(0, maxChars) : combined;
-    return gateway.embed(safe, opts);
+    return combined.length > maxChars ? combined.slice(0, maxChars) : combined;
+}
+
+function embedText(gateway, description, data, maxChars, opts) {
+    return gateway.embed(memoryVectorInput(description, data, maxChars), { ...opts, path: EMBED_PATH });
+}
+
+// The payload the index needs: the vector's own text (`content`) for the
+// reranker and the lexical columns (`description`, `data`) for BM25. A stored
+// memory without them would be vector-only forever.
+function memoryPayload({ memId, description, data, input }) {
+    const payload = { id: memId, description, content: input };
+    if (data != null) payload.data = serializeData(data);
+    return JSON.stringify(payload);
+}
+
+// Track every ACTIVE memory that already has a vector, so a fresh embed can be
+// checked against vectors stored by an earlier process. Only the vector hash is
+// computed here; each memory's input hash stays lazy (it reads the current
+// description+data only when a candidate collides with that vector).
+export function buildMemoryVectorGuard({ db, coll, maxChars }) {
+    const guard = createStoredVectorGuard('memory');
+    const stats = { registered: 0, missing: 0 };
+    // A memory that exists in nDB but has no vector in the BOUND collection is
+    // invisible to recall. Index switches (or a candidate built before the
+    // memory was stored) leave exactly this gap, and nothing else notices it.
+    const missingIds = [];
+    for (const doc of db.iter()) {
+        if (!doc._id.startsWith('mem_')) continue;
+        const stored = coll.get(doc._id);
+        if (!stored || !stored.vector) {
+            stats.missing++;
+            missingIds.push(doc._id);
+            continue;
+        }
+        guard.register(doc._id, stored.vector, () => {
+            const current = db.get(doc._id);
+            if (!current) throw new Error(`memory: stored vector ${doc._id} has no active document — cannot resolve its input`);
+            return memoryVectorInput(current.description, current.data, maxChars);
+        });
+        stats.registered++;
+    }
+    return { guard, ...stats, missingIds };
+}
+
+// Assert the fresh vector against the stored vectors BEFORE inserting, so a
+// provider that reuses a vector for new text can never reach nVDB; register only
+// after the insert succeeds. `input` is the exact text that produced `vector`
+// (memoryVectorInput), so the identity check is on content, not on ids.
+export function insertMemoryVector({ coll, guard, ndbId, memId, input, description, data, vector }) {
+    if (!guard) throw new Error('memory: stored-vector guard is not initialized — refusing to insert an embedding');
+    guard.assert(ndbId, vector, input, `memory ${ndbId}`);
+    coll.insert(ndbId, vector, memoryPayload({ memId, description, data, input }));
+    guard.register(ndbId, vector, input);
 }
 
 function normId(id) {
     return typeof id === 'number' ? id : parseInt(String(id || '').replace(/^#/, ''), 10);
+}
+
+// Memory payloads carry `content` (the text that was embedded) for the
+// reranker, and `description`/`data` for BM25. `id` groups a memory's chunks —
+// one vector per memory, so the diversity cap is nominal, but it keeps the
+// option identical to the storage lane.
+function hybridSearchMemory(vector, text, topK) {
+    const options = {
+        vector,
+        text,
+        topK,
+        candidateK: Math.max(HYBRID.candidateK, topK),
+        distance: 'cosine',
+        rrfK: HYBRID.rrfK,
+        vectorWeight: HYBRID.vectorWeight,
+        lexicalWeight: HYBRID.lexicalWeight,
+        groupBy: 'id',
+        maxPerDocument: HYBRID.maxPerDocument
+    };
+    if (RERANKER) {
+        return MEM_COLL.hybridSearchReranked(options, RERANKER, RERANK.textField, RERANK.weight, RERANK.shortlist);
+    }
+    return MEM_COLL.hybridSearch(options);
+}
+
+// Reciprocal-rank fusion produces two score regimes in one result list: the
+// reranked head is fused against nVDB's fixed k=60 (~1/61), while everything
+// past the shortlist keeps its lane score (~1/11). Dividing the tail by the
+// head's ceiling clamps it to 100% — the numbers read backwards against the
+// order. Rank position is the only scale that is monotonic across the boundary,
+// so the displayed percentage is "position in the fused ranking".
+function positionScore(index, last) {
+    return last <= 0 ? 1 : 1 - index / last;
 }
 
 // Tool name prefix for validation errors — keeps messages consistent.
@@ -105,6 +200,15 @@ export async function init(context) {
     VDB_AGENT = context.agents?.get('vdb');
     if (VDB_AGENT?.getCollection) {
         EMBEDDING_DIM = VDB_AGENT.embeddingDim || EMBEDDING_DIM;
+        // The memory collection lives in the same index as storage, so it must
+        // use the same vector space and lane tuning.
+        EMBED_PATH = VDB_AGENT.embeddingPath ?? null;
+        RERANKER = VDB_AGENT.reranker ?? null;
+        HYBRID = VDB_AGENT.hybrid ?? { enabled: false };
+        RERANK = VDB_AGENT.rerank ?? null;
+        if (HYBRID.enabled && RERANKER && !RERANK) {
+            throw new Error('memory.init: VDB agent reports a loaded reranker but no rerank settings');
+        }
         try {
             MEM_COLL = VDB_AGENT.getCollection('memory');
             logger.info(`[Memory] nVDB 'memory' collection ready (dim=${EMBEDDING_DIM})`, null, 'Memory');
@@ -121,6 +225,10 @@ export async function init(context) {
         logger.warn('[Memory] VDB agent not available — recall will degrade to recency', null, 'Memory');
     }
 
+    logger.info(`[Memory] Recall mode: ${HYBRID.enabled
+        ? `hybrid(rrfK=${HYBRID.rrfK}${RERANKER ? `, rerank(${RERANK.textField}, shortlist=${RERANK.shortlist}, weight=${RERANK.weight})` : ', no reranker'})`
+        : 'vector-only'}${EMBED_PATH ? `, embeddings=${EMBED_PATH}` : ''}`, null, 'Memory');
+
     // Clean up orphaned vectors: soft-deleted nDB documents may still have
     // vectors in nVDB if the delete didn't flush properly. Remove them.
     if (MEM_COLL) {
@@ -133,6 +241,27 @@ export async function init(context) {
             MEM_COLL.flush();
             logger.info(`[Memory] Cleaned up ${cleaned} orphaned vectors from nVDB`, null, 'Memory');
         }
+
+        // Build the stored-vector guard AFTER the orphan sweep, so it mirrors
+        // exactly the vectors that belong to active memories. Vectors were
+        // written by earlier processes; the process-local guard cannot know them.
+        const built = buildMemoryVectorGuard({ db: DB, coll: MEM_COLL, maxChars: CONFIG.maxMemoryChars || 6000 });
+        MEM_VECTOR_GUARD = built.guard;
+        logger.info(`[Memory] Stored-vector guard: ${built.registered} vector(s) tracked${built.missing ? `, ${built.missing} active memory(ies) without a stored vector` : ''}`, null, 'Memory');
+        if (built.missingIds.length > 0) {
+            // Their embedStatus says 'embedded', so the self-heal path would
+            // skip them forever: the vector exists — just in a different index.
+            // Queue them so the normal heal re-embeds them into the bound one.
+            const dbPath = context.config?.agents?.vdb?.dbPath ?? 'the bound index';
+            for (const id of built.missingIds) {
+                DB.set(id, 'embedStatus', 'pending');
+                DB.set(id, 'embedError', `no vector in ${dbPath} — queued for heal`);
+            }
+            DB.flush();
+            logger.warn(`[Memory] ${built.missingIds.length} memory(ies) absent from ${dbPath} — queued for self-heal`, null, 'Memory');
+        }
+    } else {
+        MEM_VECTOR_GUARD = createStoredVectorGuard('memory');
     }
 
     const memCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
@@ -195,15 +324,18 @@ export async function memory_store(args, context) {
     // self-heal in memory_overview retries it later.
     // Background timeout: let the wrapper queue work it off, don't abort at
     // the foreground cap (would churn pending->heal->retry).
+    const input = memoryVectorInput(description, data, maxChars);
     embedText(gateway, description, data, maxChars, { background: true }).then(embedding => {
         if (MEM_COLL) {
-            MEM_COLL.insert(ndbId, embedding, JSON.stringify({ id: memId }));
+            insertMemoryVector({ coll: MEM_COLL, guard: MEM_VECTOR_GUARD, ndbId, memId, input, description, data, vector: embedding });
             MEM_COLL.flush();
         }
         DB.set(ndbId, 'embedStatus', 'embedded');
         DB.set(ndbId, 'embedError', null);
         DB.flush();
     }).catch(err => {
+        // A reused embedding leaves embedStatus at 'pending' — never 'embedded'.
+        logger.warn(`[Memory] embed of #${memId} failed: ${err.message || 'embed failed'} — left pending for self-heal`, null, 'Memory');
         DB.set(ndbId, 'embedError', err.message || 'embed failed');
         DB.flush();
     });
@@ -303,7 +435,7 @@ export async function memory_recall(args, context) {
     let queryEmbed = null;
     let embedError = null;
     try {
-        queryEmbed = await gateway.embed(safeQuery);
+        queryEmbed = await gateway.embed(safeQuery, { path: EMBED_PATH });
     } catch (err) {
         // Embed timed out or provider unreachable — degrade to recency so the
         // model still gets context, but surface the REAL error. The generic
@@ -312,7 +444,6 @@ export async function memory_recall(args, context) {
         logger.warn(`[Memory] recall query embed failed: ${embedError}`, null, 'Memory');
     }
     pr.set('Searching memory index...', 60);
-
     // Get candidates (optionally filtered by category) — recency fallback pool
     let candidates = DB.iter().filter(d => d._id.startsWith('mem_'));
     if (category) candidates = candidates.filter(m => m.category === category);
@@ -359,13 +490,16 @@ export async function memory_recall(args, context) {
         };
     }
 
-    // Semantic search via nVDB — over-fetch so the summary tier has headroom.
-    // nVDB search is async (native call); without await this yields a Promise
-    // whose .length is undefined and whose iteration throws.
-    const searchResults = await MEM_COLL.search({
-        vector: queryEmbed,
-        topK: Math.max(limit * 5, 25)
-    });
+    // Semantic search via nVDB — dense + lexical fused, and reranked when the
+    // VDB agent has a reranker loaded. Over-fetch so the summary tier has
+    // headroom. nVDB search is async (native call); without await this yields a
+    // Promise whose .length is undefined and whose iteration throws.
+    const searchResults = HYBRID.enabled
+        ? await hybridSearchMemory(queryEmbed, safeQuery, Math.max(limit * 5, 25))
+        : await MEM_COLL.search({
+            vector: queryEmbed,
+            topK: Math.max(limit * 5, 25)
+        });
 
     if (searchResults.length === 0) {
         // Semantic empty — lexical-only hits are still worth returning.
@@ -385,11 +519,13 @@ export async function memory_recall(args, context) {
 
     pr.set('Ranking results...', 80);
 
-    // Join nVDB hits with nDB documents, apply confidence weighting
+    // Join nVDB hits with nDB documents.
     const scored = [];
     const seenIds = new Set();
+    const last = searchResults.length - 1;
 
-    for (const hit of searchResults) {
+    for (let index = 0; index <= last; index++) {
+        const hit = searchResults[index];
         // DB.get throws for soft-deleted documents. A vector may linger in
         // nVDB after its nDB doc was deleted (tombstoned) — skip those hits.
         let doc;
@@ -403,22 +539,33 @@ export async function memory_recall(args, context) {
         if (category && doc.category !== category) continue;
         seenIds.add(doc.id);
 
-        const conf = doc.confidence ?? 0.5;
-        // In both legs (semantic + lexical) — strongest relevance signal.
         const lexical = lexicalIdSet.has(doc.id);
-        const sim = lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score;
-        scored.push({ ...doc, score: sim, weightedScore: sim * (0.7 + conf * 0.3), lexical });
+        const sim = HYBRID.enabled
+            ? positionScore(index, last)
+            : (lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score);
+        // Hybrid order (and the reranker's ordering inside it) is the measured
+        // artifact — confidence must not reorder it. The vector-only path keeps
+        // the historical confidence weighting.
+        const weightedScore = HYBRID.enabled ? sim : sim * (0.7 + (doc.confidence ?? 0.5) * 0.3);
+        scored.push({
+            ...doc,
+            score: sim,
+            weightedScore,
+            lexical,
+            ...(HYBRID.enabled ? { rerankScore: hit.rerankScore ?? null } : {})
+        });
     }
 
     // Lexical-only docs (semantic missed them) join the ranking.
     for (const doc of lexicalDocs) {
         if (seenIds.has(doc.id)) continue;
         const conf = doc.confidence ?? 0.5;
-        scored.push({ ...doc, score: LEXICAL_BASE, weightedScore: LEXICAL_BASE * (0.7 + conf * 0.3), lexical: true });
+        const weightedScore = HYBRID.enabled ? LEXICAL_BASE : LEXICAL_BASE * (0.7 + conf * 0.3);
+        scored.push({ ...doc, score: LEXICAL_BASE, weightedScore, lexical: true });
         seenIds.add(doc.id);
     }
 
-    scored.sort((a, b) => b.weightedScore - a.weightedScore);
+    if (!HYBRID.enabled) scored.sort((a, b) => b.weightedScore - a.weightedScore);
 
     pr.done('Search complete');
     return {
@@ -462,6 +609,7 @@ export async function memory_forget(args, context) {
     // Also remove the vector from nVDB
     if (MEM_COLL) {
         try { MEM_COLL.delete(ndbId); MEM_COLL.flush(); } catch {}
+        if (MEM_VECTOR_GUARD) MEM_VECTOR_GUARD.remove(ndbId);
     }
 
     return { content: [{ type: 'text', text: `✓ Forgot memory #${id}.` }] };
@@ -535,15 +683,17 @@ export async function memory_update(args, context) {
         // Detached: embed in background so provider hangs never block the
         // response. Self-heal picks up failures on the next memory_overview.
         // Background timeout: let the wrapper queue work it off.
+        const input = memoryVectorInput(newDesc, newData, maxChars);
         embedText(gateway, newDesc, newData, maxChars, { background: true }).then(newEmbedding => {
             if (MEM_COLL) {
-                MEM_COLL.insert(ndbId, newEmbedding, JSON.stringify({ id }));
+                insertMemoryVector({ coll: MEM_COLL, guard: MEM_VECTOR_GUARD, ndbId, memId: id, input, description: newDesc, data: newData, vector: newEmbedding });
                 MEM_COLL.flush();
             }
             DB.set(ndbId, 'embedStatus', 'embedded');
             DB.set(ndbId, 'embedError', null);
             DB.flush();
         }).catch(err => {
+            logger.warn(`[Memory] re-embed of #${id} failed: ${err.message || 'embed failed'} — left pending for self-heal`, null, 'Memory');
             DB.set(ndbId, 'embedStatus', 'pending');
             DB.set(ndbId, 'embedError', err.message || 'embed failed');
             DB.flush();
@@ -597,12 +747,14 @@ async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
         const m = batch[i];
         try {
             // Background timeout: let the wrapper queue work it off.
+            const input = memoryVectorInput(m.description, m.data, maxChars);
             const embedding = await embedText(gateway, m.description, m.data, maxChars, { background: true });
-            MEM_COLL.insert(m._id, embedding, JSON.stringify({ id: m.id }));
+            insertMemoryVector({ coll: MEM_COLL, guard: MEM_VECTOR_GUARD, ndbId: m._id, memId: m.id, input, description: m.description, data: m.data, vector: embedding });
             DB.set(m._id, 'embedStatus', 'embedded');
             DB.set(m._id, 'embedError', null);
             healed++;
         } catch (err) {
+            logger.warn(`[Memory] heal of #${m.id} failed: ${err.message || 'embed failed'} — left pending`, null, 'Memory');
             DB.set(m._id, 'embedError', err.message || 'embed failed');
             break;
         }

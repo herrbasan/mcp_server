@@ -1,12 +1,13 @@
 # Tool Catalog — Overview
 
 Index of every agent and tool in the MCP server, with links to the detailed
-reference docs. Last verified 2026-11-05.
+reference docs. Last verified 2026-11-15.
 
 Detailed docs live in this folder, one file per system. Shared infrastructure is
 documented alongside: `documentation/fileops.md` (root-confined file operations)
 and `documentation/html-to-markdown.md` (HTML→CommonMark conversion, used by
-`browser.content` `mode: 'markdown'`).
+`browser.content` `mode: 'markdown'`). The isolated recall/index/dreamer test
+replica is documented in [memory-lab.md](memory-lab.md).
 
 ## How tools are invoked
 
@@ -51,6 +52,7 @@ nesting level.
 | **print** | `print.render`, `print.preview` | MD-Blocks → PDF through canonical nui_wc2 + Chromium. Semantic `breakBefore`/`breakAfter`, source page-break presets, section pages and repeated chrome. PDFium rasters of the actual PDF for model-reviewed pagination. | [print.md](print.md) |
 | **inspector** | `inspector.inspect_code` | Whole-file code review through the gateway with the house system prompt. | [inspector.md](inspector.md) |
 | **codereview** | `codereview.review`, `codereview.findings`, `codereview.accept` | Prime-Directive codebase review: tier-0 deterministic ranking + parallel isolated per-file reviews with 1-hop context, hard budgets, per-call telemetry ledger, bias validator, report-first, acceptance gate runs the paired test (fail before, pass after). | [codereview.md](codereview.md) |
+| **stylereview** | `stylereview.review` | Chromium UX/UI/SVG review with deterministic geometry, NUI-contract/custom-style checks, full nui_wc2 documentation injection, semantic UX inventories, and opt-in bounded multi-step usage flows. | [stylereview.md](stylereview.md) |
 | **telemetry** | `telemetry.report` | Lab report from localweb2: environment, hardware, alerts, cluster, services + nPM LLM log findings. | [telemetry.md](telemetry.md) |
 | **notepad** | `notepad.add/list/get/update/complete/remove/promote/attach/snapshot` | Deliberate state — ideas, tasks with step checklists, dates, contacts, bucket attachments. `snapshot` = Today view; REST at `/notepad/*` for manual edits and dashboard components. | [notepad.md](notepad.md) |
 | **usage-monitor** | `usage_scan`, `usage_status` | LLM subscription usage collector: 8 providers (browser sessions + direct APIs) folded into one normalized snapshot on a 10-min timer, served as `/usage-limits.json` for the localweb2 card. | [usage-monitor.md](usage-monitor.md) |

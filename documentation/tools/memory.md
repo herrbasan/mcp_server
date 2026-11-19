@@ -26,9 +26,16 @@ dreaming deduplicates and organizes.
 | Store | Path | Role |
 |---|---|---|
 | **nDB** (document store) | `data/memories/data.jsonl` | Memory metadata: id, description, category, confidence, timestamp, data, embedStatus. Append-only JSONL, immediate persistence, soft-delete via tombstones. |
-| **nVDB** (vector index) | `data/nvdb/`, collection `memory` | One vector per memory (embeds description + data). Cosine search. Owned by the vdb agent; memory accesses it via `dependsOn: "vdb"` → `getCollection('memory')`. |
+| **nVDB** (vector index) | `data/candidates/wizkid-hybrid-rerank/nvdb`, collection `memory` | One vector per memory (embeds description + data). Hybrid (dense + BM25) and reranked. Owned by the vdb agent; memory accesses it via `dependsOn: "vdb"` → `getCollection('memory')`, `embeddingPath`, `reranker`, `hybrid`, `rerank`. |
 
-- `EMBEDDING_DIM = 2560` (must match vdb agent + gateway embed model).
+- `EMBEDDING_DIM = 2560` (must match vdb agent + the index's vector space).
+- **Vector space**: memory embeds through `agents.vdb.embeddingPath`
+  (`/v1/embeddings/wizkid`) for every call — store, update, heal, recall query.
+  A different route is a different vector space and would silently poison the
+  index; the shared client rejects any path that is not `/v1/embeddings…`.
+- **Payload written per memory**: `{ id, description, data, content }` —
+  `content` is the exact embedded text (description + data, capped), which is
+  what the reranker scores and the lexical lane reads.
 - nDB indexes: `id`, `category`, `embedStatus` + full-text indexes on
   `description` and `data` (nDB v1.3).
 - **Init fail-fast probe**: memory opens a throwaway in-memory nDB and verifies
@@ -77,27 +84,52 @@ tool response. Success → vector inserted, `embedStatus: 'embedded'`. Failure �
 `embedError` recorded; the overview self-heal or `memory.embed_heal` retries
 later.
 
-### Hybrid recall (semantic + lexical)
+### Recall (hybrid, reranked)
 
-Two legs run on every `memory.recall`:
+Two retrieval modes, chosen by `agents.vdb.hybrid.enabled`:
 
-1. **Semantic**: query embedded (foreground, truncated to 6000 chars) →
-   nVDB cosine search, over-fetched at `topK = max(limit × 5, 25)` to give the
-   summary tier headroom.
-2. **Lexical** (nDB text indexes, runs regardless of embed health): whole-token
-   AND over the query's content words (≥3 chars, deduped, max 8 tokens) across
-   `description` and `data`; if strict AND finds nothing, narrows on leading
-   token subsets (6 → 4 tokens). **Never single-token OR** — common words
-   match hundreds of docs and drown the ranking. Capped at `LEXICAL_MAX_DOCS = 50`.
+**Hybrid mode (production).** One nVDB call per recall:
+
+1. Query embedded through the index's route (foreground, truncated to 6000 chars).
+2. `hybridSearch` / `hybridSearchReranked` with `text = query`, dense + BM25
+   lanes fused at `rrfK`, `candidateK`, per-document diversity on `id`,
+   over-fetched at `topK = max(limit × 5, 25)`.
+3. When a reranker is loaded, the top `shortlist` (10) are scored by the ONNX
+   cross-encoder on payload field `content` and re-fused at `weight` 0.2.
+4. Hits join nDB by `_id`; **the nVDB order is kept** — confidence must not
+   reorder the measured ranking (it is still displayed). The printed percentage
+   is **position in the fused ranking** (`1 - index/(n-1)`), not a similarity:
+   RRF puts the reranked head on one scale (`~1/61`) and the unscored tail on
+   another (`~1/11`), and no single division is monotonic across that boundary.
+5. The nDB full-text leg still runs and appends any doc the index never returned,
+   marked `·lex` at `LEXICAL_BASE` — it only surfaces when the index returns
+   fewer than `limit` hits.
+
+**Vector-only mode (rollback).** Cosine search over one collection and the
+original ranking merge — `LEXICAL_BOOST` for docs found by both legs, then a
+`score × (0.7 + confidence × 0.3)` sort.
+
+The nDB **lexical leg** (both modes, runs regardless of embed health):
+whole-token AND over the query's content words (≥3 chars, deduped, max 8 tokens)
+across `description` and `data`; if strict AND finds nothing, narrows on leading
+token subsets (6 → 4 tokens). **Never single-token OR** — common words match
+hundreds of docs and drown the ranking. Capped at `LEXICAL_MAX_DOCS = 50`.
+
+All memory embeddings pass through the shared client's integrity guard:
+non-finite/zero-norm vectors are rejected, and a byte-identical vector reused
+for a different input is rejected even across separate requests. A startup
+tracker also guards against collisions with vectors already stored for other
+active memories, including after process restarts. Rejected stores remain
+pending for the normal self-heal path rather than persisting a known-bad vector.
 
 Ranking merge constants:
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `LEXICAL_BOOST` | 0.10 | Added to semantic score of docs that ALSO match lexically (strongest relevance signal). |
+| `LEXICAL_BOOST` | 0.10 | Vector-only mode: added to the semantic score of docs that ALSO match lexically. |
 | `LEXICAL_BASE` | 0.45 | Synthetic score for lexical-only docs (semantic missed). |
 | `SCORE_FLOOR` | 0.35 | Minimum score for the compact "also found" second tier. |
-| confidence weight | `score × (0.7 + confidence × 0.3)` | Final sort key. |
+| confidence weight | `score × (0.7 + confidence × 0.3)` | Final sort key — **vector-only mode only**. |
 
 Output: top `limit` entries with descriptions (`[#id] [category] 87.3% ·lex
 conf:0.9 [has data]`), plus an `--- also found ---` one-line tier for hits ≥
