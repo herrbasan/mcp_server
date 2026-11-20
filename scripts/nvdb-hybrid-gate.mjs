@@ -86,6 +86,42 @@ try {
     const folderHits = await vdb.searchDocuments({ query: 'markdown blocks spec', top_k: 10, folder: 'documentation' });
     check('folder filter applies on snapshot payloads', folderHits.length > 0 && folderHits.every(r => (r.path || '').startsWith('documentation/')), `${folderHits.length} hit(s)`);
 
+    // ── per-request layer selection (A/B) ──────────────────────────────
+    const modes = [
+        ['all layers', {}],
+        ['no rerank', { rerank: false }],
+        ['dense only', { lexical: false }],
+        ['lexical only', { dense: false }],
+        ['no diversity', { diversity: false }]
+    ];
+    console.log('\nA/B matrix (same query, layer by layer):');
+    for (const [label, search] of modes) {
+        const started = performance.now();
+        const rows = await vdb.searchDocuments({ query: 'Consciousness Is the Record', top_k: 5, search });
+        const ms = Math.round(performance.now() - started);
+        console.log(`  ${label.padEnd(13)} ${String(ms).padStart(4)} ms  ${rows.map(r => `${r.path}#${r.splitIdx}`).join(', ') || '(none)'}`);
+        check(`${label}: returns hits`, rows.length > 0);
+        if (search.lexical === false) check('dense only: every hit carries a vector rank', rows.every(r => r.vectorRank !== null && r.vectorRank !== undefined));
+        if (search.dense === false) check('lexical only: every hit carries a lexical rank', rows.every(r => r.lexicalRank !== null && r.lexicalRank !== undefined));
+        if (search.dense === false) check('lexical only: no vector-only hit survives', rows.every(r => r.lexicalRank !== null && r.lexicalRank !== undefined));
+        if (search.rerank === false) check('no rerank: no rerank scores', rows.every(r => r.rerankScore === null || r.rerankScore === undefined));
+        if (search.rerank !== false) check('rerank on: head carries a rerank score', rows[0].rerankScore !== undefined && rows[0].rerankScore !== null);
+    }
+
+    // Bad selections fail loudly — no silent fallback to the default search.
+    for (const bad of [{ wibble: 1 }, { dense: false, lexical: false }, { rrfK: 0 }, { rerank: 'yes' }, { shortlist: 0 }]) {
+        let message = null;
+        try {
+            await vdb.searchDocuments({ query: 'x', top_k: 3, search: bad });
+        } catch (e) {
+            message = e.message;
+        }
+        check(`rejects ${JSON.stringify(bad)}`, message !== null, message ?? 'no error thrown');
+    }
+
+    const modeLabel = vdb.describeSearchRequest({ dense: true, lexical: false, rerank: false });
+    check('mode label names the active layers', modeLabel.startsWith('layers=dense'), modeLabel);
+
     const memStarted = performance.now();
     const reply = await memory.memory_recall({ query: 'German public funding Prototype Fund open source application window', limit: 5 }, context);
     const memoryMs = Math.round(performance.now() - memStarted);

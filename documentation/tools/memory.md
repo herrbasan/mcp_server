@@ -67,7 +67,7 @@ Exposed as `memory.store`, `memory.recall`, `memory.get`, `memory.forget`,
 | Tool | Args | Notes |
 |---|---|---|
 | `memory.store` | `description*`, `category?` (default `notes`), `confidence?` 0–1 (default 0.5, clamped), `data?` | Returns immediately — embedding runs detached. Visible to recall within seconds. Alias: `memory_remember`. |
-| `memory.recall` | `query*`, `limit?` (default 5), `category?` | Hybrid search, see below. |
+| `memory.recall` | `query*`, `limit?` (default 5), `category?`, `search?` | Hybrid search, see below. `search` selects layers for one request (same keys as `vdb.search`); the reply's first line names the mode that ran. |
 | `memory.get` | `id*` | Full memory incl. `data` payload. `#123` and `"123"` both accepted. |
 | `memory.forget` | `id*` | Soft-delete in nDB (tombstone) + vector removed from nVDB + flush both. |
 | `memory.list` | `category?`, `limit?` (positive int), `sort?` `newest\|oldest` | Chronological ID order; returns id+description+category only, never `data`. |
@@ -101,6 +101,13 @@ Two retrieval modes, chosen by `agents.vdb.hybrid.enabled`:
    is **position in the fused ranking** (`1 - index/(n-1)`), not a similarity:
    RRF puts the reranked head on one scale (`~1/61`) and the unscored tail on
    another (`~1/11`), and no single division is monotonic across that boundary.
+
+`memory.recall` also accepts `search` — per-request layer switches
+(`dense`, `lexical`, `diversity`, `rerank` + `rrfK`, `candidateK`,
+`vectorWeight`, `lexicalWeight`, `maxPerDocument`, `shortlist`,
+`rerankWeight`) for A/B runs. Memory's diversity group field is `id`. The
+reply's first line names the mode that ran; invalid selections throw rather
+than falling back. Full semantics: [vdb.md](vdb.md#per-request-layer-selection-ab).
 5. The nDB full-text leg still runs and appends any doc the index never returned,
    marked `·lex` at `LEXICAL_BASE` — it only surfaces when the index returns
    fewer than `limit` hits.

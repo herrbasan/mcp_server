@@ -6,6 +6,7 @@ import { loadNdb } from './ndb-loader.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createStoredVectorGuard } from '../../embed-client.js';
+import { resolveSearchOptions, describeSearchOptions, selectLanes } from '../vdb/search-options.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -105,23 +106,40 @@ function normId(id) {
 // reranker, and `description`/`data` for BM25. `id` groups a memory's chunks —
 // one vector per memory, so the diversity cap is nominal, but it keeps the
 // option identical to the storage lane.
-function hybridSearchMemory(vector, text, topK) {
-    const options = {
+function resolveRecallOptions(search) {
+    if (!HYBRID.enabled) {
+        if (search) throw new Error('per-request layers need agents.vdb.hybrid.enabled — the memory collection is vector-only');
+        return null;
+    }
+    return resolveSearchOptions({
+        overrides: search,
+        hybrid: HYBRID,
+        rerank: RERANK,
+        rerankerAvailable: RERANKER !== null,
+        diversityField: 'id'
+    });
+}
+
+async function hybridSearchMemory(vector, text, topK, options) {
+    const singleLane = !(options.dense && options.lexical);
+    const nativeTopK = singleLane ? Math.max(topK * 4, 40) : topK;
+    const native = {
         vector,
         text,
-        topK,
-        candidateK: Math.max(HYBRID.candidateK, topK),
+        topK: nativeTopK,
+        candidateK: Math.max(options.candidateK, nativeTopK),
         distance: 'cosine',
-        rrfK: HYBRID.rrfK,
-        vectorWeight: HYBRID.vectorWeight,
-        lexicalWeight: HYBRID.lexicalWeight,
-        groupBy: 'id',
-        maxPerDocument: HYBRID.maxPerDocument
+        rrfK: options.rrfK,
+        vectorWeight: options.vectorWeight,
+        lexicalWeight: options.lexicalWeight,
+        ...(options.diversity
+            ? { groupBy: options.diversityField, maxPerDocument: options.maxPerDocument }
+            : {})
     };
-    if (RERANKER) {
-        return MEM_COLL.hybridSearchReranked(options, RERANKER, RERANK.textField, RERANK.weight, RERANK.shortlist);
-    }
-    return MEM_COLL.hybridSearch(options);
+    const rows = options.rerank
+        ? await MEM_COLL.hybridSearchReranked(native, RERANKER, options.rerankTextField, options.rerankWeight, options.shortlist)
+        : await MEM_COLL.hybridSearch(native);
+    return selectLanes(rows, options, topK);
 }
 
 // Reciprocal-rank fusion produces two score regimes in one result list: the
@@ -425,8 +443,11 @@ function lexicalRecall(query, category) {
 
 export async function memory_recall(args, context) {
     const { gateway, progress } = context;
-    const { query, limit = 5, category } = args;
+    const { query, limit = 5, category, search = null } = args;
     const pr = createProgressReporter(progress);
+    // Validate the requested layers before spending a query embedding.
+    const options = resolveRecallOptions(search);
+    const mode = options ? describeSearchOptions(options) : 'vector-only';
 
     pr.set('Embedding query...', 20, true);
     const maxChars = CONFIG.maxMemoryChars || 6000;
@@ -494,8 +515,8 @@ export async function memory_recall(args, context) {
     // VDB agent has a reranker loaded. Over-fetch so the summary tier has
     // headroom. nVDB search is async (native call); without await this yields a
     // Promise whose .length is undefined and whose iteration throws.
-    const searchResults = HYBRID.enabled
-        ? await hybridSearchMemory(queryEmbed, safeQuery, Math.max(limit * 5, 25))
+    const searchResults = options
+        ? await hybridSearchMemory(queryEmbed, safeQuery, Math.max(limit * 5, 25), options)
         : await MEM_COLL.search({
             vector: queryEmbed,
             topK: Math.max(limit * 5, 25)
@@ -514,7 +535,7 @@ export async function memory_recall(args, context) {
             })
             .sort((a, b) => b.weightedScore - a.weightedScore);
         pr.done('Search complete');
-        return { content: [{ type: 'text', text: formatRecall(ranked, limit) }] };
+        return { content: [{ type: 'text', text: `mode: ${mode} (semantic empty — lexical only)\n${formatRecall(ranked, limit)}` }] };
     }
 
     pr.set('Ranking results...', 80);
@@ -540,19 +561,19 @@ export async function memory_recall(args, context) {
         seenIds.add(doc.id);
 
         const lexical = lexicalIdSet.has(doc.id);
-        const sim = HYBRID.enabled
+        const sim = options
             ? positionScore(index, last)
             : (lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score);
         // Hybrid order (and the reranker's ordering inside it) is the measured
         // artifact — confidence must not reorder it. The vector-only path keeps
         // the historical confidence weighting.
-        const weightedScore = HYBRID.enabled ? sim : sim * (0.7 + (doc.confidence ?? 0.5) * 0.3);
+        const weightedScore = options ? sim : sim * (0.7 + (doc.confidence ?? 0.5) * 0.3);
         scored.push({
             ...doc,
             score: sim,
             weightedScore,
             lexical,
-            ...(HYBRID.enabled ? { rerankScore: hit.rerankScore ?? null } : {})
+            ...(options ? { rerankScore: hit.rerankScore ?? null } : {})
         });
     }
 
@@ -560,16 +581,16 @@ export async function memory_recall(args, context) {
     for (const doc of lexicalDocs) {
         if (seenIds.has(doc.id)) continue;
         const conf = doc.confidence ?? 0.5;
-        const weightedScore = HYBRID.enabled ? LEXICAL_BASE : LEXICAL_BASE * (0.7 + conf * 0.3);
+        const weightedScore = options ? LEXICAL_BASE : LEXICAL_BASE * (0.7 + conf * 0.3);
         scored.push({ ...doc, score: LEXICAL_BASE, weightedScore, lexical: true });
         seenIds.add(doc.id);
     }
 
-    if (!HYBRID.enabled) scored.sort((a, b) => b.weightedScore - a.weightedScore);
+    if (!options) scored.sort((a, b) => b.weightedScore - a.weightedScore);
 
     pr.done('Search complete');
     return {
-        content: [{ type: 'text', text: formatRecall(scored, limit) }]
+        content: [{ type: 'text', text: `mode: ${mode}\n${formatRecall(scored, limit)}` }]
     };
 }
 

@@ -139,6 +139,45 @@ what it is:
   monotonic across the shortlist boundary** — never sort or threshold on them.
   `normalizedScore` and memory's recall percentage both come from rank position.
 
+## Per-request layer selection (A/B)
+
+`vdb.search` and `storage.search` accept `search` — an override object applied
+to that one request (config stays the default). The effective mode is the first
+line of the reply, so an A/B run is attributable from the transcript.
+
+```json
+{ "rerank": false }
+{ "dense": true, "lexical": false }
+{ "rrfK": 30, "candidateK": 400, "rerankWeight": 0.5 }
+```
+
+| Key | Type | Layer it switches |
+|---|---|---|
+| `dense` | bool | vector lane |
+| `lexical` | bool | BM25 lane over the index's lexical fields |
+| `diversity` | bool | per-document cap inside the native call |
+| `rerank` | bool | ONNX cross-encoder over the fused shortlist |
+| `rrfK`, `candidateK`, `vectorWeight`, `lexicalWeight`, `maxPerDocument`, `shortlist`, `rerankWeight` | numbers | the knobs those layers use |
+
+Semantics worth knowing:
+
+- **Both lanes always run natively.** A single-lane request fetches headroom
+  (`fetchK × 4`), drops the other lane's hits, and orders by the kept lane's
+  rank — or keeps the fused rerank order when reranking is on, because that
+  order is the measured artifact. The query is still embedded when
+  `dense: false`, so latency is not "lexical-only cheap".
+- **Strict, never silent.** Unknown keys, wrong types, out-of-range numbers,
+  `dense: false + lexical: false`, a zero weight on an enabled lane, or
+  `rerank: true` with no reranker loaded all throw with the reason. A request
+  never quietly runs the default search.
+- Layer selection needs `agents.vdb.hybrid.enabled`; on the vector-only index
+  (`data/nvdb`) passing `search` is an error.
+
+Gate coverage: `npm run gate:nvdb` runs the same query through five modes
+(all / no rerank / dense only / lexical only / no diversity), asserts lane
+membership and rerank presence per mode, and checks that five invalid
+selections are rejected.
+
 ## Config (effective, `agents.vdb`)
 
 `enabled: true`, `dbPath: 'data/candidates/wizkid-hybrid-rerank/nvdb'`,

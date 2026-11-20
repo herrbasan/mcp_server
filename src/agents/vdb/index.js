@@ -9,6 +9,7 @@ import { makeChunker } from './chunker.js';
 import { createContextEnhancer, formatContextHeader } from './context-enhancer.js';
 import { embedGroupWithPersistence } from './embedding-persistence.js';
 import { createStoredVectorGuard } from '../../embed-client.js';
+import { resolveSearchOptions, describeSearchOptions, selectLanes } from './search-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -998,37 +999,52 @@ function buildFilter(collectionName, folder, extension) {
 // Stops one long/broad document from filling all result slots.
 const MAX_CHUNKS_PER_FILE = 3;
 
-// Hybrid search is a different score space: dense and lexical lanes are fused
-// by reciprocal rank, so `score` is ~1/(rrfK+1), not a cosine similarity.
-// Normalizing against the best achievable fused score keeps downstream
-// thresholds (memory's confidence weighting, vdb's normalized ranking) and the
-// rendered percentages meaningful. The reranked pass fuses against nVDB's fixed
-// k=60 (DEFAULT_RRF_K in the Rust core), not the configurable lane rrfK.
-function hybridScoreCeiling() {
-    if (RERANKER) return 1 / 61;
-    const weights = CONFIG.hybrid.vectorWeight + CONFIG.hybrid.lexicalWeight;
-    return weights / (CONFIG.hybrid.rrfK + 1);
+// Resolve the layers for one request. `search` is the caller's override object
+// (see search-options.js); null means "use the configured defaults".
+function resolveRequestOptions(search) {
+    if (!CONFIG.hybrid.enabled) {
+        if (search) throw new Error('per-request layers need agents.vdb.hybrid.enabled — the bound index is vector-only');
+        return null;
+    }
+    return resolveSearchOptions({
+        overrides: search,
+        hybrid: CONFIG.hybrid,
+        rerank: CONFIG.rerank,
+        rerankerAvailable: RERANKER !== null,
+        diversityField: CONFIG.hybrid.diversityField
+    });
 }
 
-async function runHybridSearch(coll, { vector, text, fetchK, filter }) {
-    const options = {
+// Public: the effective mode for a request, for tool output and A/B logs.
+export function describeSearchRequest(search = null) {
+    if (!CONFIG) throw new Error('VDB not initialized');
+    const options = resolveRequestOptions(search);
+    return options ? describeSearchOptions(options) : 'vector-only';
+}
+
+// Per-request layer selection cannot change what the native call computes, so a
+// single-lane request fetches headroom and drops the other lane afterwards.
+async function runHybridSearch(coll, { vector, text, fetchK, filter, options }) {
+    const singleLane = !(options.dense && options.lexical);
+    const nativeTopK = singleLane ? Math.max(fetchK * 4, 40) : fetchK;
+    const native = {
         vector,
         text,
-        topK: fetchK,
-        candidateK: Math.max(CONFIG.hybrid.candidateK, fetchK),
+        topK: nativeTopK,
+        candidateK: Math.max(options.candidateK, nativeTopK),
         distance: 'cosine',
-        rrfK: CONFIG.hybrid.rrfK,
-        vectorWeight: CONFIG.hybrid.vectorWeight,
-        lexicalWeight: CONFIG.hybrid.lexicalWeight,
-        ...(CONFIG.hybrid.diversityField
-            ? { groupBy: CONFIG.hybrid.diversityField, maxPerDocument: CONFIG.hybrid.maxPerDocument }
+        rrfK: options.rrfK,
+        vectorWeight: options.vectorWeight,
+        lexicalWeight: options.lexicalWeight,
+        ...(options.diversity
+            ? { groupBy: options.diversityField, maxPerDocument: options.maxPerDocument }
             : {}),
         ...(filter ? { filter } : {})
     };
-    if (RERANKER) {
-        return coll.hybridSearchReranked(options, RERANKER, CONFIG.rerank.textField, CONFIG.rerank.weight, CONFIG.rerank.shortlist);
-    }
-    return coll.hybridSearch(options);
+    const rows = options.rerank
+        ? await coll.hybridSearchReranked(native, RERANKER, options.rerankTextField, options.rerankWeight, options.shortlist)
+        : await coll.hybridSearch(native);
+    return selectLanes(rows, options, fetchK);
 }
 
 function collectionHasPayloadFields(collectionName) {
@@ -1046,9 +1062,13 @@ function chunkIndexFromId(id) {
     return Number.isInteger(parsed) ? parsed : 0;
 }
 
-export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, onProgress = null } = {}) {
+export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, search = null, onProgress = null } = {}) {
     if (!DATABASE) throw new Error('VDB agent is not initialized or nVDB is unavailable. Check logs.');
     if (!query) throw new Error('searchDocuments: query is required');
+
+    // Resolve before embedding: an invalid layer selection must not spend a
+    // gateway round trip.
+    const options = resolveRequestOptions(search);
 
     const targetCollections = (collections && collections.length > 0)
         ? collections.filter(c => Object.keys(COLLECTIONS).includes(c) && CONFIG.watch?.[c])
@@ -1080,8 +1100,8 @@ export async function searchDocuments({ query, collections, folder, extension, t
         const clientFiltered = Boolean(folder || extension) && !indexFiltered;
         const indexFilter = indexFiltered ? buildFilter(collectionName, folder, extension) : null;
         const fetchK = Math.max(top_k * 3, 30);
-        const searchResults = CONFIG.hybrid.enabled
-            ? await runHybridSearch(coll, { vector: queryEmbedding, text: query, fetchK, filter: indexFilter })
+        const searchResults = options
+            ? await runHybridSearch(coll, { vector: queryEmbedding, text: query, fetchK, filter: indexFilter, options })
             : await coll.search({
                 vector: queryEmbedding,
                 topK: fetchK,
@@ -1111,7 +1131,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
                 charOffset: payload.charOffset,
                 tokEst: payload.tokEst
             };
-            if (CONFIG.hybrid.enabled) {
+            if (options) {
                 result.rrfScore = match.rrfScore;
                 result.rerankScore = match.rerankScore ?? null;
                 result.vectorRank = match.vectorRank ?? null;
@@ -1135,7 +1155,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
         // scores are not monotonic across the rerank shortlist boundary, so
         // re-sorting by them would promote the unscored tail over the ranked
         // head. Rank position is the comparable signal, so encode that.
-        if (CONFIG.hybrid.enabled) {
+        if (options) {
             const last = matches.length - 1;
             matches.forEach((result, index) => {
                 result.normalizedScore = last === 0 ? 1 : 1 - index / last;
@@ -1267,6 +1287,9 @@ const FILE_MATCH_LIMIT = 20;
 
 export async function vdb_search(args, context) {
     const pr = createProgressReporter(context?.progress);
+    // Validate the requested layers before anything else: an invalid selection
+    // must fail, not fall through to the filename path or a default search.
+    const mode = describeSearchRequest(args?.search ?? null);
 
     // Filename-like queries bypass semantic search entirely — the embedding
     // of a filename carries no meaning, only noise.
@@ -1295,7 +1318,6 @@ export async function vdb_search(args, context) {
 
     const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
     pr.done('Search complete');
-
     const summary = top.map((r, i) => {
         const detail = r.rrfScore === undefined
             ? `score: ${r.score.toFixed(4)}, norm: ${r.normalizedScore?.toFixed(3) ?? 'n/a'}`
@@ -1306,7 +1328,7 @@ export async function vdb_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `Found ${top.length} matches:\n\n${summary}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
+            text: `mode: ${mode}\nFound ${top.length} matches:\n\n${summary}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
         }]
     };
 }

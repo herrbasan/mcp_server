@@ -202,7 +202,28 @@ The 160-case MRR replay (`scripts/memory-lab-phase0.mjs` /
 `compare-memory-lab-storage-candidate.mjs`) remains the reference measurement —
 MRR 0.8148, top-1 119, 17 improvements / 2 regressions.
 
-### 8. Rollback
+### 8. Per-request layer selection (A/B) — **done**
+
+`vdb.search`, `storage.search` and `memory.recall` accept `search`:
+
+```json
+{ "rerank": false }
+{ "dense": true, "lexical": false }
+{ "rrfK": 30, "rerankWeight": 0.5 }
+```
+
+Keys: `dense`, `lexical`, `diversity`, `rerank` (booleans) plus `rrfK`,
+`candidateK`, `vectorWeight`, `lexicalWeight`, `maxPerDocument`, `shortlist`,
+`rerankWeight`. The reply's first line names the effective mode; invalid or
+impossible selections throw. Both lanes still run natively — a single-lane
+request drops the other lane and orders by the kept lane's rank (or keeps the
+rerank order). `src/agents/vdb/search-options.js`.
+
+First measurement on the real index (`Consciousness Is the Record`): all layers
+and dense-only put the record file at rank 4-5 or absent, **lexical-only puts
+it at 1-3** — the exact-title signal is carried by BM25, not the dense lane.
+
+### 9. Rollback
 
 Keep:
 

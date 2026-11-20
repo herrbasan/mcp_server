@@ -524,10 +524,15 @@ Memory scopes:
       ⚠️ CALL THIS FIRST. Shows the Memory Map: clusters, bridges, top nodes,
       wildcards, and the recall directive. Quick orientation before any task.
 
-  memory.recall — { query*, limit?, category? }
+  memory.recall — { query*, limit?, category?, search? }
       Search memories by semantic similarity. Use natural language — it finds
       related memories even with different wording. Use when overview shows a
       topic you need more detail on, or for recent memories not yet in the map.
+      search: per-request layer switches for A/B, e.g. {"rerank": false} or
+      {"dense": true, "lexical": false}. Keys: dense, lexical, diversity,
+      rerank (booleans), rrfK, candidateK, vectorWeight, lexicalWeight,
+      maxPerDocument, shortlist, rerankWeight. The reply's first line names the
+      mode that actually ran. Unknown keys and impossible combinations fail.
 
   memory.store — { description*, category?, confidence?, data? }
       Save a memory. description is the only required field — be specific,
@@ -811,15 +816,19 @@ execution (fail on unpatched snapshot, pass on patched).
 STYLEREVIEW — UX/UI, NUI & Chart Style Review
 ═══════════════════════════════════════════════════════════════
 
-Deterministic Tier-0 geometry, spacing, typography, contrast, NUI-pattern,
-and SVG/chart collision checks in headless Chromium, followed by a single-pass
-LLM critique for UX flow, hierarchy, and taste.
+Deterministic Tier-0 geometry, spacing, typography, contrast, NUI-contract,
+custom component styling, and SVG/chart collision checks in headless Chromium, followed by a single-pass
+LLM critique for usage flows, hierarchy, and taste. When NUI is present, the
+complete nui_wc2 registry, LLM cheatsheet, and component/addon documentation
+are injected so the reviewer can detect documented misuse and relevant unused
+components without inventing APIs.
 
   stylereview.review — { target*, viewports?, probeInteractions?, tier0Only?, model? }
       target: http(s):// URL or absolute path to an .html or .svg file.
       viewports: [{ name, width, height }] (defaults to desktop 1440x900 +
-      mobile 390x844 for HTML; 1280x900 for SVG). probeInteractions: click
-      safe controls to detect silent actions. tier0Only: skip LLM pass.
+      mobile 390x844 for HTML; 1280x900 for SVG). probeInteractions: follow
+      bounded multi-step flows through safe controls and newly revealed UI;
+      submit/destructive actions are excluded. tier0Only: skip LLM pass.
 
 
 ═══════════════════════════════════════════════════════════════
@@ -1077,6 +1086,17 @@ thumbnail, m4a → mp3, video → keyframe, transcode.
       alerts, cluster power/thermal summary, service states with LLM health
       findings. Log tails stripped. Optional sections param to limit scope.
 
+  usage-monitor.usage_scan — {}
+      Run a usage collection cycle NOW (all providers), bypassing the
+      timer. Returns the consolidated normalized result: per-provider
+      windows (kind: 5h|weekly|tpm-day|monthly|pool) with usedPct/used/
+      limit/unit/resetAt, plus a stale[] list of providers that failed
+      this cycle.
+
+  usage-monitor.usage_status — {}
+      Show usage-monitor health: timer state, last run timestamp and
+      duration, per-provider last-success age and last error. Read-only.
+
 
 ═══════════════════════════════════════════════════════════════
 LLM — Direct Model Access
@@ -1117,12 +1137,17 @@ docs/ — the former documentation knowledge base) on a timer (default 5
 minutes) and exposes semantic search.
 
   vdb.search — { query*, collections?, folder?, extension?, top_k?,
-                 approximate?, include_content? }
+                 approximate?, include_content?, search? }
       Semantic search over storage files (by meaning, not name). Docs are
       under folder 'docs'; use folder= to scope to a top-level storage folder.
       Filename-like queries (e.g. "report_v2.md") are auto-detected and
       matched against indexed file paths instead of embeddings. To browse
       directories use storage.list.
+      search: per-request layer switches for A/B, e.g. {"rerank": false} or
+      {"dense": false} (lexical only). Keys: dense, lexical, diversity, rerank
+      (booleans), rrfK, candidateK, vectorWeight, lexicalWeight,
+      maxPerDocument, shortlist, rerankWeight. The reply's first line names the
+      mode that actually ran; each hit carries its lane ranks.
 
   vdb.status — {}
       Show collection counts, last scan, and whether nVDB is loaded.
@@ -1191,8 +1216,11 @@ content that should survive beyond the current session.
   storage.delete — { path*, recursive? }
       Delete a file or directory. Set recursive:true to delete non-empty dirs.
 
-  storage.search — { query*, folder?, extension?, top_k?, include_content? }
-      Semantic search over files in storage via the vector database.
+  storage.search — { query*, folder?, extension?, top_k?, include_content?, search? }
+      Semantic search over files in storage via the vector database. search
+      takes the same per-request layer switches as vdb.search (dense, lexical,
+      diversity, rerank + numeric knobs); the reply's first line names the mode
+      that ran.
 
   storage.search_file — { query*, path?, limit? }
       Find files by NAME (substring or exact basename). The right tool for
@@ -1551,6 +1579,8 @@ IMPORTANT RULES
         "media.process": "media_process",
 
         "telemetry.report": "telemetry_report",
+
+        "usage-monitor.usage_scan": "usage_scan", "usage-monitor.usage_status": "usage_status",
 
         "llm.query": "query_model",
         "llm.session_create": "llm_session_create", "llm.session_query": "llm_session_query",

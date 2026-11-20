@@ -6,7 +6,7 @@ import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps, joinNormalizedTail } from '../../lib/fileops.js';
 import { requireFields } from '../../utils/require-fields.js';
-import { searchDocuments } from '../vdb/index.js';
+import { searchDocuments, describeSearchRequest } from '../vdb/index.js';
 import * as resources from './resource-provider.js';
 
 const logger = getLogger();
@@ -738,10 +738,13 @@ export async function storage_search_file(args) {
 
 export async function storage_search(args, context) {
     requireFields(args, ['query'], 'storage_search');
-    const { query, folder, extension, top_k = 10, include_content = false } = args;
-    logger.info(`[Storage] storage_search: "${query}"`, { folder, extension, top_k }, 'Storage');
+    const { query, folder, extension, top_k = 10, include_content = false, search = null } = args;
+    logger.info(`[Storage] storage_search: "${query}"`, { folder, extension, top_k, search }, 'Storage');
 
     const pr = createProgressReporter(context?.progress);
+    // Effective mode for this request — an A/B run must be attributable from
+    // the transcript alone.
+    const mode = describeSearchRequest(search);
     const results = await searchDocuments({
         query,
         collections: ['storage'],
@@ -749,6 +752,7 @@ export async function storage_search(args, context) {
         extension,
         top_k,
         include_content,
+        search,
         onProgress: (msg, pct) => pr.set(msg, pct)
     });
     pr.done('Search complete');
@@ -770,7 +774,7 @@ export async function storage_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `Storage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+            text: `mode: ${mode}\nStorage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
         }]
     };
 }
