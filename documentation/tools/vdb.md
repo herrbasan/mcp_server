@@ -204,6 +204,30 @@ returns 800 rows with **zero** `.md` (the two religion hits are
 `ledger.json`), while lexical returns the book. That is dense-lane coverage,
 not a filter defect.
 
+### Relevance, confidence and rejection
+
+The displayed percentage is the **cross-encoder score**, never a rank position
+(`src/agents/vdb/relevance.js`). Measured on the real corpus: nonsense queries
+score `0.0001 … 0.0089`, the weakest verified real match `0.0453`, typical real
+matches `0.62 … 0.995`. Dense cosine is not a confidence (~0.43–0.76 for noise
+*and* for real matches) and BM25 is worse than useless as a gate (`radiator`
+scored 31.7 on an unrelated document).
+
+- **Set-level rejection.** When reranking ran and the *best* score in the result
+  set is below `agents.vdb.relevanceFloor` (default `0.02`), the answer is an
+  explicit "no relevant matches" with the candidates listed as low-relevance
+  evidence — not a ranked list. Applies to `vdb.search`, `storage.search` and
+  `memory.recall`.
+- **No rejection without a reranker.** Dense-only and lexical-only runs have no
+  calibrated signal, so they report no confidence rather than guessing one.
+- **Per-row suppression is deliberately not applied.** Weak single-token
+  queries overlap legitimate paraphrases (`set` 0.160 vs a genuine German query
+  0.139), so a per-row floor would cut valid deep answers. Rows below the floor
+  stay visible with their true near-zero percentage.
+- A filtered/deep request can still be rejected when its best hit sits below the
+  requested depth — measured: a German storage paraphrase at `top_k=5` sees only
+  0.0015 and is rejected, at `top_k=10` it sees 0.0453 and is kept.
+
 Gate coverage: `npm run gate:nvdb` runs the same query through five modes
 (all / no rerank / dense only / lexical only / no diversity), asserts lane
 membership and rerank presence per mode, and checks that five invalid

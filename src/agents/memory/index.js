@@ -7,6 +7,7 @@ import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createStoredVectorGuard } from '../../embed-client.js';
 import { resolveSearchOptions, describeSearchOptions, selectLanes } from '../vdb/search-options.js';
+import { assessRelevance, formatRelevance } from '../vdb/relevance.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
@@ -26,6 +27,7 @@ let EMBED_PATH = null;    // Vector-space route shared with the index (agents.vd
 let RERANKER = null;      // nVDB Reranker owned by the VDB agent (null when disabled)
 let HYBRID = { enabled: false }; // agents.vdb.hybrid — lane tuning shared with the index
 let RERANK = null;        // agents.vdb.rerank — shortlist/weight/textField
+let RELEVANCE_FLOOR = 0.02; // agents.vdb.relevanceFloor (see vdb/relevance.js)
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -254,6 +256,7 @@ export async function init(context) {
         RERANKER = VDB_AGENT.reranker ?? null;
         HYBRID = VDB_AGENT.hybrid ?? { enabled: false };
         RERANK = VDB_AGENT.rerank ?? null;
+        RELEVANCE_FLOOR = VDB_AGENT.relevanceFloor ?? RELEVANCE_FLOOR;
         if (HYBRID.enabled && RERANKER && !RERANK) {
             throw new Error('memory.init: VDB agent reports a loaded reranker but no rerank settings');
         }
@@ -404,17 +407,18 @@ export { memory_store as memory_remember };
 //   lexical leg — appearing in both is the strongest relevance signal.
 // - LEXICAL_BASE: synthetic score for lexical-only docs (semantic missed).
 //   Below typical strong semantic hits, above the "also found" floor.
-// - SCORE_FLOOR: minimum score for the compact second-tier listing.
+// - SCORE_FLOOR: minimum *relevance* for the compact second-tier listing. The
+//   displayed number is the cross-encoder score, never a rank position.
 const LEXICAL_BOOST = 0.10;
 const LEXICAL_BASE = 0.45;
 const SCORE_FLOOR = 0.35;
 
-// Shared two-tier recall output: top `limit` with descriptions, the rest
-// above scoreFloor as a compact one-line-per-hit listing. Lexical-sourced
-// hits carry a ·lex tag, demoted query echoes a ·echo tag.
+// Shared two-tier recall output: top `limit` with descriptions, the rest above
+// scoreFloor as a compact one-line-per-hit listing. Lexical-sourced hits carry
+// a ·lex tag, demoted query echoes a ·echo tag.
 function formatRecall(ranked, limit) {
     const top = ranked.slice(0, limit);
-    const also = ranked.slice(limit).filter(m => m.score >= SCORE_FLOOR);
+    const also = ranked.slice(limit).filter(m => typeof m.score === 'number' && Number.isFinite(m.score) && m.score >= SCORE_FLOOR);
     if (!top.length) {
         return 'No memories found. This topic is new — consider storing insights with memory_store as you learn.';
     }
@@ -422,12 +426,12 @@ function formatRecall(ranked, limit) {
         const conf = m.confidence ?? 0.5;
         const hasData = m.data ? ' [has data]' : '';
         const lex = `${m.lexical ? ' ·lex' : ''}${m.queryEcho ? ' ·echo' : ''}`;
-        return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}%${lex} conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
+        return `[#${m.id}] [${m.category}] ${formatRelevance(m.score)}${lex} conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
     }).join('\n\n');
     let summary = '';
     if (also.length > 0) {
         const lines = also.map(m =>
-            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%${m.lexical ? '·lex' : ''}${m.queryEcho ? '·echo' : ''}`
+            `#${m.id} [${m.category}] ${formatRelevance(m.score)}${m.lexical ? '·lex' : ''}${m.queryEcho ? '·echo' : ''}`
         ).join('  ');
         summary = `\n\n--- also found ---\n${lines}`;
     }
@@ -595,9 +599,13 @@ export async function memory_recall(args, context) {
         const lexical = lexicalIdSet.has(doc.id);
         const echoed = echo !== null
             && normalizeForEcho(`${doc.description ?? ''} ${serializeData(doc.data)}`).includes(echo);
-        const base = options
-            ? positionScore(index, last)
+        // Displayed relevance is the cross-encoder score — the only calibrated
+        // signal (relevance.js). Rank position drives the ordering below, never
+        // the number a caller reads as confidence.
+        const relevance = options
+            ? (typeof hit.rerankScore === 'number' ? hit.rerankScore : null)
             : (lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score);
+        const base = options ? positionScore(index, last) : relevance;
         const sim = echoed ? base * echoFactor : base;
         // Hybrid order (and the reranker's ordering inside it) is the measured
         // artifact — confidence must not reorder it. The vector-only path keeps
@@ -605,12 +613,35 @@ export async function memory_recall(args, context) {
         const weightedScore = options ? sim : sim * (0.7 + (doc.confidence ?? 0.5) * 0.3);
         scored.push({
             ...doc,
-            score: sim,
+            score: relevance,
             weightedScore,
             lexical,
             queryEcho: echoed,
             ...(options ? { rerankScore: hit.rerankScore ?? null } : {})
         });
+    }
+
+    // Reject nonsense before ranking is displayed: a query whose best
+    // cross-encoder score is below the floor has no relevant memory, and
+    // presenting its top rows as an answer is the R1 defect. Only possible when
+    // the reranker ran — dense and lexical scores cannot be gated (measured:
+    // cosine ~0.5 for noise, BM25 31.7 on an unrelated document).
+    if (options?.rerank) {
+        const assessment = assessRelevance(scored, { rerankActive: true, floor: RELEVANCE_FLOOR });
+        if (assessment.rejected) {
+            const lines = scored.slice(0, 5).map((m, i) =>
+                `  ${i + 1}. [#${m.id}] [${m.category}] relevance ${formatRelevance(m.rerankScore)}`
+            ).join('\n');
+            pr.done('No relevant memories');
+            logger.info(`[Memory] rejected: best rerank ${assessment.best.toFixed(4)} < floor ${RELEVANCE_FLOOR} for "${safeQuery}"`, null, 'Memory');
+            return {
+                content: [{
+                    type: 'text',
+                    text: `mode: ${mode}\nNo relevant memories: the best cross-encoder score is ${formatRelevance(assessment.best)}, below the ${(RELEVANCE_FLOOR * 100).toFixed(1)}% relevance floor.\n`
+                        + `The candidates below are low-relevance evidence, not answers:\n${lines}`
+                }]
+            };
+        }
     }
 
     // Demote the echoed records. Positions are strictly decreasing, so this
@@ -624,12 +655,14 @@ export async function memory_recall(args, context) {
         }
     }
 
-    // Lexical-only docs (semantic missed them) join the ranking.
+    // Lexical-only docs (semantic missed them) join the ranking. In hybrid mode
+    // they have no cross-encoder score, so their displayed relevance is
+    // unknown — never a synthetic percentage.
     for (const doc of lexicalDocs) {
         if (seenIds.has(doc.id)) continue;
         const conf = doc.confidence ?? 0.5;
         const weightedScore = options ? LEXICAL_BASE : LEXICAL_BASE * (0.7 + conf * 0.3);
-        scored.push({ ...doc, score: LEXICAL_BASE, weightedScore, lexical: true });
+        scored.push({ ...doc, score: options ? null : LEXICAL_BASE, weightedScore, lexical: true });
         seenIds.add(doc.id);
     }
 

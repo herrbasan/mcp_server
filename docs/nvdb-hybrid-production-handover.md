@@ -286,7 +286,36 @@ extension, five rejections — all three lanes. Measured boundary: `dense-only +
 md` is empty for `A Little Religion v6 final` because that lane's raw 800 rows
 contain zero `.md`; dense coverage, not a filter defect.
 
-### 12. Rollback
+### 13. R1 relevance rejection — **fixed**
+
+Report cluster R1: nonsense queries returned unrelated records displayed at
+100% confidence (memory `100.0 / 95.8 / 91.7%`, storage `1.00 / 0.966 / 0.931`)
+and near-zero rerank scores suppressed nothing.
+
+The displayed number is now the **cross-encoder score**, never rank position.
+When reranking ran and the best score in the set is below
+`agents.vdb.relevanceFloor` (default `0.02`), the tool answers "no relevant
+matches" and lists the candidates as low-relevance evidence.
+
+Measured before choosing the floor (real corpus, copy of the live index):
+
+| class | best rerank score |
+|---|---|
+| nonsense, 1–4 tokens (3 queries) | 0.0003 … 0.0089 |
+| weakest verified real match (German storage paraphrase, top_k=10) | 0.0453 |
+| typical real match | 0.62 … 0.995 |
+
+Dense cosine does not discriminate (~0.43–0.76 for noise *and* real), and BM25
+is worse than useless as a gate (`radiator` scored 31.7 on an unrelated doc).
+Weak single-token queries overlap real paraphrases (memory `set` 0.160 vs
+German legit 0.139), which is why **no per-row cutoff** and **no cutoff outside
+the reranked path** is applied.
+
+Gate: three nonsense queries rejected in storage and memory with no `100.0%`
+in the output; `nConvert`, the exact title, `Prototype`, `nui_wc2` and a German
+paraphrase kept; the rejection boundary at shallow depth is printed.
+
+### 14. Rollback
 
 Keep:
 

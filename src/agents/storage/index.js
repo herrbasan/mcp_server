@@ -6,7 +6,8 @@ import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps, joinNormalizedTail } from '../../lib/fileops.js';
 import { requireFields } from '../../utils/require-fields.js';
-import { searchDocuments, describeSearchRequest } from '../vdb/index.js';
+import { searchDocuments, describeSearchRequest, searchRequestInfo, describeRejection } from '../vdb/index.js';
+import { assessRelevance } from '../vdb/relevance.js';
 import * as resources from './resource-provider.js';
 
 const logger = getLogger();
@@ -744,7 +745,8 @@ export async function storage_search(args, context) {
     const pr = createProgressReporter(context?.progress);
     // Effective mode for this request — an A/B run must be attributable from
     // the transcript alone.
-    const mode = describeSearchRequest(search);
+    const info = searchRequestInfo(search);
+    const mode = info.mode;
     const results = await searchDocuments({
         query,
         collections: ['storage'],
@@ -756,6 +758,16 @@ export async function storage_search(args, context) {
         onProgress: (msg, pct) => pr.set(msg, pct)
     });
     pr.done('Search complete');
+
+    const assessment = assessRelevance(results, { rerankActive: info.rerankActive, floor: info.floor });
+    if (assessment.rejected) {
+        return {
+            content: [{
+                type: 'text',
+                text: `mode: ${mode}\n${describeRejection(assessment, results, 'storage matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+            }]
+        };
+    }
 
     const formatted = results.map((r, i) => {
         // Hybrid scores are rank-fusion values, not similarities, and the

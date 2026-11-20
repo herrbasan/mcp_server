@@ -100,9 +100,19 @@ Two retrieval modes, chosen by `agents.vdb.hybrid.enabled`:
    cross-encoder on payload field `content` and re-fused at `weight` 0.2.
 4. Hits join nDB by `_id`; **the nVDB order is kept** — confidence must not
    reorder the measured ranking (it is still displayed). The printed percentage
-   is **position in the fused ranking** (`1 - index/(n-1)`), not a similarity:
-   RRF puts the reranked head on one scale (`~1/61`) and the unscored tail on
-   another (`~1/11`), and no single division is monotonic across that boundary.
+   is the **cross-encoder relevance score**, not a similarity and not a rank
+   position: RRF puts the reranked head on one scale (`~1/61`) and the unscored
+   tail on another (`~1/11`), and rank position says nothing about whether a
+   result is relevant. Rows past the rerank shortlist have no measured
+   relevance and print `n/a`.
+
+**Rejection.** If the reranker ran and the best score in the set is below
+`agents.vdb.relevanceFloor` (0.02), recall answers "No relevant memories" and
+lists the candidates as low-relevance evidence. Measured: nonsense queries max
+at 0.0089, the weakest verified real match is 0.0453. Dense-only and
+lexical-only runs cannot reject — no calibrated signal exists. Per-row
+suppression is not applied because weak single-token queries overlap legitimate
+paraphrases (`set` 0.160 vs German `0.139`).
 
 `memory.recall` also accepts `search` — per-request layer switches
 (`dense`, `lexical`, `diversity`, `rerank` + `rrfK`, `candidateK`,

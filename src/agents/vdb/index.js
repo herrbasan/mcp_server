@@ -10,6 +10,7 @@ import { createContextEnhancer, formatContextHeader } from './context-enhancer.j
 import { embedGroupWithPersistence } from './embedding-persistence.js';
 import { createStoredVectorGuard } from '../../embed-client.js';
 import { resolveSearchOptions, describeSearchOptions, selectLanes } from './search-options.js';
+import { resolveRelevanceFloor, assessRelevance } from './relevance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -1024,6 +1025,37 @@ export function describeSearchRequest(search = null) {
     return options ? describeSearchOptions(options) : 'vector-only';
 }
 
+// Mode plus the relevance contract for one request: a rejection is only
+// possible when the cross-encoder ran, because it is the only calibrated
+// signal (see relevance.js).
+export function searchRequestInfo(search = null) {
+    if (!CONFIG) throw new Error('VDB not initialized');
+    const options = resolveRequestOptions(search);
+    return {
+        mode: options ? describeSearchOptions(options) : 'vector-only',
+        rerankActive: Boolean(options?.rerank),
+        floor: CONFIG.relevanceFloor
+    };
+}
+
+export function relevanceFloor() {
+    if (!CONFIG) throw new Error('VDB not initialized');
+    return CONFIG.relevanceFloor;
+}
+
+// Evidence text for a rejected (nonsense / no-confident-match) request. The
+// candidates are listed, not hidden: hiding them would be presentation, and the
+// report explicitly rules that out.
+export function describeRejection(assessment, rows, label = 'matches') {
+    const best = assessment.best === null ? 'n/a' : `${(assessment.best * 100).toFixed(2)}%`;
+    const lines = rows.slice(0, 5).map((row, i) => {
+        const score = typeof row.rerankScore === 'number' ? `${(row.rerankScore * 100).toFixed(2)}%` : 'n/a';
+        return `  ${i + 1}. ${row.path ?? `#${row.id}`} (relevance ${score})`;
+    }).join('\n');
+    return `No relevant ${label}: the best cross-encoder score is ${best}, below the ${(assessment.floor * 100).toFixed(1)}% relevance floor.\n`
+        + `The candidates below are returned as low-relevance evidence, not as answers:\n${lines}`;
+}
+
 // Per-request layer selection cannot change what the native call computes, so a
 // single-lane request fetches headroom and drops the other lane afterwards.
 async function runHybridSearch(coll, { vector, text, fetchK, filter, options }) {
@@ -1340,7 +1372,8 @@ export async function vdb_search(args, context) {
     const pr = createProgressReporter(context?.progress);
     // Validate the requested layers before anything else: an invalid selection
     // must fail, not fall through to the filename path or a default search.
-    const mode = describeSearchRequest(args?.search ?? null);
+    const info = searchRequestInfo(args?.search ?? null);
+    const mode = info.mode;
 
     // Filename-like queries bypass semantic search entirely — the embedding
     // of a filename carries no meaning, only noise.
@@ -1369,6 +1402,17 @@ export async function vdb_search(args, context) {
 
     const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
     pr.done('Search complete');
+
+    const assessment = assessRelevance(top, { rerankActive: info.rerankActive, floor: info.floor });
+    if (assessment.rejected) {
+        return {
+            content: [{
+                type: 'text',
+                text: `mode: ${mode}\n${describeRejection(assessment, top, 'storage matches')}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
+            }]
+        };
+    }
+
     const summary = top.map((r, i) => {
         const detail = r.rrfScore === undefined
             ? `score: ${r.score.toFixed(4)}, norm: ${r.normalizedScore?.toFixed(3) ?? 'n/a'}`
@@ -1400,6 +1444,7 @@ export async function vdb_status(args, context) {
             chunkOverlapTokens: CONFIG?.chunkOverlapTokens,
             batchDelayMs: CONFIG?.batchDelayMs,
             contextEnhancement: CONFIG?.contextEnhancement,
+            relevanceFloor: CONFIG?.relevanceFloor,
             hybrid: CONFIG?.hybrid,
             rerank: CONFIG?.rerank ? { ...CONFIG.rerank, loaded: RERANKER !== null } : null,
             nativePath: DATABASE ? loadNvdb().nativePath : null
@@ -1508,6 +1553,7 @@ export async function init(context) {
         contextEnhancement: agentConfig.contextEnhancement || { enabled: false },
         snapshot: agentConfig.snapshot ?? DEFAULTS.snapshot,
         embeddingPath: agentConfig.embeddingPath ?? DEFAULTS.embeddingPath,
+        relevanceFloor: resolveRelevanceFloor(agentConfig.relevanceFloor),
         hybrid: { ...DEFAULTS.hybrid, ...(agentConfig.hybrid || {}) },
         rerank: { ...DEFAULTS.rerank, ...(agentConfig.rerank || {}) }
     };
@@ -1596,6 +1642,7 @@ export async function init(context) {
         getCollection: (name) => getCollection(name),
         embeddingDim: CONFIG.embeddingDim,
         embeddingPath: CONFIG.embeddingPath,
+        relevanceFloor: CONFIG.relevanceFloor,
         reranker: RERANKER,
         hybrid: CONFIG.hybrid,
         rerank: CONFIG.rerank,
