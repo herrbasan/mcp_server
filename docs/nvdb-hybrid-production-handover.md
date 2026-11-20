@@ -334,6 +334,16 @@ so `conciousness → consciousness` is a unique one-edit match; ambiguity is lef
 alone. No generative expansion — the paraphrase family already works, so extra
 inference would have bought nothing here.
 
+Measured result by lane (issue #86 correction): **hybrid ✓, raw lexical ✓, raw
+dense ✗**. With true lane isolation (`{ dense: true, lexical: false, rerank:
+false }`) the correctly spelled and corrected-misspelled queries still return
+`arena-publication/sessions/landmark/04-wave-geometry.json` at rank 1; the
+paraphrase's raw dense result is genuine material. The earlier gate called
+`dense-only` with `{ lexical: false }`, which left the reranker on and measured
+dense+rerank — the gate now forces `rerank:false` for raw lanes and asserts the
+results carry no rerank scores. The raw-dense miss is kept as evaluation
+evidence (guide §24/§25), not tuned away.
+
 Cost, measured: 573 terms from 2,058 paths in **97–104 ms once per process**,
 ~65 µs per token, query latency **254 ms vs 250 ms** median (inside run-to-run
 spread), no extra embedding or reranker work.

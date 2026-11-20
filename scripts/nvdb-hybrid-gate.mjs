@@ -99,10 +99,21 @@ try {
     // lane can actually serve. That distinction is the report's "dense-only
     // returns zero" boundary: correct filtering, not a filter defect.
     const QUERY_R3_DENSE = 'Consciousness Is the Record';
+    // Lane isolation (issue #86): "dense only" must be the RAW dense lane. With
+    // rerank left on, the cross-encoder reorders the head and the mode stops
+    // being a lane probe at all — the three tables below were doing exactly that.
+    const RAW_LANE = {
+        dense: { dense: true, lexical: false, rerank: false },
+        lexical: { dense: false, lexical: true, rerank: false }
+    };
+    const rawLaneCheck = (label, search, rows) => {
+        if (search.rerank !== false) return;
+        check(`${label}: raw lane carries no rerank scores`, rows.every(r => r.rerankScore === null || r.rerankScore === undefined));
+    };
     const r3Modes = [
         ['hybrid', {}, QUERY_R3],
-        ['dense-only', { lexical: false }, QUERY_R3_DENSE],
-        ['lexical-only', { dense: false }, QUERY_R3]
+        ['dense-only', RAW_LANE.dense, QUERY_R3_DENSE],
+        ['lexical-only', RAW_LANE.lexical, QUERY_R3]
     ];
     const idsOf = rows => rows.map(r => r.id).join('|');
     for (const [label, search, query] of r3Modes) {
@@ -112,6 +123,7 @@ try {
         const deep = await vdb.searchDocuments({ query, top_k: 200, search: { ...search } });
         const deepIds = new Set(deep.map(r => r.id));
         console.log(`R3 ${label.padEnd(12)} md=${md.length} .md=${dotMd.length} MD=${upper.length} deep=${deep.length}  md-first=${md[0]?.path ?? '-'}`);
+        rawLaneCheck(`R3 ${label}`, search, md);
         check(`R3 ${label}: extension filter returns matches`, md.length > 0);
         check(`R3 ${label}: ".md" equals "md"`, idsOf(dotMd) === idsOf(md) && md.length > 0);
         check(`R3 ${label}: "MD" equals "md"`, idsOf(upper) === idsOf(md) && md.length > 0);
@@ -144,8 +156,8 @@ try {
     const modes = [
         ['all layers', {}],
         ['no rerank', { rerank: false }],
-        ['dense only', { lexical: false }],
-        ['lexical only', { dense: false }],
+        ['dense only', RAW_LANE.dense],
+        ['lexical only', RAW_LANE.lexical],
         ['no diversity', { diversity: false }]
     ];
     console.log('\nA/B matrix (same query, layer by layer):');
@@ -155,10 +167,10 @@ try {
         const ms = Math.round(performance.now() - started);
         console.log(`  ${label.padEnd(13)} ${String(ms).padStart(4)} ms  ${rows.map(r => `${r.path}#${r.splitIdx}`).join(', ') || '(none)'}`);
         check(`${label}: returns hits`, rows.length > 0);
+        rawLaneCheck(label, search, rows);
         if (search.lexical === false) check('dense only: every hit carries a vector rank', rows.every(r => r.vectorRank !== null && r.vectorRank !== undefined));
         if (search.dense === false) check('lexical only: every hit carries a lexical rank', rows.every(r => r.lexicalRank !== null && r.lexicalRank !== undefined));
         if (search.dense === false) check('lexical only: no vector-only hit survives', rows.every(r => r.lexicalRank !== null && r.lexicalRank !== undefined));
-        if (search.rerank === false) check('no rerank: no rerank scores', rows.every(r => r.rerankScore === null || r.rerankScore === undefined));
         if (search.rerank !== false) check('rerank on: head carries a rerank score', rows[0].rerankScore !== undefined && rows[0].rerankScore !== null);
     }
 
@@ -206,7 +218,7 @@ try {
     // One intent, three surfaces (correct, misspelled, paraphrased) and three
     // lanes. The operational test record quoting the misspelled query must not
     // win, and the arena artifacts that led the dense lane must not win either.
-    const R2_LANES = [['hybrid', {}], ['dense-only', { lexical: false }], ['lexical-only', { dense: false }]];
+    const R2_LANES = [['hybrid', {}], ['dense-only', RAW_LANE.dense], ['lexical-only', RAW_LANE.lexical]];
     const R2_FAMILIES = [
         ['correct', 'AI Consciousness'],
         ['misspelled', 'AI Conciousness'],
@@ -217,6 +229,7 @@ try {
             const rows = await vdb.searchDocuments({ query, top_k: 5, search });
             const top = rows[0]?.path ?? '(none)';
             console.log(`R2 ${family.padEnd(12)} ${lane.padEnd(12)} rank1=${top}`);
+            rawLaneCheck(`R2 ${family}/${lane}`, search, rows);
             check(`R2 ${family}/${lane}: rank 1 is consciousness material`, /conscious/i.test(top), top);
             check(`R2 ${family}/${lane}: no arena artifact at rank 1`, !/^arena-publication\//.test(top), top);
             check(`R2 ${family}/${lane}: operational test record is not rank 1`, !/architecture_recall-refactor/.test(top), top);
