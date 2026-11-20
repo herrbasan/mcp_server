@@ -12,6 +12,7 @@ import { createStoredVectorGuard } from '../../embed-client.js';
 import { resolveSearchOptions, describeSearchOptions, selectLanes } from './search-options.js';
 import { resolveRelevanceFloor, assessRelevance } from './relevance.js';
 import { buildVocabulary, correctQuery, describeCorrections } from './query-normalizer.js';
+import { createDeltaReconciler } from './delta.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -43,6 +44,14 @@ const DEFAULTS = {
     embeddingPath: null,
     // Deterministic spelling repair against the storage path vocabulary.
     typoCorrection: true,
+    // Incremental freshness for a snapshot index: a separate reconciler with its
+    // own checkpoint; the full scanner stays off (see delta.js).
+    delta: {
+        enabled: true,
+        intervalMinutes: 5,
+        initialDelaySeconds: 10,
+        compactAfterDeletes: false
+    },
     hybrid: {
         enabled: false,
         rrfK: 10,
@@ -87,6 +96,10 @@ let RERANKER = null;
 // Spelling vocabulary built from the storage paths (see query-normalizer.js).
 // Lazy: it costs ~130 ms to build and most processes search immediately.
 let QUERY_VOCAB = null;
+// Incremental storage freshness for the snapshot index (see delta.js).
+let DELTA = null;
+let DELTA_TIMER = null;
+let DELTA_FIRST_RUN = null;
 // Stored-vector guard for every chunk vector this agent writes (see
 // createStoredVectorGuard). Built from the live index in init(): the
 // process-local guard inside embed-client cannot see vectors that an earlier
@@ -1115,6 +1128,58 @@ async function queryVocabulary() {
     return QUERY_VOCAB;
 }
 
+// ── Storage delta ────────────────────────────────────────────────────
+
+async function listStorageFilesForDelta() {
+    const entries = await listWatchedFiles('storage');
+    const files = [];
+    for (const entry of entries) {
+        const stat = await fs.promises.stat(entry.absolutePath);
+        files.push({
+            relPath: safeRel(entry.root, entry.absolutePath),
+            absolutePath: entry.absolutePath,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size
+        });
+    }
+    return files;
+}
+
+// The build time of the snapshot is not recorded anywhere; its newest segment
+// file is the best available proxy. It is used for one decision only: during the
+// first bootstrap, a file modified after it is treated as pending rather than
+// adopted as already-indexed.
+function snapshotBuiltAtMs(dbPath) {
+    const segments = path.join(dbPath, 'storage', 'segments');
+    if (!fs.existsSync(segments)) return null;
+    let newest = 0;
+    for (const name of fs.readdirSync(segments)) {
+        const stat = fs.statSync(path.join(segments, name));
+        if (stat.mtimeMs > newest) newest = stat.mtimeMs;
+    }
+    return newest || null;
+}
+
+async function runDeltaSafely(trigger) {
+    if (!DELTA) return;
+    try {
+        await DELTA.run();
+    } catch (error) {
+        logger.error(`[VDB:delta] ${trigger} run failed: ${error.message}`, null, 'VDB');
+    }
+}
+
+// Public for the lifecycle test and for an operator who wants one cycle now.
+export async function runDeltaReconcile() {
+    if (!DATABASE) throw new Error('VDB agent is not initialized');
+    if (!DELTA) throw new Error('delta reconciler is not active (needs agents.vdb.snapshot and agents.vdb.delta.enabled)');
+    return DELTA.run();
+}
+
+export function deltaStatus() {
+    return DELTA ? DELTA.status() : null;
+}
+
 // Filters are a contract, not a hint. `md` and `.md` name the same suffix, so
 // they must produce the same request (the old code built `..md` and matched
 // nothing); anything that cannot be a suffix is rejected instead of quietly
@@ -1485,6 +1550,7 @@ export async function vdb_status(args, context) {
             nativePath: DATABASE ? loadNvdb().nativePath : null
         },
         collections: {},
+        delta: deltaStatus(),
         lastScanAt: LAST_SCAN_AT,
         isScanning: IS_SCANNING,
         lastScanError: LAST_SCAN_ERROR,
@@ -1590,6 +1656,7 @@ export async function init(context) {
         embeddingPath: agentConfig.embeddingPath ?? DEFAULTS.embeddingPath,
         typoCorrection: agentConfig.typoCorrection ?? DEFAULTS.typoCorrection,
         relevanceFloor: resolveRelevanceFloor(agentConfig.relevanceFloor),
+        delta: { ...DEFAULTS.delta, ...(agentConfig.delta || {}) },
         hybrid: { ...DEFAULTS.hybrid, ...(agentConfig.hybrid || {}) },
         rerank: { ...DEFAULTS.rerank, ...(agentConfig.rerank || {}) }
     };
@@ -1641,6 +1708,27 @@ export async function init(context) {
         CONTEXT_ENHANCER = null;
         STORED_VECTOR_GUARD = createStoredVectorGuard('vdb');
         logger.info('[VDB] Snapshot index: scanning, compaction and context enhancement are disabled', null, 'VDB');
+
+        if (CONFIG.delta.enabled) {
+            DELTA = createDeltaReconciler({
+                checkpointPath: path.join(dbPath, 'delta-checkpoint.json'),
+                storageRoot: STORAGE_ROOT,
+                getCollection,
+                chunker: CHUNKER,
+                embedMany: texts => embedInBatches(texts),
+                listFiles: listStorageFilesForDelta,
+                snapshotBuiltAt: snapshotBuiltAtMs(dbPath),
+                logger,
+                compactAfterDeletes: Boolean(CONFIG.delta.compactAfterDeletes)
+            });
+            const initialDelayMs = Math.max(0, Number(CONFIG.delta.initialDelaySeconds) || 0) * 1000;
+            const intervalMs = Math.max(1, Number(CONFIG.delta.intervalMinutes) || 5) * 60 * 1000;
+            DELTA_FIRST_RUN = setTimeout(() => runDeltaSafely('initial'), initialDelayMs);
+            DELTA_TIMER = setInterval(() => runDeltaSafely('scheduled'), intervalMs);
+            logger.info(`[VDB:delta] reconciler armed at ${DELTA.checkpointPath} (first run in ${initialDelayMs / 1000}s, then every ${intervalMs / 60000} min)`, null, 'VDB');
+        } else {
+            logger.info('[VDB:delta] disabled by config — storage freshness will not advance', null, 'VDB');
+        }
     } else {
         const enhancementCache = createEnhancementCache();
         CONTEXT_ENHANCER = createContextEnhancer(CONFIG.contextEnhancement, GATEWAY, logger, enhancementCache);
@@ -1709,6 +1797,10 @@ function createReranker({ Reranker, config }) {
 
 export async function shutdown() {
     if (SCAN_TIMER) clearInterval(SCAN_TIMER);
+    if (DELTA_TIMER) clearInterval(DELTA_TIMER);
+    if (DELTA_FIRST_RUN) clearTimeout(DELTA_FIRST_RUN);
+    DELTA_TIMER = null;
+    DELTA_FIRST_RUN = null;
     if (DATABASE) {
         for (const coll of COLLECTION_INSTANCES.values()) {
             try { coll.flush(); } catch {}

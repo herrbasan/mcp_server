@@ -77,6 +77,9 @@ if (process.argv.includes('--refresh-index') || !fs.existsSync(indexPath)) {
     fs.cpSync(indexSource, indexPath, { recursive: true });
 }
 config.agents.vdb.dbPath = path.relative(repo, indexPath).replace(/\\/g, '/');
+// A baseline run must measure a fixed index; the delta timer would otherwise
+// ingest the live storage root into the copy while the run is in progress.
+config.agents.vdb.delta = { ...config.agents.vdb.delta, enabled: false };
 
 const runId = new Date().toISOString().replace(/[:.]/g, '-');
 const outDir = path.join(repo, 'data', 'eval', 'retrieval-baseline', runId);

@@ -39,6 +39,9 @@ fs.rmSync(workRoot, { recursive: true, force: true });
 fs.mkdirSync(workRoot, { recursive: true });
 fs.cpSync(candidate, workNvdb, { recursive: true });
 config.agents.vdb.dbPath = path.relative(repo, workNvdb).replace(/\\/g, '/');
+// A measurement run must not mutate its own index: the delta timer would ingest
+// the live storage root into the copy mid-run.
+config.agents.vdb.delta = { ...config.agents.vdb.delta, enabled: false };
 
 const load = spec => import(pathToFileURL(path.join(repo, spec)).href);
 const { createEmbedClient } = await load('src/embed-client.js');

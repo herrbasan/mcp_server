@@ -153,6 +153,12 @@
       "embeddingPath": "/v1/embeddings",
       "relevanceFloor": 0.02,
       "typoCorrection": true,
+      "delta": {
+        "enabled": true,
+        "intervalMinutes": 5,
+        "initialDelaySeconds": 10,
+        "compactAfterDeletes": false
+      },
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
       "embeddingDim": 2560,

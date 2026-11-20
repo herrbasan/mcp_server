@@ -502,6 +502,9 @@ export function buildAgentConfig(baseConfig, { candidateNvdb, workStorage, batch
         // would point the candidate at the live index.
         indexPath: null,
         scanIntervalMinutes: ONE_SHOT_SCAN_INTERVAL_MINUTES,
+        // This tool drives its own scan against the candidate; the delta
+        // reconciler must never compete with it.
+        delta: { ...(config.agents.vdb.delta || {}), enabled: false },
         watch: { [STORAGE_COLLECTION]: { enabled: true } }
     };
     if (batchDelayMs !== null && batchDelayMs !== undefined) config.agents.vdb.batchDelayMs = batchDelayMs;

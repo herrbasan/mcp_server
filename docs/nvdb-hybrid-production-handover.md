@@ -370,7 +370,65 @@ Boundary: memory queries are not corrected (the vocabulary is storage paths); a
 misspelled memory query behaves as before. Correction only helps when the
 correct form appears in ≥2 storage paths.
 
-### 15. Rollback
+### 15. Storage delta — incremental freshness for the snapshot index
+
+The live index keeps `snapshot: true` and `lastScanAt: null`: the full scanner
+stays off the candidate (a scan would re-embed all 21k chunks and rewrite
+payloads the builder owns). Freshness comes from a separate reconciler,
+`src/agents/vdb/delta.js`, which appends only the difference.
+
+**Configuration** (`agents.vdb.delta`):
+
+```json
+{ "enabled": true, "intervalMinutes": 5, "initialDelaySeconds": 10,
+  "compactAfterDeletes": false }
+```
+
+Active only with `snapshot: true`. First cycle ~10 s after boot, then every 5
+minutes; `vdb.status.delta` reports the checkpoint path, tracked files, last run
+and last error.
+
+**Checkpoint.** `<dbPath>/delta-checkpoint.json`, separate from
+`scan-index.json`. Per file: content hash, chunk count, mtime, size, indexedAt.
+Written atomically after each file, so a restart resumes at the file that was in
+flight instead of re-embedding the corpus.
+
+**Per-file flow.** hash → chunk with the existing chunker/config → embed every
+chunk through the existing `/v1/embeddings` route → insert under the snapshot's
+own ids (`storage:<relPath>`, or `#i` when multi-chunk) with the snapshot's
+payload shape `{ path, title, content }` → prune ids the file owned before and
+no longer has. Deletions remove all of a file's chunk ids.
+
+**First run (bootstrap).** Files the snapshot already covers are adopted without
+embedding; their existing chunk count is discovered by probing ids, which is what
+makes a later shrinking edit able to prune. A file whose mtime is newer than the
+newest segment file is queued for embedding instead. *Boundary:* a file edited
+between the snapshot build and this first run whose mtime is older than the build
+(restored/copied with preserved timestamps) is adopted as baseline and only
+caught on its next edit.
+
+**Failure semantics.** For one file, all chunks are embedded before anything is
+written; the checkpoint advances only after the write. A provider failure leaves
+the previous chunks intact, records `lastError`, and stops the cycle (the
+provider is likely down rather than one file being bad); the next cycle retries
+that file. Nothing is half-written and nothing is silently skipped.
+
+**Compaction** is deliberately not automatic: deletes leave tombstones that
+search already skips, and rewriting the 100 MB+ segments on a few-file change is
+the stall this project removed once before. `compactAfterDeletes: true` exists
+for an operator that wants it.
+
+**Measured** (`npm run test:delta`, throwaway copy of the real index + temp
+storage root; the live index and corpus are never touched): create → searchable;
+edit → new evidence searchable and the old chunk absent; shrinking multi-chunk
+edit → stale chunk pruned; delete → absent; simulated provider failure → nothing
+written, prior state intact, error recorded, retry succeeds; restart → checkpoint
+resumed, unchanged files not re-embedded (15/15 checks).
+
+**Not done:** no native-engine change, no re-embedding of the snapshot, no corpus
+edit, no nDB change.
+
+### 16. Rollback
 
 Keep:
 

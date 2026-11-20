@@ -16,6 +16,7 @@
         "test:embed": "node tests/embed-client-guard.test.mjs && node tests/stored-vector-guard.test.mjs",
         "gate:nvdb": "node scripts/nvdb-hybrid-gate.mjs",
     "baseline:retrieval": "node scripts/retrieval-baseline.mjs",
+    "test:delta": "node tests/nvdb-delta-lifecycle.test.mjs",
         "repair:memorylab": "node scripts/repair-memory-lab-vectors.mjs",
         "compare:memorylab": "node scripts/compare-memory-lab-storage-candidate.mjs",
         "snapshot:memorylab": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/snapshot-memory-lab.ps1",
