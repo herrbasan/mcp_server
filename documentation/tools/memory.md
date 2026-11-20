@@ -110,6 +110,28 @@ Two retrieval modes, chosen by `agents.vdb.hybrid.enabled`:
 `rerankWeight`) for A/B runs. Memory's diversity group field is `id`. The
 reply's first line names the mode that ran; invalid selections throw rather
 than falling back. Full semantics: [vdb.md](vdb.md#per-request-layer-selection-ab).
+
+#### Query echo — source intent (2026-11-20)
+
+A memory whose text contains the **whole query verbatim** is a record *about*
+the query — a verification run, a status log — not an answer to it. Such a
+record is demoted by `agents.memory.queryEchoPenalty` (default `0.5`) and marked
+`·echo`; it is never removed.
+
+Measured case: the query `Prototype Fund 47.5k application November 30 funding`
+was quoted verbatim inside verification memory #7137, which therefore ranked 1
+in **every** mode — full hybrid+rerank, dense-only and lexical-only — above
+#6830, the funding memory that answers it. The cross-encoder rejects the echo
+(0.0007 against #6830's 0.62), but RRF cannot express a 700× margin: every
+candidate below #6830 scores inside a ~1e-5 noise band (0.000866 … 0.000187), so
+the echoed record's rank there is arbitrary and raising the rerank weight only
+moves a coin-flip tie (`w=0.5` leaves a 0.0004 gap; a shift inside the noise
+band flips it back). The echo itself is categorical — exactly one candidate
+matches — so it is tested directly instead of re-weighting the lane.
+
+Minimum probe length is 4 tokens (shorter strings are ordinary vocabulary, not
+a quotation). Golden: `npm run gate:nvdb` asserts #6830 rank 1 and that the
+demoted record is still returned.
 5. The nDB full-text leg still runs and appends any doc the index never returned,
    marked `·lex` at `LEXICAL_BASE` — it only surfaces when the index returns
    fewer than `limit` hits.

@@ -233,7 +233,42 @@ First measurement on the real index (`Consciousness Is the Record`): all layers
 and dense-only put the record file at rank 4-5 or absent, **lexical-only puts
 it at 1-3** — the exact-title signal is carried by BM25, not the dense lane.
 
-### 9. Rollback
+### 9. Prototype Fund source-intent regression — **fixed**
+
+Reported 2026-11-20: `Prototype Fund 47.5k application November 30 funding`
+returned **#7137 rank 1** and #6830 rank 2 in every mode — full hybrid+rerank,
+dense-only and lexical-only. #7137 is a verification record that quotes the
+query verbatim in its `data`; both lanes read that as a perfect match.
+
+Measured, before the fix (copy of the live index, real embedder):
+
+| knob | #6830 rank | notes |
+|---|---|---|
+| full, rerank weight 0.2 (config) | 2 | #7137 rank 1 |
+| full, weight 0.5 | 1 | margin 0.0004 |
+| full, weight 0.8 | 1 | but it flips the storage golden's top doc v2 → record |
+| no rerank | 2 | |
+| dense only | 2 | |
+| lexical only | 2 | (#6956 first) |
+| rerank on `description`, w=0.2 | 1 | |
+
+The reranker knows: **#6830 scores 0.6214; everything else sits in a 0.000866 …
+0.000187 band.** #7137 is inside that noise (0.000674, rank 4), so its position
+there is arbitrary — a weight change only moves a coin-flip tie, and `w=0.8`
+costs the storage golden.
+
+Fix: **query-echo demotion, not a re-weight.** A memory containing the whole
+query verbatim (≥4 tokens, normalized substring) is a record *about* the query;
+it is multiplied by `agents.memory.queryEchoPenalty` (0.5), marked `·echo`, and
+kept. Exactly one candidate matches, so the signal is categorical and stable.
+
+Result: #6830 rank 1 (95.8%), #7137 falls into the also-found tier as `·echo`.
+No memory was edited or deleted; embeddings, provider and wrapper untouched.
+
+Gate now asserts this golden: `Prototype Fund: #6830 rank 1`, the echoed record
+is not rank 1, it is still returned, and the marker is present.
+
+### 10. Rollback
 
 Keep:
 

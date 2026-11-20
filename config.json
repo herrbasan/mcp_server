@@ -32,7 +32,8 @@
     },
     "memory": {
       "dbPath": "data/memories/data.jsonl",
-      "maxMemoryChars": 6000
+      "maxMemoryChars": 6000,
+      "queryEchoPenalty": 0.5
     },
     "research": {
       "maxPages": 10,

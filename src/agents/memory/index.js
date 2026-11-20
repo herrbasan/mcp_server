@@ -152,6 +152,36 @@ function positionScore(index, last) {
     return last <= 0 ? 1 : 1 - index / last;
 }
 
+// ── Query echo ───────────────────────────────────────────────────────
+// A memory whose text contains the query verbatim is a record ABOUT the query —
+// a verification run, a status log — not an answer to it. Measured cause of the
+// Prototype Fund regression (2026-11-20): a test record quoting the golden query
+// outranked #6830, the funding memory that actually answers it. The cross-encoder
+// rejects the echo (0.0007 against #6830's 0.62), but RRF cannot express a 700×
+// margin: everything below #6830 scores inside a ~1e-5 noise band, so the echoed
+// record's rank there is arbitrary and re-weighting the rerank lane only moves a
+// coin-flip tie. The echo itself is categorical, so it is tested directly and
+// that record is demoted — the evidence stays stored, only its ranking changes.
+const ECHO_MIN_QUERY_TOKENS = 4;   // shorter strings are ordinary vocabulary, not a quotation
+const ECHO_PENALTY_DEFAULT = 0.5;
+
+function normalizeForEcho(text) {
+    return String(text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function echoProbe(query) {
+    const normalized = normalizeForEcho(query);
+    return normalized.split(' ').filter(Boolean).length >= ECHO_MIN_QUERY_TOKENS ? normalized : null;
+}
+
+function echoPenaltyFactor() {
+    const value = CONFIG.queryEchoPenalty ?? ECHO_PENALTY_DEFAULT;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) {
+        throw new Error(`memory.queryEchoPenalty must be a number in (0, 1] (got ${String(value)})`);
+    }
+    return value;
+}
+
 // Tool name prefix for validation errors — keeps messages consistent.
 const TOOL = 'memory';
 
@@ -381,7 +411,7 @@ const SCORE_FLOOR = 0.35;
 
 // Shared two-tier recall output: top `limit` with descriptions, the rest
 // above scoreFloor as a compact one-line-per-hit listing. Lexical-sourced
-// hits carry a ·lex tag.
+// hits carry a ·lex tag, demoted query echoes a ·echo tag.
 function formatRecall(ranked, limit) {
     const top = ranked.slice(0, limit);
     const also = ranked.slice(limit).filter(m => m.score >= SCORE_FLOOR);
@@ -391,13 +421,13 @@ function formatRecall(ranked, limit) {
     const results = top.map(m => {
         const conf = m.confidence ?? 0.5;
         const hasData = m.data ? ' [has data]' : '';
-        const lex = m.lexical ? ' ·lex' : '';
+        const lex = `${m.lexical ? ' ·lex' : ''}${m.queryEcho ? ' ·echo' : ''}`;
         return `[#${m.id}] [${m.category}] ${(m.score * 100).toFixed(1)}%${lex} conf:${conf.toFixed(1)}${hasData}\n${m.description}`;
     }).join('\n\n');
     let summary = '';
     if (also.length > 0) {
         const lines = also.map(m =>
-            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%${m.lexical ? '·lex' : ''}`
+            `#${m.id} [${m.category}] ${(m.score * 100).toFixed(1)}%${m.lexical ? '·lex' : ''}${m.queryEcho ? '·echo' : ''}`
         ).join('  ');
         summary = `\n\n--- also found ---\n${lines}`;
     }
@@ -452,6 +482,8 @@ export async function memory_recall(args, context) {
     pr.set('Embedding query...', 20, true);
     const maxChars = CONFIG.maxMemoryChars || 6000;
     const safeQuery = query.length > maxChars ? query.slice(0, maxChars) : query;
+    const echo = echoProbe(safeQuery);
+    const echoFactor = echoPenaltyFactor();
 
     let queryEmbed = null;
     let embedError = null;
@@ -561,9 +593,12 @@ export async function memory_recall(args, context) {
         seenIds.add(doc.id);
 
         const lexical = lexicalIdSet.has(doc.id);
-        const sim = options
+        const echoed = echo !== null
+            && normalizeForEcho(`${doc.description ?? ''} ${serializeData(doc.data)}`).includes(echo);
+        const base = options
             ? positionScore(index, last)
             : (lexical ? Math.min(1, hit.score + LEXICAL_BOOST) : hit.score);
+        const sim = echoed ? base * echoFactor : base;
         // Hybrid order (and the reranker's ordering inside it) is the measured
         // artifact — confidence must not reorder it. The vector-only path keeps
         // the historical confidence weighting.
@@ -573,8 +608,20 @@ export async function memory_recall(args, context) {
             score: sim,
             weightedScore,
             lexical,
+            queryEcho: echoed,
             ...(options ? { rerankScore: hit.rerankScore ?? null } : {})
         });
+    }
+
+    // Demote the echoed records. Positions are strictly decreasing, so this
+    // sort is a no-op for a normal result list — it only moves a memory that
+    // quotes the query, and only as far as the penalty puts it.
+    if (options) {
+        const demoted = scored.filter(s => s.queryEcho).map(s => s.id);
+        if (demoted.length > 0) {
+            scored.sort((a, b) => b.weightedScore - a.weightedScore);
+            logger.info(`[Memory] query echo: demoted #${demoted.join(', #')} (penalty ${echoFactor}) for "${safeQuery}"`, null, 'Memory');
+        }
     }
 
     // Lexical-only docs (semantic missed them) join the ranking.

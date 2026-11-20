@@ -131,6 +131,20 @@ try {
     const memRank = order.indexOf(6830);
     check('memory #6830 top-3', memRank >= 0 && memRank < 3, memRank >= 0 ? `rank ${memRank + 1}` : 'not in the recalled set');
 
+    // ── Prototype Fund source-intent regression (2026-11-20) ───────────
+    // A verification record (#7137) quotes this exact query in its data, so both
+    // lanes read it as a perfect match and it outranked #6830, the funding
+    // memory that answers the query. The echo demotion must put #6830 back at
+    // rank 1 without removing the record — it stays stored and returned.
+    const proto = await memory.memory_recall({ query: 'Prototype Fund 47.5k application November 30 funding', limit: 5 }, context);
+    const protoText = proto.content[0].text;
+    console.log(`\nPrototype Fund golden:\n${protoText.split('\n').filter(l => l.startsWith('[#') || l.startsWith('mode:')).join('\n')}`);
+    const protoOrder = [...protoText.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]));
+    check('Prototype Fund: #6830 rank 1', protoOrder[0] === 6830, protoOrder.slice(0, 3).map(id => `#${id}`).join(', '));
+    check('Prototype Fund: echoed record is not rank 1', protoOrder[0] !== 7137);
+    check('Prototype Fund: demoted record is still returned', protoOrder.includes(7137) || protoText.includes('#7137'), `top: ${protoOrder.join(', ')}`);
+    check('Prototype Fund: echo is visible in the output', protoText.includes('·echo'));
+
     console.log(`\nlatency: storage ${storageMs} ms, memory ${memoryMs} ms`);
 } finally {
     await vdb.shutdown().catch(() => {});
