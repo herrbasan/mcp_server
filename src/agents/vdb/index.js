@@ -215,12 +215,14 @@ function getCollection(name) {
     if (COLLECTION_INSTANCES.has(name)) return COLLECTION_INSTANCES.get(name);
     if (!DATABASE) throw new Error('VDB not initialized');
 
-    let coll;
-    try {
-        coll = DATABASE.getCollection(name);
-    } catch {
-        coll = DATABASE.createCollection(name, CONFIG.embeddingDim, { durability: 'buffered' });
-    }
+    // Decide by presence, never by swallowing the error: a failed open is a
+    // real fault (best case another process holds the index LOCK), and the old
+    // catch-all reported it as "collection already exists" — pointing at the
+    // wrong cause entirely.
+    const exists = DATABASE.listCollections().includes(name);
+    const coll = exists
+        ? DATABASE.getCollection(name)
+        : DATABASE.createCollection(name, CONFIG.embeddingDim, { durability: 'buffered' });
     COLLECTION_INSTANCES.set(name, coll);
     return coll;
 }
@@ -1034,7 +1036,9 @@ async function runHybridSearch(coll, { vector, text, fetchK, filter, options }) 
         candidateK: Math.max(options.candidateK, nativeTopK),
         distance: 'cosine',
         rrfK: options.rrfK,
-        vectorWeight: options.vectorWeight,
+        // A dense-off request passes a zero vector; the lane weight must be 0 or
+        // its constant 0.0 scores would still enter the fusion.
+        vectorWeight: options.dense ? options.vectorWeight : 0,
         lexicalWeight: options.lexicalWeight,
         ...(options.diversity
             ? { groupBy: options.diversityField, maxPerDocument: options.maxPerDocument }
@@ -1077,7 +1081,14 @@ export async function searchDocuments({ query, collections, folder, extension, t
     if (targetCollections.length === 0) throw new Error('searchDocuments: no enabled collections to search');
 
     onProgress?.('Embedding query...', 20);
-    const queryEmbedding = await embedText(query);
+    // A dense-off request must not touch the embedder: the native fusion takes a
+    // vector, and a zero vector scores exactly 0.0 for every document (the
+    // cosine guard in distance.rs), which the zero lane weight neutralises and
+    // selectLanes then drops. Lexical-only A/B therefore works while the
+    // embedding backend is down.
+    const queryEmbedding = options && !options.dense
+        ? new Array(CONFIG.embeddingDim).fill(0)
+        : await embedText(query);
     onProgress?.('Searching collections...', 40);
 
     // Per-collection search with min-max score normalization.

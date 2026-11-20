@@ -30,9 +30,11 @@ dreaming deduplicates and organizes.
 
 - `EMBEDDING_DIM = 2560` (must match vdb agent + the index's vector space).
 - **Vector space**: memory embeds through `agents.vdb.embeddingPath`
-  (`/v1/embeddings/wizkid`) for every call — store, update, heal, recall query.
-  A different route is a different vector space and would silently poison the
-  index; the shared client rejects any path that is not `/v1/embeddings…`.
+  (`/v1/embeddings`, llama-based Qwen3-Embedding-4B) for every call — store,
+  update, heal, recall query. The route must serve the model that produced the
+  index's vectors; a different model is a different vector space and would
+  silently poison the index. The shared client rejects any path that is not
+  `/v1/embeddings…`.
 - **Payload written per memory**: `{ id, description, data, content }` —
   `content` is the exact embedded text (description + data, capped), which is
   what the reranker scores and the lexical lane reads.

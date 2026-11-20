@@ -86,17 +86,26 @@ Contents:
 - `storage`: 2,055 files / 21,047 vectors, plus `path`, `title`, `content`
   lexical fields;
 - `memory`: 4,931 vectors, plus `description`, `data`, `content` lexical fields;
-- vectors are the same clean Wizkid candidate vectors, no re-embedding needed.
+- vectors are the same clean candidate vectors, no re-embedding needed; they were
+  produced by the llama-based Qwen3-Embedding-4B service (`/v1/embeddings`).
 
 Old production index `data/nvdb` remains the rollback index. Do not delete or
 mutate it.
 
-**Vector-space rule:** the candidate index uses Wizkid Qwen3 vectors. Query
-embeddings must use the Gateway Wizkid route:
+**Vector-space rule:** the candidate index's vectors come from the llama-based
+**Qwen3-Embedding-4B** service, which is what `/v1/embeddings` serves (verified
+2026-11-20: `model=Qwen/Qwen3-Embedding-4B-GGUF`, dim 2560, L2-normalized).
+Production therefore uses the default route:
 
-`POST http://localhost:3400/v1/embeddings/wizkid`
+```
+POST http://localhost:3400/v1/embeddings
+```
 
-Do not mix Fatten query vectors with this index.
+`/v1/embeddings/wizkid` is the *same model* on the OpenVINO/Wizkid machine — a
+different server, not a different space — so switching between them is a config
+edit, not a re-index. What must never happen is pointing `embeddingPath` at a
+route serving a different embedding model: the query vector would live in a
+foreign space and every score would be confident nonsense.
 
 ## Measured quality/latency
 
@@ -155,7 +164,8 @@ loaded `nativePath`. `NODE_NVDB_NATIVE_PATH` overrides the search order.
 ### 3. Query embedding route — **done**
 
 `src/embed-client.js` takes `opts.path` (must start with `/v1/embeddings`);
-`agents.vdb.embeddingPath = "/v1/embeddings/wizkid"` is passed by both agents
+`agents.vdb.embeddingPath = "/v1/embeddings"` (the llama-based Qwen3 service
+that produced the vectors) is passed by both agents
 for every embed (query, batch, background, memory store/update/heal). No
 provider fallback; 429/503 stay explicit.
 

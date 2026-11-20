@@ -149,7 +149,7 @@
       "dbPath": "data/candidates/wizkid-hybrid-rerank/nvdb",
       "indexPath": null,
       "snapshot": true,
-      "embeddingPath": "/v1/embeddings/wizkid",
+      "embeddingPath": "/v1/embeddings",
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
       "embeddingDim": 2560,

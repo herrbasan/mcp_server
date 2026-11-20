@@ -102,7 +102,7 @@ what it is:
 | Setting | Value | Effect |
 |---|---|---|
 | `snapshot` | `true` | No scanner, no initial scan, no compaction, no `__enhancement_cache`, no context enhancer. The index is a fixed artifact; `vdb.trigger_scan` refuses with an explanation instead of re-embedding it. |
-| `embeddingPath` | `/v1/embeddings/wizkid` | Every embed this agent issues (query, batch, background) goes to that Gateway route. The index's vectors came from it; another route is a different vector space. |
+| `embeddingPath` | `/v1/embeddings` | Every embed this agent issues (query, batch, background) goes to that Gateway route. It must serve the model that produced the index's vectors — currently llama-based Qwen3-Embedding-4B, dim 2560. `/v1/embeddings/wizkid` is the same model on another machine; any other model is a foreign vector space. |
 | `hybrid` | see below | Dense + BM25 lanes fused by RRF, per-document diversity. |
 | `rerank` | see below | ONNX cross-encoder over the hybrid shortlist. |
 
@@ -161,11 +161,15 @@ line of the reply, so an A/B run is attributable from the transcript.
 
 Semantics worth knowing:
 
-- **Both lanes always run natively.** A single-lane request fetches headroom
-  (`fetchK × 4`), drops the other lane's hits, and orders by the kept lane's
-  rank — or keeps the fused rerank order when reranking is on, because that
-  order is the measured artifact. The query is still embedded when
-  `dense: false`, so latency is not "lexical-only cheap".
+- **Single-lane ordering.** Both lanes still run inside the native call; the
+  request fetches headroom (`fetchK × 4`), drops the other lane's hits, and
+  orders by the kept lane's rank — or keeps the fused rerank order when
+  reranking is on, because that order is the measured artifact.
+- **`dense: false` never touches the embedder.** The native fusion requires a
+  vector, so a zero vector is passed (the cosine guard scores it 0.0 against
+  every document) with the vector lane weight forced to 0, and the lane's hits
+  are dropped. Lexical-only therefore works while the embedding service is
+  down, and its latency is genuinely lexical-only (~220 ms vs ~280 ms).
 - **Strict, never silent.** Unknown keys, wrong types, out-of-range numbers,
   `dense: false + lexical: false`, a zero weight on an enabled lane, or
   `rerank: true` with no reranker loaded all throw with the reason. A request
@@ -181,7 +185,7 @@ selections are rejected.
 ## Config (effective, `agents.vdb`)
 
 `enabled: true`, `dbPath: 'data/candidates/wizkid-hybrid-rerank/nvdb'`,
-`indexPath: null`, `snapshot: true`, `embeddingPath: '/v1/embeddings/wizkid'`,
+`indexPath: null`, `snapshot: true`, `embeddingPath: '/v1/embeddings'`,
 `scanIntervalMinutes: 5`, `scanTimeoutMinutes: 30`, `embeddingDim: 2560`,
 `chunkMaxTokens: 1024`, `chunkOverlapTokens: 128`, `chunkTokCharsRatio: 2.5`,
 `maxFileSizeBytes: 10 MB`, `batchTokenLimit: 29000`, `maxBatchTexts: 4`,
