@@ -191,6 +191,14 @@ lane and reranker see them. nVDB order is preserved (confidence is displayed,
 not used to reorder); the nDB full-text leg remains as the explicit degraded
 path when embedding is unavailable.
 
+Per-request layer selection: `dense: false` no longer calls the embedder at all.
+The native fusion needs a vector, so a zero vector is passed with the vector
+lane weight forced to 0 and the lane's hits dropped — this is an intentional
+mode, distinct from a failed embed, so it does not enter the "semantic
+unavailable" fallback. Measured on the labeled baseline: keyword-only memory
+embeddings 8 → 0 (baseline) and 3 → 0 (holdout), target ranks unchanged. The
+vector/combined/full/outage/recency paths are untouched.
+
 ### 6. Configuration — **done**
 
 See `agents.vdb.{snapshot,embeddingPath,hybrid,rerank}` in `config.json`.

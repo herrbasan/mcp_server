@@ -132,7 +132,9 @@ async function hybridSearchMemory(vector, text, topK, options) {
         candidateK: Math.max(options.candidateK, nativeTopK),
         distance: 'cosine',
         rrfK: options.rrfK,
-        vectorWeight: options.vectorWeight,
+        // A dense-off request passes a zero vector; the lane weight must be 0 or
+        // its constant 0.0 scores would still enter the fusion.
+        vectorWeight: options.dense ? options.vectorWeight : 0,
         lexicalWeight: options.lexicalWeight,
         ...(options.diversity
             ? { groupBy: options.diversityField, maxPerDocument: options.maxPerDocument }
@@ -489,16 +491,24 @@ export async function memory_recall(args, context) {
     const echo = echoProbe(safeQuery);
     const echoFactor = echoPenaltyFactor();
 
-    let queryEmbed = null;
+    // A dense-off request must not touch the embedder: the native fusion takes a
+    // vector, and the distance.rs cosine guard scores a zero vector 0.0 against
+    // every document, which the zero lane weight neutralises (hybridSearchMemory
+    // forces it) and selectLanes then drops. This is an intentional mode, not a
+    // failed embed — it must not fall into the "semantic unavailable" branch.
+    const denseOff = Boolean(options && !options.dense);
+    let queryEmbed = denseOff ? new Array(EMBEDDING_DIM).fill(0) : null;
     let embedError = null;
-    try {
-        queryEmbed = await gateway.embed(safeQuery, { path: EMBED_PATH });
-    } catch (err) {
-        // Embed timed out or provider unreachable — degrade to recency so the
-        // model still gets context, but surface the REAL error. The generic
-        // "embed provider error" hid the actual failure mode for months.
-        embedError = err.message || String(err);
-        logger.warn(`[Memory] recall query embed failed: ${embedError}`, null, 'Memory');
+    if (!denseOff) {
+        try {
+            queryEmbed = await gateway.embed(safeQuery, { path: EMBED_PATH });
+        } catch (err) {
+            // Embed timed out or provider unreachable — degrade to recency so the
+            // model still gets context, but surface the REAL error. The generic
+            // "embed provider error" hid the actual failure mode for months.
+            embedError = err.message || String(err);
+            logger.warn(`[Memory] recall query embed failed: ${embedError}`, null, 'Memory');
+        }
     }
     pr.set('Searching memory index...', 60);
     // Get candidates (optionally filtered by category) — recency fallback pool
