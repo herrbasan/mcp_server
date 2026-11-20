@@ -19,7 +19,7 @@ reranker** — see *Production retrieval* below. Scanning is off there.
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `vdb.search` | `query*`, `collections?` [`storage`,`memory`], `folder?` (top-level storage folder), `extension?` (e.g. `.md`), `top_k?` (default 10), `approximate?`, `include_content?` | Ranked results: path, score, normalizedScore, folder, contentHash, chunk coordinates; `include_content` slices the exact chunk text from disk. **Filename-like queries bypass embeddings** (query contains `\` or matches `^\S+\.[a-z0-9]{1,8}$`) → substring match over indexed paths, exact names first, cap 20. |
+| `vdb.search` | `query*`, `collections?` [`storage`,`memory`], `folder?` (storage-relative directory), `extension?` (`md`, `.md`, `MD` — one suffix, normalized), `top_k?` (default 10), `approximate?`, `include_content?`, `search?` | Ranked results: path, score, normalizedScore, folder, contentHash, chunk coordinates; `include_content` slices the exact chunk text from disk. **Filename-like queries bypass embeddings** (query contains `\` or matches `^\S+\.[a-z0-9]{1,8}$`) → substring match over indexed paths, exact names first, cap 20. **Filters are normalized and strict**: all spellings of one extension are the same request, an impossible spelling throws, and a filter never returns a non-match. |
 | `vdb.status` | — | JSON: availability, full effective config, per-collection stats (docs, segments, hasIndex, watched), lastScanAt, isScanning, lastScanStats. |
 | `vdb.trigger_scan` | — | Synchronous re-scan with progress. Returns added/updated/removed/skipped/errors (pending if interrupted). |
 | `vdb.build_index` | `collections?` | Flush + rebuild HNSW approximate index per collection. |
@@ -176,6 +176,33 @@ Semantics worth knowing:
   never quietly runs the default search.
 - Layer selection needs `agents.vdb.hybrid.enabled`; on the vector-only index
   (`data/nvdb`) passing `search` is an error.
+
+### Filters (`folder`, `extension`)
+
+On the snapshot index both filters are applied in `searchDocuments` after the
+native call, because the snapshot payload has no `folder`/`extension` fields.
+That makes two things the caller can rely on:
+
+- **One spelling per extension.** `md`, `.md`, `MD`, ` .MD ` are the same
+  request; anything that cannot be one bare suffix (`md.`, `..md`, `''`, `'.'`,
+  `-md`) throws. `folder` is trimmed of a leading `./` and trailing slashes, and
+  a `..` segment throws. Both are contract errors, never an empty result.
+- **The pool is deepened, not the answer truncated.** A client-side filter can
+  reject most of the candidate set, so a filtered request fetches
+  `max(top_k*3, candidateK)` candidates before filtering. At the old depth a
+  lane's matching hits sat below the cut — and, because the cut follows a
+  near-tie rerank order, two identical requests could disagree.
+
+`npm run gate:nvdb` covers both: spelling equivalence across hybrid, dense-only
+and lexical-only, "only matches are returned", "the filter never invents a hit
+the lane's own pool does not contain", and rejection of five invalid spellings.
+
+Boundary worth knowing: a filtered single lane can legitimately return nothing
+while another lane has matches — the filter is only as good as that lane's
+candidates. Measured: for `A Little Religion v6 final` the raw dense lane
+returns 800 rows with **zero** `.md` (the two religion hits are
+`ledger.json`), while lexical returns the book. That is dense-lane coverage,
+not a filter defect.
 
 Gate coverage: `npm run gate:nvdb` runs the same query through five modes
 (all / no rerank / dense only / lexical only / no diversity), asserts lane

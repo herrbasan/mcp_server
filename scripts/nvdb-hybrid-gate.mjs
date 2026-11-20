@@ -86,6 +86,60 @@ try {
     const folderHits = await vdb.searchDocuments({ query: 'markdown blocks spec', top_k: 10, folder: 'documentation' });
     check('folder filter applies on snapshot payloads', folderHits.length > 0 && folderHits.every(r => (r.path || '').startsWith('documentation/')), `${folderHits.length} hit(s)`);
 
+    // ── R3: extension filters across lanes ─────────────────────────────
+    // Two defects from the broadening report (2026-11-20): `.md` was spelled into
+    // `..md` and matched nothing, and the client-side filter ran after the
+    // native top-N cut, so a lane whose top candidates happened to be .json was
+    // emptied. The contract: both spellings are one request, a filter never
+    // returns a non-match, and it never silently empties a lane that has
+    // matching documents.
+    const QUERY_R3 = 'A Little Religion v6 final';
+    // The dense lane carries no .md candidate for QUERY_R3 at all (800 raw rows,
+    // religion=2 and both ledger.json), so a dense filter test needs a query that
+    // lane can actually serve. That distinction is the report's "dense-only
+    // returns zero" boundary: correct filtering, not a filter defect.
+    const QUERY_R3_DENSE = 'Consciousness Is the Record';
+    const r3Modes = [
+        ['hybrid', {}, QUERY_R3],
+        ['dense-only', { lexical: false }, QUERY_R3_DENSE],
+        ['lexical-only', { dense: false }, QUERY_R3]
+    ];
+    const idsOf = rows => rows.map(r => r.id).join('|');
+    for (const [label, search, query] of r3Modes) {
+        const md = await vdb.searchDocuments({ query, top_k: 5, search: { ...search }, extension: 'md' });
+        const dotMd = await vdb.searchDocuments({ query, top_k: 5, search: { ...search }, extension: '.md' });
+        const upper = await vdb.searchDocuments({ query, top_k: 5, search: { ...search }, extension: 'MD' });
+        const deep = await vdb.searchDocuments({ query, top_k: 200, search: { ...search } });
+        const deepIds = new Set(deep.map(r => r.id));
+        console.log(`R3 ${label.padEnd(12)} md=${md.length} .md=${dotMd.length} MD=${upper.length} deep=${deep.length}  md-first=${md[0]?.path ?? '-'}`);
+        check(`R3 ${label}: extension filter returns matches`, md.length > 0);
+        check(`R3 ${label}: ".md" equals "md"`, idsOf(dotMd) === idsOf(md) && md.length > 0);
+        check(`R3 ${label}: "MD" equals "md"`, idsOf(upper) === idsOf(md) && md.length > 0);
+        check(`R3 ${label}: filter returns only .md`, md.every(r => (r.path || '').toLowerCase().endsWith('.md')));
+        check(`R3 ${label}: filter never invents hits`, md.every(r => deepIds.has(r.id)));
+
+        const relFolder = await vdb.searchDocuments({ query, top_k: 5, search: { ...search }, folder: 'religion' });
+        const relFolderMd = await vdb.searchDocuments({ query, top_k: 5, search: { ...search }, folder: 'religion', extension: 'md' });
+        console.log(`R3 ${label.padEnd(12)} folder=religion ${relFolder.length}, +md ${relFolderMd.length}  ${relFolderMd.slice(0, 2).map(r => r.path).join(', ')}`);
+        check(`R3 ${label}: folder+extension honours both`, relFolderMd.every(r => (r.path || '').startsWith('religion/') && r.path.toLowerCase().endsWith('.md')));
+        // religion/ is mixed (.md and .json), so the extension must narrow the
+        // folder result — but it must never erase it while matches exist.
+        const relFolderMdRows = relFolder.filter(r => (r.path || '').toLowerCase().endsWith('.md'));
+        check(`R3 ${label}: extension keeps matching folder hits`, relFolderMdRows.length === 0 || relFolderMd.length > 0);
+    }
+    for (const bad of ['md.', '..md', '', '.', '-md']) {
+        let message = null;
+        try {
+            await vdb.searchDocuments({ query: QUERY_R3, top_k: 3, extension: bad });
+        } catch (e) {
+            message = e.message;
+        }
+        check(`R3 rejects extension ${JSON.stringify(bad)}`, message !== null, message ?? 'no error thrown');
+    }
+    const spaced = await vdb.searchDocuments({ query: QUERY_R3, top_k: 5, extension: ' .MD ' });
+    const canonical = await vdb.searchDocuments({ query: QUERY_R3, top_k: 5, extension: '.md' });
+    check('R3 whitespace/case spellings are one request', idsOf(spaced) === idsOf(canonical) && canonical.length > 0);
+
     // ── per-request layer selection (A/B) ──────────────────────────────
     const modes = [
         ['all layers', {}],
@@ -130,6 +184,13 @@ try {
     const order = [...text.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]));
     const memRank = order.indexOf(6830);
     check('memory #6830 top-3', memRank >= 0 && memRank < 3, memRank >= 0 ? `rank ${memRank + 1}` : 'not in the recalled set');
+
+    // Exact-quote positive control from the broadening report: a legitimate
+    // exact-quote query must keep its target at rank 1 — the echo demotion must
+    // not swallow real quoted searches.
+    const quote = await memory.memory_recall({ query: 'A Little Religion v6 final', limit: 3 }, context);
+    const quoteIds = [...quote.content[0].text.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]));
+    check('exact-quote positive control: #2103 rank 1', quoteIds[0] === 2103, quoteIds.slice(0, 3).map(id => `#${id}`).join(', '));
 
     // ── Prototype Fund source-intent regression (2026-11-20) ───────────
     // A verification record (#7137) quotes this exact query in its data, so both

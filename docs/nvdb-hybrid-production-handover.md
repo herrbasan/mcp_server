@@ -268,7 +268,25 @@ No memory was edited or deleted; embeddings, provider and wrapper untouched.
 Gate now asserts this golden: `Prototype Fund: #6830 rank 1`, the echoed record
 is not rank 1, it is still returned, and the marker is present.
 
-### 10. Rollback
+### 11. R3 extension filters — **fixed**
+
+Report cluster R3: `extension: ".md"` returned zero everywhere (`md` was
+turned into `..md`), and a client-side filter could empty one lane while
+another returned hits — two identical requests even disagreed (5 vs 0).
+
+- `md`, `.md`, `MD`, ` .MD ` are now one request; `md.`, `..md`, `''`, `'.'`,
+  `-md` throw a documented error instead of returning zero. `folder` is
+  trimmed and a `..` segment throws.
+- A filtered request fetches `max(top_k*3, candidateK)` candidates before the
+  client-side filter (it used to filter a 30-row cut, and the cut follows a
+  near-tie rerank order, which made the membership unstable).
+
+Gate: spelling equivalence, "only matches", "never invents a hit", folder+
+extension, five rejections — all three lanes. Measured boundary: `dense-only +
+md` is empty for `A Little Religion v6 final` because that lane's raw 800 rows
+contain zero `.md`; dense coverage, not a filter defect.
+
+### 12. Rollback
 
 Keep:
 

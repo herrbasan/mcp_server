@@ -1066,6 +1066,35 @@ function chunkIndexFromId(id) {
     return Number.isInteger(parsed) ? parsed : 0;
 }
 
+// Filters are a contract, not a hint. `md` and `.md` name the same suffix, so
+// they must produce the same request (the old code built `..md` and matched
+// nothing); anything that cannot be a suffix is rejected instead of quietly
+// returning zero.
+function normalizeExtension(extension) {
+    if (extension === undefined || extension === null) return null;
+    if (typeof extension !== 'string') {
+        throw new Error(`extension must be a string like "md" or ".md" (got ${extension === null ? 'null' : typeof extension})`);
+    }
+    const value = extension.trim().toLowerCase();
+    const bare = value.startsWith('.') ? value.slice(1) : value;
+    if (!/^[a-z0-9]+$/.test(bare)) {
+        throw new Error(`extension must be one bare suffix like "md" or ".md" (got ${JSON.stringify(extension)})`);
+    }
+    return `.${bare}`;
+}
+
+function normalizeFolder(folder) {
+    if (folder === undefined || folder === null) return null;
+    if (typeof folder !== 'string') {
+        throw new Error(`folder must be a string (got ${folder === null ? 'null' : typeof folder})`);
+    }
+    const value = folder.trim().replace(/^\.\//, '').replace(/\/+$/, '');
+    if (value === '' || value.split('/').includes('..')) {
+        throw new Error(`folder must be a storage-relative directory path (got ${JSON.stringify(folder)})`);
+    }
+    return value;
+}
+
 export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, search = null, onProgress = null } = {}) {
     if (!DATABASE) throw new Error('VDB agent is not initialized or nVDB is unavailable. Check logs.');
     if (!query) throw new Error('searchDocuments: query is required');
@@ -1073,6 +1102,10 @@ export async function searchDocuments({ query, collections, folder, extension, t
     // Resolve before embedding: an invalid layer selection must not spend a
     // gateway round trip.
     const options = resolveRequestOptions(search);
+    // Same for the filters: normalize once so every path (index filter and
+    // client filter) sees one spelling, and reject what cannot be a suffix.
+    const folderFilter = normalizeFolder(folder);
+    const extensionFilter = normalizeExtension(extension);
 
     const targetCollections = (collections && collections.length > 0)
         ? collections.filter(c => Object.keys(COLLECTIONS).includes(c) && CONFIG.watch?.[c])
@@ -1108,9 +1141,16 @@ export async function searchDocuments({ query, collections, folder, extension, t
         const indexFiltered = collectionHasPayloadFields(collectionName);
         // A filter on fields the snapshot payload does not have would match
         // nothing — silently. Apply it to the mapped results instead.
-        const clientFiltered = Boolean(folder || extension) && !indexFiltered;
-        const indexFilter = indexFiltered ? buildFilter(collectionName, folder, extension) : null;
-        const fetchK = Math.max(top_k * 3, 30);
+        const clientFiltered = Boolean(folderFilter || extensionFilter) && !indexFiltered;
+        const indexFilter = indexFiltered ? buildFilter(collectionName, folderFilter, extensionFilter) : null;
+        // A filter applied after the native call can reject most of the pool, so
+        // the pool must be deep enough to survive it. At the old depth the .md
+        // hits for one query sat below the cut and the filtered result was empty
+        // — or, because the truncation follows a near-tie rerank order, differed
+        // between two identical requests.
+        const fetchK = clientFiltered
+            ? Math.max(top_k * 3, CONFIG.hybrid.candidateK ?? 200)
+            : Math.max(top_k * 3, 30);
         const searchResults = options
             ? await runHybridSearch(coll, { vector: queryEmbedding, text: query, fetchK, filter: indexFilter, options })
             : await coll.search({
@@ -1149,8 +1189,8 @@ export async function searchDocuments({ query, collections, folder, extension, t
                 result.lexicalRank = match.lexicalRank ?? null;
             }
             if (clientFiltered) {
-                if (folder && !(relPath || '').toLowerCase().startsWith(`${folder.toLowerCase()}/`)) continue;
-                if (extension && path.extname(relPath || '').toLowerCase() !== `.${extension.toLowerCase()}`) continue;
+                if (folderFilter && !(relPath || '').toLowerCase().startsWith(`${folderFilter.toLowerCase()}/`)) continue;
+                if (extensionFilter && path.extname(relPath || '').toLowerCase() !== extensionFilter) continue;
             }
             if (include_content) {
                 result.content = payload.content ?? readChunkContent(payload, CHUNKER);
