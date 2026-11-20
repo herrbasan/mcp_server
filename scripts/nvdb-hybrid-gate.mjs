@@ -202,6 +202,32 @@ try {
     const germanStorage = await vdb.vdb_search({ query: 'Welche Rolle spielt Offenheit bei Modellen?', top_k: 10 }, {});
     console.log(`R1 storage German paraphrase at top_k=10 -> ${/No relevant storage matches/.test(germanStorage.content[0].text) ? 'rejected' : 'kept'}`);
 
+    // ── R2: spelling / source-intent families ──────────────────────────
+    // One intent, three surfaces (correct, misspelled, paraphrased) and three
+    // lanes. The operational test record quoting the misspelled query must not
+    // win, and the arena artifacts that led the dense lane must not win either.
+    const R2_LANES = [['hybrid', {}], ['dense-only', { lexical: false }], ['lexical-only', { dense: false }]];
+    const R2_FAMILIES = [
+        ['correct', 'AI Consciousness'],
+        ['misspelled', 'AI Conciousness'],
+        ['paraphrase', 'is artificial intelligence conscious']
+    ];
+    for (const [family, query] of R2_FAMILIES) {
+        for (const [lane, search] of R2_LANES) {
+            const rows = await vdb.searchDocuments({ query, top_k: 5, search });
+            const top = rows[0]?.path ?? '(none)';
+            console.log(`R2 ${family.padEnd(12)} ${lane.padEnd(12)} rank1=${top}`);
+            check(`R2 ${family}/${lane}: rank 1 is consciousness material`, /conscious/i.test(top), top);
+            check(`R2 ${family}/${lane}: no arena artifact at rank 1`, !/^arena-publication\//.test(top), top);
+            check(`R2 ${family}/${lane}: operational test record is not rank 1`, !/architecture_recall-refactor/.test(top), top);
+        }
+    }
+    const misspelledSearch = await vdb.vdb_search({ query: 'AI Conciousness', top_k: 5 }, {});
+    check('R2 misspelled query reports its correction', /corrected: Conciousness → consciousness/.test(misspelledSearch.content[0].text), misspelledSearch.content[0].text.split('\n').slice(0, 2).join(' | '));
+    // Deterministic guard: a legitimate inflection is not a typo.
+    const inflected = await vdb.vdb_search({ query: 'which reranker model is licensed for production', top_k: 5 }, {});
+    check('R2 inflections are left alone', !inflected.content[0].text.includes('corrected:'));
+
     const memStarted = performance.now();
     const reply = await memory.memory_recall({ query: 'German public funding Prototype Fund open source application window', limit: 5 }, context);
     const memoryMs = Math.round(performance.now() - memStarted);
@@ -234,6 +260,16 @@ try {
     }
     const german = await memory.memory_recall({ query: 'Welche Rolle spielt Offenheit bei Modellen?', limit: 5 }, context);
     check('R1 memory keeps a German paraphrase (no false rejection)', !/No relevant memories/.test(german.content[0].text));
+
+    // Current-versus-historical intent must survive every ranking change.
+    for (const [query, expected] of [
+        ['Which model currently generates nConvert summaries?', 6716],
+        ['What was nConvert summary routing before the local switch?', 6593]
+    ]) {
+        const out = await memory.memory_recall({ query, limit: 3 }, context);
+        const first = [...out.content[0].text.matchAll(/\[#(\d+)\]/g)].map(m => Number(m[1]))[0];
+        check(`current-vs-historical intent preserved ("${query}")`, first === expected, `first=#${first}, expected #${expected}`);
+    }
 
     // ── Prototype Fund source-intent regression (2026-11-20) ───────────
     // A verification record (#7137) quotes this exact query in its data, so both

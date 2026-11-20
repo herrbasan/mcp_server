@@ -11,6 +11,7 @@ import { embedGroupWithPersistence } from './embedding-persistence.js';
 import { createStoredVectorGuard } from '../../embed-client.js';
 import { resolveSearchOptions, describeSearchOptions, selectLanes } from './search-options.js';
 import { resolveRelevanceFloor, assessRelevance } from './relevance.js';
+import { buildVocabulary, correctQuery, describeCorrections } from './query-normalizer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -40,6 +41,8 @@ const DEFAULTS = {
     // Route that produced the index's vectors. Mixing routes mixes vector
     // spaces and produces confident nonsense.
     embeddingPath: null,
+    // Deterministic spelling repair against the storage path vocabulary.
+    typoCorrection: true,
     hybrid: {
         enabled: false,
         rrfK: 10,
@@ -81,6 +84,9 @@ let STORAGE_ROOT = null;
 let CHUNKER = null;
 let CONTEXT_ENHANCER = null;
 let RERANKER = null;
+// Spelling vocabulary built from the storage paths (see query-normalizer.js).
+// Lazy: it costs ~130 ms to build and most processes search immediately.
+let QUERY_VOCAB = null;
 // Stored-vector guard for every chunk vector this agent writes (see
 // createStoredVectorGuard). Built from the live index in init(): the
 // process-local guard inside embed-client cannot see vectors that an earlier
@@ -1098,6 +1104,17 @@ function chunkIndexFromId(id) {
     return Number.isInteger(parsed) ? parsed : 0;
 }
 
+// Built once per process from the storage paths. A stale vocabulary can only
+// affect spelling suggestions, never retrieval, so it is not rebuilt.
+async function queryVocabulary() {
+    if (QUERY_VOCAB) return QUERY_VOCAB;
+    const started = Date.now();
+    const files = await listWatchedFiles('storage');
+    QUERY_VOCAB = buildVocabulary(files.map(entry => safeRel(entry.root, entry.absolutePath)));
+    logger.info(`[VDB] Typo vocabulary: ${QUERY_VOCAB.terms.size} term(s) from ${files.length} path(s) in ${Date.now() - started} ms`, null, 'VDB');
+    return QUERY_VOCAB;
+}
+
 // Filters are a contract, not a hint. `md` and `.md` name the same suffix, so
 // they must produce the same request (the old code built `..md` and matched
 // nothing); anything that cannot be a suffix is rejected instead of quietly
@@ -1127,7 +1144,7 @@ function normalizeFolder(folder) {
     return value;
 }
 
-export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, search = null, onProgress = null } = {}) {
+export async function searchDocuments({ query, collections, folder, extension, top_k = 10, approximate = false, include_content = false, search = null, onProgress = null, onNormalize = null } = {}) {
     if (!DATABASE) throw new Error('VDB agent is not initialized or nVDB is unavailable. Check logs.');
     if (!query) throw new Error('searchDocuments: query is required');
 
@@ -1138,6 +1155,17 @@ export async function searchDocuments({ query, collections, folder, extension, t
     // client filter) sees one spelling, and reject what cannot be a suffix.
     const folderFilter = normalizeFolder(folder);
     const extensionFilter = normalizeExtension(extension);
+    // Deterministic spelling repair before any embedding or lane work. The
+    // corpus's own path vocabulary is the dictionary — no inference, no
+    // expansion, ambiguity left alone (see query-normalizer.js).
+    const normalized = CONFIG.typoCorrection
+        ? correctQuery(query, await queryVocabulary())
+        : { query, corrections: [] };
+    if (normalized.corrections.length > 0) {
+        logger.info(`[VDB] query corrected: ${describeCorrections(normalized.corrections)} ("${query}")`, null, 'VDB');
+        onNormalize?.(normalized.corrections);
+    }
+    const searchQuery = normalized.query;
 
     const targetCollections = (collections && collections.length > 0)
         ? collections.filter(c => Object.keys(COLLECTIONS).includes(c) && CONFIG.watch?.[c])
@@ -1153,7 +1181,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
     // embedding backend is down.
     const queryEmbedding = options && !options.dense
         ? new Array(CONFIG.embeddingDim).fill(0)
-        : await embedText(query);
+        : await embedText(searchQuery);
     onProgress?.('Searching collections...', 40);
 
     // Per-collection search with min-max score normalization.
@@ -1184,7 +1212,7 @@ export async function searchDocuments({ query, collections, folder, extension, t
             ? Math.max(top_k * 3, CONFIG.hybrid.candidateK ?? 200)
             : Math.max(top_k * 3, 30);
         const searchResults = options
-            ? await runHybridSearch(coll, { vector: queryEmbedding, text: query, fetchK, filter: indexFilter, options })
+            ? await runHybridSearch(coll, { vector: queryEmbedding, text: searchQuery, fetchK, filter: indexFilter, options })
             : await coll.search({
                 vector: queryEmbedding,
                 topK: fetchK,
@@ -1400,15 +1428,21 @@ export async function vdb_search(args, context) {
         };
     }
 
-    const top = await searchDocuments({ ...(args || {}), onProgress: (msg, pct) => pr.set(msg, pct) });
+    let corrections = [];
+    const top = await searchDocuments({
+        ...(args || {}),
+        onNormalize: found => { corrections = found; },
+        onProgress: (msg, pct) => pr.set(msg, pct)
+    });
     pr.done('Search complete');
+    const correctedNote = corrections.length > 0 ? `corrected: ${describeCorrections(corrections)}\n` : '';
 
     const assessment = assessRelevance(top, { rerankActive: info.rerankActive, floor: info.floor });
     if (assessment.rejected) {
         return {
             content: [{
                 type: 'text',
-                text: `mode: ${mode}\n${describeRejection(assessment, top, 'storage matches')}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
+                text: `mode: ${mode}\n${correctedNote}${describeRejection(assessment, top, 'storage matches')}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
             }]
         };
     }
@@ -1423,7 +1457,7 @@ export async function vdb_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `mode: ${mode}\nFound ${top.length} matches:\n\n${summary}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
+            text: `mode: ${mode}\n${correctedNote}Found ${top.length} matches:\n\n${summary}\n\nRaw results:\n${JSON.stringify(top, null, 2)}`
         }]
     };
 }
@@ -1445,6 +1479,7 @@ export async function vdb_status(args, context) {
             batchDelayMs: CONFIG?.batchDelayMs,
             contextEnhancement: CONFIG?.contextEnhancement,
             relevanceFloor: CONFIG?.relevanceFloor,
+            typoCorrection: CONFIG?.typoCorrection,
             hybrid: CONFIG?.hybrid,
             rerank: CONFIG?.rerank ? { ...CONFIG.rerank, loaded: RERANKER !== null } : null,
             nativePath: DATABASE ? loadNvdb().nativePath : null
@@ -1553,6 +1588,7 @@ export async function init(context) {
         contextEnhancement: agentConfig.contextEnhancement || { enabled: false },
         snapshot: agentConfig.snapshot ?? DEFAULTS.snapshot,
         embeddingPath: agentConfig.embeddingPath ?? DEFAULTS.embeddingPath,
+        typoCorrection: agentConfig.typoCorrection ?? DEFAULTS.typoCorrection,
         relevanceFloor: resolveRelevanceFloor(agentConfig.relevanceFloor),
         hybrid: { ...DEFAULTS.hybrid, ...(agentConfig.hybrid || {}) },
         rerank: { ...DEFAULTS.rerank, ...(agentConfig.rerank || {}) }

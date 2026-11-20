@@ -152,6 +152,7 @@
       "snapshot": true,
       "embeddingPath": "/v1/embeddings",
       "relevanceFloor": 0.02,
+      "typoCorrection": true,
       "scanIntervalMinutes": 5,
       "scanTimeoutMinutes": 30,
       "embeddingDim": 2560,

@@ -228,6 +228,23 @@ scored 31.7 on an unrelated document).
   requested depth — measured: a German storage paraphrase at `top_k=5` sees only
   0.0015 and is rejected, at `top_k=10` it sees 0.0453 and is kept.
 
+### Spelling repair
+
+Queries are corrected deterministically before embedding and lane work, against
+a vocabulary built from the storage paths themselves
+(`src/agents/vdb/query-normalizer.js`):
+
+- a token absent from the vocabulary with **exactly one** one-edit neighbour is
+  replaced (`conciousness → consciousness`); zero or several candidates leave
+  the typo untouched;
+- a candidate must appear in ≥2 paths, and an inflectional variant is never a
+  correction (`model`/`models`, `licensed`/`license` are both real words);
+- the substitution is reported in the reply's `corrected:` line.
+
+Cost: 573 terms from 2,058 paths in ~100 ms once per process, ~65 µs/token,
+0 extra embedding or reranker work. Disable with `agents.vdb.typoCorrection:
+false`. Memory queries are not corrected — the vocabulary is storage paths.
+
 Gate coverage: `npm run gate:nvdb` runs the same query through five modes
 (all / no rerank / dense only / lexical only / no diversity), asserts lane
 membership and rerank presence per mode, and checks that five invalid

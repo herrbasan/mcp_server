@@ -315,7 +315,44 @@ Gate: three nonsense queries rejected in storage and memory with no `100.0%`
 in the output; `nConvert`, the exact title, `Prototype`, `nui_wc2` and a German
 paraphrase kept; the rejection boundary at shallow depth is printed.
 
-### 14. Rollback
+### 14. R2 spelling repair and source intent — **fixed**
+
+Report cluster R2: `AI Conciousness` led with an arena session artifact in the
+dense lane and with the retrieval-test document in the lexical lane (it quotes
+the misspelled golden query), while `AI Consciousness` and a paraphrase of the
+same intent both return `research/consciousness/…` at rank 1.
+
+Measured before the change: correct → `research/consciousness/joscha-bach…`
+(rerank 0.889); misspelled → `arena-publication/sessions/…/04-wave-geometry.json`
+in hybrid and dense, `documentation/Workshop/architecture_recall-refactor.md` in
+lexical; paraphrase → `research/consciousness/the-mythology-of-conscious-ai.md`
+in every lane.
+
+Fix: **deterministic spelling repair** (`src/agents/vdb/query-normalizer.js`).
+The vocabulary is the storage paths themselves (`research/consciousness/…`),
+so `conciousness → consciousness` is a unique one-edit match; ambiguity is left
+alone. No generative expansion — the paraphrase family already works, so extra
+inference would have bought nothing here.
+
+Cost, measured: 573 terms from 2,058 paths in **97–104 ms once per process**,
+~65 µs per token, query latency **254 ms vs 250 ms** median (inside run-to-run
+spread), no extra embedding or reranker work.
+
+Two guards, both from measurement: a candidate must appear in ≥2 paths, and an
+inflectional variant is not a typo (before the guard, `which reranker model is
+licensed for production` was "corrected" to `… models is license …`).
+
+Source intent needed no separate rule: the test record's advantage *was* the
+misspelled string, so it leaves the top six once the query is corrected. A
+blanket storage echo rule was rejected on evidence — legitimate documents
+contain `AI consciousness` verbatim (e.g. `ai-might-be-conscious…`, rerank 0.920),
+so demoting on echo would suppress real content.
+
+Boundary: memory queries are not corrected (the vocabulary is storage paths); a
+misspelled memory query behaves as before. Correction only helps when the
+correct form appears in ≥2 storage paths.
+
+### 15. Rollback
 
 Keep:
 
