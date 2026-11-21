@@ -297,7 +297,7 @@ export function createStorageConnector({
 
         while (attachedTotal + staleSkipped + missingSkipped < maxItems) {
             const remaining = maxItems - (attachedTotal + staleSkipped + missingSkipped);
-            const fetchLimit = Math.min(remaining, Math.max(batchSize * 4, 32));
+            const fetchLimit = Math.min(remaining, 128);
             const res = await client.pendingEmbeddings(collection, fetchLimit);
             const pending = res.pending || [];
             if (pending.length === 0) break;
@@ -341,32 +341,51 @@ export function createStorageConnector({
 
             if (work.length === 0) break;
 
+            // Buffer all embeddings for this page and flush in a single attachVectors
+            // call so nvdb's vectors.bin persist runs once per page instead of per 4 items.
+            const attachments = [];
             for (let i = 0; i < work.length; i += batchSize) {
                 const slice = work.slice(i, i + batchSize);
                 const vectors = await embedBatch(
                     slice.map(w => w.text),
                     { background: true, path: embeddingPath }
                 );
-                const attachments = slice.map((w, idx) => ({
-                    id: w.id,
-                    content_hash: w.content_hash,
-                    model_version: modelVersion,
-                    vector: vectors[idx],
-                }));
-                try {
-                    const attachRes = await client.attachVectors(collection, attachments);
-                    attachedTotal += attachRes.attached ?? attachments.length;
-                } catch (err) {
-                    if (err.status === 409 && err.code === 'stale_vector_cas') {
-                        staleSkipped += attachments.length;
-                        logger.warn?.(`[VDB] Stale vector CAS on storage batch (${attachments.length} items) — will refresh on next sync`);
-                    } else {
-                        throw err;
+                for (let idx = 0; idx < slice.length; idx++) {
+                    attachments.push({
+                        id: slice[idx].id,
+                        content_hash: slice[idx].content_hash,
+                        model_version: modelVersion,
+                        vector: vectors[idx],
+                    });
+                }
+            }
+
+            try {
+                const attachRes = await client.attachVectors(collection, attachments);
+                attachedTotal += attachRes.attached ?? attachments.length;
+            } catch (err) {
+                if (err.status === 409 && err.code === 'stale_vector_cas') {
+                    // One or more files changed mid-embed; retry individually so fresh items still land.
+                    for (const att of attachments) {
+                        try {
+                            const singleRes = await client.attachVectors(collection, [att]);
+                            attachedTotal += singleRes.attached ?? 1;
+                        } catch (inner) {
+                            if (inner.status === 409 && inner.code === 'stale_vector_cas') {
+                                staleSkipped++;
+                            } else {
+                                throw inner;
+                            }
+                        }
                     }
+                    logger.warn?.(`[VDB] Stale vector CAS during storage batch — skipped ${staleSkipped} stale items`);
+                } else {
+                    throw err;
                 }
-                if (onProgress) {
-                    onProgress(`Embedded ${attachedTotal} storage chunks`, null);
-                }
+            }
+
+            if (onProgress) {
+                onProgress(`Embedded ${attachedTotal} storage chunks`, null);
             }
 
             if (pending.length < fetchLimit) break;

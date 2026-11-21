@@ -28,9 +28,9 @@ let MODEL_VERSION = 'qwen3-embedding-4b';
 let EMBED_PATH = '/v1/embeddings';
 let FUZZY_EDITS = 1;
 let RERANKER_LOADED = false;
-let HYBRID = { enabled: true, rrfK: 60, candidateK: 200, lexicalWeight: 1.0, vectorWeight: 0.3, diversityField: 'parent_id', maxPerDocument: 2 };
+let HYBRID = { enabled: true, adaptive: true, rrfK: 20, candidateK: 200, lexicalWeight: 0.3, vectorWeight: 1.0, diversityField: 'parent_id', maxPerDocument: 2 };
 let RERANK = { enabled: true, shortlist: 20, weight: 0.2 };
-let RELEVANCE_FLOOR = 0.02;
+let RELEVANCE_FLOOR = 0.05;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -92,8 +92,9 @@ function embedText(gateway, description, data, maxChars, opts) {
     return gateway.embed(memoryVectorInput(description, data, maxChars), { ...opts, path: EMBED_PATH });
 }
 
-function resolveRecallOptions(search) {
+function resolveRecallOptions(search, query = null) {
     return resolveSearchOptions({
+        query,
         overrides: search,
         hybrid: HYBRID,
         rerank: RERANK,
@@ -372,7 +373,7 @@ export async function memory_recall(args, context) {
     const { gateway, progress } = context;
     const { query, limit = 5, category, search = null } = args;
     const pr = createProgressReporter(progress);
-    const options = resolveRecallOptions(search);
+    const options = resolveRecallOptions(search, query);
     const mode = describeSearchOptions(options);
 
     const maxChars = CONFIG.maxMemoryChars || 6000;

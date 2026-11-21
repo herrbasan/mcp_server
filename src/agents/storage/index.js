@@ -745,7 +745,7 @@ export async function storage_search(args, context) {
     const pr = createProgressReporter(context?.progress);
     // Effective mode for this request — an A/B run must be attributable from
     // the transcript alone.
-    const info = searchRequestInfo(search);
+    const info = searchRequestInfo(search, query);
     const mode = info.mode;
     const results = await searchDocuments({
         query,

@@ -12,7 +12,7 @@
 //   diversity  per-document cap inside the native call
 //   rerank     ONNX cross-encoder over the fused shortlist
 
-const BOOLEAN_KEYS = ['dense', 'lexical', 'diversity', 'rerank'];
+const BOOLEAN_KEYS = ['dense', 'lexical', 'diversity', 'rerank', 'adaptive'];
 
 const NUMBER_KEYS = {
     rrfK: { min: 1, integer: true },
@@ -25,6 +25,54 @@ const NUMBER_KEYS = {
 };
 
 export const SEARCH_KEYS = [...BOOLEAN_KEYS, ...Object.keys(NUMBER_KEYS)];
+
+function isHexHashToken(t) {
+    return /^[0-9a-f]{7,40}$/i.test(t) && /[0-9]/.test(t) && /[a-f]/i.test(t);
+}
+
+function isFileOrPathToken(t) {
+    const clean = t.replace(/[?,.;:)"']+$/, '');
+    return /[\/\\]/.test(clean) || /\.[a-z0-9]{1,5}$/i.test(clean);
+}
+
+function isCodeSymbolToken(t) {
+    const clean = t.replace(/^[("'[]+|[)"'\]?,.;:]+$/g, '');
+    if (!clean) return false;
+    if (isHexHashToken(clean)) return true;
+    if (/^#\d+$/.test(clean)) return true;
+    if (/[a-z0-9]_[a-z0-9]/i.test(clean)) return true;
+    if (/[a-z0-9]:[a-z0-9]/i.test(clean)) return true;
+    if (/^[a-z0-9]+(-[a-z0-9]+){2,}$/i.test(clean)) return true;
+    if (/^[a-z]+[A-Z][a-zA-Z0-9]*$/.test(clean)) return true;
+    if (/^[a-z0-9_]+\.[a-z0-9_]+(\.[a-z0-9_]+)*$/i.test(clean)) return true;
+    return false;
+}
+
+// Classify query shape into adaptive RRF weights (#87):
+// - Pure exact identifiers (hashes, filenames, code symbols) let lexical lead.
+// - Prose containing an embedded literal/symbol keeps both lanes strong.
+// - Natural-language prose, questions, cross-lingual queries, and typos let dense lead
+//   so high-DF words ("AI", "Coolkid", "machine") cannot bury vec#1.
+export function classifyQueryProfile(query) {
+    const q = typeof query === 'string' ? query.trim() : '';
+    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+    const hasExactToken = tokens.some(t => isCodeSymbolToken(t) || isFileOrPathToken(t));
+    const hasQuotedPhrase = /"[^"]+"/.test(q);
+
+    if (tokens.length === 1 && hasExactToken) {
+        return { profile: 'exact-id', lexicalWeight: 1.0, vectorWeight: 0.2, rrfK: 20 };
+    }
+    if (tokens.length <= 2 && tokens.some(t => isHexHashToken(t) || isFileOrPathToken(t))) {
+        return { profile: 'exact-short', lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 20 };
+    }
+    if (hasExactToken || hasQuotedPhrase) {
+        return { profile: 'mixed-exact', lexicalWeight: 1.0, vectorWeight: 0.8, rrfK: 20 };
+    }
+    if (tokens.length === 1) {
+        return { profile: 'single-term', lexicalWeight: 0.8, vectorWeight: 1.0, rrfK: 20 };
+    }
+    return { profile: 'semantic', lexicalWeight: 0.3, vectorWeight: 1.0, rrfK: 20 };
+}
 
 function assertBoolean(key, value) {
     if (typeof value !== 'boolean') throw new Error(`search.${key} must be a boolean (got ${value === null ? 'null' : typeof value})`);
@@ -41,7 +89,7 @@ function assertNumber(key, value, rule) {
     return value;
 }
 
-export function resolveSearchOptions({ overrides = null, hybrid, rerank, rerankerAvailable, diversityField }) {
+export function resolveSearchOptions({ query = null, overrides = null, hybrid, rerank, rerankerAvailable, diversityField }) {
     if (!hybrid || hybrid.enabled !== true) {
         throw new Error('per-request layers need agents.vdb.hybrid.enabled — the bound index is vector-only');
     }
@@ -61,6 +109,8 @@ export function resolveSearchOptions({ overrides = null, hybrid, rerank, reranke
         lexical: true,
         diversity: Boolean(diversityField),
         rerank: Boolean(rerankerAvailable && rerank?.enabled),
+        adaptive: hybrid.adaptive !== false,
+        profile: 'static',
         rrfK: hybrid.rrfK,
         candidateK: hybrid.candidateK,
         vectorWeight: hybrid.vectorWeight,
@@ -75,9 +125,23 @@ export function resolveSearchOptions({ overrides = null, hybrid, rerank, reranke
     for (const key of BOOLEAN_KEYS) {
         if (overrides?.[key] !== undefined) resolved[key] = assertBoolean(key, overrides[key]);
     }
-    for (const [key, rule] of Object.entries(NUMBER_KEYS)) {
-        if (overrides?.[key] !== undefined) resolved[key] = assertNumber(key, overrides[key], rule);
+
+    if (resolved.adaptive && resolved.dense && resolved.lexical && typeof query === 'string' && query.trim()) {
+        const cls = classifyQueryProfile(query);
+        resolved.profile = cls.profile;
+        resolved.lexicalWeight = cls.lexicalWeight;
+        resolved.vectorWeight = cls.vectorWeight;
+        resolved.rrfK = cls.rrfK;
     }
+
+    let explicitWeights = false;
+    for (const [key, rule] of Object.entries(NUMBER_KEYS)) {
+        if (overrides?.[key] !== undefined) {
+            resolved[key] = assertNumber(key, overrides[key], rule);
+            if (key === 'vectorWeight' || key === 'lexicalWeight' || key === 'rrfK') explicitWeights = true;
+        }
+    }
+    if (explicitWeights) resolved.profile = 'explicit';
 
     if (!resolved.dense && !resolved.lexical) {
         throw new Error('search: dense and lexical cannot both be off — there would be no lane to search');
@@ -108,7 +172,8 @@ export function describeSearchOptions(options) {
         options.diversity && 'diversity',
         options.rerank && 'rerank'
     ].filter(Boolean);
-    return `layers=${layers.join('+')} rrfK=${options.rrfK} candidateK=${options.candidateK} v=${options.vectorWeight} l=${options.lexicalWeight}`
+    const profilePart = options.profile ? ` profile=${options.profile}` : '';
+    return `layers=${layers.join('+')}${profilePart} rrfK=${options.rrfK} candidateK=${options.candidateK} v=${options.vectorWeight} l=${options.lexicalWeight}`
         + (options.diversity ? ` mpd=${options.maxPerDocument}` : '')
         + (options.rerank ? ` short=${options.shortlist} w=${options.rerankWeight}` : '');
 }

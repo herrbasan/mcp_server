@@ -19,10 +19,10 @@ const DEFAULTS = {
     embeddingPath: '/v1/embeddings',
     queryInstruct: DEFAULT_QUERY_INSTRUCT,
     fuzzyEdits: 1,
-    relevanceFloor: 0.02,
+    relevanceFloor: 0.05,
     autoSync: true,
     scanIntervalMinutes: 5,
-    maxBatchTexts: 4,
+    maxBatchTexts: 8,
     chunkMaxTokens: 1024,
     chunkOverlapTokens: 128,
     chunkTokCharsRatio: 2.5,
@@ -31,10 +31,11 @@ const DEFAULTS = {
     ignore: ['forge', 'temp', '_trash', '.backups', 'charts', 'prints', 'item.json', 'meta.json'],
     hybrid: {
         enabled: true,
-        rrfK: 60,
+        adaptive: true,
+        rrfK: 20,
         candidateK: 200,
-        lexicalWeight: 1.0,
-        vectorWeight: 0.3,
+        lexicalWeight: 0.3,
+        vectorWeight: 1.0,
         diversityField: 'parent_id',
         maxPerDocument: 2,
     },
@@ -87,8 +88,9 @@ export function relevanceFloor() {
     return RELEVANCE_FLOOR;
 }
 
-export function searchRequestInfo(search = null) {
+export function searchRequestInfo(search = null, query = null) {
     const options = resolveSearchOptions({
+        query,
         overrides: search,
         hybrid: CFG.hybrid,
         rerank: CFG.rerank,
@@ -103,8 +105,8 @@ export function searchRequestInfo(search = null) {
     };
 }
 
-export function describeSearchRequest(search = null) {
-    return searchRequestInfo(search).mode;
+export function describeSearchRequest(search = null, query = null) {
+    return searchRequestInfo(search, query).mode;
 }
 
 export function describeRejection(assessment, rows, label = 'matches') {
@@ -262,7 +264,7 @@ export async function searchDocuments({
         throw new Error('query must be a non-empty string');
     }
 
-    const { options } = searchRequestInfo(search);
+    const { options } = searchRequestInfo(search, query);
     const normFolder = normalizeFolder(folder);
     const normExt = normalizeExtension(extension);
 
@@ -405,7 +407,7 @@ export async function vdb_search(args, context) {
     } = args;
 
     const pr = createProgressReporter(context?.progress);
-    const info = searchRequestInfo(search);
+    const info = searchRequestInfo(search, query);
     const results = await searchDocuments({
         query,
         collections,
