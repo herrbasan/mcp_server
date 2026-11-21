@@ -172,6 +172,20 @@ const GOLDEN_STORAGE = [
         topN: 3,
     },
     {
+        id: 'sto-gsb-robots-de',
+        kind: 'prose-exact-id',
+        query: 'Wo steht im GSB Handbuch etwas über robots.txt?',
+        matchPath: p => /gsb11anwendungshandbuch|local-vision-run/i.test(p),
+        topN: 3,
+    },
+    {
+        id: 'sto-preset-narration',
+        kind: 'exact-id',
+        query: 'preset=narration:david-a-renelt',
+        matchPath: p => p === 'scratch/nspeech-dialogue-mode-handover.md',
+        topN: 3,
+    },
+    {
         id: 'sto-nonsense-1',
         kind: 'nonsense',
         query: 'zxqjvplkmn wqertyuiop',

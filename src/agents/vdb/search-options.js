@@ -66,7 +66,7 @@ export function classifyQueryProfile(query) {
         return { profile: 'exact-short', lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 20 };
     }
     if (hasExactToken || hasQuotedPhrase) {
-        return { profile: 'mixed-exact', lexicalWeight: 1.0, vectorWeight: 0.8, rrfK: 20 };
+        return { profile: 'mixed-exact', lexicalWeight: 0.5, vectorWeight: 1.0, rrfK: 20 };
     }
     if (tokens.length === 1) {
         return { profile: 'single-term', lexicalWeight: 0.8, vectorWeight: 1.0, rrfK: 20 };

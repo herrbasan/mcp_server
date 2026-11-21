@@ -33,6 +33,10 @@ test('classifyQueryProfile separates exact identifiers, mixed queries, single te
     assert.equal(classifyQueryProfile('commit a2e3c27').profile, 'exact-short');
     assert.equal(classifyQueryProfile('open Agents_Prime.md').profile, 'exact-short');
 
+    const mixed = classifyQueryProfile('Wo steht im GSB Handbuch etwas über robots.txt?');
+    assert.equal(mixed.profile, 'mixed-exact');
+    assert.equal(mixed.lexicalWeight, 0.5);
+    assert.equal(mixed.vectorWeight, 1.0);
     assert.equal(classifyQueryProfile('what changed in commit a2e3c27?').profile, 'mixed-exact');
     assert.equal(classifyQueryProfile('how does mb:columns weights work in md-blocks?').profile, 'mixed-exact');
     assert.equal(classifyQueryProfile('find "exact quoted phrase" in docs').profile, 'mixed-exact');
