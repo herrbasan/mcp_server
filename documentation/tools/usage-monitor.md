@@ -28,6 +28,27 @@ the card shows the reason instead of hiding the last known figures.
 - **`usage_status`** — timer state, last run + duration, per-provider
   last-success age and last error. Read-only.
 
+## Renewing sessions
+
+`node scripts/usage-login.mjs [provider…]` (default `gemini kimi anthropic`,
+optionally `minimax openai`) opens ONE visible window on the monitor's own
+profile — the only path that survives 2FA, captchas and bot checks — with one
+tab per provider, and **verifies each session itself** before closing: the
+Gemini account identity plus a rendered rate-limit table, Kimi's
+`GetSubscriptionStats` RPC, Anthropic's `current_spend` endpoint. It never
+re-navigates a tab (that yanks the page out from under a sign-in) and exits
+non-zero naming whatever is still unverified after
+`USAGE_LOGIN_TIMEOUT_MIN` (10). The closed prompt to "tell the agent when
+you're done" is gone — the verification is the done signal, and a window
+closed early is reported as such instead of being discovered by the next
+failed cycle.
+
+`scripts/gemini-login.mjs` remains the Google-only path; it does the same
+identity check but cannot verify the other providers. `data/usage-login.html`
+is the human-facing landing page listing all six browser providers — useful
+when every session is gone at once, since the script only opens the ones you
+name.
+
 ## Extraction routes
 
 Browser providers run on the monitor's OWN Chrome profile

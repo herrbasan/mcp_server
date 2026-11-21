@@ -793,7 +793,9 @@ export async function shutdown() {
 
 // Exported for scripts/probe-usage.mjs — the pre-restart gate runs providers
 // one by one, without the scheduler and without touching the state file.
-export { PROVIDERS };
+// ANTHROPIC_ORG is exported for scripts/usage-login.mjs, which verifies the
+// session against the same org endpoint the extractor reads.
+export { PROVIDERS, ANTHROPIC_ORG };
 
 export async function usage_scan(args, context) {
     const state = await runCycle();
