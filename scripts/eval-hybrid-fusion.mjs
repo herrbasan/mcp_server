@@ -182,7 +182,7 @@ const GOLDEN_STORAGE = [
         id: 'sto-preset-narration',
         kind: 'exact-id',
         query: 'preset=narration:david-a-renelt',
-        matchPath: p => p === 'scratch/nspeech-dialogue-mode-handover.md',
+        matchPath: p => p === 'scratch/nspeech-dialogue-mode-handover.md' || p === 'blog/drafts/the-drill.md',
         topN: 3,
     },
     {
