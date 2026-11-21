@@ -1,41 +1,41 @@
 {
     "agent": "vdb",
-    "description": "Vector database agent — embedded nVDB-backed semantic search over storage files and memories. Indexes text files on a timer and exposes ranked search across collections. Directories and files can be excluded from indexing via .nvdb_ignore files or the agents.vdb.ignore config list.",
+    "description": "Vector database agent — nVDB v2 (nvdb serve HTTP) hybrid lexical + dense + Level-2 ONNX reranked search over storage files and memories. Syncs storage files asynchronously and exposes ranked search across collections. Directories and files can be excluded via .nvdb_ignore files or agents.vdb.ignore.",
     "tools": [
         {
             "name": "vdb_search",
-            "description": "Semantic search over the vector database. For FINDING A FILE BY NAME/PATH: filename-like queries are matched against indexed file paths automatically. To browse the full directory tree use storage.list instead. Semantic search finds content by meaning; use filters to narrow by folder or file extension.",
+            "description": "Hybrid lexical + dense + Level-2 reranked search via nVDB v2. Supports exact titles, paths, German compounds, 1-edit fuzzy typos, and native folder/extension pre-filters. To browse the full directory tree use storage.list instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Search query or natural language question." },
                     "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "memory"] }, "description": "Collections to search. Default: all enabled collections." },
-                    "folder": { "type": "string", "description": "Filter to a specific folder (storage)." },
-                    "extension": { "type": "string", "description": "Filter to files with this extension, e.g. '.md'." },
+                    "folder": { "type": "string", "description": "Filter to a specific top-level folder (storage)." },
+                    "extension": { "type": "string", "description": "Filter to files with this extension, e.g. 'md' or '.md'." },
                     "top_k": { "type": "number", "default": 10, "description": "Number of top matches to return." },
-                    "approximate": { "type": "boolean", "default": false, "description": "Use HNSW approximate search. Requires index to be built." },
-                    "include_content": { "type": "boolean", "default": false, "description": "If true, include the matched chunk text in results." }
+                    "include_content": { "type": "boolean", "default": false, "description": "If true, include the matched chunk text in results." },
+                    "search": { "type": "object", "description": "Optional per-request layer switches for A/B (dense, lexical, diversity, rerank, rrfK, candidateK, vectorWeight, lexicalWeight, maxPerDocument, shortlist, rerankWeight)." }
                 },
                 "required": ["query"]
             }
         },
         {
             "name": "vdb_status",
-            "description": "Show vector database status: enabled collections, document counts, last scan time, pending changes, and whether nVDB is loaded.",
+            "description": "Show nVDB v2 server status: health, reranker state, collections, document counts, pending embeddings sample, and last sync stats.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "vdb_trigger_scan",
-            "description": "Manually trigger a re-scan of all watched folders. Returns when the scan is complete or reports that a scan is already running.",
+            "description": "Manually sync watched storage files to nvdb serve and drain pending embeddings.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "vdb_build_index",
-            "description": "Build or rebuild the HNSW approximate-search index for one or more collections. Use after large ingestions.",
+            "description": "Commit all open collections in nvdb serve (v2 uses flat SIMD scan below flat_search_cutoff).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "memory"] }, "description": "Collections to index. Default: all." }
+                    "collections": { "type": "array", "items": { "type": "string", "enum": ["storage", "memory"] }, "description": "Collections to commit. Default: all." }
                 }
             }
         }

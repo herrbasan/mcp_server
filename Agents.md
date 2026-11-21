@@ -218,26 +218,11 @@ delivered only via `notepad.get`.
 
 ## VDB Retrieval
 
-**Production retrieval is a fixed snapshot index with hybrid search and a reranker** (2026-11-19). `agents.vdb.dbPath` = `data/candidates/wizkid-hybrid-rerank/nvdb`, `snapshot: true` (no scan, no compaction — `vdb.trigger_scan` refuses), `embeddingPath: /v1/embeddings` (llama-based Qwen3-Embedding-4B, the model that produced the index vectors; the Wizkid route is the same model on another machine), dense+BM25 fused by RRF (`rrfK` 10, lexical weight 1.0, `diversity('path', 2)`), then the Apache-2.0 `atelasi/multilingual-reranker-small` cross-encoder over the top 10 on payload field `content` (fusion weight 0.2). Memory recall uses the same index, route and reranker. A missing addon feature or model file aborts startup — serving without the reranker is a different, unmeasured system. Gate: `npm run gate:nvdb`. Indexing below describes the rollback mode (`data/nvdb`, non-snapshot).
+**Production retrieval runs on `nvdb serve` (nVDB v2 HTTP, zero NAPI in Node)** (2026-11-21). `mcp_server` talks to `nvdb serve --dir <path> --host 127.0.0.1 --port 3510 --reranker-model <modelDir>` over localhost HTTP via `src/agents/vdb/v2-client.js` (no `.node` addon, no 268 MB ONNX runtime in Node).
 
-The `vdb` agent indexes text files from the storage root (`agents.storage.root`, which includes `documentation/`) for semantic search. Exclusions work at two levels:
-
-- **Config-level**: `agents.vdb.ignore` in `config.json` lists directory/file names to skip everywhere.
-- **Directory-level**: any watched directory may contain a `.nvdb_ignore` file with one pattern per line (`name`, `*`, or simple globs like `*.tmp`). Patterns apply to entries in that directory only.
-
-Current default ignores: `forge` (transient forge tool output), `temp` (fleeting user temp files).
-
-**Scans must not block the event loop.** Enumeration is `fs.promises.readdir` (a
-recursive `readdirSync` over ~9.7k files stalled every HTTP request for ~20 s),
-and the hash/read path yields every `scanYieldBudgetMs` (50 ms). Embedding
-persists each file as soon as all of its chunks complete, so a later batch
-failure cannot discard earlier files; failures name the pending file list.
-Compaction of the
-segment files runs **only when a scan produced tombstones** (`removed`/`updated`
-> 0), tracked by `data/nvdb/compaction-pending` so it survives a restart — an
-unconditional compact rewrote the 104 MB segment every five minutes for no
-change. Measured after both fixes: steady-state scan <1 s, and p95 latency 2 ms
-while a scan runs (previously 13–20 s).
+- **Hybrid + Level-2 rerank**: Tantivy BM25F (exact titles, paths, German compound `body_parts`, bounded 1-edit fuzzy, native columnar `folder`/`ext`/`category` pre-filters) + `content_hash`-keyed 2560-dim dense vectors (`qwen3-embedding-4b`, Qwen3 `Instruct:` query prefix) fused by RRF (`rrfK: 60`, `lexicalWeight: 1.0`, `vectorWeight: 0.3`, `group_by_parent: 2`), then Level-2 ONNX cross-encoder reranking (`/level2`, `shortlist: 20`, `rerankWeight: 0.2`, `relevanceFloor: 0.02`). If `agents.vdb.rerank.enabled` is true and `/health` reports `reranker_loaded: false`, startup aborts loudly.
+- **Connectors & integrity**: `src/agents/vdb/storage-connector.js` (non-blocking `fs.promises.readdir` with 50ms yield budget, `.nvdb_ignore` + `agents.vdb.ignore`, BLAKE3 `v2-hash.js` envelope diffing, async `/pending_embeddings` → `/attach_vectors` CAS drain) and `src/agents/memory/index.js` (authoritative `nDB` + `nvdb serve` `memory` collection with promoted `category` filter). Both expose `integrityCheck({ checkVectors })` against `POST /v2/collections/:name/integrity_check`.
+- **Verification**: `npm run test:v2` runs `tests/v2-hash.test.mjs` (15 Rust-parity BLAKE3/envelope tests) + `tests/nvdb-v2-e2e.test.mjs` (full local `nvdb.exe serve --reranker-model` E2E gate).
 
 ## Running
 

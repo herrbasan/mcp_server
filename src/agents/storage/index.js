@@ -6,9 +6,8 @@ import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps, joinNormalizedTail } from '../../lib/fileops.js';
 import { requireFields } from '../../utils/require-fields.js';
-import { searchDocuments, describeSearchRequest, searchRequestInfo, describeRejection } from '../vdb/index.js';
+import { searchDocuments, searchRequestInfo, describeRejection } from '../vdb/index.js';
 import { assessRelevance } from '../vdb/relevance.js';
-import { describeCorrections } from '../vdb/query-normalizer.js';
 import * as resources from './resource-provider.js';
 
 const logger = getLogger();
@@ -748,7 +747,6 @@ export async function storage_search(args, context) {
     // the transcript alone.
     const info = searchRequestInfo(search);
     const mode = info.mode;
-    let corrections = [];
     const results = await searchDocuments({
         query,
         collections: ['storage'],
@@ -757,18 +755,16 @@ export async function storage_search(args, context) {
         top_k,
         include_content,
         search,
-        onNormalize: found => { corrections = found; },
         onProgress: (msg, pct) => pr.set(msg, pct)
     });
     pr.done('Search complete');
-    const correctedNote = corrections.length > 0 ? `corrected: ${describeCorrections(corrections)}\n` : '';
 
     const assessment = assessRelevance(results, { rerankActive: info.rerankActive, floor: info.floor });
     if (assessment.rejected) {
         return {
             content: [{
                 type: 'text',
-                text: `mode: ${mode}\n${correctedNote}${describeRejection(assessment, results, 'storage matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+                text: `mode: ${mode}\n${describeRejection(assessment, results, 'storage matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
             }]
         };
     }
@@ -790,7 +786,7 @@ export async function storage_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `mode: ${mode}\n${correctedNote}Storage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+            text: `mode: ${mode}\nStorage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
         }]
     };
 }

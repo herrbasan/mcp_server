@@ -93,7 +93,7 @@ export function resolveSearchOptions({ overrides = null, hybrid, rerank, reranke
     }
     if (resolved.rerank && !rerankerAvailable) {
         throw new Error(rerank?.enabled
-            ? 'search: rerank is on but no reranker is loaded — the addon was built without --features rerank-onnx'
+            ? 'search: rerank is on but nvdb serve has no reranker loaded — start nvdb serve with --reranker-model'
             : 'search: rerank is on but agents.vdb.rerank.enabled is false');
     }
     return resolved;
@@ -111,17 +111,4 @@ export function describeSearchOptions(options) {
     return `layers=${layers.join('+')} rrfK=${options.rrfK} candidateK=${options.candidateK} v=${options.vectorWeight} l=${options.lexicalWeight}`
         + (options.diversity ? ` mpd=${options.maxPerDocument}` : '')
         + (options.rerank ? ` short=${options.shortlist} w=${options.rerankWeight}` : '');
-}
-
-// Per-request layer selection cannot change what the native call computes (both
-// lanes always run), so a single-lane request fetches headroom and drops the
-// other lane afterwards. Membership is then the kept lane's own top-N; ordering
-// is that lane's rank — except under reranking, where the fused rerank order is
-// the measured artifact and must survive the filter.
-export function selectLanes(rows, options, topK) {
-    if (options.dense && options.lexical) return rows.slice(0, topK);
-    const keep = options.dense ? 'vectorRank' : 'lexicalRank';
-    const kept = rows.filter(row => row[keep] !== null && row[keep] !== undefined);
-    if (!options.rerank) kept.sort((a, b) => a[keep] - b[keep]);
-    return kept.slice(0, topK);
 }
