@@ -11,8 +11,9 @@ import { createV2Client } from '../src/agents/vdb/v2-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const NVDB_EXE = path.join(PROJECT_ROOT, 'src', 'nVDB', 'target', 'release', 'nvdb.exe');
-const RERANKER_DIR = path.join(PROJECT_ROOT, 'src', 'nVDB', 'models', 'reranker', 'atelasi-multilingual-reranker-small');
+const NVDB_ROOT = process.env.NVDB_ROOT || 'D:\\DEV\\nVDB';
+const NVDB_EXE = process.env.NVDB_BIN || path.join(NVDB_ROOT, 'target', 'release', 'nvdb.exe');
+const RERANKER_DIR = process.env.NVDB_RERANKER_MODEL || path.join(NVDB_ROOT, 'models', 'reranker', 'atelasi-multilingual-reranker-small');
 const REAL_STORAGE_ROOT = 'D:\\MCP_Storage';
 const REAL_MEMORY_DB = path.join(PROJECT_ROOT, 'data', 'memories', 'data.jsonl');
 

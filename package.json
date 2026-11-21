@@ -24,7 +24,7 @@
         "snapshot:memorylab": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/snapshot-memory-lab.ps1",
         "baseline:memorylab": "node scripts/memory-lab-phase0.mjs",
         "test:image": "node tests/image-agent-test.mjs",
-        "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build; nVDB: cd src/nVDB && npm run build)"
+        "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build)"
     },
     "dependencies": {
         "@mozilla/readability": "^0.6.0",
