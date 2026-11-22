@@ -35,7 +35,22 @@ GATEWAY_HTTP_URL=http://localhost:3400
 
 Model routing is handled by the LLM Gateway. See the Gateway's configuration for task-to-model mapping.
 
-### 4. Start the server
+### 4. Run the retrieval service
+
+Semantic search (`vdb.*`, `storage.search`) and memory recall talk to a
+standalone **`nvdb serve`** process at `http://127.0.0.1:3510`
+(`agents.vdb.serviceUrl` in `config.json`). Start it before the server:
+
+```bash
+nvdb serve --dir <index-path> --host 127.0.0.1 --port 3510 --reranker-model <modelDir>
+```
+
+The MCP server holds no vector engine itself — no native addon, no ONNX runtime
+in Node. It aborts at startup if `nvdb serve` is unreachable, or if reranking is
+enabled in `config.json` while the serve reports no loaded reranker. Details:
+`documentation/tools/vdb.md`.
+
+### 5. Start the server
 
 ```bash
 npm start
@@ -43,7 +58,7 @@ npm start
 
 The MCP endpoint is available at `http://<HOST>:<PORT>/sse/compact` (SSE) or `http://<HOST>:<PORT>/mcp/compact` (streamable HTTP). Both serve the single unified `tools` tool — all agent methods are invoked through it via `agent.action` routing.
 
-### 5. Connect a client
+### 6. Connect a client
 
 In VS Code `mcp.json`:
 

@@ -1,8 +1,9 @@
 # Memory System — memory + dreaming agents
 
 Reference documentation for the persistent memory system. Last verified
-2026-09-22 against `src/agents/memory/index.js`, `src/agents/dreaming/index.js`,
-and both agents' `config.json`.
+2026-11-22 against `src/agents/memory/index.js`, `src/agents/dreaming/index.js`,
+both agents' `config.json`, and the vdb agent's nVDB v2 HTTP surface at `main`
+(`24ac535`).
 
 ## What it is
 
@@ -26,26 +27,28 @@ dreaming deduplicates and organizes.
 | Store | Path | Role |
 |---|---|---|
 | **nDB** (document store) | `data/memories/data.jsonl` | Memory metadata: id, description, category, confidence, timestamp, data, embedStatus. Append-only JSONL, immediate persistence, soft-delete via tombstones. |
-| **nVDB** (vector index) | `data/candidates/wizkid-hybrid-rerank/nvdb`, collection `memory` | One vector per memory (embeds description + data). Hybrid (dense + BM25) and reranked. Owned by the vdb agent; memory accesses it via `dependsOn: "vdb"` → `getCollection('memory')`, `embeddingPath`, `reranker`, `hybrid`, `rerank`. |
+| **nVDB** (vector index) | `memory` collection in the shared `nvdb serve` (`agents.vdb.serviceUrl`, default `http://127.0.0.1:3510`) | One vector per memory (embeds description + data). Hybrid (dense + BM25F) and Level-2 reranked. There is no addon in Node: memory receives the vdb agent's HTTP client via `dependsOn: "vdb"` plus the effective `embeddingPath`, `queryInstruct`, `fuzzyEdits`, `relevanceFloor`, `rerankerLoaded`, `hybrid` and `rerank` settings. The collection's on-disk location belongs to the serve, not this repo. |
 
-- `EMBEDDING_DIM = 2560` (must match vdb agent + the index's vector space).
-- **Vector space**: memory embeds through `agents.vdb.embeddingPath`
-  (`/v1/embeddings`, llama-based Qwen3-Embedding-4B) for every call — store,
-  update, heal, recall query. The route must serve the model that produced the
-  index's vectors; a different model is a different vector space and would
-  silently poison the index. The shared client rejects any path that is not
-  `/v1/embeddings…`.
-- **Payload written per memory**: `{ id, description, data, content }` —
-  `content` is the exact embedded text (description + data, capped), which is
-  what the reranker scores and the lexical lane reads.
-- nDB indexes: `id`, `category`, `embedStatus` + full-text indexes on
-  `description` and `data` (nDB v1.3).
+- **Vector space**: 2560-dim `qwen3-embedding-4b`, embedded through
+  `agents.vdb.embeddingPath` (`/v1/embeddings`, hosted on Fatten / nBed) for
+  every call — store, update, heal, recall query. The route must serve the
+  model that produced the index's vectors; a different model is a different
+  vector space and would silently poison the index. Query text is prefixed with
+  the Qwen3 Instruct (`agents.vdb.queryInstruct`) via `formatQueryForEmbedding`.
+- **Document written per memory** (`memoryToV2Doc`): a full nVDB v2 document —
+  `id` = `parent_id` = `mem_<n>`, `chunk_index: 0`, `kind: 'memory'`,
+  `title` = description, `path` = `memory/<n>`, `body` = description + data,
+  `acl` = principals, `metadata { memId, category, confidence }`, 1 KB
+  `excerpt`, plus `content_hash` / `envelope_hash` from `v2-hash.js`. The
+  embedded text is description + data capped at `maxMemoryChars`.
+- nDB indexes: `id`, `category`, `embedStatus` (nDB v1.3).
 - **Init fail-fast probe**: memory opens a throwaway in-memory nDB and verifies
   the delta-op index fix (v1.3, commit 0ea6afd). A stale nDB binary throws at
   startup ("rebuild the nDB submodule") rather than silently poisoning
   pending-memory lookups.
-- Init also cleans **orphaned vectors**: soft-deleted nDB docs whose vectors
-  lingered in nVDB are removed and flushed.
+- **Init reconciliation**: `syncMemories()` compares nDB documents against
+  `GET /v2/collections/memory/fingerprints` and upserts changed / deletes
+  vanished ids in 200-document batches, then commits — nDB stays authoritative.
 - Legacy `data/memories.json` (37MB, inline embeddings) is a cold backup only —
   never read or written at runtime.
 
@@ -86,100 +89,64 @@ tool response. Success → vector inserted, `embedStatus: 'embedded'`. Failure �
 `embedError` recorded; the overview self-heal or `memory.embed_heal` retries
 later.
 
-### Recall (hybrid, reranked)
+### Recall (hybrid, reranked — one path)
 
-Two retrieval modes, chosen by `agents.vdb.hybrid.enabled`:
+`memory.recall` has exactly one retrieval path (the old vector-only rollback
+mode is gone). Per recall:
 
-**Hybrid mode (production).** One nVDB call per recall:
-
-1. Query embedded through the index's route (foreground, truncated to 6000 chars).
-2. `hybridSearch` / `hybridSearchReranked` with `text = query`, dense + BM25
-   lanes fused at `rrfK`, `candidateK`, per-document diversity on `id`,
-   over-fetched at `topK = max(limit × 5, 25)`.
-3. When a reranker is loaded, the top `shortlist` (10) are scored by the ONNX
-   cross-encoder on payload field `content` and re-fused at `weight` 0.2.
-4. Hits join nDB by `_id`; **the nVDB order is kept** — confidence must not
-   reorder the measured ranking (it is still displayed). The printed percentage
-   is the **cross-encoder relevance score**, not a similarity and not a rank
-   position: RRF puts the reranked head on one scale (`~1/61`) and the unscored
-   tail on another (`~1/11`), and rank position says nothing about whether a
-   result is relevant. Rows past the rerank shortlist have no measured
-   relevance and print `n/a`.
+1. `resolveSearchOptions` selects lanes, weights and profile (adaptive
+   query-shape RRF — see
+   [vdb.md](vdb.md#adaptive-query-shape-rrf-search-optionsjs)).
+2. Query embedded through `agents.vdb.embeddingPath` (`/v1/embeddings`,
+   `qwen3-embedding-4b`, 2560-dim) with the Qwen3 Instruct prefix, truncated
+   at 6000 chars. If the embed fails, recall drops to the lexical lane with a
+   `⚠` header naming the error; an explicitly dense-only request throws
+   instead.
+3. One `POST /v2/collections/memory/hybrid_search` with `text = query`,
+   `candidate_k` 200, `rrf_k` 20, `fuzzy_edits` 1, per-document diversity on
+   `parent_id` (`group_by_parent: { max_per_parent: 2 }`), a native promoted
+   `category` filter when `category` is given, and
+   `top_k = max(limit × 3, rerank ? effectiveShortlist : limit, 20)`.
+4. Hits hydrate from nDB by `_id`; tombstoned/missing docs are dropped before
+   reranking.
+5. When a reranker is loaded, `POST /v2/collections/memory/level2` scores the
+   shortlist — `max(limit, agents.vdb.rerank.shortlist)` (12) unless the
+   request passes `search.shortlist` — at the adaptive `rerank_weight` (0.2
+   for `exact-id` / `exact-short`, 0.6 otherwise) with `relevance_floor`
+   0.05.
+6. **The nVDB order is kept** — confidence is displayed, never used to
+   reorder. The printed percentage is the **cross-encoder relevance score**,
+   not a similarity and not a rank position; rows past the rerank shortlist
+   print `n/a`.
 
 **Rejection.** If the reranker ran and the best score in the set is below
-`agents.vdb.relevanceFloor` (0.02), recall answers "No relevant memories" and
-lists the candidates as low-relevance evidence. Measured: nonsense queries max
-at 0.0089, the weakest verified real match is 0.0453. Dense-only and
-lexical-only runs cannot reject — no calibrated signal exists. Per-row
-suppression is not applied because weak single-token queries overlap legitimate
-paraphrases (`set` 0.160 vs German `0.139`).
+`agents.vdb.relevanceFloor` (0.05), recall answers "No relevant memories" and
+lists the candidates as low-relevance evidence. Dense-only and lexical-only
+runs cannot reject — no calibrated signal exists. Per-row suppression is not
+applied because weak single-token queries overlap legitimate paraphrases.
 
 `memory.recall` also accepts `search` — per-request layer switches
-(`dense`, `lexical`, `diversity`, `rerank` + `rrfK`, `candidateK`,
+(`dense`, `lexical`, `diversity`, `rerank`, `adaptive` + `rrfK`, `candidateK`,
 `vectorWeight`, `lexicalWeight`, `maxPerDocument`, `shortlist`,
-`rerankWeight`) for A/B runs. Memory's diversity group field is `id`. The
-reply's first line names the mode that ran; invalid selections throw rather
-than falling back. Full semantics: [vdb.md](vdb.md#per-request-layer-selection-ab).
+`rerankWeight`) for A/B runs. The handler accepts it even though the agent's
+advertised schema does not list it. Memory's diversity group field is
+`parent_id` (= the memory id). The reply's first line names the mode that ran;
+invalid selections throw rather than falling back. Full semantics:
+[vdb.md](vdb.md#per-request-layer-selection-ab).
 
-#### Query echo — source intent (2026-11-20)
+**Output**: the top `limit` entries (`[#id] [category] 87.3% (vec#1/lex#4)
+conf:0.9 [has data]`), plus an `--- also found ---` one-line tier for further
+hits whose rerank score is ≥ `SCORE_FLOOR` (0.35).
 
-A memory whose text contains the **whole query verbatim** is a record *about*
-the query — a verification run, a status log — not an answer to it. Such a
-record is demoted by `agents.memory.queryEchoPenalty` (default `0.5`) and marked
-`·echo`; it is never removed.
+The shared embed client (`src/embed-client.js`) guards every vector: non-finite
+or zero-norm vectors are rejected, and a byte-identical vector reused for a
+different input is rejected even across separate requests. Rejected stores
+remain `embedStatus: 'pending'` for the normal self-heal path rather than
+persisting a known-bad vector.
 
-Measured case: the query `Prototype Fund 47.5k application November 30 funding`
-was quoted verbatim inside verification memory #7137, which therefore ranked 1
-in **every** mode — full hybrid+rerank, dense-only and lexical-only — above
-#6830, the funding memory that answers it. The cross-encoder rejects the echo
-(0.0007 against #6830's 0.62), but RRF cannot express a 700× margin: every
-candidate below #6830 scores inside a ~1e-5 noise band (0.000866 … 0.000187), so
-the echoed record's rank there is arbitrary and raising the rerank weight only
-moves a coin-flip tie (`w=0.5` leaves a 0.0004 gap; a shift inside the noise
-band flips it back). The echo itself is categorical — exactly one candidate
-matches — so it is tested directly instead of re-weighting the lane.
-
-Minimum probe length is 4 tokens (shorter strings are ordinary vocabulary, not
-a quotation). Golden: `npm run gate:nvdb` asserts #6830 rank 1 and that the
-demoted record is still returned.
-5. The nDB full-text leg still runs and appends any doc the index never returned,
-   marked `·lex` at `LEXICAL_BASE` — it only surfaces when the index returns
-   fewer than `limit` hits.
-
-**Vector-only mode (rollback).** Cosine search over one collection and the
-original ranking merge — `LEXICAL_BOOST` for docs found by both legs, then a
-`score × (0.7 + confidence × 0.3)` sort.
-
-The nDB **lexical leg** (both modes, runs regardless of embed health):
-whole-token AND over the query's content words (≥3 chars, deduped, max 8 tokens)
-across `description` and `data`; if strict AND finds nothing, narrows on leading
-token subsets (6 → 4 tokens). **Never single-token OR** — common words match
-hundreds of docs and drown the ranking. Capped at `LEXICAL_MAX_DOCS = 50`.
-
-All memory embeddings pass through the shared client's integrity guard:
-non-finite/zero-norm vectors are rejected, and a byte-identical vector reused
-for a different input is rejected even across separate requests. A startup
-tracker also guards against collisions with vectors already stored for other
-active memories, including after process restarts. Rejected stores remain
-pending for the normal self-heal path rather than persisting a known-bad vector.
-
-Ranking merge constants:
-
-| Constant | Value | Meaning |
-|---|---|---|
-| `LEXICAL_BOOST` | 0.10 | Vector-only mode: added to the semantic score of docs that ALSO match lexically. |
-| `LEXICAL_BASE` | 0.45 | Synthetic score for lexical-only docs (semantic missed). |
-| `SCORE_FLOOR` | 0.35 | Minimum score for the compact "also found" second tier. |
-| confidence weight | `score × (0.7 + confidence × 0.3)` | Final sort key — **vector-only mode only**. |
-
-Output: top `limit` entries with descriptions (`[#id] [category] 87.3% ·lex
-conf:0.9 [has data]`), plus an `--- also found ---` one-line tier for hits ≥
-SCORE_FLOOR. Tombstoned vectors lingering in nVDB are skipped (DB.get throws →
-caught → continue).
-
-Degradation ladder (embed provider down): lexical results returned with a ⚠
-header naming the real error → if no lexical hits either, the `limit` most
-recent memories → if store empty, a "topic is new" hint. Recall never hard-fails
+**Degradation ladder**: no nvdb serve client → the `limit` most recent memories
+with a `⚠` header naming the reason → if the store is empty, a "topic is new"
+hint. Query-embed failure → lexical lane only (above). Recall never hard-fails
 on provider outages.
 
 ### Overview output tiers

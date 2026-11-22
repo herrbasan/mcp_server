@@ -1,315 +1,301 @@
-# VDB — Vector Database agent (nVDB)
+# VDB — Vector Database agent (nVDB v2 over `nvdb serve`)
 
 Reference documentation for semantic indexing and search. Last verified
-2026-11-19 against `src/agents/vdb/index.js`, `chunker.js`,
-`context-enhancer.js`, `nvdb-loader.js`, and root `config.json`.
+2026-11-22 against `src/agents/vdb/` (`index.js`, `v2-client.js`,
+`storage-connector.js`, `search-options.js`, `merge.js`, `v2-hash.js`,
+`relevance.js`, `chunker.js`), `src/agents/memory/index.js`, root `config.json`
+and `package.json` at `main` (`24ac535`).
 
 ## What it is
 
-Embedded vector search over storage files and memories, backed by the nVDB
-native module (Rust, submodule `nVDB/`). In its default mode it watches the
-storage root, chunks text files, enriches them with LLM-generated metadata,
-embeds them through the gateway, and serves cosine similarity search. It also
-owns the `memory` collection the memory agent writes into.
+Retrieval runs on a standalone `nvdb serve` process, reached over localhost
+HTTP at `agents.vdb.serviceUrl` (default `http://127.0.0.1:3510`).
+`src/agents/vdb/v2-client.js` is a thin HTTP/1.1 client: any non-2xx response
+throws `NvdbHttpError` with the server's status and structured `code` — no
+retries, no silent fallbacks, and an unreachable serve names the URL in the
+error.
 
-**Production mode (2026-11-19) is a snapshot index with hybrid retrieval and a
-reranker** — see *Production retrieval* below. Scanning is off there.
+**There is no vector engine in this repository.** No `.node` addon, no NAPI
+load path, no ONNX runtime inside Node — the cross-encoder runs inside
+`nvdb serve` and only its scores cross the HTTP boundary. `package.json` has no
+database or inference dependency for retrieval; the `nDB/` submodule serves the
+memory *document* store only.
+
+The shared `nvdb serve` also hosts the chat app's `chat` collection.
+`mcp_server` creates and uses exactly two collections:
+
+| Collection | Filled by | Contents |
+|---|---|---|
+| `storage` | storage connector (this agent) | Chunk documents of text files under `agents.storage.root`. |
+| `memory` | memory agent | One document per memory, `category` promoted as a native filter field. |
+
+### Startup contract
+
+1. `GET /health` must answer `ok`, otherwise `init` throws naming
+   `agents.vdb.serviceUrl`.
+2. With `agents.vdb.rerank.enabled: true`, health must report
+   `reranker_loaded: true`; otherwise startup aborts loudly
+   (`Start nvdb serve with --reranker-model.`). Serving without the reranker
+   would be a different, unmeasured system.
+3. Both collections are created idempotently with `store_excerpt: true`, a
+   2560-dim cosine vector lane (`model_version: agents.vdb.modelVersion`,
+   `flat_search_cutoff: 50000`), and — for `memory` — a promoted `category`
+   field.
+4. With `agents.vdb.autoSync` and `storageConnector` present, a storage sync
+   timer runs every `scanIntervalMinutes` (5). **No sync runs at init**;
+   `vdb.trigger_scan` is the manual entry point.
 
 ## Tools
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `vdb.search` | `query*`, `collections?` [`storage`,`memory`], `folder?` (storage-relative directory), `extension?` (`md`, `.md`, `MD` — one suffix, normalized), `top_k?` (default 10), `approximate?`, `include_content?`, `search?` | Ranked results: path, score, normalizedScore, folder, contentHash, chunk coordinates; `include_content` slices the exact chunk text from disk. **Filename-like queries bypass embeddings** (query contains `\` or matches `^\S+\.[a-z0-9]{1,8}$`) → substring match over indexed paths, exact names first, cap 20. **Filters are normalized and strict**: all spellings of one extension are the same request, an impossible spelling throws, and a filter never returns a non-match. |
-| `vdb.status` | — | JSON: availability, full effective config, per-collection stats (docs, segments, hasIndex, watched), lastScanAt, isScanning, lastScanStats. |
-| `vdb.trigger_scan` | — | Synchronous re-scan with progress. Returns added/updated/removed/skipped/errors (pending if interrupted). |
-| `vdb.build_index` | `collections?` | Flush + rebuild HNSW approximate index per collection. |
+| `vdb.search` | `query*`, `collections?` (default `['storage','memory']`), `folder?` (first path segment, storage only), `extension?` (`md`, `.md`, `MD`), `top_k?` (default 10), `include_content?`, `search?` | Ranked results across collections with `collection`, `path`, `title`, `folder`, `rrfScore`, `rerankScore`, lane scores/ranks. The reply's first line is the effective mode (`mode: layers=… profile=… rrfK=… candidateK=… …`). Rejection replaces the list with "No relevant vdb matches" plus the candidate evidence. |
+| `vdb.status` | — | `GET /health` + collection list + a pending-embedding sample per collection, `syncInProgress`, `lastSync` (files, chunks, upserted, deleted, unchanged, attached/stale counts, duration). |
+| `vdb.trigger_scan` | — | Runs one storage sync now: enumerate → BLAKE3 envelope diff → upsert/delete → commit → drain pending embeddings. Returns the sync stats; refuses (returns `skipped`) when a sync is already running. |
+| `vdb.build_index` | — | Commits every collection. v2 needs no HNSW build — the serve scans flat SIMD below `flat_search_cutoff` and uses its own index above it. |
 
-An exported internal `searchDocuments(...)` (not advertised as a tool) is what
-`storage.search` and other agents call.
+An exported internal `searchDocuments(...)` is what `storage.search` uses;
+`describeSearchRequest` / `describeRejection` build the reply's mode line and
+rejection text.
 
-## Collections
+## Storage sync pipeline (`storage-connector.js`)
 
-| Collection | Filled by | Contents |
-|---|---|---|
-| `storage` | vdb scan cycle | Chunk embeddings of text files under `agents.storage.root` (default: whole `D:\MCP_Storage`). |
-| `memory` | memory agent | One vector per memory. Pre-opened here, never scanned by this agent. |
-| `__enhancement_cache` | vdb internally | Zero-vector doc cache of LLM context-enhancement results, keyed by content hash. |
+1. **Enumerate** the storage root with `fs.promises.readdir`. No blocking I/O
+   storm: every 50 ms of work yields with `setImmediate`.
+2. **Filter**: extension must be in `agents.vdb.textExtensions`; names in
+   `agents.vdb.ignore` and per-directory `.nvdb_ignore` patterns (name, `*`,
+   simple `*`/`?` globs) are skipped, as are dot-files; files above
+   `maxFileSizeBytes` (10 MB) are skipped.
+3. **Chunk** with `chunker.js` — structure-aware: heading-led blocks first,
+   then blank-line paragraphs, and only a block larger than the cap falls back
+   to a hard char window (newline/space break preferred). Sizes:
+   `chunkMaxTokens` (1024) × `chunkTokCharsRatio` (2.5) ≈ 2560 chars per chunk,
+   `chunkOverlapTokens` (128) × 2.5 ≈ 320 chars overlap on hard splits. Every
+   chunk carries exact `charOffset` / `charLen`.
+4. **Build documents** (`id`, `parent_id`, `chunk_index`, `kind`, `title`,
+   `name`, `path`, `headings`, `categories`, `tags`, `body`, `folder`, `ext`,
+   `mime`, `status`, timestamps, `acl: principals`, `metadata {charOffset,
+   charLen, splitIdx, isLastChunk}`, 1 KB `excerpt`). `id` is
+   `<relPath>#<chunkIndex>`, `parent_id` is the relative path, `title` comes
+   from YAML frontmatter `title`, else the first H1, else the filename.
+5. **Diff by envelope hash**: `v2-hash.js` is a dependency-free BLAKE3 +
+   canonical-JSON implementation that mirrors the Rust
+   `compute_content_hash` / `compute_envelope_hash` (golden-tested by
+   `tests/v2-hash.test.mjs`). Documents whose `envelope_hash` matches the
+   server's `GET /v2/collections/:name/fingerprints` entry are skipped.
+6. **Write without vectors**: changed documents are upserted in 200-document
+   batches with `commit: false`; ids that vanished from disk are deleted the
+   same way; one `commit` at the end. The index is at once lexically complete
+   and vector-pending.
+7. **Drain pending embeddings**: `GET
+   /v2/collections/storage/pending_embeddings` (pages of ≤128, up to 500 per
+   pass) → re-read the source file and rebuild the chunk → verify its
+   `content_hash` still matches (stale/missing sources are skipped, not
+   embedded) → `gateway.embedBatch` (batches of `maxBatchTexts`, 8) →
+   `POST /v2/collections/storage/attach_vectors` with a compare-and-set on
+   `content_hash`, so a file that changed mid-drain cannot get a foreign
+   vector.
 
-## Indexing pipeline (scan cycle)
+`lastSync` reports `{ files, chunks, upserted, deleted, unchanged, attached,
+staleSkipped, missingSkipped, durationMs }`.
 
-1. **Schedule**: `setInterval` every `scanIntervalMinutes` (**5**); initial scan
-   2 s after init; a scan-timeout guard (30 min) force-releases hung scans.
-2. **Enumerate** watched files: walk the storage root. Config
-   `watch.storage.enabled: true`. Per-directory `.nvdb_ignore` files (patterns:
-   name, `*`, simple `*`/`?` globs) merge with config-level
-   `ignore: ["forge","temp","_trash",".backups"]`. Only `textExtensions`
-   (.md .txt .json .js .mjs .css .html .htm .log .yaml .yml .xml .csv .tsv
-   .sql); files > 10 MB (`maxFileSizeBytes`) skipped.
-3. **Change detection**: SHA-256 per file, every scan — mtime deliberately
-   ignored (sync tools defeat it). Unchanged → skip.
-4. **Dedup**: identical content stored once; later copies become aliases
-   (`duplicateOf`), never embedded.
-5. **Chunk** (structure-aware): heading-led blocks first, then blank-line
-   paragraphs, then hard char windows with newline/space break preference.
-   maxChars = `chunkMaxTokens (1024) × chunkTokCharsRatio (2.5)` = 2560;
-   overlap = `chunkOverlapTokens (128) × 2.5` = 320 chars.
-6. **Context enhancement** (enabled): per file, gateway `predict` with task
-   `local` (temperature 0.3, maxOutputTokens 1536, 30 s timeout) produces
-   `{summary, keywords, entities, docType}`, cached by content hash. The
-   header `[Type: … | Keywords: … | Summary: …]` is prepended to chunk text
-   **for embedding only**. Input truncation `headmidtail` at 60 000 chars.
-   Failures are best-effort (metadata flags `contextEnhanced: false`).
-7. **Embed in batches**: via `gateway.embedBatchBackground` (background tier).
-   Batches capped by `batchTokenLimit` 29 000 est. tokens (len/2.5) and
-   `maxBatchTexts: 4` (config override; code default 32), 100 ms delay between
-   batches, 100 files per group. The shared embed client rejects non-finite /
-   zero-norm vectors and byte-identical vectors reused for different inputs,
-   including across separate single/batch requests and against vectors already
-   stored for active scan-index chunks; existing inputs are reconstructed lazily
-   from the configured storage root on a collision. Batch responses are mapped
-   by their required OpenAI `index`. The VDB adds a duplicate first-8-dims
-   within-batch guard. Network-class
-   errors abort the scan (retry next cycle); others retry once with a
-   recursive half-split fallback. After every successful batch, each file whose
-   complete chunk set has arrived is persisted immediately; a later network
-   failure therefore leaves earlier files indexed. The error names the exact
-   persisted count and pending file list instead of discarding the whole group.
-8. **Persist**: `coll.insert(docId, vector, payload)` per completed file, not
-   all-or-nothing per 100-file group. docId
-   `<collection>:<relPath>` (+`#i` per chunk). Scan index at
-   `data/nvdb/scan-index.json` records path, contentHash, mtime, size, chunk
-   count, indexedAt, metadata per file.
-9. **Compaction** after each collection: deleted files pruned, then
-   `coll.compact()` (deliberately without flush — tombstones must stay in the
-   memtable).
-10. **Main-thread yielding**: `setImmediate` every 50 ms of synchronous work —
-    scans never block the server's tool loop.
+## Search path
 
-## Search mechanics
+1. **Query embedding** (dense lane on): `formatQueryForEmbedding` prepends
+   `agents.vdb.queryInstruct` (`Given a web search query, …`), then
+   `gateway.embed(..., { path: agents.vdb.embeddingPath })` → Gateway
+   `POST /v1/embeddings` serving `qwen3-embedding-4b` (2560-dim, hosted on
+   Fatten / nBed).
+2. **Per collection, concurrently** (`Promise.all`):
+   `POST /v2/collections/:name/hybrid_search` with the lexical text,
+   `candidate_k` 200, `rrf_k` 20, `fuzzy_edits` 1, the resolved lane weights,
+   `group_by_parent { max_per_parent: 2 }` when diversity is on, and native
+   columnar `filters { folder, ext }` for `storage`.
+3. **Level-2 rerank** per collection when rerank is on (see below).
+4. **Merge** across collections (`merge.js`, see below).
+5. `include_content` re-derives the exact chunk text from disk through the
+   connector.
+6. `assessRelevance` turns the result set into a rejection when the best
+   cross-encoder score sits below the floor.
 
-Query embedded foreground (dim validated 2560) → per-collection search with
-over-fetch `fetchK = max(top_k × 3, 30)` → **min-max score normalization per
-collection** before merging (cross-collection comparability) → dedup by id and
-by `contentHash#splitIdx`, per-file cap 3 chunks → sort by normalizedScore →
-cut at `top_k`.
+### Adaptive query-shape RRF (`search-options.js`)
 
-## Production retrieval — snapshot index, hybrid, rerank
+`agents.vdb.hybrid` supplies the defaults — `rrfK: 20`, `candidateK: 200`,
+`maxPerDocument: 2`, `diversityField: parent_id` — and `adaptive: true` lets
+the query shape pick the lane weights for that request:
 
-`agents.vdb.dbPath` points at a fixed candidate index
-(`data/candidates/wizkid-hybrid-rerank/nvdb`). Three config switches make it
-what it is:
+| Profile | When | `lexicalWeight` | `vectorWeight` | `rerankWeight` |
+|---|---|---|---|---|
+| `exact-id` | one token that is a hash, filename/path, or code symbol | 1.0 | 0.2 | 0.2 |
+| `exact-short` | ≤2 tokens with a hash or file/path token | 1.0 | 0.3 | 0.2 |
+| `mixed-exact` | prose containing an exact token or a quoted phrase | 0.5 | 1.0 | 0.6 |
+| `single-term` | one plain token | 0.8 | 1.0 | 0.6 |
+| `semantic` | everything else (prose, questions, typos, cross-lingual) | 0.3 | 1.0 | 0.6 |
 
-| Setting | Value | Effect |
-|---|---|---|
-| `snapshot` | `true` | No scanner, no initial scan, no compaction, no `__enhancement_cache`, no context enhancer. The index is a fixed artifact; `vdb.trigger_scan` refuses with an explanation instead of re-embedding it. |
-| `embeddingPath` | `/v1/embeddings` | Every embed this agent issues (query, batch, background) goes to that Gateway route. It must serve the model that produced the index's vectors — currently llama-based Qwen3-Embedding-4B, dim 2560. `/v1/embeddings/wizkid` is the same model on another machine; any other model is a foreign vector space. |
-| `hybrid` | see below | Dense + BM25 lanes fused by RRF, per-document diversity. |
-| `rerank` | see below | ONNX cross-encoder over the hybrid shortlist. |
+Pure identifiers let the lexical lane lead; prose keeps both lanes strong.
+`rrfK` stays 20 in every profile.
 
-```json
-"hybrid": { "enabled": true, "rrfK": 10, "candidateK": 200, "vectorWeight": 1.0,
-            "lexicalWeight": 1.0, "diversityField": "path", "maxPerDocument": 2 },
-"rerank": { "enabled": true, "modelPath": "...\\atelasi-multilingual-reranker-small\\model.onnx",
-            "tokenizerPath": "...\\tokenizer.json", "textField": "content",
-            "maxLength": 64, "batchSize": 10, "shortlist": 10, "weight": 0.2 }
-```
+**Precedence**: classification only runs while both lanes are on and the query
+is non-empty. An explicit per-request `search` override always wins — passing
+`vectorWeight`, `lexicalWeight`, `rrfK` or `rerankWeight` marks the run
+`profile: explicit`, and `adaptive: false` keeps the config weights
+(`profile: static`).
 
-- **Reranker fails loudly at startup.** A missing `model.onnx`/`tokenizer.json`,
-  or an addon built without `--features rerank-onnx` (no `Reranker` export),
-  aborts `vdb.init` with the path or the feature name. Serving without the
-  reranker would be a different, unmeasured system.
-- **Ordering is the native call's.** `hybridSearchReranked` returns the
-  reranked head first and the unscored tail after it, but the tail keeps its
-  larger raw RRF score — so `searchDocuments` must NOT re-sort by raw score in
-  hybrid mode. It derives `normalizedScore` from rank position instead;
-  re-sorting by score promoted the tail over the head (caught by the golden
-  gate, 2026-11-19).
-- **Snapshot payload schema is the builder's**, not the scanner's:
-  `{ path, title, content }` per chunk (memory: `{ id, description, data,
-  content }`). Consequences:
-  - `include_content` returns `payload.content` (the exact embedded chunk).
-  - `absolutePath` is resolved from `payload.path` under `agents.storage.root`.
-  - `splitIdx` comes from the `#N` id suffix.
-  - `folder` / `extension` filters cannot use an nVDB payload filter (those
-    fields do not exist) — they are applied client-side over the over-fetched
-    result set.
-- **Known upstream shape**, left as is: reranked `score` is a fusion against
-  nVDB's fixed k=60, while lane fusion uses `rrfK`, and results past the
-  rerank shortlist keep their lane score. Raw scores are therefore **not
-  monotonic across the shortlist boundary** — never sort or threshold on them.
-  `normalizedScore` and memory's recall percentage both come from rank position.
+### Level-2 reranking
 
-## Multi-collection merge
+`POST /v2/collections/:name/level2` runs the ONNX cross-encoder inside
+`nvdb serve` over the fused shortlist and returns its score per hit.
+
+- `shortlist`: when the caller passes `search.shortlist` that exact value is
+  used; otherwise the effective shortlist is `max(top_k, agents.vdb.rerank
+  .shortlist)` — with `top_k` 10 and `shortlist` 12, twelve candidates.
+- `rerank_weight`: the adaptive profile weight (0.2 for `exact-id` /
+  `exact-short`, 0.6 otherwise); config default `0.6`.
+- `relevance_floor`: `agents.vdb.relevanceFloor` (0.05) is sent with every
+  request.
+
+The displayed percentage is the **cross-encoder score**, never a rank position.
+Rows past the rerank shortlist carry no measured relevance and report none.
+
+### Filters (`folder`, `extension`)
+
+Both are now **native** `hybrid_search` filters for the `storage` collection
+(the documents carry `folder` and `ext` fields), not a client-side pass over an
+over-fetched set:
+
+- `extension` is trimmed, one leading dot removed, must be alphanumeric, and is
+  lowercased — `md`, `.md`, `MD` are the same request; junk (`md.`, `..md`,
+  empty) throws.
+- `folder` is trimmed of leading/trailing slashes and must not be empty; it
+  matches the document's first path segment.
+- `memory` documents have no `folder`/`ext`, so those filters apply to the
+  `storage` collection only.
+
+### Relevance and rejection
+
+`src/agents/vdb/relevance.js` owns the confidence gate:
+
+- Floor from `agents.vdb.relevanceFloor` (effective 0.05; the code default is
+  0.02 when the key is absent). A value outside `(0, 1)` throws.
+- **Set-level rejection**: when reranking ran and the best cross-encoder score
+  in the set is below the floor, the answer is an explicit "no relevant
+  matches" with the candidates listed as low-relevance evidence — not a ranked
+  list. Applies to `vdb.search`, `storage.search` and `memory.recall`.
+- **No rejection without a reranker**: dense-only and lexical-only runs have no
+  calibrated signal, so they report no confidence instead of guessing one.
+- **No per-row suppression**: weak single-token queries overlap legitimate
+  paraphrases, so rows below the floor stay visible with their true near-zero
+  percentage.
+
+## Multi-collection merge (`merge.js`)
 
 `searchDocuments` embeds the query once and queries every requested collection
-concurrently (`Promise.all`); `mergeCollectionResults`
-(`src/agents/vdb/merge.js`) then decides only **how collections interleave**.
+concurrently. The merge decides only **how collections interleave**:
 
-- **A collection's own order is authoritative** — rows arrive from
-  `nvdb serve` in its blended order (level-2 head, then the unscored tail), and
-  1-based `rank` is `index + 1` inside that list. The merge never re-sorts one
-  collection's rows by raw score: `b.rerankScore - a.rerankScore` promoted a
-  lower-ranked doc above its own collection's winner (caught on
+- **A collection's own order is authoritative.** Rows arrive in
+  `nvdb serve`'s blended order; 1-based `rank` is `index + 1` inside that list.
+  Re-sorting one collection's rows by raw score promoted a lower-ranked doc
+  above its own collection's winner (caught on
   `documentation/Workshop/Agents_Prime.md`, 2026-11-22).
-- **Rank prior with collection strength**: `mergeScore = 1/(5+rank) ×
-  (0.35 + 0.65 × strength)`, where `strength` is the collection's
-  `best_rerank_score` clamped to `0…1`. A strong collection takes several top
-  slots before a weak one contributes; two equally strong collections
-  interleave (ties by rank, then by rerank score). Without a reranker
-  (`rerankActive: false`) `mergeScore = 1/(5+rank)`, ties by `rrfScore`.
+- **Rank prior with collection strength**:
+  `mergeScore = 1/(5 + rank) × (0.35 + 0.65 × strength)`, where `strength` is
+  the collection's best rerank score clamped to `0…1`. A strong collection
+  takes several top slots before a weak one contributes; ties fall back to
+  strength, then rank, then `rerankScore`. Without a reranker
+  (`rerankActive: false`) `mergeScore = 1/(5 + rank)` and ties use `rrfScore`.
 - **Rejected collections are dropped** when any other collection has accepted
   hits, so rejected junk never appears next to real matches. When *every*
-  collection was rejected the rows are preserved, so `assessRelevance` still
-  reports the rejection with its evidence. One requested collection (or one
-  survivor) returns its rows verbatim.
-- Coverage: `tests/vdb-merge.test.mjs` (run by `npm run test:v2`);
-  `node scripts/eval-realworld-e2e.mjs` measures the multi-collection path
-  end-to-end.
+  collection was rejected the rows are preserved so the rejection has
+  evidence. A single collection (or a single survivor) returns its rows
+  verbatim, cut at `top_k`.
+
+Coverage: `tests/vdb-merge.test.mjs` (run by `npm run test:v2`);
+`node scripts/eval-realworld-e2e.mjs` exercises the multi-collection path
+end-to-end.
 
 ## Per-request layer selection (A/B)
 
-`vdb.search` and `storage.search` accept `search` — an override object applied
-to that one request (config stays the default). The effective mode is the first
-line of the reply, so an A/B run is attributable from the transcript.
+`vdb.search` and `storage.search` (and the `memory.recall` handler) accept
+`search` — an override object applied to that one request; config stays the
+default. The effective mode is the first line of the reply, so an A/B run is
+attributable from the transcript.
 
 ```json
 { "rerank": false }
 { "dense": true, "lexical": false }
+{ "adaptive": false }
 { "rrfK": 30, "candidateK": 400, "rerankWeight": 0.5 }
 ```
 
-| Key | Type | Layer it switches |
+| Key | Type | Layer / knob |
 |---|---|---|
 | `dense` | bool | vector lane |
-| `lexical` | bool | BM25 lane over the index's lexical fields |
-| `diversity` | bool | per-document cap inside the native call |
-| `rerank` | bool | ONNX cross-encoder over the fused shortlist |
+| `lexical` | bool | BM25F lane over the index's lexical fields |
+| `diversity` | bool | per-parent cap inside the native call (`group_by_parent`) |
+| `rerank` | bool | Level-2 ONNX cross-encoder over the fused shortlist |
+| `adaptive` | bool | query-shape weight selection |
 | `rrfK`, `candidateK`, `vectorWeight`, `lexicalWeight`, `maxPerDocument`, `shortlist`, `rerankWeight` | numbers | the knobs those layers use |
 
 Semantics worth knowing:
 
-- **Single-lane ordering.** Both lanes still run inside the native call; the
-  request fetches headroom (`fetchK × 4`), drops the other lane's hits, and
-  orders by the kept lane's rank — or keeps the fused rerank order when
-  reranking is on, because that order is the measured artifact.
-- **`dense: false` never touches the embedder.** The native fusion requires a
-  vector, so a zero vector is passed (the cosine guard scores it 0.0 against
-  every document) with the vector lane weight forced to 0, and the lane's hits
-  are dropped. Lexical-only therefore works while the embedding service is
-  down, and its latency is genuinely lexical-only (~220 ms vs ~280 ms).
+- **`dense: false` never calls the embedder.** The native call is told
+  `dense: false`; lexical-only therefore keeps working while the embedding
+  service is down.
 - **Strict, never silent.** Unknown keys, wrong types, out-of-range numbers,
-  `dense: false + lexical: false`, a zero weight on an enabled lane, or
-  `rerank: true` with no reranker loaded all throw with the reason. A request
-  never quietly runs the default search.
-- Layer selection needs `agents.vdb.hybrid.enabled`; on the vector-only index
-  (`data/nvdb`) passing `search` is an error.
+  `dense: false + lexical: false`, a zero weight on an enabled lane, a
+  `diversity` request on a collection without a group field, or `rerank: true`
+  with no reranker loaded all throw with the reason. A request never quietly
+  runs the default search.
+- Layer selection requires `agents.vdb.hybrid.enabled`.
 
-### Filters (`folder`, `extension`)
+## Config (`agents.vdb`, effective)
 
-On the snapshot index both filters are applied in `searchDocuments` after the
-native call, because the snapshot payload has no `folder`/`extension` fields.
-That makes two things the caller can rely on:
+```json
+{
+  "enabled": true,
+  "serviceUrl": "http://127.0.0.1:3510",
+  "principals": ["default"],
+  "modelVersion": "qwen3-embedding-4b",
+  "embeddingPath": "/v1/embeddings",
+  "queryInstruct": "Given a web search query, retrieve relevant passages that answer the query",
+  "fuzzyEdits": 1,
+  "relevanceFloor": 0.05,
+  "autoSync": true,
+  "scanIntervalMinutes": 5,
+  "embeddingDim": 2560,
+  "chunkMaxTokens": 1024,
+  "chunkOverlapTokens": 128,
+  "chunkTokCharsRatio": 2.5,
+  "maxFileSizeBytes": 10485760,
+  "maxBatchTexts": 8,
+  "ignore": ["forge", "temp", "_trash", ".backups", "charts", "prints", "item.json", "meta.json"],
+  "hybrid": { "enabled": true, "adaptive": true, "rrfK": 20, "candidateK": 200,
+              "lexicalWeight": 0.3, "vectorWeight": 1.0,
+              "diversityField": "parent_id", "maxPerDocument": 2 },
+  "rerank": { "enabled": true, "shortlist": 12, "weight": 0.6 }
+}
+```
 
-- **One spelling per extension.** `md`, `.md`, `MD`, ` .MD ` are the same
-  request; anything that cannot be one bare suffix (`md.`, `..md`, `''`, `'.'`,
-  `-md`) throws. `folder` is trimmed of a leading `./` and trailing slashes, and
-  a `..` segment throws. Both are contract errors, never an empty result.
-- **The pool is deepened, not the answer truncated.** A client-side filter can
-  reject most of the candidate set, so a filtered request fetches
-  `max(top_k*3, candidateK)` candidates before filtering. At the old depth a
-  lane's matching hits sat below the cut — and, because the cut follows a
-  near-tie rerank order, two identical requests could disagree.
+The collection storage location belongs to the serve (`nvdb serve --dir …`),
+not to this repo. `data/nvdb/` and `data/candidates/` are leftovers from the v1
+and snapshot-index eras; nothing in the running agent reads them.
 
-`npm run gate:nvdb` covers both: spelling equivalence across hybrid, dense-only
-and lexical-only, "only matches are returned", "the filter never invents a hit
-the lane's own pool does not contain", and rejection of five invalid spellings.
+## Verification
 
-Boundary worth knowing: a filtered single lane can legitimately return nothing
-while another lane has matches — the filter is only as good as that lane's
-candidates. Measured: for `A Little Religion v6 final` the raw dense lane
-returns 800 rows with **zero** `.md` (the two religion hits are
-`ledger.json`), while lexical returns the book. That is dense-lane coverage,
-not a filter defect.
+| Command | Covers |
+|---|---|
+| `npm run test:v2` | `tests/v2-hash.test.mjs` (BLAKE3/envelope golden vectors), `tests/search-options.test.mjs` (layer resolution, adaptive profiles, strict errors), `tests/vdb-merge.test.mjs` (rank-preserving merge, rejected-collection drop), `tests/nvdb-v2-e2e.test.mjs` (full local `nvdb.exe serve --reranker-model` E2E). |
+| `node scripts/eval-hybrid-fusion.mjs` | Live golden-query fusion benchmark against the running serve. |
+| `node scripts/eval-realworld-e2e.mjs` | Multi-collection end-to-end quality run. |
 
-### Relevance, confidence and rejection
-
-The displayed percentage is the **cross-encoder score**, never a rank position
-(`src/agents/vdb/relevance.js`). Measured on the real corpus: nonsense queries
-score `0.0001 … 0.0089`, the weakest verified real match `0.0453`, typical real
-matches `0.62 … 0.995`. Dense cosine is not a confidence (~0.43–0.76 for noise
-*and* for real matches) and BM25 is worse than useless as a gate (`radiator`
-scored 31.7 on an unrelated document).
-
-- **Set-level rejection.** When reranking ran and the *best* score in the result
-  set is below `agents.vdb.relevanceFloor` (default `0.02`), the answer is an
-  explicit "no relevant matches" with the candidates listed as low-relevance
-  evidence — not a ranked list. Applies to `vdb.search`, `storage.search` and
-  `memory.recall`.
-- **No rejection without a reranker.** Dense-only and lexical-only runs have no
-  calibrated signal, so they report no confidence rather than guessing one.
-- **Per-row suppression is deliberately not applied.** Weak single-token
-  queries overlap legitimate paraphrases (`set` 0.160 vs a genuine German query
-  0.139), so a per-row floor would cut valid deep answers. Rows below the floor
-  stay visible with their true near-zero percentage.
-- A filtered/deep request can still be rejected when its best hit sits below the
-  requested depth — measured: a German storage paraphrase at `top_k=5` sees only
-  0.0015 and is rejected, at `top_k=10` it sees 0.0453 and is kept.
-
-### Spelling repair
-
-Queries are corrected deterministically before embedding and lane work, against
-a vocabulary built from the storage paths themselves
-(`src/agents/vdb/query-normalizer.js`):
-
-- a token absent from the vocabulary with **exactly one** one-edit neighbour is
-  replaced (`conciousness → consciousness`); zero or several candidates leave
-  the typo untouched;
-- a candidate must appear in ≥2 paths, and an inflectional variant is never a
-  correction (`model`/`models`, `licensed`/`license` are both real words);
-- the substitution is reported in the reply's `corrected:` line.
-
-Cost: 573 terms from 2,058 paths in ~100 ms once per process, ~65 µs/token,
-0 extra embedding or reranker work. Disable with `agents.vdb.typoCorrection:
-false`. Memory queries are not corrected — the vocabulary is storage paths.
-
-Gate coverage: `npm run gate:nvdb` runs the same query through five modes
-(all / no rerank / dense only / lexical only / no diversity), asserts lane
-membership and rerank presence per mode, and checks that five invalid
-selections are rejected.
-
-## Config (effective, `agents.vdb`)
-
-`enabled: true`, `dbPath: 'data/candidates/wizkid-hybrid-rerank/nvdb'`,
-`indexPath: null`, `snapshot: true`, `embeddingPath: '/v1/embeddings'`,
-`scanIntervalMinutes: 5`, `scanTimeoutMinutes: 30`, `embeddingDim: 2560`,
-`chunkMaxTokens: 1024`, `chunkOverlapTokens: 128`, `chunkTokCharsRatio: 2.5`,
-`maxFileSizeBytes: 10 MB`, `batchTokenLimit: 29000`, `maxBatchTexts: 4`,
-`filesPerGroup: 100`, `maxRetries: 1`, `batchDelayMs: 100`,
-`ignore: ["forge","temp","_trash",".backups"]`,
-`contextEnhancement: { enabled, task: 'local', maxInputChars: 60000,
-maxOutputTokens: 1536, temperature: 0.3, truncation: 'headmidtail' }`,
-`watch.storage.enabled: true` (search target only — no scan in snapshot mode).
-
-Rollback index: `data/nvdb` (old `.node` + old config paths).
-
-## Binary loading
-
-`nvdb-loader.js` resolves the addon and `require`s it **directly** — it no
-longer copies anything into `nVDB/napi/` (that copy silently replaced a staged
-binary, and would have destroyed a rollback file at startup). Search order:
-
-1. `NODE_NVDB_NATIVE_PATH` (explicit override; a missing file is an error)
-2. `src/nVDB/target/release/nvdb-node.<platform>.node`
-3. `src/nVDB/napi/nvdb-node.<platform>.node`
-4. `D:\SRV\LLM-Gateway-Chat\lib\nvdb\napi\nvdb-node.<platform>.node`
-
-It exports `Database`, `Collection`, `FilterBuilder`, `Reranker` (null when the
-addon lacks the feature) and `nativePath`. `vdb.status` reports the loaded
-`nativePath` — that is how you tell which binary the service actually has.
+`npm run gate:nvdb` (`scripts/nvdb-hybrid-gate.mjs`) is a **legacy v1 gate**: it
+resolves a NAPI addon and an `/v1/embeddings/wizkid` route, neither of which
+exists in production anymore. Do not treat it as a current acceptance check.
 
 ## Consumers
 
 - `storage.search` — semantic file content search (`storage` collection).
-- memory agent — `dependsOn: "vdb"`, uses `getCollection('memory')`,
-  `embeddingDim`, `embeddingPath`, `reranker`, `hybrid` and `rerank` for its
-  recall leg (vector-only and hybrid both supported).
+- memory agent — `dependsOn: "vdb"`, receives the HTTP client and the effective
+  `embeddingPath`, `queryInstruct`, `fuzzyEdits`, `relevanceFloor`,
+  `rerankerLoaded`, `hybrid` and `rerank` settings, and searches the `memory`
+  collection directly.

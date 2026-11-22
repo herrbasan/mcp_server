@@ -1,7 +1,7 @@
 # Tool Catalog — Overview
 
-Index of every agent and tool in the MCP server, with links to the detailed
-reference docs. Last verified 2026-11-15.
+Index of every agent and tool in the MCP server with links to the detailed
+reference docs. Last verified 2026-11-22.
 
 Detailed docs live in this folder, one file per system. Shared infrastructure is
 documented alongside: `documentation/fileops.md` (root-confined file operations)
@@ -35,7 +35,7 @@ nesting level.
 | **memory** | `memory.store/recall/get/forget/list/update/overview/embed_heal` | Persistent cross-session memory: nDB store + nVDB vectors, hybrid semantic+lexical recall, knowledge-map overview. | [memory.md](memory.md) |
 | **dreaming** | `memory.dream_generate/dream_status/dream_inject` | Consolidation pipeline (every 15 min): clusters, bridges, scores, wildcards. No `dream.*` namespace. | [memory.md](memory.md) |
 | **storage** | `storage.*` (18 file ops + `storage.resources_*`) | Root-confined file store (`D:\MCP_Storage`) with snapshots, trash, bulk ops, semantic search, REST + MCP resources. | [storage.md](storage.md) |
-| **vdb** | `vdb.search/status/trigger_scan/build_index` | nVDB vector index: watches storage, chunks + LLM-enhances + embeds files every 5 min; owns the memory collection. | [vdb.md](vdb.md) |
+| **vdb** | `vdb.search/status/trigger_scan/build_index` | nVDB v2 over the shared `nvdb serve` (`:3510`): hybrid BM25F + dense search with adaptive RRF, Level-2 ONNX rerank and rank-preserving multi-collection merge; syncs storage files every 5 min and owns the `memory` collection. No addon or ONNX runtime in Node. | [vdb.md](vdb.md) |
 | **browser** | `browser.fetch`, `browser.session_*`, `browser.goto/content/click/fill/type/evaluate/scroll/inspect/console/wait` (15) | Persistent headless Chrome (Puppeteer) with idle-timeout session lifecycle, plus `browser.fetch`: one URL in, rendered Markdown written to storage, path returned. | [browser.md](browser.md) |
 | **harvest** | `harvest.collect` | Pass 1 of docs harvesting: discover a seed's section, render every page into storage, write a manifest listing every discovered link. No model. | [harvest.md](harvest.md) |
 | **research** | `research.topic` | Multi-engine search → scrape → cite-tracked synthesis + confidence evaluation, with unretrieved sources named in the report. | [browser.md](browser.md) |
@@ -59,6 +59,13 @@ nesting level.
 
 ## Cross-cutting dependencies
 
+- **nVDB v2 serve** (`http://127.0.0.1:3510`, `agents.vdb.serviceUrl`) — the
+  retrieval engine, a standalone process started with
+  `nvdb serve --dir <path> --port 3510 --reranker-model <modelDir>`. It hosts
+  the `storage`, `memory` and `chat` collections; `mcp_server` creates/uses
+  only `storage` and `memory`. Startup aborts if the serve is unreachable or if
+  `agents.vdb.rerank.enabled` is true while `/health` reports
+  `reranker_loaded: false`.
 - **LLM Gateway** (`ws://localhost:3400`, `http://localhost:3400`) — all model
   traffic: chat (tasks: query, synthesis, analysis, vision, inspect, local,
   dreamer/distiller), embeddings (foreground + background batch), predict.
@@ -99,5 +106,8 @@ Things that bite if you don't know them (each detailed in the linked doc):
   literal string "undefined". [github.md](github.md)
 - The dream map lags memory by up to the 15-minute dreaming cadence — recall
   for anything recent. [memory.md](memory.md)
+- `npm run gate:nvdb` is a legacy **v1** gate (NAPI addon +
+  `/v1/embeddings/wizkid`); the current retrieval gate is `npm run test:v2`.
+  [vdb.md](vdb.md)
 - Legacy tool names (`storage_read`, `memory_store`, …) still work — the
   server maps them — but `agent.action` form is canonical.
