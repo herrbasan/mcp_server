@@ -67,8 +67,13 @@ function deterministicEmbed(text, dim = 2560) {
     return out;
 }
 
+// Held while non-null so a test can observe the window between "text changed ->
+// embedStatus pending" and the detached embed completing.
+let embedGate = null;
+
 const mockGateway = {
     async embed(text) {
+        if (embedGate) await embedGate;
         return deterministicEmbed(text);
     },
     async embedBatch(texts) {
@@ -285,6 +290,8 @@ async function run() {
         assert.ok(listCat.content[0].text.includes('nui_wc2') && !listCat.content[0].text.includes('Prototype Fund'), 'category filter pushed into query');
 
         // 9c. update through one atomic PATCH, then read back
+        let releaseEmbed;
+        embedGate = new Promise(resolve => { releaseEmbed = resolve; });
         await memory.memory_update(
             { id: 1, description: 'Prototype Fund grant approved for open-source tooling', category: 'funding-approved', confidence: 1 },
             { gateway: mockGateway }
@@ -297,6 +304,9 @@ async function run() {
             limit: 1,
         });
         assert.equal(patchedDoc.results[0].embedStatus, 'pending', 'text change marks embedStatus pending');
+        releaseEmbed();
+        embedGate = null;
+        await new Promise(r => setTimeout(r, 300));
         const memCheckAfterUpdate = await memory.memoryIntegrityCheck({ checkVectors: false });
         assert.equal(memCheckAfterUpdate.clean, true, `integrity_check clean after PATCH: ${JSON.stringify(memCheckAfterUpdate)}`);
 
@@ -316,6 +326,111 @@ async function run() {
         const storageCheckAfter = await vdb.integrityCheck({ collection: 'storage', checkVectors: true });
         assert.equal(storageCheckAfter.clean, true, 'storage integrity_check clean after delete');
         console.log('✓ delete lifecycle + post-delete integrity_check clean');
+
+        // ── Phase 4a: incremental nDB → nVDB sync gates ──────────────────
+        const ndb = createNdbClient(ndbServer.url).db('memories');
+        const directMemory = (id, description) => ({
+            id,
+            description,
+            category: 'direct-ndb',
+            confidence: 0.7,
+            timestamp: new Date().toISOString(),
+            embedStatus: 'embedded',
+        });
+
+        // Settle anything the store/update path left behind, then prove a
+        // fully-synced index is a pure no-op.
+        await memory.syncMemoryIndex();
+        const settled = await memory.syncMemoryIndex();
+        assert.equal(settled.mode, 'noop', `settled index no-ops: ${JSON.stringify(settled)}`);
+        assert.equal(settled.upserted, 0, 'noop upserts nothing');
+        assert.equal(settled.deleted, 0, 'noop deletes nothing');
+        console.log('✓ syncMemoryIndex no-ops when the watermark is at last_seq');
+
+        // (a) Incremental catch-up — writes made directly in ndb, bypassing
+        // memory_store/memory_update/memory_forget entirely.
+        const patchedDirect = await ndb.insert(directMemory(9001, 'Direct ndb insert — incremental gate'), { prefix: 'mem' });
+        await ndb.patch(patchedDirect.id, [
+            { op: 'set', path: 'description', value: 'Direct ndb patch — incremental gate' },
+        ]);
+        const deletedDirect = await ndb.insert(directMemory(9002, 'Direct ndb insert then delete'), { prefix: 'mem' });
+        await ndb.delete(deletedDirect.id);
+        await ndb.flush();
+
+        const lineageBeforeA = await ndb.lineage();
+        const inc = await memory.syncMemoryIndex();
+        assert.equal(inc.mode, 'incremental', `(a) incremental mode: ${JSON.stringify(inc)}`);
+        assert.equal(inc.syncedSeq, lineageBeforeA.last_seq, '(a) synced seq reaches the journal head');
+        assert.ok(inc.upserted >= 1, `(a) upserts applied (${inc.upserted})`);
+        assert.ok(inc.deleted >= 1, `(a) deletes applied (${inc.deleted})`);
+
+        const lineageAfterA = await ndb.lineage();
+        const fpA = await client.fingerprints('memory');
+        assert.equal(fpA.watermark.source_epoch_uuid, lineageAfterA.source_epoch_uuid, '(a) epoch persisted');
+        assert.equal(fpA.watermark.synced_seq, lineageAfterA.last_seq, '(a) watermark persisted at last_seq');
+        const checkA = await memory.memoryIntegrityCheck({});
+        assert.equal(checkA.clean, true, `(a) integrity_check clean after incremental catch-up: ${JSON.stringify(checkA)}`);
+        const recallDirect = await memory.memory_recall({ query: 'Direct ndb patch incremental gate', limit: 3 }, { gateway: mockGateway });
+        assert.ok(recallDirect.content[0].text.includes('Direct ndb patch'), `(a) direct write is searchable: ${recallDirect.content[0].text.slice(0, 160)}`);
+        console.log('✓ (a) incremental catch-up from direct ndb writes (insert + patch + delete)');
+
+        // (b) Compaction past the watermark → 409 cursor_expired → automatic rebuild.
+        await ndb.insert(directMemory(9003, 'Survives compaction — direct ndb insert'), { prefix: 'mem' });
+        const wmBeforeCompact = (await client.fingerprints('memory')).watermark;
+        await ndb.compact();
+        const lineageB = await ndb.lineage();
+        assert.ok(
+            lineageB.min_available_seq > wmBeforeCompact.synced_seq,
+            `(b) compaction advanced min_available_seq (${lineageB.min_available_seq}) past the watermark (${wmBeforeCompact.synced_seq})`
+        );
+
+        const rebuiltB = await memory.syncMemoryIndex();
+        assert.equal(rebuiltB.mode, 'rebuild', `(b) rebuild mode: ${JSON.stringify(rebuiltB)}`);
+        assert.equal(rebuiltB.reason, 'cursor_expired', `(b) rebuild reason: ${rebuiltB.reason}`);
+        const fpB = await client.fingerprints('memory');
+        assert.equal(fpB.watermark.synced_seq, lineageB.last_seq, '(b) watermark matches last_seq after rebuild');
+        assert.equal(fpB.watermark.source_epoch_uuid, lineageB.source_epoch_uuid, '(b) epoch preserved');
+        const checkB = await memory.memoryIntegrityCheck({});
+        assert.equal(checkB.clean, true, `(b) integrity_check clean after compaction rebuild: ${JSON.stringify(checkB)}`);
+        console.log('✓ (b) compaction → cursor_expired → automatic pinned-snapshot rebuild');
+
+        // (c) Changed source epoch → automatic rebuild.
+        const lineageC = await ndb.lineage();
+        await client.setWatermark('memory', {
+            source_epoch_uuid: '11111111-2222-3333-4444-555555555555',
+            synced_seq: 1,
+        });
+        const rebuiltC = await memory.syncMemoryIndex();
+        assert.equal(rebuiltC.mode, 'rebuild', `(c) rebuild mode: ${JSON.stringify(rebuiltC)}`);
+        assert.equal(rebuiltC.reason, 'epoch_changed', `(c) rebuild reason: ${rebuiltC.reason}`);
+        const fpC = await client.fingerprints('memory');
+        assert.equal(fpC.watermark.source_epoch_uuid, lineageC.source_epoch_uuid, '(c) watermark epoch replaced');
+        assert.equal(fpC.watermark.synced_seq, lineageC.last_seq, '(c) watermark matches last_seq');
+        const checkC = await memory.memoryIntegrityCheck({});
+        assert.equal(checkC.clean, true, `(c) integrity_check clean after epoch rebuild: ${JSON.stringify(checkC)}`);
+        console.log('✓ (c) epoch change → automatic rebuild');
+
+        // (d) Same-epoch watermark ahead of last_seq is a loud invariant violation.
+        const lineageD = await ndb.lineage();
+        await client.setWatermark('memory', {
+            source_epoch_uuid: lineageD.source_epoch_uuid,
+            synced_seq: lineageD.last_seq + 100,
+        });
+        await assert.rejects(
+            () => memory.syncMemoryIndex(),
+            err => {
+                assert.match(err.message, /monotonic seq invariant violated/, `(d) loud failure: ${err.message}`);
+                assert.ok(err.message.includes(String(lineageD.last_seq + 100)), '(d) error names the watermark seq');
+                assert.ok(err.message.includes(String(lineageD.last_seq)), '(d) error names last_seq');
+                assert.ok(err.message.includes(lineageD.source_epoch_uuid), '(d) error names the epoch');
+                return true;
+            }
+        );
+        await client.setWatermark('memory', {
+            source_epoch_uuid: lineageD.source_epoch_uuid,
+            synced_seq: lineageD.last_seq,
+        });
+        console.log('✓ (d) same-epoch watermark ahead of last_seq fails loud');
 
         await memory.shutdown();
         console.log('\nALL PHASE 4 E2E GATES PASSED.');

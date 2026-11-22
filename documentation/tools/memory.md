@@ -5,7 +5,8 @@ Reference documentation for the persistent memory system. Last verified
 both agents' `config.json`, and the vdb agent's nVDB v2 HTTP surface at `main`
 (`24ac535`). Since Phase 2a of the nDB v2 cutover the memory store is reached
 over HTTP from a resident `ndb serve` — there is no napi addon in the memory
-path (`src/lib/ndb-client.js`).
+path (`src/lib/ndb-client.js`). Phase 4a (nDB `seq` change feed → nVDB
+watermark, pinned-snapshot auto-rebuild) landed 2026-11-22.
 
 ## What it is
 
@@ -48,9 +49,23 @@ dreaming deduplicates and organizes.
   `health.dbs` or init throws naming the URL and the DB. Then the `id`,
   `category`, `embedStatus` hash indexes are created (idempotent), and the
   `_meta` doc (`nextId` allocator) is located — created if the DB is empty.
-- **Init reconciliation**: `syncMemories()` compares nDB documents against
-  `GET /v2/collections/memory/fingerprints` and upserts changed / deletes
-  vanished ids in 200-document batches, then commits — nDB stays authoritative.
+- **Incremental index sync** (`syncMemoryIndex({ forceRebuild })`, run at init,
+  after every store/update/forget, and on a light periodic timer): drains
+  `GET /v2/dbs/memories/changes?since=&limit=` in 500-event batches,
+  deduplicating each batch by `_id` (highest `seq` wins) and skipping
+  non-`mem_*` docs, then commits to nVDB **before** persisting the collection
+  watermark (`POST /v2/collections/memory/watermark`). Normal restarts are
+  O(changes); a full scan only happens on a rebuild.
+- **Watermark / rebuild**: the watermark is `{ source_epoch_uuid, synced_seq }`.
+  A missing watermark, a changed `source_epoch_uuid`, a degraded watermark, a
+  `409 cursor_expired` (compaction replayed away the gap) or
+  `forceRebuild: true` all trigger the **pinned-snapshot rebuild** — page
+  through `GET /v2/dbs/memories/snapshot?snapshot_id=` for one frozen state,
+  hash-diff against `fingerprints` so unchanged documents keep their vectors,
+  upsert/delete in 250-doc chunks, set the watermark to the snapshot's
+  `watermark_seq`, then catch up incrementally if the journal moved on. A
+  same-epoch watermark with `synced_seq > last_seq` is a **loud invariant
+  violation**, never silently repaired.
 - Legacy `data/memories.json` (37MB, inline embeddings) is a cold backup only —
   never read or written at runtime.
 
@@ -237,6 +252,7 @@ If `data/dream_map.json` doesn't exist yet: guidance text pointing at
 | `agents.memory.ndbUrl` | (unset) | Per-agent override of `ndb.serviceUrl` (tests). |
 | `agents.memory.dbName` | (unset) | Per-agent override of `ndb.dbs.memories` (tests). |
 | `agents.memory.maxMemoryChars` | 6000 | Embed input truncation. |
+| `agents.memory.syncIntervalMinutes` | 5 | Periodic `syncMemoryIndex()` catch-up for out-of-band `ndb` writes; `0` disables (init + write-through still run). |
 | `agents.dreaming.intervalMinutes` | 15 | Dream cadence. |
 | `agents.dreaming.contextBudget` | 800000 | Distill+dream token budget. |
 | `agents.dreaming.autoStart` | true | Schedule automatically. |

@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
-import { createNdbClient } from '../../lib/ndb-client.js';
+import { createNdbClient, NdbError } from '../../lib/ndb-client.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { resolveSearchOptions, describeSearchOptions } from '../vdb/search-options.js';
@@ -14,8 +14,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
 
 const MAX_EXCERPT_BYTES = 1024;
-const UPSERT_BATCH_SIZE = 200;
 const MEMORY_PAGE_SIZE = 1000;
+const CHANGES_BATCH_SIZE = 500;
+const REBUILD_UPSERT_CHUNK = 250;
+const SNAPSHOT_PAGE_SIZE = 5000;
+const DEFAULT_SYNC_INTERVAL_MINUTES = 5;
 
 // ── State ────────────────────────────────────────────────────────────
 
@@ -35,6 +38,7 @@ let RERANKER_LOADED = false;
 let HYBRID = { enabled: true, adaptive: true, rrfK: 20, candidateK: 200, lexicalWeight: 0.3, vectorWeight: 1.0, diversityField: 'parent_id', maxPerDocument: 2 };
 let RERANK = { enabled: true, shortlist: 12, weight: 0.6 };
 let RELEVANCE_FLOOR = 0.05;
+let SYNC_TIMER = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -143,46 +147,305 @@ async function upsertAndAttachMemory(gateway, mem, { background = true } = {}) {
     });
 }
 
-export async function syncMemories() {
-    if (!VDB_CLIENT || !DB) throw new Error('memory.syncMemories: memory agent or VDB client not initialized');
+function isMemoryDocId(id) {
+    return typeof id === 'string' && id.startsWith('mem_');
+}
+
+// One sync at a time: init, live write-through and the periodic catch-up all
+// converge on the same watermark, and two concurrent drains would race it.
+let SYNC_LOCK = Promise.resolve();
+
+function withSyncLock(fn) {
+    const run = SYNC_LOCK.then(fn, fn);
+    SYNC_LOCK = run.then(() => {}, () => {});
+    return run;
+}
+
+async function readWatermark() {
+    const fp = await VDB_CLIENT.fingerprints('memory');
+    return fp.watermark ?? null;
+}
+
+// A batch is deduplicated by `_id` keeping the highest-seq event, so a
+// replay (or an insert→patch→delete triple inside one batch) converges on the
+// final state instead of applying stale intermediate ones.
+async function applyChangeBatch(batch) {
+    const latest = new Map();
+    for (const change of batch.changes) {
+        const prev = latest.get(change.id);
+        if (!prev || change.seq >= prev.seq) latest.set(change.id, change);
+    }
+
     const maxChars = CONFIG.maxMemoryChars || 6000;
-    const fpRes = await VDB_CLIENT.fingerprints('memory');
+    const upserts = [];
+    const deletes = [];
+
+    for (const change of latest.values()) {
+        if (!isMemoryDocId(change.id)) continue; // `_meta` and friends are not searchable
+        if (change.kind === 'upsert') {
+            if (!change.doc || change.doc._id !== change.id) {
+                throw new Error(`memory.syncMemoryIndex: upsert event for ${change.id} at seq ${change.seq} carries no matching doc`);
+            }
+            upserts.push(memoryToV2Doc(change.doc, { maxChars, principals: PRINCIPALS }));
+        } else if (change.kind === 'delete') {
+            deletes.push(change.id);
+        } else {
+            throw new Error(`memory.syncMemoryIndex: unknown change kind "${change.kind}" for ${change.id} at seq ${change.seq}`);
+        }
+    }
+
+    if (upserts.length > 0) await VDB_CLIENT.upsert('memory', upserts, { commit: false });
+    if (deletes.length > 0) await VDB_CLIENT.deleteIds('memory', deletes, { commit: false });
+    if (upserts.length > 0 || deletes.length > 0) await VDB_CLIENT.commit('memory');
+
+    return { upserted: upserts.length, deleted: deletes.length };
+}
+
+// Drains the change feed from `cursor` to the journal head. Every batch is
+// committed to nvdb BEFORE the watermark advances past it, so a crash at any
+// point leaves a watermark that never overstates what the index holds.
+async function drainIncremental({ cursor, epoch }) {
+    let syncedSeq = cursor;
+    let upserted = 0;
+    let deleted = 0;
+    let batches = 0;
+
+    for (;;) {
+        const batch = await DB.changes(syncedSeq, { limit: CHANGES_BATCH_SIZE });
+        if (batch.source_epoch_uuid !== epoch) {
+            throw new Error(
+                `memory.syncMemoryIndex: source_epoch_uuid changed mid-drain (expected ${epoch}, got ${batch.source_epoch_uuid}) — ` +
+                'the database was restored or re-mounted; the next sync rebuilds from a pinned snapshot'
+            );
+        }
+        if (batch.has_more && batch.to_seq <= syncedSeq) {
+            throw new Error(`memory.syncMemoryIndex: change feed reported has_more at seq ${syncedSeq} without advancing (to_seq ${batch.to_seq})`);
+        }
+
+        const applied = await applyChangeBatch(batch);
+        upserted += applied.upserted;
+        deleted += applied.deleted;
+        batches++;
+
+        if (batch.to_seq > syncedSeq) {
+            syncedSeq = batch.to_seq;
+            await VDB_CLIENT.setWatermark('memory', { source_epoch_uuid: batch.source_epoch_uuid, synced_seq: syncedSeq });
+        }
+        if (!batch.has_more) break;
+    }
+
+    return { syncedSeq, upserted, deleted, batches };
+}
+
+// One frozen state, paged by `snapshot_id` so concurrent writes cannot make
+// the pages drift against each other.
+async function readPinnedSnapshot() {
+    const first = await DB.snapshot({ offset: 0, limit: SNAPSHOT_PAGE_SIZE });
+    const docs = [...first.docs];
+    const { total, snapshot_id } = first;
+
+    while (docs.length < total) {
+        if (!snapshot_id) {
+            throw new Error(`memory.syncMemoryIndex: ndb reported ${total} documents but issued no snapshot_id to page with (the read would drift)`);
+        }
+        const page = await DB.snapshot({ offset: docs.length, limit: SNAPSHOT_PAGE_SIZE, snapshotId: snapshot_id });
+        if (page.source_epoch_uuid !== first.source_epoch_uuid
+            || page.watermark_seq !== first.watermark_seq
+            || page.total !== total) {
+            throw new Error(
+                `memory.syncMemoryIndex: pinned snapshot ${snapshot_id} drifted between pages ` +
+                `(${first.source_epoch_uuid}@${first.watermark_seq} total ${total} vs ${page.source_epoch_uuid}@${page.watermark_seq} total ${page.total})`
+            );
+        }
+        if (page.docs.length === 0) {
+            throw new Error(`memory.syncMemoryIndex: pinned snapshot ${snapshot_id} returned an empty page at offset ${docs.length} of ${total}`);
+        }
+        docs.push(...page.docs);
+    }
+    if (docs.length !== total) {
+        throw new Error(`memory.syncMemoryIndex: pinned snapshot returned ${docs.length} documents, expected ${total}`);
+    }
+
+    return { source_epoch_uuid: first.source_epoch_uuid, watermark_seq: first.watermark_seq, docs };
+}
+
+async function rebuildIndex(reason) {
+    const snapshot = await readPinnedSnapshot();
+    const maxChars = CONFIG.maxMemoryChars || 6000;
+    const live = snapshot.docs.filter(d => isMemoryDocId(d._id));
+
+    const fp = await VDB_CLIENT.fingerprints('memory');
     const existing = new Map();
-    for (const entry of fpRes.entries || []) existing.set(entry.id, entry);
+    for (const entry of fp.entries || []) existing.set(entry.id, entry);
 
-    const activeMems = await iterMemoryDocs();
     const liveIds = new Set();
-    const toUpsert = [];
+    const pending = [];
     let unchanged = 0;
-
-    for (const mem of activeMems) {
+    for (const mem of live) {
         const doc = memoryToV2Doc(mem, { maxChars, principals: PRINCIPALS });
         liveIds.add(doc.id);
         const { envelope_hash } = documentHashes(doc);
         const prev = existing.get(doc.id);
-        if (prev && prev.envelope_hash === envelope_hash) {
-            unchanged++;
-        } else {
-            toUpsert.push(doc);
-        }
+        // Hash-equal documents keep their stored vectors — a rebuild re-embeds
+        // nothing that did not change.
+        if (prev && prev.envelope_hash === envelope_hash) unchanged++;
+        else pending.push(doc);
     }
 
-    const toDelete = [];
+    const stale = [];
     for (const id of existing.keys()) {
-        if (!liveIds.has(id)) toDelete.push(id);
+        if (!liveIds.has(id)) stale.push(id);
     }
 
-    for (let i = 0; i < toUpsert.length; i += UPSERT_BATCH_SIZE) {
-        await VDB_CLIENT.upsert('memory', toUpsert.slice(i, i + UPSERT_BATCH_SIZE), { commit: false });
+    for (let i = 0; i < pending.length; i += REBUILD_UPSERT_CHUNK) {
+        await VDB_CLIENT.upsert('memory', pending.slice(i, i + REBUILD_UPSERT_CHUNK), { commit: false });
     }
-    for (let i = 0; i < toDelete.length; i += UPSERT_BATCH_SIZE) {
-        await VDB_CLIENT.deleteIds('memory', toDelete.slice(i, i + UPSERT_BATCH_SIZE), { commit: false });
+    for (let i = 0; i < stale.length; i += REBUILD_UPSERT_CHUNK) {
+        await VDB_CLIENT.deleteIds('memory', stale.slice(i, i + REBUILD_UPSERT_CHUNK), { commit: false });
     }
-    if (toUpsert.length > 0 || toDelete.length > 0) {
-        await VDB_CLIENT.commit('memory');
+    if (pending.length > 0 || stale.length > 0) await VDB_CLIENT.commit('memory');
+
+    await VDB_CLIENT.setWatermark('memory', {
+        source_epoch_uuid: snapshot.source_epoch_uuid,
+        synced_seq: snapshot.watermark_seq,
+    });
+
+    // The snapshot is pinned at a seq; anything committed after it is caught
+    // up incrementally right away instead of waiting for the next tick.
+    let syncedSeq = snapshot.watermark_seq;
+    let upserted = pending.length;
+    let deleted = stale.length;
+    let catchUp = null;
+
+    const after = await DB.lineage();
+    if (after.source_epoch_uuid === snapshot.source_epoch_uuid && after.last_seq > syncedSeq) {
+        catchUp = await drainIncremental({ cursor: syncedSeq, epoch: snapshot.source_epoch_uuid });
+        syncedSeq = catchUp.syncedSeq;
+        upserted += catchUp.upserted;
+        deleted += catchUp.deleted;
     }
 
-    return { total: activeMems.length, upserted: toUpsert.length, deleted: toDelete.length, unchanged };
+    return {
+        mode: 'rebuild',
+        reason,
+        sourceEpochUuid: snapshot.source_epoch_uuid,
+        syncedSeq,
+        upserted,
+        deleted,
+        unchanged,
+        catchUp: catchUp ? { upserted: catchUp.upserted, deleted: catchUp.deleted, batches: catchUp.batches, syncedSeq: catchUp.syncedSeq } : null,
+    };
+}
+
+async function runSync({ forceRebuild }) {
+    const lineage = await DB.lineage();
+    const watermark = await readWatermark();
+
+    // A same-epoch watermark past the journal head means the index claims a
+    // history this journal never issued — a restored backup or a lost tail.
+    // Never paper over it: the caller has to decide.
+    if (!forceRebuild
+        && watermark
+        && watermark.source_epoch_uuid === lineage.source_epoch_uuid
+        && watermark.synced_seq > lineage.last_seq) {
+        throw new Error(
+            `memory.syncMemoryIndex: monotonic seq invariant violated — nvdb watermark synced_seq ${watermark.synced_seq} ` +
+            `is ahead of ndb last_seq ${lineage.last_seq} for epoch ${lineage.source_epoch_uuid} ` +
+            `(nvdb base URL ${VDB_CLIENT.baseUrl}); rebuild deliberately with syncMemoryIndex({ forceRebuild: true })`
+        );
+    }
+
+    let reason = null;
+    if (forceRebuild) reason = 'forced';
+    else if (!watermark) reason = 'no_watermark';
+    else if (watermark.source_epoch_uuid !== lineage.source_epoch_uuid) reason = 'epoch_changed';
+    else if (watermark.degraded) reason = 'degraded';
+
+    if (reason) {
+        logger.info(`[Memory] Index rebuild (${reason}) from pinned snapshot at seq ${lineage.last_seq}`, null, 'Memory');
+        return rebuildIndex(reason);
+    }
+
+    if (watermark.synced_seq === lineage.last_seq) {
+        return {
+            mode: 'noop',
+            sourceEpochUuid: lineage.source_epoch_uuid,
+            syncedSeq: watermark.synced_seq,
+            upserted: 0,
+            deleted: 0,
+        };
+    }
+
+    try {
+        const drained = await drainIncremental({ cursor: watermark.synced_seq, epoch: lineage.source_epoch_uuid });
+        return {
+            mode: 'incremental',
+            sourceEpochUuid: lineage.source_epoch_uuid,
+            syncedSeq: drained.syncedSeq,
+            upserted: drained.upserted,
+            deleted: drained.deleted,
+            batches: drained.batches,
+        };
+    } catch (err) {
+        if (err instanceof NdbError && err.status === 409 && err.code === 'cursor_expired') {
+            logger.warn('[Memory] cursor_expired — falling back to pinned snapshot rebuild', null, 'Memory');
+            return rebuildIndex('cursor_expired');
+        }
+        if (err instanceof NdbError && err.status === 409 && err.code === 'cursor_ahead') {
+            logger.warn('[Memory] cursor_ahead — falling back to pinned snapshot rebuild', null, 'Memory');
+            return rebuildIndex('cursor_ahead');
+        }
+        throw err;
+    }
+}
+
+/**
+ * Brings the `memory` collection of `nvdb serve` in line with the `memories`
+ * database of `ndb serve` using the monotonic `seq` change feed.
+ *
+ * - no watermark, a changed epoch, `forceRebuild` or `cursor_expired` →
+ *   pinned-snapshot rebuild (hash-diffed, so unchanged vectors survive)
+ * - otherwise → drain `changes(since)` in 500-event batches, committing each
+ *   batch before its watermark
+ * - a same-epoch watermark ahead of `last_seq` is a loud invariant violation
+ *
+ * @param {{ forceRebuild?: boolean }} [options]
+ */
+export async function syncMemoryIndex({ forceRebuild = false } = {}) {
+    if (!DB || !VDB_CLIENT) {
+        throw new Error('memory.syncMemoryIndex: memory agent or VDB client not initialized');
+    }
+    if (typeof forceRebuild !== 'boolean') {
+        throw new TypeError(`memory.syncMemoryIndex: forceRebuild must be a boolean (got ${typeof forceRebuild})`);
+    }
+    return withSyncLock(() => runSync({ forceRebuild }));
+}
+
+/** Kept for callers that predate the change feed — now an alias. */
+export async function syncMemories() {
+    return syncMemoryIndex();
+}
+
+// Sequential single-doc write-through already applied the change to nvdb, so
+// the watermark may advance by exactly one. Anything less obvious (a meta
+// counter patch, a concurrent writer, a background embed patch) is left to the
+// change feed, which catches up contiguously and never skips a seq.
+async function advanceWatermarkAfterWrite(writeSeq) {
+    if (!VDB_CLIENT) return;
+    const [lineage, watermark] = await Promise.all([DB.lineage(), readWatermark()]);
+    if (watermark
+        && watermark.source_epoch_uuid === lineage.source_epoch_uuid
+        && watermark.synced_seq >= writeSeq) {
+        return;
+    }
+    if (watermark
+        && !watermark.degraded
+        && watermark.source_epoch_uuid === lineage.source_epoch_uuid
+        && watermark.synced_seq + 1 === writeSeq) {
+        await VDB_CLIENT.setWatermark('memory', { source_epoch_uuid: watermark.source_epoch_uuid, synced_seq: writeSeq });
+        return;
+    }
+    await syncMemoryIndex();
 }
 
 export async function memoryIntegrityCheck({ checkVectors = false } = {}) {
@@ -281,9 +544,10 @@ export async function init(context) {
         RERANK = VDB_AGENT.rerank || RERANK;
         RELEVANCE_FLOOR = VDB_AGENT.relevanceFloor ?? RELEVANCE_FLOOR;
 
-        const syncStats = await syncMemories();
+        const syncStats = await syncMemoryIndex();
         logger.info(
-            `[Memory] Synced with nvdb serve: ${syncStats.total} total (${syncStats.upserted} upserted, ${syncStats.deleted} deleted, ${syncStats.unchanged} unchanged)`,
+            `[Memory] Index sync: ${syncStats.mode}${syncStats.reason ? ` (${syncStats.reason})` : ''} — ` +
+            `${syncStats.upserted} upserted, ${syncStats.deleted} deleted, watermark seq ${syncStats.syncedSeq}`,
             null,
             'Memory'
         );
@@ -306,6 +570,28 @@ export async function init(context) {
     const memCount = (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total;
     logger.info(`[Memory] Initialized: ${memCount} memories in ndb serve db "${DB_NAME}" at ${NDB_URL}`, null, 'Memory');
 
+    // Out-of-band ndb writes (restores, other clients, a dreaming-side patch)
+    // never pass through the write-through path — a light catch-up keeps the
+    // index honest without a full scan.
+    if (SYNC_TIMER) {
+        clearInterval(SYNC_TIMER);
+        SYNC_TIMER = null;
+    }
+    if (VDB_CLIENT) {
+        const minutes = CONFIG.syncIntervalMinutes ?? DEFAULT_SYNC_INTERVAL_MINUTES;
+        if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < 0) {
+            throw new Error(`memory.init: agents.memory.syncIntervalMinutes must be a non-negative number (got ${String(minutes)})`);
+        }
+        if (minutes > 0) {
+            SYNC_TIMER = setInterval(() => {
+                syncMemoryIndex().catch(err => {
+                    logger.error(`[Memory] Periodic index sync failed: ${err.message}`, null, 'Memory');
+                });
+            }, minutes * 60_000);
+            if (typeof SYNC_TIMER.unref === 'function') SYNC_TIMER.unref();
+        }
+    }
+
     return {
         // Dreaming agent compatibility: async iter() over every memory doc.
         memories: {
@@ -316,12 +602,17 @@ export async function init(context) {
             },
             count: async () => (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total,
         },
+        syncMemoryIndex,
         syncMemories,
         integrityCheck: memoryIntegrityCheck,
     };
 }
 
 export async function shutdown() {
+    if (SYNC_TIMER) {
+        clearInterval(SYNC_TIMER);
+        SYNC_TIMER = null;
+    }
     if (DB) await DB.flush();
 }
 
@@ -347,11 +638,12 @@ export async function memory_store(args, context) {
     };
     if (data) doc.data = data;
 
-    const { id: ndbId } = await DB.insert(doc, { prefix: 'mem' });
+    const { id: ndbId, seq: writeSeq } = await DB.insert(doc, { prefix: 'mem' });
     await DB.flush();
 
     const storedDoc = { _id: ndbId, ...doc };
     await upsertAndAttachMemory(gateway, storedDoc, { background: true });
+    await advanceWatermarkAfterWrite(writeSeq);
 
     const totalCount = (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total;
 
@@ -600,12 +892,13 @@ export async function memory_forget(args, context) {
         return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
-    await DB.delete(ndbId);
+    const { seq: deleteSeq } = await DB.delete(ndbId);
     await DB.flush();
 
     // Also remove from nvdb serve
     if (VDB_CLIENT) {
         await VDB_CLIENT.deleteIds('memory', [ndbId], { commit: true });
+        await advanceWatermarkAfterWrite(deleteSeq);
     }
 
     return { content: [{ type: 'text', text: `✓ Forgot memory #${id}.` }] };
@@ -703,7 +996,7 @@ export async function memory_update(args, context) {
     ops.push({ op: 'set', path: 'timestamp', value: new Date().toISOString() });
     if (textChanged) ops.push({ op: 'set', path: 'embedStatus', value: 'pending' });
 
-    const { doc: updated } = await DB.patch(ndbId, ops);
+    const { doc: updated, seq: writeSeq } = await DB.patch(ndbId, ops);
     await DB.flush();
     if (VDB_CLIENT && updated) {
         if (textChanged) {
@@ -713,6 +1006,7 @@ export async function memory_update(args, context) {
             const maxChars = CONFIG.maxMemoryChars || 6000;
             await VDB_CLIENT.upsert('memory', [memoryToV2Doc(updated, { maxChars, principals: PRINCIPALS })], { commit: true });
         }
+        await advanceWatermarkAfterWrite(writeSeq);
     }
 
     return {
