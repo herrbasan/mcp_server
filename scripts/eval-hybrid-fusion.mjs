@@ -252,12 +252,16 @@ async function runStrategy(client, collName, c, queryVec, strategy, principals, 
     let bestRerank = null;
 
     if (strategy.rerank && hits.length > 0) {
+        const cls = strategy.adaptive ? classifyQueryProfile(c.query) : null;
+        const rw = strategy.adaptiveRerank
+            ? cls.rerankWeight
+            : (strategy.rerankWeight ?? 0.2);
         const l2 = await client.level2(collName, {
             query_text: c.query,
             principals,
             hits,
-            shortlist: 20,
-            rerank_weight: strategy.rerankWeight ?? 0.2,
+            shortlist: strategy.shortlist ?? 20,
+            rerank_weight: rw,
             relevance_floor: floor,
         });
         rejected = Boolean(l2.rejected);
@@ -319,16 +323,17 @@ async function main() {
         }
     }
 
-    console.log('=== QUERY CLASSIFICATION & RERANK MARGIN ===');
+    const liveSl = vdbCfg.rerank?.shortlist ?? 12;
+    console.log(`=== QUERY CLASSIFICATION & RERANK MARGIN (sl=${liveSl}, adaptive rerankWeight, f=${floor}) ===`);
     for (const c of allCases) {
         const cls = classifyQueryProfile(c.query);
         const r = await runStrategy(client, c.coll, c, vecs.get(c.query), {
-            adaptive: true, rerank: true, rerankWeight: 0.2, floor: 0.05,
+            adaptive: true, adaptiveRerank: true, rerank: true, shortlist: liveSl, floor,
         }, principals, fuzzyEdits, floor);
         const status = r.pass ? 'PASS' : 'FAIL';
         const rr = r.bestRerank != null ? r.bestRerank.toFixed(4) : '-';
         console.log(
-            `${status} ${c.id.padEnd(28)} cls=${cls.profile.padEnd(11)} (l=${cls.lexicalWeight} v=${cls.vectorWeight}) rank=${String(r.rank ?? (r.rejected ? 'REJ' : 'miss')).padEnd(4)} rr=${rr} top1=${r.top1}`
+            `${status} ${c.id.padEnd(28)} cls=${cls.profile.padEnd(11)} (l=${cls.lexicalWeight} v=${cls.vectorWeight} rw=${cls.rerankWeight}) rank=${String(r.rank ?? (r.rejected ? 'REJ' : 'miss')).padEnd(4)} rr=${rr} top1=${r.top1}`
         );
     }
 
@@ -338,9 +343,10 @@ async function main() {
         { name: 'dense-only + floor(0.05)', dense: true, lexical: false, lexicalWeight: 0, vectorWeight: 1, rrfK: 60, rerank: true, floorOnly: true, floor: 0.05 },
         { name: 'equal (l=1 v=1 k=20 f=0.05)', lexicalWeight: 1.0, vectorWeight: 1.0, rrfK: 20, rerank: true, rerankWeight: 0.2, floor: 0.05 },
         { name: 'vec-heavy (l=0.3 v=1 k=20 f=0.05)', lexicalWeight: 0.3, vectorWeight: 1.0, rrfK: 20, rerank: true, rerankWeight: 0.2, floor: 0.05 },
-        { name: 'adaptive + rr(0.2) f=0.02', adaptive: true, rerank: true, rerankWeight: 0.2, floor: 0.02 },
-        { name: 'adaptive + rr(0.2) f=0.05', adaptive: true, rerank: true, rerankWeight: 0.2, floor: 0.05 },
-        { name: 'adaptive + rr(0.5) f=0.05', adaptive: true, rerank: true, rerankWeight: 0.5, floor: 0.05 },
+        { name: 'adaptive + sl=20 rr(0.2) f=0.05', adaptive: true, rerank: true, shortlist: 20, rerankWeight: 0.2, floor: 0.05 },
+        { name: 'adaptive + sl=12 rr(0.5) f=0.05', adaptive: true, rerank: true, shortlist: 12, rerankWeight: 0.5, floor: 0.05 },
+        { name: 'adaptive + sl=12 rr(0.6) f=0.05', adaptive: true, rerank: true, shortlist: 12, rerankWeight: 0.6, floor: 0.05 },
+        { name: 'adaptive + sl=12 adaptRR(.2/.6)', adaptive: true, adaptiveRerank: true, rerank: true, shortlist: 12, rerankWeight: 0.6, floor: 0.05 },
         { name: 'adaptive + floorOnly f=0.05', adaptive: true, rerank: true, floorOnly: true, floor: 0.05 },
     ];
 

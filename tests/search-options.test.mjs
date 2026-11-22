@@ -19,8 +19,8 @@ const BASE_HYBRID = {
 
 const BASE_RERANK = {
     enabled: true,
-    shortlist: 20,
-    weight: 0.2,
+    shortlist: 12,
+    weight: 0.6,
 };
 
 test('classifyQueryProfile separates exact identifiers, mixed queries, single terms, and semantic prose', () => {
@@ -60,6 +60,7 @@ test('resolveSearchOptions applies adaptive weights by default and preserves exp
     assert.equal(sem.lexicalWeight, 0.3);
     assert.equal(sem.vectorWeight, 1.0);
     assert.equal(sem.rrfK, 20);
+    assert.equal(sem.rerankWeight, 0.6);
     assert.match(describeSearchOptions(sem), /profile=semantic/);
 
     const hash = resolveSearchOptions({
@@ -72,10 +73,11 @@ test('resolveSearchOptions applies adaptive weights by default and preserves exp
     assert.equal(hash.profile, 'exact-id');
     assert.equal(hash.lexicalWeight, 1.0);
     assert.equal(hash.vectorWeight, 0.2);
+    assert.equal(hash.rerankWeight, 0.2);
 
     const explicit = resolveSearchOptions({
         query: 'Welche GPU steckt in Coolkid?',
-        overrides: { lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 60 },
+        overrides: { lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 60, rerankWeight: 0.25 },
         hybrid: BASE_HYBRID,
         rerank: BASE_RERANK,
         rerankerAvailable: true,
@@ -85,12 +87,13 @@ test('resolveSearchOptions applies adaptive weights by default and preserves exp
     assert.equal(explicit.lexicalWeight, 1.0);
     assert.equal(explicit.vectorWeight, 0.3);
     assert.equal(explicit.rrfK, 60);
+    assert.equal(explicit.rerankWeight, 0.25);
 
     const staticMode = resolveSearchOptions({
         query: 'a2e3c27',
         overrides: { adaptive: false },
         hybrid: { ...BASE_HYBRID, lexicalWeight: 0.7, vectorWeight: 0.9, rrfK: 40 },
-        rerank: BASE_RERANK,
+        rerank: { ...BASE_RERANK, weight: 0.45 },
         rerankerAvailable: true,
         diversityField: 'parent_id',
     });
@@ -98,6 +101,7 @@ test('resolveSearchOptions applies adaptive weights by default and preserves exp
     assert.equal(staticMode.lexicalWeight, 0.7);
     assert.equal(staticMode.vectorWeight, 0.9);
     assert.equal(staticMode.rrfK, 40);
+    assert.equal(staticMode.rerankWeight, 0.45);
 });
 
 test('resolveSearchOptions rejects invalid search keys and impossible combinations', () => {

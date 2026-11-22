@@ -60,18 +60,18 @@ export function classifyQueryProfile(query) {
     const hasQuotedPhrase = /"[^"]+"/.test(q);
 
     if (tokens.length === 1 && hasExactToken) {
-        return { profile: 'exact-id', lexicalWeight: 1.0, vectorWeight: 0.2, rrfK: 20 };
+        return { profile: 'exact-id', lexicalWeight: 1.0, vectorWeight: 0.2, rrfK: 20, rerankWeight: 0.2 };
     }
     if (tokens.length <= 2 && tokens.some(t => isHexHashToken(t) || isFileOrPathToken(t))) {
-        return { profile: 'exact-short', lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 20 };
+        return { profile: 'exact-short', lexicalWeight: 1.0, vectorWeight: 0.3, rrfK: 20, rerankWeight: 0.2 };
     }
     if (hasExactToken || hasQuotedPhrase) {
-        return { profile: 'mixed-exact', lexicalWeight: 0.5, vectorWeight: 1.0, rrfK: 20 };
+        return { profile: 'mixed-exact', lexicalWeight: 0.5, vectorWeight: 1.0, rrfK: 20, rerankWeight: 0.6 };
     }
     if (tokens.length === 1) {
-        return { profile: 'single-term', lexicalWeight: 0.8, vectorWeight: 1.0, rrfK: 20 };
+        return { profile: 'single-term', lexicalWeight: 0.8, vectorWeight: 1.0, rrfK: 20, rerankWeight: 0.6 };
     }
-    return { profile: 'semantic', lexicalWeight: 0.3, vectorWeight: 1.0, rrfK: 20 };
+    return { profile: 'semantic', lexicalWeight: 0.3, vectorWeight: 1.0, rrfK: 20, rerankWeight: 0.6 };
 }
 
 function assertBoolean(key, value) {
@@ -132,13 +132,14 @@ export function resolveSearchOptions({ query = null, overrides = null, hybrid, r
         resolved.lexicalWeight = cls.lexicalWeight;
         resolved.vectorWeight = cls.vectorWeight;
         resolved.rrfK = cls.rrfK;
+        resolved.rerankWeight = cls.rerankWeight;
     }
 
     let explicitWeights = false;
     for (const [key, rule] of Object.entries(NUMBER_KEYS)) {
         if (overrides?.[key] !== undefined) {
             resolved[key] = assertNumber(key, overrides[key], rule);
-            if (key === 'vectorWeight' || key === 'lexicalWeight' || key === 'rrfK') explicitWeights = true;
+            if (key === 'vectorWeight' || key === 'lexicalWeight' || key === 'rrfK' || key === 'rerankWeight') explicitWeights = true;
         }
     }
     if (explicitWeights) resolved.profile = 'explicit';

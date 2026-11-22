@@ -5,6 +5,7 @@ import { createV2Client } from './v2-client.js';
 import { createStorageConnector } from './storage-connector.js';
 import { resolveSearchOptions, describeSearchOptions } from './search-options.js';
 import { resolveRelevanceFloor, assessRelevance } from './relevance.js';
+import { mergeCollectionResults } from './merge.js';
 
 const logger = getLogger();
 
@@ -41,8 +42,8 @@ const DEFAULTS = {
     },
     rerank: {
         enabled: true,
-        shortlist: 20,
-        weight: 0.2,
+        shortlist: 12,
+        weight: 0.6,
     },
 };
 
@@ -275,9 +276,12 @@ export async function searchDocuments({
     }
 
     const targets = Array.isArray(collections) && collections.length > 0 ? collections : ['storage'];
-    const allRows = [];
 
-    for (const collName of targets) {
+    const effectiveShortlist = search?.shortlist !== undefined
+        ? options.shortlist
+        : Math.max(top_k, options.shortlist);
+
+    const perCollection = await Promise.all(targets.map(async (collName) => {
         const filters = {};
         if (collName === 'storage') {
             if (normFolder) filters.folder = normFolder;
@@ -287,7 +291,7 @@ export async function searchDocuments({
         const hybridQuery = {
             lexical: {
                 text: query,
-                top_k: options.rerank ? Math.max(top_k, options.shortlist) : top_k,
+                top_k: options.rerank ? effectiveShortlist : top_k,
                 principals: CFG.principals,
                 fuzzy_edits: CFG.fuzzyEdits,
                 explain: false,
@@ -313,16 +317,17 @@ export async function searchDocuments({
                 query_text: query,
                 principals: CFG.principals,
                 hits: rawHits,
-                shortlist: options.shortlist,
+                shortlist: effectiveShortlist,
                 rerank_weight: options.rerankWeight,
                 relevance_floor: RELEVANCE_FLOOR,
             });
+            const rows = [];
             for (const item of l2.hits || []) {
                 const h = item.hybrid;
                 const doc = h.hit;
                 const relPath = doc.path || doc.parent_id || doc.id;
                 const slash = relPath.indexOf('/');
-                allRows.push({
+                rows.push({
                     id: doc.id,
                     parentId: doc.parent_id ?? null,
                     chunkIndex: doc.chunk_index ?? null,
@@ -342,46 +347,45 @@ export async function searchDocuments({
                     rejected: Boolean(l2.rejected),
                 });
             }
-        } else {
-            for (const h of rawHits) {
-                const doc = h.hit;
-                const relPath = doc.path || doc.parent_id || doc.id;
-                const slash = relPath.indexOf('/');
-                allRows.push({
-                    id: doc.id,
-                    parentId: doc.parent_id ?? null,
-                    chunkIndex: doc.chunk_index ?? null,
-                    collection: collName,
-                    path: relPath,
-                    title: doc.title || '',
-                    folder: slash === -1 ? null : relPath.slice(0, slash),
-                    score: h.rrf_score,
-                    rrfScore: h.rrf_score,
-                    rerankScore: null,
-                    lexicalScore: h.lexical_score ?? null,
-                    lexicalRank: h.lexical_rank ?? null,
-                    vectorScore: h.vector_score ?? null,
-                    vectorRank: h.vector_rank ?? null,
-                    excerpt: doc.excerpt ?? null,
-                    content: doc.excerpt ?? null,
-                    rejected: false,
-                });
-            }
+            return {
+                collection: collName,
+                rows,
+                rejected: Boolean(l2.rejected),
+                bestRerankScore: l2.best_rerank_score ?? null,
+            };
         }
-    }
 
-    // Preserve nvdb serve's exact ordering for single-collection queries; only
-    // merge-sort when multiple collections were requested together.
-    if (targets.length > 1) {
-        allRows.sort((a, b) => {
-            if (options.rerank && a.rerankScore !== null && b.rerankScore !== null) {
-                return b.rerankScore - a.rerankScore;
-            }
-            return b.rrfScore - a.rrfScore;
-        });
-    }
+        const rows = [];
+        for (const h of rawHits) {
+            const doc = h.hit;
+            const relPath = doc.path || doc.parent_id || doc.id;
+            const slash = relPath.indexOf('/');
+            rows.push({
+                id: doc.id,
+                parentId: doc.parent_id ?? null,
+                chunkIndex: doc.chunk_index ?? null,
+                collection: collName,
+                path: relPath,
+                title: doc.title || '',
+                folder: slash === -1 ? null : relPath.slice(0, slash),
+                score: h.rrf_score,
+                rrfScore: h.rrf_score,
+                rerankScore: null,
+                lexicalScore: h.lexical_score ?? null,
+                lexicalRank: h.lexical_rank ?? null,
+                vectorScore: h.vector_score ?? null,
+                vectorRank: h.vector_rank ?? null,
+                excerpt: doc.excerpt ?? null,
+                content: doc.excerpt ?? null,
+                rejected: false,
+            });
+        }
+        return { collection: collName, rows, rejected: false, bestRerankScore: null };
+    }));
 
-    const sliced = allRows.slice(0, top_k);
+    // Each collection's rows keep `nvdb serve`'s own order; the merge only
+    // decides how collections interleave, never how one collection ranks itself.
+    const sliced = mergeCollectionResults(perCollection, { topK: top_k, rerankActive: options.rerank });
 
     if (include_content && STORAGE_CONNECTOR) {
         for (const row of sliced) {

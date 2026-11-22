@@ -139,6 +139,33 @@ what it is:
   monotonic across the shortlist boundary** — never sort or threshold on them.
   `normalizedScore` and memory's recall percentage both come from rank position.
 
+## Multi-collection merge
+
+`searchDocuments` embeds the query once and queries every requested collection
+concurrently (`Promise.all`); `mergeCollectionResults`
+(`src/agents/vdb/merge.js`) then decides only **how collections interleave**.
+
+- **A collection's own order is authoritative** — rows arrive from
+  `nvdb serve` in its blended order (level-2 head, then the unscored tail), and
+  1-based `rank` is `index + 1` inside that list. The merge never re-sorts one
+  collection's rows by raw score: `b.rerankScore - a.rerankScore` promoted a
+  lower-ranked doc above its own collection's winner (caught on
+  `documentation/Workshop/Agents_Prime.md`, 2026-11-22).
+- **Rank prior with collection strength**: `mergeScore = 1/(5+rank) ×
+  (0.35 + 0.65 × strength)`, where `strength` is the collection's
+  `best_rerank_score` clamped to `0…1`. A strong collection takes several top
+  slots before a weak one contributes; two equally strong collections
+  interleave (ties by rank, then by rerank score). Without a reranker
+  (`rerankActive: false`) `mergeScore = 1/(5+rank)`, ties by `rrfScore`.
+- **Rejected collections are dropped** when any other collection has accepted
+  hits, so rejected junk never appears next to real matches. When *every*
+  collection was rejected the rows are preserved, so `assessRelevance` still
+  reports the rejection with its evidence. One requested collection (or one
+  survivor) returns its rows verbatim.
+- Coverage: `tests/vdb-merge.test.mjs` (run by `npm run test:v2`);
+  `node scripts/eval-realworld-e2e.mjs` measures the multi-collection path
+  end-to-end.
+
 ## Per-request layer selection (A/B)
 
 `vdb.search` and `storage.search` accept `search` — an override object applied

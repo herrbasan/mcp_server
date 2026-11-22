@@ -29,7 +29,7 @@ let EMBED_PATH = '/v1/embeddings';
 let FUZZY_EDITS = 1;
 let RERANKER_LOADED = false;
 let HYBRID = { enabled: true, adaptive: true, rrfK: 20, candidateK: 200, lexicalWeight: 0.3, vectorWeight: 1.0, diversityField: 'parent_id', maxPerDocument: 2 };
-let RERANK = { enabled: true, shortlist: 20, weight: 0.2 };
+let RERANK = { enabled: true, shortlist: 12, weight: 0.6 };
 let RELEVANCE_FLOOR = 0.05;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -419,7 +419,10 @@ export async function memory_recall(args, context) {
     }
 
     pr.set('Searching memory index...', 50);
-    const fetchK = Math.max(limit * 3, options.rerank ? options.shortlist : limit, 20);
+    const effectiveShortlist = search?.shortlist !== undefined
+        ? options.shortlist
+        : Math.max(limit, options.shortlist);
+    const fetchK = Math.max(limit * 3, options.rerank ? effectiveShortlist : limit, 20);
     const hybridQuery = {
         lexical: {
             text: safeQuery,
@@ -475,7 +478,7 @@ export async function memory_recall(args, context) {
             principals: PRINCIPALS,
             hits: liveHits,
             texts: textsById,
-            shortlist: options.shortlist,
+            shortlist: effectiveShortlist,
             rerank_weight: options.rerankWeight,
             relevance_floor: RELEVANCE_FLOOR,
         });
