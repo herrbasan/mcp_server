@@ -89,6 +89,15 @@ export function relevanceFloor() {
     return RELEVANCE_FLOOR;
 }
 
+export function formatSearchTiming(timing) {
+    const { totalMs, embedMs, searchMs, rerankMs } = timing;
+    const parts = [];
+    if (Number.isFinite(embedMs)) parts.push(`embed ${embedMs.toFixed(1)}ms`);
+    if (Number.isFinite(searchMs)) parts.push(`nvdb ${searchMs.toFixed(1)}ms`);
+    if (Number.isFinite(rerankMs)) parts.push(`rerank ${rerankMs.toFixed(1)}ms`);
+    return `took: ${totalMs.toFixed(1)}ms${parts.length ? ` (${parts.join(', ')})` : ''}`;
+}
+
 export function searchRequestInfo(search = null, query = null) {
     const options = resolveSearchOptions({
         query,
@@ -265,14 +274,18 @@ export async function searchDocuments({
         throw new Error('query must be a non-empty string');
     }
 
+    const startMs = performance.now();
     const { options } = searchRequestInfo(search, query);
     const normFolder = normalizeFolder(folder);
     const normExt = normalizeExtension(extension);
 
     let queryVector = null;
+    let embedMs = null;
     if (options.dense) {
         onProgress?.('Embedding query', 20);
+        const embedStart = performance.now();
         queryVector = await GATEWAY.embed(formatQueryForEmbedding(query), { path: CFG.embeddingPath });
+        embedMs = performance.now() - embedStart;
     }
 
     const targets = Array.isArray(collections) && collections.length > 0 ? collections : ['storage'];
@@ -308,11 +321,14 @@ export async function searchDocuments({
         };
 
         onProgress?.(`Searching ${collName}`, 50);
+        const searchStart = performance.now();
         const res = await CLIENT.hybridSearch(collName, hybridQuery);
+        const searchMs = Number.isFinite(res.took_ms) ? res.took_ms : performance.now() - searchStart;
         const rawHits = res.hits || [];
 
         if (options.rerank && rawHits.length > 0) {
             onProgress?.(`Reranking ${collName}`, 75);
+            const rerankStart = performance.now();
             const l2 = await CLIENT.level2(collName, {
                 query_text: query,
                 principals: CFG.principals,
@@ -321,6 +337,7 @@ export async function searchDocuments({
                 rerank_weight: options.rerankWeight,
                 relevance_floor: RELEVANCE_FLOOR,
             });
+            const rerankMs = Number.isFinite(l2.took_ms) ? l2.took_ms : performance.now() - rerankStart;
             const rows = [];
             for (const item of l2.hits || []) {
                 const h = item.hybrid;
@@ -352,6 +369,8 @@ export async function searchDocuments({
                 rows,
                 rejected: Boolean(l2.rejected),
                 bestRerankScore: l2.best_rerank_score ?? null,
+                searchMs,
+                rerankMs,
             };
         }
 
@@ -380,7 +399,7 @@ export async function searchDocuments({
                 rejected: false,
             });
         }
-        return { collection: collName, rows, rejected: false, bestRerankScore: null };
+        return { collection: collName, rows, rejected: false, bestRerankScore: null, searchMs, rerankMs: null };
     }));
 
     // Each collection's rows keep `nvdb serve`'s own order; the merge only
@@ -395,6 +414,16 @@ export async function searchDocuments({
             }
         }
     }
+
+    const searchTimes = perCollection.map(c => c.searchMs).filter(v => Number.isFinite(v));
+    const rerankTimes = perCollection.map(c => c.rerankMs).filter(v => Number.isFinite(v));
+    const timing = {
+        totalMs: performance.now() - startMs,
+        embedMs,
+        searchMs: searchTimes.length ? Math.max(...searchTimes) : null,
+        rerankMs: rerankTimes.length ? Math.max(...rerankTimes) : null,
+    };
+    Object.defineProperty(sliced, 'timing', { value: timing, enumerable: false });
 
     return sliced;
 }
@@ -429,7 +458,7 @@ export async function vdb_search(args, context) {
         return {
             content: [{
                 type: 'text',
-                text: `mode: ${info.mode}\n${describeRejection(assessment, results, 'vdb matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`,
+                text: `mode: ${info.mode} | ${formatSearchTiming(results.timing)}\n${describeRejection(assessment, results, 'vdb matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`,
             }],
             isError: false,
         };
@@ -451,7 +480,7 @@ export async function vdb_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `mode: ${info.mode}\nFound ${results.length} match(es):\n\n${formatted || 'No matches.'}`,
+            text: `mode: ${info.mode} | ${formatSearchTiming(results.timing)}\nFound ${results.length} match(es):\n\n${formatted || 'No matches.'}`,
         }],
         isError: false,
     };

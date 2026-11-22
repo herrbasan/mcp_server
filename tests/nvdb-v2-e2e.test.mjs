@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import * as vdb from '../src/agents/vdb/index.js';
 import * as memory from '../src/agents/memory/index.js';
+import * as storage from '../src/agents/storage/index.js';
 import { createV2Client } from '../src/agents/vdb/v2-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -159,6 +160,7 @@ async function run() {
         agents.set('vdb', vdbInstance);
         const memInstance = await memory.init({ config, gateway: mockGateway, agents });
         agents.set('memory', memInstance);
+        await storage.init({ config, agents });
 
         // 1. Sync storage + drain embeddings
         const scanRes = await vdb.vdb_trigger_scan({}, {});
@@ -189,6 +191,20 @@ async function run() {
         assert.ok(exact[0].content.includes('Markdown blocks specification'), 'include_content returns full chunk');
         console.log('✓ exact title + rerank + include_content');
 
+        // 4b. Timing: exposed non-enumerably on searchDocuments results
+        const timed = await vdb.searchDocuments({ query: 'MD-Blocks Specification', top_k: 3 });
+        assert.ok(timed.timing, 'searchDocuments exposes results.timing');
+        assert.equal(Object.prototype.propertyIsEnumerable.call(timed, 'timing'), false, 'timing is non-enumerable');
+        assert.ok(Number.isFinite(timed.timing.totalMs) && timed.timing.totalMs >= 0, 'timing.totalMs is finite and non-negative');
+        assert.ok(Number.isFinite(timed.timing.searchMs) && timed.timing.searchMs >= 0, 'timing.searchMs is finite and non-negative');
+        assert.ok(Number.isFinite(timed.timing.rerankMs) && timed.timing.rerankMs >= 0, 'timing.rerankMs is finite when rerank runs');
+        assert.ok(!JSON.stringify(timed).includes('timing'), 'JSON.stringify(results) omits timing');
+        const vdbTimed = await vdb.vdb_search({ query: 'MD-Blocks Specification', collections: ['storage'] }, {});
+        assert.match(vdbTimed.content[0].text.split('\n')[0], /\| took: \d+\.\dms/, 'vdb.search mode line carries timing');
+        const storageTimed = await storage.storage_search({ query: 'MD-Blocks Specification', top_k: 3 }, {});
+        assert.match(storageTimed.content[0].text.split('\n')[0], /\| took: \d+\.\dms/, 'storage.search mode line carries timing');
+        console.log('✓ search timing exposed (non-enumerable) and rendered in vdb/storage replies');
+
         // 5. Native 1-edit fuzzy typo ("AI Conciousness") — zero JS query-normalizer
         const typo = await vdb.searchDocuments({ query: 'AI Conciousness', top_k: 3 });
         assert.equal(typo[0].path, 'documentation/ai-consciousness.md', 'native 1-edit fuzzy finds AI Consciousness');
@@ -215,6 +231,7 @@ async function run() {
         // 8. Nonsense query rejected by Level-2 relevance floor (R1)
         const nonsense = await vdb.vdb_search({ query: 'zxqjvplkmn wqertyuiop', collections: ['storage'] }, {});
         assert.ok(nonsense.content[0].text.includes('No relevant'), `nonsense rejected: ${nonsense.content[0].text.slice(0, 120)}`);
+        assert.match(nonsense.content[0].text.split('\n')[0], /\| took: \d+\.\dms/, 'rejected vdb.search carries timing');
         console.log('✓ Level-2 nonsense rejection');
 
         // 9. Memory store -> recall -> update -> forget -> integrity_check
@@ -231,6 +248,9 @@ async function run() {
 
         const memRecall = await memory.memory_recall({ query: 'Prototype Fund funding', limit: 3 }, { gateway: mockGateway });
         assert.ok(memRecall.content[0].text.includes('Prototype Fund'), `memory recall hit: ${memRecall.content[0].text}`);
+        assert.match(memRecall.content[0].text.split('\n')[0], /\| took: \d+\.\dms/, 'memory.recall mode line carries timing');
+        const memMiss = await memory.memory_recall({ query: 'zxqjvplkmn wqertyuiop', limit: 3 }, { gateway: mockGateway });
+        assert.ok(memMiss.content[0].text.includes('took: '), 'memory no-hit/reject path carries timing');
 
         const memCat = await memory.memory_recall({ query: 'web component', category: 'architecture', limit: 3 }, { gateway: mockGateway });
         assert.ok(memCat.content[0].text.includes('nui_wc2'), 'promoted category filter works');

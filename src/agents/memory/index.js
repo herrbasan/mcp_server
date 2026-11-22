@@ -6,6 +6,7 @@ import { loadNdb } from './ndb-loader.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { resolveSearchOptions, describeSearchOptions } from '../vdb/search-options.js';
+import { formatSearchTiming } from '../vdb/index.js';
 import { formatRelevance } from '../vdb/relevance.js';
 import { documentHashes } from '../vdb/v2-hash.js';
 
@@ -400,13 +401,17 @@ export async function memory_recall(args, context) {
     let queryVector = null;
     let denseActive = options.dense;
     let embedNotice = '';
+    const t0 = performance.now();
+    let embedMs = null;
     if (options.dense) {
         pr.set('Embedding query...', 20, true);
         try {
             const formatted = VDB_AGENT?.formatQueryForEmbedding
                 ? VDB_AGENT.formatQueryForEmbedding(safeQuery)
                 : safeQuery;
+            const embedStart = performance.now();
             queryVector = await gateway.embed(formatted, { path: EMBED_PATH });
+            embedMs = performance.now() - embedStart;
         } catch (err) {
             const embedError = err.message || String(err);
             logger.warn(`[Memory] recall query embed failed: ${embedError} — running lexical-only`, null, 'Memory');
@@ -444,8 +449,12 @@ export async function memory_recall(args, context) {
         vector_weight: options.vectorWeight,
     };
 
+    const searchStart = performance.now();
     const res = await VDB_CLIENT.hybridSearch('memory', hybridQuery);
+    const searchMs = Number.isFinite(res.took_ms) ? res.took_ms : performance.now() - searchStart;
     const rawHits = res.hits || [];
+    let rerankMs = null;
+    const timingLine = () => formatSearchTiming({ totalMs: performance.now() - t0, embedMs, searchMs, rerankMs });
 
     // Hydrate from authoritative nDB; drop tombstoned/missing docs before Level-2.
     const liveHits = [];
@@ -467,12 +476,13 @@ export async function memory_recall(args, context) {
 
     if (liveHits.length === 0) {
         pr.done('Search complete');
-        return { content: [{ type: 'text', text: `mode: ${mode}\n${embedNotice}No memories found. This topic is new — consider storing insights with memory_store as you learn.` }] };
+        return { content: [{ type: 'text', text: `mode: ${mode} | ${timingLine()}\n${embedNotice}No memories found. This topic is new — consider storing insights with memory_store as you learn.` }] };
     }
 
     let ranked = [];
     if (options.rerank) {
         pr.set('Reranking results...', 75);
+        const rerankStart = performance.now();
         const l2 = await VDB_CLIENT.level2('memory', {
             query_text: safeQuery,
             principals: PRINCIPALS,
@@ -482,6 +492,7 @@ export async function memory_recall(args, context) {
             rerank_weight: options.rerankWeight,
             relevance_floor: RELEVANCE_FLOOR,
         });
+        rerankMs = Number.isFinite(l2.took_ms) ? l2.took_ms : performance.now() - rerankStart;
         for (const item of l2.hits || []) {
             const h = item.hybrid;
             const doc = docsById.get(h.hit.id);
@@ -505,7 +516,7 @@ export async function memory_recall(args, context) {
             return {
                 content: [{
                     type: 'text',
-                    text: `mode: ${mode}\n${embedNotice}No relevant memories: the best cross-encoder score is ${formatRelevance(best)}, below the ${(RELEVANCE_FLOOR * 100).toFixed(1)}% relevance floor.\n`
+                    text: `mode: ${mode} | ${timingLine()}\n${embedNotice}No relevant memories: the best cross-encoder score is ${formatRelevance(best)}, below the ${(RELEVANCE_FLOOR * 100).toFixed(1)}% relevance floor.\n`
                         + `The candidates below are low-relevance evidence, not answers:\n${lines}`
                 }]
             };
@@ -527,7 +538,7 @@ export async function memory_recall(args, context) {
 
     pr.done('Search complete');
     return {
-        content: [{ type: 'text', text: `mode: ${mode}\n${embedNotice}${formatRecall(ranked, limit)}` }]
+        content: [{ type: 'text', text: `mode: ${mode} | ${timingLine()}\n${embedNotice}${formatRecall(ranked, limit)}` }]
     };
 }
 

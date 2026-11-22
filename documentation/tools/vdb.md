@@ -49,14 +49,16 @@ The shared `nvdb serve` also hosts the chat app's `chat` collection.
 
 | Tool | Args | Behavior |
 |---|---|---|
-| `vdb.search` | `query*`, `collections?` (default `['storage','memory']`), `folder?` (first path segment, storage only), `extension?` (`md`, `.md`, `MD`), `top_k?` (default 10), `include_content?`, `search?` | Ranked results across collections with `collection`, `path`, `title`, `folder`, `rrfScore`, `rerankScore`, lane scores/ranks. The reply's first line is the effective mode (`mode: layers=… profile=… rrfK=… candidateK=… …`). Rejection replaces the list with "No relevant vdb matches" plus the candidate evidence. |
+| `vdb.search` | `query*`, `collections?` (default `['storage','memory']`), `folder?` (first path segment, storage only), `extension?` (`md`, `.md`, `MD`), `top_k?` (default 10), `include_content?`, `search?` | Ranked results across collections with `collection`, `path`, `title`, `folder`, `rrfScore`, `rerankScore`, lane scores/ranks. The reply's first line is the effective mode followed by the search timing: `mode: layers=… profile=… rrfK=… candidateK=… … | took: 42.3ms (embed 12.1ms, nvdb 8.4ms, rerank 21.8ms)` — stages appear only when they ran. Rejection replaces the list with "No relevant vdb matches" plus the candidate evidence. |
 | `vdb.status` | — | `GET /health` + collection list + a pending-embedding sample per collection, `syncInProgress`, `lastSync` (files, chunks, upserted, deleted, unchanged, attached/stale counts, duration). |
 | `vdb.trigger_scan` | — | Runs one storage sync now: enumerate → BLAKE3 envelope diff → upsert/delete → commit → drain pending embeddings. Returns the sync stats; refuses (returns `skipped`) when a sync is already running. |
 | `vdb.build_index` | — | Commits every collection. v2 needs no HNSW build — the serve scans flat SIMD below `flat_search_cutoff` and uses its own index above it. |
 
 An exported internal `searchDocuments(...)` is what `storage.search` uses;
 `describeSearchRequest` / `describeRejection` build the reply's mode line and
-rejection text.
+rejection text, and `formatSearchTiming` renders the `took: …ms (…)` suffix.
+Search responses from `vdb.search`, `storage.search` and `memory.recall` all
+carry that suffix on their mode line.
 
 ## Storage sync pipeline (`storage-connector.js`)
 

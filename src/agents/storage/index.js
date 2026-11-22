@@ -6,7 +6,7 @@ import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { createTranslatorFromConfig } from './path-translator.js';
 import { createFileOps, joinNormalizedTail } from '../../lib/fileops.js';
 import { requireFields } from '../../utils/require-fields.js';
-import { searchDocuments, searchRequestInfo, describeRejection } from '../vdb/index.js';
+import { searchDocuments, searchRequestInfo, describeRejection, formatSearchTiming } from '../vdb/index.js';
 import { assessRelevance } from '../vdb/relevance.js';
 import * as resources from './resource-provider.js';
 
@@ -764,7 +764,7 @@ export async function storage_search(args, context) {
         return {
             content: [{
                 type: 'text',
-                text: `mode: ${mode}\n${describeRejection(assessment, results, 'storage matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+                text: `mode: ${mode} | ${formatSearchTiming(results.timing)}\n${describeRejection(assessment, results, 'storage matches')}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
             }]
         };
     }
@@ -786,7 +786,7 @@ export async function storage_search(args, context) {
     return {
         content: [{
             type: 'text',
-            text: `mode: ${mode}\nStorage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
+            text: `mode: ${mode} | ${formatSearchTiming(results.timing)}\nStorage search results (${results.length}):\n\n${formatted || 'No matches.'}\n\nRaw results:\n${JSON.stringify(results, null, 2)}`
         }]
     };
 }

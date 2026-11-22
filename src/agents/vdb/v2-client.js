@@ -166,7 +166,7 @@ export function createV2Client(baseUrl, { timeoutMs = 30_000 } = {}) {
             return request('POST', `/v2/collections/${c}/watermark`, watermark);
         },
 
-        /** POST /v2/collections/:name/level2 -> { rejected, best_rerank_score, hits } */
+        /** POST /v2/collections/:name/level2 -> { rejected, best_rerank_score, hits, took_ms } */
         level2(name, payload) {
             const c = encodeCollection(name);
             return request('POST', `/v2/collections/${c}/level2`, payload);
