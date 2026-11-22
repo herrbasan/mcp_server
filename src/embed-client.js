@@ -123,128 +123,6 @@ function acceptVector(inputText, vector, where) {
     return vector;
 }
 
-// ── Stored-vector guard ──────────────────────────────────────────────────
-// The map above only knows vectors THIS process has seen. A freshly returned
-// vector can be byte-identical to one stored in the index by an earlier run for
-// different text, and nothing process-local can tell — the stored vector was
-// never part of this process's request history. So a second guard tracks the
-// vectors that are actually STORED: vectorHash -> { docId -> inputHash }, built
-// from the live index at startup and updated as documents are inserted/removed.
-//
-// Rules:
-//   - identical input for the same vector is legitimate (re-index, duplicates,
-//     repeated chunk text) → allowed.
-//   - a vector stored for a different input/entity is a provider fault → throws
-//     EmbeddingIntegrityError before the caller writes anything.
-//   - re-inserting the same document detaches its previous vector, so replacing
-//     an entity's embedding never trips over its own stale record: a candidate
-//     is never checked against the record owned by its own id.
-//
-// Deliberately NOT bounded and NOT evicting: one record per active document
-// (memory) or chunk (collection), so the bound is the corpus itself — the same
-// order as the index it mirrors. Evicting a record would turn a real collision
-// into a silent accept, and a wrong vector in the index is unrecoverable without
-// a re-index. Correctness for active entities beats a memory ceiling here.
-//
-// The input hash is resolved LAZILY: pass a function instead of the text and it
-// runs only when a candidate vector actually collides, so startup does not
-// re-read every source file. The resolved hash is cached on the record.
-export function createStoredVectorGuard(label) {
-    if (!label) throw new Error('createStoredVectorGuard: label is required');
-    const byVector = new Map(); // vectorHash -> Map<docId, { input: string|fn|null, inputHash: string|null }>
-    const byDoc = new Map();    // docId -> vectorHash
-
-    function resolveInputHash(record, docId, vectorHash) {
-        if (record.inputHash !== null) return record.inputHash;
-        if (typeof record.input !== 'function') {
-            throw new Error(`${label}: stored vector ${vectorHash.slice(0, 12)}… (doc ${docId}) has no input to resolve`);
-        }
-        const input = record.input();
-        if (typeof input !== 'string') {
-            throw new Error(`${label}: input resolver for doc ${docId} returned ${input === null ? 'null' : typeof input}, expected string`);
-        }
-        record.inputHash = hashInput(input);
-        record.input = null;
-        return record.inputHash;
-    }
-
-    function detach(docId) {
-        const previous = byDoc.get(docId);
-        if (previous === undefined) return;
-        byDoc.delete(docId);
-        const owners = byVector.get(previous);
-        if (!owners) return;
-        owners.delete(docId);
-        if (owners.size === 0) byVector.delete(previous);
-    }
-
-    function register(docId, vector, input) {
-        if (typeof docId !== 'string' || docId.length === 0) throw new Error(`${label}: register needs a non-empty doc id`);
-        const vectorHash = hashVector(assertVector(vector, `${label}.register(${docId})`));
-        let record;
-        if (typeof input === 'string') record = { input: null, inputHash: hashInput(input) };
-        else if (typeof input === 'function') record = { input, inputHash: null };
-        else throw new Error(`${label}: register(${docId}) needs the input text or a resolver (got ${input === null ? 'null' : typeof input})`);
-        detach(docId);
-        let owners = byVector.get(vectorHash);
-        if (!owners) {
-            owners = new Map();
-            byVector.set(vectorHash, owners);
-        }
-        owners.set(docId, record);
-        byDoc.set(docId, vectorHash);
-    }
-
-    function assertMany(candidates) {
-        if (!Array.isArray(candidates) || candidates.length === 0) {
-            throw new Error(`${label}: assertMany needs a non-empty candidate array`);
-        }
-        // Staged hashes make the batch check itself: two different inputs that
-        // embed identically must fail before ANY of them is inserted.
-        const staged = new Map(); // vectorHash -> inputHash
-        for (const candidate of candidates) {
-            const where = candidate.where || `${label} doc ${candidate.id}`;
-            if (typeof candidate.id !== 'string' || candidate.id.length === 0) throw new Error(`${where}: candidate id must be a non-empty string`);
-            if (typeof candidate.input !== 'string') throw new Error(`${where}: candidate input must be a string (got ${candidate.input === null ? 'null' : typeof candidate.input})`);
-            const vectorHash = hashVector(assertVector(candidate.vector, where));
-            const inputHash = hashInput(candidate.input);
-            const owners = byVector.get(vectorHash);
-            if (owners) {
-                for (const [ownerId, record] of owners) {
-                    // The candidate's OWN record is not a collision: replacing an
-                    // entity's embedding detaches that record on register. Two
-                    // cases need this — a legitimately new vector, and text that
-                    // changed only past the embedding cap so the provider
-                    // correctly returns the same vector for the same embedded
-                    // input. Any OTHER owner still fails.
-                    if (ownerId === candidate.id) continue;
-                    const ownerHash = resolveInputHash(record, ownerId, vectorHash);
-                    if (ownerHash !== inputHash) {
-                        throw new EmbeddingIntegrityError(`${where}: vector ${vectorHash.slice(0, 12)}… is already stored for a different input (doc ${ownerId}) — refusing a reused embedding`);
-                    }
-                }
-            }
-            const earlier = staged.get(vectorHash);
-            if (earlier !== undefined && earlier !== inputHash) {
-                throw new EmbeddingIntegrityError(`${where}: two different inputs in this batch embed to the same vector ${vectorHash.slice(0, 12)}… — refusing a reused embedding`);
-            }
-            staged.set(vectorHash, inputHash);
-        }
-    }
-
-    return {
-        label,
-        register,
-        assert(docId, vector, input, where) {
-            assertMany([{ id: docId, vector, input, where }]);
-        },
-        assertMany,
-        remove: detach,
-        size: () => byDoc.size,
-        vectorCount: () => byVector.size
-    };
-}
-
 export function createEmbedClient(embedUrl, accessKey = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
     const baseUrl = embedUrl.replace(/\/+$/, '');
@@ -253,8 +131,9 @@ export function createEmbedClient(embedUrl, accessKey = null) {
 
     // An index lives in exactly one vector space, so the route that produced
     // its vectors must be selected explicitly. The Gateway serves one route per
-    // embedding model (`/v1/embeddings/wizkid`); anything else is a typo, not a
-    // fallback. No model is sent either way — each route owns its upstream model.
+    // embedding model (`/v1/embeddings` for qwen3-embedding-4b); anything else
+    // is a typo, not a fallback. No model is sent either way — each route owns
+    // its upstream model.
     const DEFAULT_EMBED_PATH = '/v1/embeddings';
     function resolvePath(opts) {
         const value = opts?.path ?? DEFAULT_EMBED_PATH;

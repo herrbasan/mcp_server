@@ -1132,14 +1132,14 @@ or tasks that need a different model than the current one.
 VDB — Vector Database (nVDB)
 ═══════════════════════════════════════════════════════════════
 
-Embedded vector database backed by nVDB. Indexes storage files (including
-docs/ — the former documentation knowledge base) on a timer (default 5
-minutes) and exposes semantic search.
+Retrieval over a standalone nvdb serve process (nVDB v2 HTTP, port 3510;
+no addon or ONNX runtime in Node). Indexes storage files on a timer (default
+5 minutes) and exposes hybrid lexical + dense search with Level-2 rerank.
 
   vdb.search — { query*, collections?, folder?, extension?, top_k?,
-                 approximate?, include_content?, search? }
-      Semantic search over storage files (by meaning, not name). Docs are
-      under folder 'docs'; use folder= to scope to a top-level storage folder.
+                 include_content?, search? }
+      Semantic search over storage files (by meaning, not name). Use folder=
+      to scope to a top-level storage folder.
       Filename-like queries (e.g. "report_v2.md") are auto-detected and
       matched against indexed file paths instead of embeddings. To browse
       directories use storage.list.
@@ -1150,13 +1150,15 @@ minutes) and exposes semantic search.
       mode that actually ran; each hit carries its lane ranks.
 
   vdb.status — {}
-      Show collection counts, last scan, and whether nVDB is loaded.
+      Show nvdb serve health, reranker state, collections, document counts,
+      pending embeddings and last sync stats.
 
   vdb.trigger_scan — {}
       Manually re-scan all watched folders.
 
   vdb.build_index — { collections? }
-      Build HNSW approximate-search index.
+      Commit all open collections in nvdb serve (v2 scans flat SIMD below
+      flat_search_cutoff; there is no HNSW build).
 
 
 ═══════════════════════════════════════════════════════════════

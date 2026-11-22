@@ -11,8 +11,8 @@
 // #24 gate could not hold: routine compaction + ordinary edge growth fire
 // every run); this script clears the backlog it left behind.
 //
-// Orphaned nVDB vectors: memory.recall already skips tombstoned docs; reclaim
-// space afterwards with scripts/cleanup-vdb-garbage.js if wanted.
+// Orphaned vectors: memory.recall skips tombstoned docs; the v2 serve drops
+// vectors for deleted documents through its own reconciliation.
 //
 // Usage:   node scripts/cleanup-between-telemetry.mjs [--apply]
 // Requires the mcp_server to be STOPPED (nDB is single-writer).

@@ -6,8 +6,7 @@ reference docs. Last verified 2026-11-22.
 Detailed docs live in this folder, one file per system. Shared infrastructure is
 documented alongside: `documentation/fileops.md` (root-confined file operations)
 and `documentation/html-to-markdown.md` (HTML→CommonMark conversion, used by
-`browser.content` `mode: 'markdown'`). The isolated recall/index/dreamer test
-replica is documented in [memory-lab.md](memory-lab.md).
+`browser.content` `mode: 'markdown'`).
 
 ## How tools are invoked
 
@@ -106,8 +105,5 @@ Things that bite if you don't know them (each detailed in the linked doc):
   literal string "undefined". [github.md](github.md)
 - The dream map lags memory by up to the 15-minute dreaming cadence — recall
   for anything recent. [memory.md](memory.md)
-- `npm run gate:nvdb` is a legacy **v1** gate (NAPI addon +
-  `/v1/embeddings/wizkid`); the current retrieval gate is `npm run test:v2`.
-  [vdb.md](vdb.md)
 - Legacy tool names (`storage_read`, `memory_store`, …) still work — the
   server maps them — but `agent.action` form is canonical.

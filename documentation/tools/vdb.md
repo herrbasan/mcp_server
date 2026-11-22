@@ -287,10 +287,8 @@ and snapshot-index eras; nothing in the running agent reads them.
 | `npm run test:v2` | `tests/v2-hash.test.mjs` (BLAKE3/envelope golden vectors), `tests/search-options.test.mjs` (layer resolution, adaptive profiles, strict errors), `tests/vdb-merge.test.mjs` (rank-preserving merge, rejected-collection drop), `tests/nvdb-v2-e2e.test.mjs` (full local `nvdb.exe serve --reranker-model` E2E). |
 | `node scripts/eval-hybrid-fusion.mjs` | Live golden-query fusion benchmark against the running serve. |
 | `node scripts/eval-realworld-e2e.mjs` | Multi-collection end-to-end quality run. |
-
-`npm run gate:nvdb` (`scripts/nvdb-hybrid-gate.mjs`) is a **legacy v1 gate**: it
-resolves a NAPI addon and an `/v1/embeddings/wizkid` route, neither of which
-exists in production anymore. Do not treat it as a current acceptance check.
+| `node scripts/eval-reranker-ablation.mjs` | Rerank lane ablation against the running serve. |
+| `node scripts/eval-reranker-sweep.mjs` | Rerank weight/profile sweep against the running serve. |
 
 ## Consumers
 
