@@ -410,10 +410,21 @@ const cjsAnalysis = await analyzeSnapshot(cjsTmp);
 const cjsNarrations = cjsAnalysis.hunts.filter((h) => h.kind === 'narration-comment');
 ok(cjsNarrations.length === 1, `CJS fallback parse does not duplicate comments (got ${cjsNarrations.length} narration hunts)`);
 
-// ── Store (nDB) ────────────────────────────────────────────────────────────
+// ── Store (nDB over `ndb serve`) ──────────────────────────────────────────
 console.log('\n[store]');
+const { startNdbTestServer } = await import('./helpers/ndb-test-server.mjs');
+// Three isolated DBs on one real `ndb serve`: the module-level store is a
+// singleton, and each scenario must start from an empty document set.
+const ndb = await startNdbTestServer({
+    dbs: [
+        ['codereview', path.join(tmpData, 'ndb', 'codereview')],
+        ['codereview_partial', path.join(tmpData, 'ndb', 'codereview-partial')],
+        ['codereview_clean', path.join(tmpData, 'ndb', 'codereview-clean')],
+    ],
+});
+try {
 const store = await import(`file://${path.join(AGENT, 'store.js').replaceAll('\\', '/')}`);
-store.initStore(path.join(tmpData, 'db'));
+await store.initStore({ serviceUrl: ndb.url, dbName: 'codereview' });
 const reviewId = await store.saveReview({ sourceLabel: 'fixture', snapshotHash: snap.treeHash, modelPair: 'a+b', validatorVersion: validator.VALIDATOR_VERSION, status: 'done' });
 const prior = await store.findLatestReviewForSource('fixture', 'a+b', validator.VALIDATOR_VERSION);
 ok(prior && prior._id === reviewId, 'review saved and found by source+models+validator');
@@ -432,7 +443,7 @@ ok(listed.length === 2, 'findings listed by review (cross-review findings exclud
 // ── Parallel failure isolation, budget caps & telemetry ledger ─────────────
 console.log('\n[parallel isolation, budget & telemetry]');
 const partialData = path.join(tmpData, 'partial-data');
-store.initStore(partialData);
+await store.initStore({ serviceUrl: ndb.url, dbName: 'codereview_partial' });
 const engineFinding = {
     file: 'src/engine.rs',
     lines: [6, 6],
@@ -519,7 +530,7 @@ ok(budgetCalls.length === 1 && budgetStopped.result?.partial !== false && budget
 
 // Clean completed review becomes incremental baseline; unchanged second run makes 0 model calls.
 const cleanData = path.join(tmpData, 'clean-data');
-store.initStore(cleanData);
+await store.initStore({ serviceUrl: ndb.url, dbName: 'codereview_clean' });
 let cleanCallCount = 0;
 const cleanGateway = {
     listModels: async () => [{ id: 'reviewer-fixture' }],
@@ -537,6 +548,7 @@ ok(secondClean.partial === false && cleanCallCount === 0, 'unchanged incremental
 // ── Gateway smoke (env-gated) ──────────────────────────────────────────────
 if (process.env.CODEVIEW_SMOKE === '1') {
     console.log('\n[gateway smoke — direct parallel pipeline against the seeded corpus]');
+    await store.initStore({ serviceUrl: ndb.url, dbName: 'codereview' });
     const { createGatewayClient } = await import(`file://${path.join(__dirname, '..', 'src', 'gateway-client.js').replaceAll('\\', '/')}`);
     const gateway = createGatewayClient(null, 'http://localhost:3400', 'someKey33!!', { embed: async () => { throw new Error('no embeds in smoke test'); } });
     const storageRoot = 'D:\\MCP_Storage';
@@ -568,6 +580,9 @@ if (process.env.CODEVIEW_SMOKE === '1') {
     ok(result.state.findings.length > 0, 'smoke run produced findings');
 } else {
     console.log('\n[gateway smoke skipped — set CODEVIEW_SMOKE=1 to run the full pipeline]');
+}
+} finally {
+    await ndb.stop();
 }
 
 await fsp.rm(tmpData, { recursive: true, force: true });

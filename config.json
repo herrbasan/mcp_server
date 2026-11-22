@@ -10,6 +10,14 @@
     "httpUrl": "http://localhost:3400",
     "accessKey": "someKey33!!"
   },
+  "ndb": {
+    "serviceUrl": "http://127.0.0.1:8323",
+    "dbs": {
+      "memories": "memories",
+      "notepad": "notepad",
+      "codereview": "codereview"
+    }
+  },
   "nMediaUrl": "http://localhost:3500",
   "agents": {
     "browser": {
@@ -31,7 +39,6 @@
       "geminiAccount": "david@raum.com"
     },
     "memory": {
-      "dbPath": "data/memories/data.jsonl",
       "maxMemoryChars": 6000
     },
     "research": {

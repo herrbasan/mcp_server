@@ -115,47 +115,58 @@ section('#66 dreaming: dream-entry write path removed, between guards intact');
 // ═══════════════════════════════════════════════════════════════
 section('#23 memory_list: sort + limit');
 {
-    const { Database } = (await import('../src/agents/memory/ndb-loader.js')).loadNdb();
+    // nDB v2 has no in-process NAPI path left — this boots a real `ndb serve`
+    // over a temp database folder, exactly how the agent reaches its store.
+    const { startNdbTestServer } = await import('./helpers/ndb-test-server.mjs');
+    const { createNdbClient } = await import('../src/lib/ndb-client.js');
     const memDir = join(TMP, 'memory');
     mkdirSync(memDir, { recursive: true });
-    const dbPath = join(memDir, 'data.jsonl');
 
-    // Seed BEFORE the agent opens it: _meta + 5 memories, ids 1..5, known timestamps
-    const seeder = Database.open(dbPath, { persistence: 'immediate' });
-    seeder.insertWithPrefix('_meta', { nextId: 6, migratedAt: new Date().toISOString() });
-    const seeds = [
-        { id: 1, description: 'oldest seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-25T10:00:00Z', embedStatus: 'embedded' },
-        { id: 2, description: 'early seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-26T10:00:00Z', embedStatus: 'embedded' },
-        { id: 3, description: 'middle seed entry', category: 'other', confidence: 0.5, timestamp: '2026-08-27T10:00:00Z', embedStatus: 'embedded' },
-        { id: 4, description: 'late seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-28T10:00:00Z', embedStatus: 'embedded' },
-        { id: 5, description: 'newest seed entry', category: 'other', confidence: 0.5, timestamp: '2026-08-29T10:00:00Z', embedStatus: 'embedded' }
-    ];
-    for (const s of seeds) seeder.insertWithPrefix('mem', s);
-    seeder.flush();
+    const ndb = await startNdbTestServer({ dbs: [['memories', memDir]] });
+    try {
+        // Seed BEFORE the agent opens it: _meta + 5 memories, ids 1..5, known timestamps
+        const seederDb = createNdbClient(ndb.url).db('memories');
+        await seederDb.insert({ nextId: 6, migratedAt: new Date().toISOString() }, { prefix: '_meta' });
+        const seeds = [
+            { id: 1, description: 'oldest seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-25T10:00:00Z', embedStatus: 'embedded' },
+            { id: 2, description: 'early seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-26T10:00:00Z', embedStatus: 'embedded' },
+            { id: 3, description: 'middle seed entry', category: 'other', confidence: 0.5, timestamp: '2026-08-27T10:00:00Z', embedStatus: 'embedded' },
+            { id: 4, description: 'late seed entry', category: 'seed', confidence: 0.5, timestamp: '2026-08-28T10:00:00Z', embedStatus: 'embedded' },
+            { id: 5, description: 'newest seed entry', category: 'other', confidence: 0.5, timestamp: '2026-08-29T10:00:00Z', embedStatus: 'embedded' }
+        ];
+        for (const s of seeds) await seederDb.insert(s, { prefix: 'mem' });
+        await seederDb.flush();
 
-    const memoryAgent = await import('../src/agents/memory/index.js');
-    const agents = new Map(); // no vdb agent — init degrades with a warning
-    await memoryAgent.init({ gateway: null, config: { agents: { memory: { dbPath: 'data/_test/verify-issues/memory/data.jsonl' } } }, agents });
-    const list = async (args) => (await memoryAgent.memory_list(args, {})).content[0].text;
+        const memoryAgent = await import('../src/agents/memory/index.js');
+        const agents = new Map(); // no vdb agent — init degrades with a warning
+        await memoryAgent.init({
+            gateway: null,
+            config: { ndb: { serviceUrl: ndb.url, dbs: { memories: 'memories' } }, agents: {} },
+            agents
+        });
+        const list = async (args) => (await memoryAgent.memory_list(args, {})).content[0].text;
 
-    const all = await list({});
-    ok(all.includes('5 memories (all categories, newest-first)'), 'default: newest-first header', all.split('\n')[0]);
-    ok(all.indexOf('#5]') < all.indexOf('#1]'), 'default: #5 before #1');
+        const all = await list({});
+        ok(all.includes('5 memories (all categories, newest-first)'), 'default: newest-first header', all.split('\n')[0]);
+        ok(all.indexOf('#5]') < all.indexOf('#1]'), 'default: #5 before #1');
 
-    const oldest = await list({ sort: 'oldest' });
-    ok(oldest.indexOf('#1]') < oldest.indexOf('#5]'), 'sort oldest: #1 before #5');
+        const oldest = await list({ sort: 'oldest' });
+        ok(oldest.indexOf('#1]') < oldest.indexOf('#5]'), 'sort oldest: #1 before #5');
 
-    const limited = await list({ limit: 2 });
-    ok(limited.includes('2 memories') && limited.includes('#5]') && limited.includes('#4]') && !limited.includes('#3]'),
-        'limit 2: returns the 2 newest only');
-    ok(limited.includes('of 5 shown'), 'limit: truncation hint present');
+        const limited = await list({ limit: 2 });
+        ok(limited.includes('2 memories') && limited.includes('#5]') && limited.includes('#4]') && !limited.includes('#3]'),
+            'limit 2: returns the 2 newest only');
+        ok(limited.includes('of 5 shown'), 'limit: truncation hint present');
 
-    const cat = await list({ category: 'seed', limit: 1 });
-    ok(cat.includes('#4]') && !cat.includes('#5]'), 'category filter + limit combine');
+        const cat = await list({ category: 'seed', limit: 1 });
+        ok(cat.includes('#4]') && !cat.includes('#5]'), 'category filter + limit combine');
 
-    await throws(() => list({ limit: 'ten' }), 'limit validation: string throws', /positive integer/);
-    await throws(() => list({ limit: 0 }), 'limit validation: zero throws', /positive integer/);
-    await throws(() => list({ sort: 'sideways' }), 'sort validation: bad value throws', /newest.*oldest/);
+        await throws(() => list({ limit: 'ten' }), 'limit validation: string throws', /positive integer/);
+        await throws(() => list({ limit: 0 }), 'limit validation: zero throws', /positive integer/);
+        await throws(() => list({ sort: 'sideways' }), 'sort validation: bad value throws', /newest.*oldest/);
+    } finally {
+        await ndb.stop();
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════

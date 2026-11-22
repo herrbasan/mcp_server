@@ -1,6 +1,6 @@
 {
     "agent": "notepad",
-    "description": "Deliberate state store — ideas (pins), tasks with step checklists, important dates, contacts, attachments. Two boards (owner: david | machine). Registry-validated contexts. Backed by its own nDB database (data/notepad/) with file buckets for attachments. Exposes LLM tools plus REST routes (/notepad/*) on the same server for manual editing and dashboard components.",
+    "description": "Deliberate state store — ideas (pins), tasks with step checklists, important dates, contacts, attachments. Two boards (owner: david | machine). Registry-validated contexts. Backed by the `notepad` database mounted in `ndb serve` (HTTP via src/lib/ndb-client.js) with file buckets for attachments. Exposes LLM tools plus REST routes (/notepad/*) on the same server for manual editing and dashboard components.",
     "tools": [
         {
             "name": "notepad_add",

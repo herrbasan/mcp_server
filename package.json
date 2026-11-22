@@ -16,7 +16,8 @@
         "test:v2": "node tests/v2-hash.test.mjs && node --test tests/search-options.test.mjs && node --test tests/vdb-merge.test.mjs && node tests/nvdb-v2-e2e.test.mjs",
         "test:v2-hash": "node tests/v2-hash.test.mjs",
         "test:image": "node tests/image-agent-test.mjs",
-        "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed (nDB: cd nDB && npm run build)"
+        "test:ndb": "node tests/ndb-mcp-e2e.test.mjs",
+        "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed"
     },
     "dependencies": {
         "@mozilla/readability": "^0.6.0",

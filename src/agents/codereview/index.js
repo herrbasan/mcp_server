@@ -41,14 +41,18 @@ export async function init(context) {
     DEFAULT_MODELS = conf.models;
     DATA_DIR = path.resolve(__dirname, '..', '..', '..', 'data', 'codereview');
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    initStoreChecked(context);
+    await initStoreChecked(context, conf);
     logger.info(`[codereview] initialized — data ${DATA_DIR}, reviewer ${DEFAULT_MODELS.reviewer}, accept ${DEFAULT_MODELS.accept}`, null, 'CodeReview');
 }
 
-function initStoreChecked(context) {
-    // The store opens its own nDB; a missing native binary is a loud startup
-    // failure (the loader throws), never a silent no-findings mode.
-    store.initStore(DATA_DIR);
+async function initStoreChecked(context, conf) {
+    // The store talks to `ndb serve` over HTTP; an unreachable service or an
+    // unmounted DB is a loud startup failure (the store throws), never a silent
+    // no-findings mode.
+    await store.initStore({
+        serviceUrl: conf.ndbUrl || context.config.ndb?.serviceUrl,
+        dbName: conf.dbName || context.config.ndb?.dbs?.codereview || 'codereview',
+    });
     context.codereviewStore = store;
 }
 

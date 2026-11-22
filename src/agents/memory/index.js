@@ -1,8 +1,8 @@
 import { readFileSync, existsSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { getLogger } from '../../utils/logger.js';
-import { loadNdb } from './ndb-loader.js';
+import { createNdbClient } from '../../lib/ndb-client.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 import { createProgressReporter } from '../../utils/progress-reporter.js';
 import { resolveSearchOptions, describeSearchOptions } from '../vdb/search-options.js';
@@ -13,13 +13,16 @@ import { documentHashes } from '../vdb/v2-hash.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
 
-const PROJECT_ROOT = resolve(__dirname, '..', '..', '..');
 const MAX_EXCERPT_BYTES = 1024;
 const UPSERT_BATCH_SIZE = 200;
+const MEMORY_PAGE_SIZE = 1000;
 
 // ── State ────────────────────────────────────────────────────────────
 
-let DB = null;            // nDB Database instance (authoritative store)
+let DB = null;            // ndb serve DB handle (authoritative store)
+let NDB_URL = null;       // service URL this agent is bound to (for error messages)
+let DB_NAME = null;       // mounted database name
+let MEM_META_ID = null;   // _meta doc id in the memories DB
 let VDB_AGENT = null;     // VDB agent instance (owns nvdb serve HTTP client)
 let VDB_CLIENT = null;    // nvdb serve HTTP client
 let GATEWAY = null;       // LLM Gateway client
@@ -122,9 +125,10 @@ async function upsertAndAttachMemory(gateway, mem, { background = true } = {}) {
                 model_version: MODEL_VERSION,
                 vector,
             }]);
-            DB.set(mem._id, 'embedStatus', 'embedded');
-            DB.set(mem._id, 'embedError', null);
-            DB.flush();
+            await DB.patch(mem._id, [
+                { op: 'set', path: 'embedStatus', value: 'embedded' },
+                { op: 'set', path: 'embedError', value: null },
+            ]);
         } catch (err) {
             if (err.status === 409 && err.code === 'stale_vector_cas') {
                 logger.warn(`[Memory] stale vector CAS for #${mem.id} — superseded by newer edit`, null, 'Memory');
@@ -134,8 +138,8 @@ async function upsertAndAttachMemory(gateway, mem, { background = true } = {}) {
         }
     }).catch(err => {
         logger.warn(`[Memory] embed of #${mem.id} failed: ${err.message || 'embed failed'} — left pending for self-heal`, null, 'Memory');
-        DB.set(mem._id, 'embedError', err.message || 'embed failed');
-        DB.flush();
+        DB.patch(mem._id, [{ op: 'set', path: 'embedError', value: err.message || 'embed failed' }])
+            .catch(patchErr => logger.warn(`[Memory] could not record embed error for #${mem.id}: ${patchErr.message}`, null, 'Memory'));
     });
 }
 
@@ -146,7 +150,7 @@ export async function syncMemories() {
     const existing = new Map();
     for (const entry of fpRes.entries || []) existing.set(entry.id, entry);
 
-    const activeMems = DB.iter().filter(d => d._id.startsWith('mem_'));
+    const activeMems = await iterMemoryDocs();
     const liveIds = new Set();
     const toUpsert = [];
     let unchanged = 0;
@@ -185,8 +189,7 @@ export async function memoryIntegrityCheck({ checkVectors = false } = {}) {
     if (!VDB_CLIENT || !DB) throw new Error('memory.memoryIntegrityCheck: memory agent or VDB client not initialized');
     const maxChars = CONFIG.maxMemoryChars || 6000;
     const expected = [];
-    for (const mem of DB.iter()) {
-        if (!mem._id.startsWith('mem_')) continue;
+    for (const mem of await iterMemoryDocs()) {
         const doc = memoryToV2Doc(mem, { maxChars, principals: PRINCIPALS });
         const { content_hash, envelope_hash } = documentHashes(doc);
         expected.push({ id: doc.id, content_hash, envelope_hash });
@@ -197,27 +200,42 @@ export async function memoryIntegrityCheck({ checkVectors = false } = {}) {
 // Tool name prefix for validation errors — keeps messages consistent.
 const TOOL = 'memory';
 
-// Find the nDB _id for a memory by its integer id field.
-// Uses the 'id' index (created at init).
-function findNdbIdByMemId(memId) {
-    const hits = DB.find('id', memId);
-    if (hits.length === 0) return null;
-    return hits[0]._id;
+// Find the nDB _id for a memory by its integer id field (indexed `id`).
+async function findNdbIdByMemId(memId) {
+    const { results } = await DB.find('id', memId);
+    return results.length === 0 ? null : results[0]._id;
 }
 
-// Read the _meta document to get/set nextId.
-function getNextId() {
-    const metaHits = DB.iter().filter(d => d._id.startsWith('_meta'));
-    if (metaHits.length === 0) throw new Error('Memory _meta document not found');
-    return metaHits[0].nextId;
+// Every live memory document (`mem_*`); the `_meta` doc is filtered out.
+async function iterMemoryDocs() {
+    const docs = await DB.allSnapshotDocs();
+    return docs.filter(d => typeof d._id === 'string' && d._id.startsWith('mem_'));
 }
 
-function incrementNextId() {
-    const metaHits = DB.iter().filter(d => d._id.startsWith('_meta'));
-    if (metaHits.length === 0) throw new Error('Memory _meta document not found');
-    const meta = metaHits[0];
-    const newNextId = meta.nextId + 1;
-    DB.set(meta._id, 'nextId', newNextId);
+// Read the _meta document id (created on first run).
+async function getMetaDoc() {
+    if (MEM_META_ID) {
+        const doc = await DB.get(MEM_META_ID);
+        if (!doc) throw new Error(`memory _meta document ${MEM_META_ID} disappeared from db "${DB_NAME}"`);
+        return doc;
+    }
+    const { results } = await DB.query({
+        filter: { id: { $exists: false } },
+        fields: ['_id', 'nextId'],
+        limit: 1000,
+    });
+    const meta = results.find(d => typeof d._id === 'string' && d._id.startsWith('_meta'));
+    if (!meta) throw new Error(`memory _meta document not found in db "${DB_NAME}"`);
+    MEM_META_ID = meta._id;
+    return meta;
+}
+
+async function incrementNextId() {
+    const meta = await getMetaDoc();
+    if (typeof meta.nextId !== 'number') {
+        throw new Error(`memory _meta document ${meta._id} has no numeric nextId (got ${JSON.stringify(meta.nextId)})`);
+    }
+    await DB.patch(meta._id, [{ op: 'set', path: 'nextId', value: meta.nextId + 1 }]);
     return meta.nextId;
 }
 
@@ -227,29 +245,28 @@ export async function init(context) {
     GATEWAY = context.gateway;
     CONFIG = context.config?.agents?.memory || {};
 
-    // Open nDB
-    const dbPath = resolve(PROJECT_ROOT, CONFIG.dbPath || 'data/memories/data.jsonl');
-    const { Database } = loadNdb();
-    DB = Database.open(dbPath, { persistence: 'immediate' });
+    // Connect to `ndb serve` — the memories DB is mounted by the service.
+    NDB_URL = CONFIG.ndbUrl || context.config?.ndb?.serviceUrl;
+    DB_NAME = CONFIG.dbName || context.config?.ndb?.dbs?.memories;
+    if (!NDB_URL) throw new Error('memory.init: no ndb service URL — set config.ndb.serviceUrl (agents.memory.ndbUrl overrides)');
+    if (!DB_NAME) throw new Error('memory.init: no memories database name — set config.ndb.dbs.memories (agents.memory.dbName overrides)');
 
-    // Create indexes if they don't exist
-    if (!DB.hasIndex('id')) DB.createIndex('id');
-    if (!DB.hasIndex('category')) DB.createIndex('category');
-    if (!DB.hasIndex('embedStatus')) DB.createIndex('embedStatus');
-
-    // Fail fast: the embedStatus index is only trustworthy on nDB builds with
-    // the delta-op index fix (v1.3). Probe the behavior on a throwaway
-    // in-memory DB — a stale binary would silently poison findPendingMemories().
-    {
-        const { Database: DbClass } = loadNdb();
-        const probe = DbClass.openInMemory();
-        probe.createIndex('probeField');
-        const pid = probe.insert({ probeField: 'a' });
-        probe.set(pid, 'probeField', 'b');
-        if (!probe.find('probeField', 'b').some(d => d._id === pid)) {
-            throw new Error('nDB binary predates the delta-op index fix (v1.3, commit 0ea6afd) — rebuild the nDB submodule (cargo build --release, stage ndb_node.dll into napi/) before running the memory agent');
-        }
+    const client = createNdbClient(NDB_URL);
+    const health = await client.health();
+    if (!health?.ok) throw new Error(`memory.init: ndb serve at ${NDB_URL} reported unhealthy: ${JSON.stringify(health)}`);
+    const mounted = health.dbs || [];
+    if (!mounted.includes(DB_NAME)) {
+        throw new Error(
+            `memory.init: database "${DB_NAME}" is not mounted in ndb serve at ${NDB_URL} ` +
+            `(mounted: ${mounted.length ? mounted.join(', ') : 'none'}) — start the service with that DB`
+        );
     }
+    DB = client.db(DB_NAME);
+
+    // Idempotent in nDB: `created` reports whether the index was new.
+    await DB.createIndex('id');
+    await DB.createIndex('category');
+    await DB.createIndex('embedStatus');
 
     // Get the VDB agent (owns the nvdb serve HTTP client)
     VDB_AGENT = context.agents?.get('vdb');
@@ -275,21 +292,29 @@ export async function init(context) {
         logger.warn('[Memory] VDB agent not available — recall will degrade to recency', null, 'Memory');
     }
 
-    const memCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
-    logger.info(`[Memory] Initialized: ${memCount} memories in nDB at ${dbPath}`, null, 'Memory');
+    // Ensure the _meta doc exists before the first store.
+    try {
+        await getMetaDoc();
+    } catch (err) {
+        const store = await DB.stats();
+        if (store.documents !== 0) throw err;
+        const { id } = await DB.insert({ nextId: 1 }, { prefix: '_meta' });
+        MEM_META_ID = id;
+        logger.info(`[Memory] Created _meta document ${id} in db "${DB_NAME}"`, null, 'Memory');
+    }
+
+    const memCount = (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total;
+    logger.info(`[Memory] Initialized: ${memCount} memories in ndb serve db "${DB_NAME}" at ${NDB_URL}`, null, 'Memory');
 
     return {
-        // Dreaming agent compatibility: expose .memories as an object with
-        // .iter() (returns array of memory docs) and .memories (getter alias
-        // for backward compatibility with the old JSON-backed agent).
+        // Dreaming agent compatibility: async iter() over every memory doc.
         memories: {
-            iter: () => DB.iter().filter(d => d._id.startsWith('mem_')),
-            get memories() { return DB.iter().filter(d => d._id.startsWith('mem_')); },
-            get: (memId) => {
-                const ndbId = findNdbIdByMemId(memId);
-                return ndbId ? DB.get(ndbId) : null;
+            iter: () => iterMemoryDocs(),
+            get: async (memId) => {
+                const ndbId = await findNdbIdByMemId(memId);
+                return ndbId ? await DB.get(ndbId) : null;
             },
-            count: () => DB.iter().filter(d => d._id.startsWith('mem_')).length
+            count: async () => (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total,
         },
         syncMemories,
         integrityCheck: memoryIntegrityCheck,
@@ -297,7 +322,7 @@ export async function init(context) {
 }
 
 export async function shutdown() {
-    if (DB) DB.flush();
+    if (DB) await DB.flush();
 }
 
 // ── Tool: memory_store ───────────────────────────────────────────────
@@ -311,7 +336,7 @@ export async function memory_store(args, context) {
     const { data } = args;
     const now = new Date().toISOString();
 
-    const memId = incrementNextId();
+    const memId = await incrementNextId();
     const doc = {
         id: memId,
         description,
@@ -322,13 +347,13 @@ export async function memory_store(args, context) {
     };
     if (data) doc.data = data;
 
-    const ndbId = DB.insertWithPrefix('mem', doc);
-    DB.flush();
+    const { id: ndbId } = await DB.insert(doc, { prefix: 'mem' });
+    await DB.flush();
 
     const storedDoc = { _id: ndbId, ...doc };
     await upsertAndAttachMemory(gateway, storedDoc, { background: true });
 
-    const totalCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
+    const totalCount = (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total;
 
     return {
         content: [{ type: 'text', text: `✓ #${memId} [${category}] stored (${totalCount} memories total). Indexed in nvdb serve; embedding runs in background.` }]
@@ -381,9 +406,14 @@ export async function memory_recall(args, context) {
     const safeQuery = query.length > maxChars ? query.slice(0, maxChars) : query;
 
     if (!VDB_CLIENT) {
-        let candidates = DB.iter().filter(d => d._id.startsWith('mem_'));
-        if (category) candidates = candidates.filter(m => m.category === category);
-        const recent = candidates.slice(-limit).reverse();
+        const fallback = await DB.query({
+            filter: category
+                ? { id: { $exists: true }, category: { $eq: category } }
+                : { id: { $exists: true } },
+            sort: { field: 'id', dir: 'desc' },
+            limit,
+        });
+        const recent = fallback.results;
         pr.done('Search complete');
         if (!recent.length) {
             return { content: [{ type: 'text', text: 'No memories found. This topic is new — consider storing insights with memory_store as you learn.' }] };
@@ -456,17 +486,15 @@ export async function memory_recall(args, context) {
     let rerankMs = null;
     const timingLine = () => formatSearchTiming({ totalMs: performance.now() - t0, embedMs, searchMs, rerankMs });
 
-    // Hydrate from authoritative nDB; drop tombstoned/missing docs before Level-2.
+    // Hydrate from the authoritative store in ONE mget round-trip; drop
+    // tombstoned/missing docs before Level-2.
     const liveHits = [];
     const docsById = new Map();
     const textsById = {};
+    const hitIds = [...new Set(rawHits.map(h => h.hit.id))];
+    const { docs: hitDocs } = await DB.mget(hitIds);
     for (const h of rawHits) {
-        let doc;
-        try {
-            doc = DB.get(h.hit.id);
-        } catch {
-            continue;
-        }
+        const doc = hitDocs[h.hit.id];
         if (!doc || !doc._id?.startsWith('mem_')) continue;
         if (category && doc.category !== category) continue;
         liveHits.push(h);
@@ -546,13 +574,13 @@ export async function memory_recall(args, context) {
 
 export async function memory_get(args, context) {
     const id = requireId(args.id, 'id', `${TOOL}.get`);
-    const ndbId = findNdbIdByMemId(id);
+    const ndbId = await findNdbIdByMemId(id);
 
     if (!ndbId) {
         return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
-    const memory = DB.get(ndbId);
+    const memory = await DB.get(ndbId);
     const conf = memory.confidence ?? 0.5;
     let result = `[#${memory.id}] [${memory.category}] conf:${conf.toFixed(1)}\n`;
     result += `Description: ${memory.description}\n`;
@@ -566,14 +594,14 @@ export async function memory_get(args, context) {
 
 export async function memory_forget(args, context) {
     const id = requireId(args.id, 'id', `${TOOL}.forget`);
-    const ndbId = findNdbIdByMemId(id);
+    const ndbId = await findNdbIdByMemId(id);
 
     if (!ndbId) {
         return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
-    DB.delete(ndbId);
-    DB.flush();
+    await DB.delete(ndbId);
+    await DB.flush();
 
     // Also remove from nvdb serve
     if (VDB_CLIENT) {
@@ -596,22 +624,33 @@ export async function memory_list(args, context) {
         throw new Error(`memory.list: sort must be "newest" or "oldest", got: ${sort}`);
     }
 
-    let list = DB.iter().filter(d => d._id.startsWith('mem_'));
-    if (category) list = list.filter(m => m.category === category);
-    list = [...list];
-
     // Memory IDs are monotonic (getNextId) — ID order IS chronological order.
     // Default newest-first: the dominant use is "what happened recently"
     // (session-start ritual), and full-store dumps don't care about order.
     const order = sort ?? 'newest';
-    list.sort((a, b) => order === 'oldest' ? a.id - b.id : b.id - a.id);
+    const filter = category
+        ? { id: { $exists: true }, category: { $eq: category } }
+        : { id: { $exists: true } };
+    const sortSpec = { field: 'id', dir: order === 'oldest' ? 'asc' : 'desc' };
+    const fields = ['_id', 'id', 'category', 'confidence', 'description', 'data'];
 
-    const total = list.length;
+    const page = await DB.query({ filter, sort: sortSpec, offset: 0, limit: limit ?? MEMORY_PAGE_SIZE, fields });
+    const total = page.total;
     if (!total) {
         return { content: [{ type: 'text', text: 'No memories found. Memory is empty or no match for this category.' }] };
     }
 
-    const shown = limit ? list.slice(0, limit) : list;
+    // No limit: page through everything so the full-list behavior is preserved
+    // without one unbounded response.
+    let shown = page.results;
+    while (limit === undefined && shown.length < total) {
+        const next = await DB.query({ filter, sort: sortSpec, offset: shown.length, limit: MEMORY_PAGE_SIZE, fields });
+        if (next.results.length === 0) {
+            throw new Error(`memory.list: query returned an empty page at offset ${shown.length} of ${total}`);
+        }
+        shown = shown.concat(next.results);
+    }
+
     const scope = category ? `category "${category}"` : 'all categories';
     const truncated = shown.length < total
         ? `\n\n(${shown.length} of ${total} shown — narrow with category, or raise limit)`
@@ -636,30 +675,36 @@ export async function memory_update(args, context) {
     const id = requireId(args.id, 'id', `${TOOL}.update`);
     const { description, category, confidence, data } = args;
 
-    const ndbId = findNdbIdByMemId(id);
+    const ndbId = await findNdbIdByMemId(id);
     if (!ndbId) {
         return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
     }
 
-    const memory = DB.get(ndbId);
+    const memory = await DB.get(ndbId);
+    if (!memory) {
+        return { content: [{ type: 'text', text: `Memory #${id} not found` }], isError: true };
+    }
     const textChanged = (description && description !== memory.description) || (data !== undefined && data !== memory.data);
 
-    if (description) DB.set(ndbId, 'description', description);
-    if (category) DB.set(ndbId, 'category', category);
-    if (confidence !== undefined) DB.set(ndbId, 'confidence', Math.max(0, Math.min(1, confidence)));
+    // One atomic PATCH: nDB applies the whole batch as a single journal record,
+    // or refuses it entirely if any path fails to resolve.
+    const ops = [];
+    if (description) ops.push({ op: 'set', path: 'description', value: description });
+    if (category) ops.push({ op: 'set', path: 'category', value: category });
+    if (confidence !== undefined) ops.push({ op: 'set', path: 'confidence', value: Math.max(0, Math.min(1, confidence)) });
     if (data !== undefined) {
         if (data === null) {
-            DB.remove(ndbId, 'data');
+            // `remove` on a missing path aborts the batch — only emit it when the key exists.
+            if ('data' in memory) ops.push({ op: 'remove', path: 'data' });
         } else {
-            DB.set(ndbId, 'data', data);
+            ops.push({ op: 'set', path: 'data', value: data });
         }
     }
+    ops.push({ op: 'set', path: 'timestamp', value: new Date().toISOString() });
+    if (textChanged) ops.push({ op: 'set', path: 'embedStatus', value: 'pending' });
 
-    DB.set(ndbId, 'timestamp', new Date().toISOString());
-    if (textChanged) DB.set(ndbId, 'embedStatus', 'pending');
-    DB.flush();
-
-    const updated = DB.get(ndbId);
+    const { doc: updated } = await DB.patch(ndbId, ops);
+    await DB.flush();
     if (VDB_CLIENT && updated) {
         if (textChanged) {
             await upsertAndAttachMemory(gateway, updated, { background: true });
@@ -679,8 +724,9 @@ export async function memory_update(args, context) {
 
 let lastHealAt = 0;
 
-function findPendingMemories() {
-    return DB.find('embedStatus', 'pending');
+async function findPendingMemories() {
+    const { results } = await DB.find('embedStatus', 'pending');
+    return results.filter(d => typeof d._id === 'string' && d._id.startsWith('mem_'));
 }
 
 async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
@@ -696,12 +742,7 @@ async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
     let healed = 0;
     for (let i = 0; i < pending.length; i++) {
         const item = pending[i];
-        let m;
-        try {
-            m = DB.get(item.id);
-        } catch {
-            continue;
-        }
+        const m = await DB.get(item.id);
         if (!m || !m._id?.startsWith('mem_')) continue;
         try {
             const vector = await embedText(gateway, m.description, m.data, maxChars, { background: true });
@@ -711,8 +752,10 @@ async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
                 model_version: MODEL_VERSION,
                 vector,
             }]);
-            DB.set(m._id, 'embedStatus', 'embedded');
-            DB.set(m._id, 'embedError', null);
+            await DB.patch(m._id, [
+                { op: 'set', path: 'embedStatus', value: 'embedded' },
+                { op: 'set', path: 'embedError', value: null },
+            ]);
             healed++;
         } catch (err) {
             if (err.status === 409 && err.code === 'stale_vector_cas') {
@@ -720,12 +763,12 @@ async function memoryEmbedHeal(context, batchLimit = 10, onProgress = null) {
                 continue;
             }
             logger.warn(`[Memory] heal of #${m.id} failed: ${err.message || 'embed failed'} — left pending`, null, 'Memory');
-            DB.set(m._id, 'embedError', err.message || 'embed failed');
+            await DB.patch(m._id, [{ op: 'set', path: 'embedError', value: err.message || 'embed failed' }]);
             break;
         }
         if (onProgress) onProgress(i + 1, pending.length, `Re-embedding memory #${m.id} (${i + 1}/${pending.length})`);
     }
-    if (healed > 0) DB.flush();
+    if (healed > 0) await DB.flush();
     const after = await VDB_CLIENT.pendingEmbeddings('memory', 1);
     return { healed, remaining: after.count > 0 ? pending.length - healed : 0 };
 }
@@ -774,7 +817,7 @@ export async function memory_overview(args, context) {
 
     // Self-heal trigger: session start is the natural cadence. Fire in the
     // background (rate-limited to 1 pass/min, 10 embeddings per pass).
-    const pendingEmbedCount = findPendingMemories().length;
+    const pendingEmbedCount = (await findPendingMemories()).length;
     if (pendingEmbedCount > 0 && Date.now() - lastHealAt > 60000) {
         lastHealAt = Date.now();
         memoryEmbedHeal(context, 10).catch(() => {});
@@ -786,7 +829,7 @@ export async function memory_overview(args, context) {
 
     const map = JSON.parse(readFileSync(mapPath, 'utf-8'));
     const lines = [`[Your Knowledge — generated ${map.meta?.generated_at || 'unknown'}]`];
-    const memCount = DB.iter().filter(d => d._id.startsWith('mem_')).length;
+    const memCount = (await DB.query({ filter: { id: { $exists: true } }, limit: 1 })).total;
     const nodeCount = map.nodes?.length || 0;
 
     if (pendingEmbedCount > 0) {

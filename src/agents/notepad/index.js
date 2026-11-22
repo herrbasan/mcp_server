@@ -12,17 +12,18 @@
 // snapshot, never acted on.
 
 import fs from 'fs';
-import { resolve, basename, extname, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { basename, extname } from 'path';
 import { getLogger } from '../../utils/logger.js';
-import { loadNdb } from '../memory/ndb-loader.js';
+import { createNdbClient } from '../../lib/ndb-client.js';
 import { requireFields, requireId } from '../../utils/require-fields.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = getLogger();
 
-const PROJECT_ROOT = resolve(__dirname, '..', '..', '..');
 const TYPES = ['idea', 'task', 'date', 'contact'];
+// Bucket file references are `<hash>.<ext>`. `ndb serve` v1b writes the full
+// 64-hex SHA-256; databases converted from the NAPI era hold 8-hex ids — both
+// must stay readable (the URL is content-addressed, never regenerated).
+export const FILE_REF_RE = /^([0-9a-f]{8}|[0-9a-f]{64})\.([A-Za-z0-9]+)$/;
 const OWNERS = ['david', 'machine'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const CONTEXT_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -57,70 +58,101 @@ const EXT_MIME = {
 export const store = {
     db: null,
     config: null,
+    baseUrl: null,
 };
 
 let NEXT_ID = null;
-let META_ID = null;   // actual _id of the counter document (insertWithPrefix appends a suffix)
+let META_ID = null;   // actual _id of the counter document (insert prefix yields a suffix)
+// Serializes id allocation: the counter patch must land in the same order the
+// ids were handed out, or a restart reissues a number already in use.
+let ALLOC_LOCK = Promise.resolve();
 
 // ── Init ─────────────────────────────────────────────────────────────
 
 export async function init(context) {
     const config = context.config?.agents?.notepad || {};
-    const dbPath = resolve(PROJECT_ROOT, config.dbPath || 'data/notepad/data.jsonl');
+    const baseUrl = config.ndbUrl || context.config?.ndb?.serviceUrl;
+    const dbName = config.dbName || context.config?.ndb?.dbs?.notepad || 'notepad';
+    if (!baseUrl) throw new Error('notepad.init: no ndb service URL — set config.ndb.serviceUrl (agents.notepad.ndbUrl overrides)');
 
-    const { Database } = loadNdb();
-    const db = Database.open(dbPath, { persistence: 'immediate' });
+    const client = createNdbClient(baseUrl);
+    const health = await client.health();
+    if (!health?.ok) throw new Error(`notepad.init: ndb serve at ${baseUrl} reported unhealthy: ${JSON.stringify(health)}`);
+    const mounted = health.dbs || [];
+    if (!mounted.includes(dbName)) {
+        throw new Error(
+            `notepad.init: database "${dbName}" is not mounted in ndb serve at ${baseUrl} ` +
+            `(mounted: ${mounted.length ? mounted.join(', ') : 'none'}) — start the service with that DB`
+        );
+    }
 
-    if (!db.hasIndex('id')) db.createIndex('id');
-    if (!db.hasIndex('type')) db.createIndex('type');
-    if (!db.hasIndex('status')) db.createIndex('status');
+    const db = client.db(dbName);
+    // Idempotent in nDB: `created` reports whether the index was new.
+    await db.createIndex('id');
+    await db.createIndex('type');
+    await db.createIndex('status');
 
     store.db = db;
-    store.config = { ...config, dbPath };
+    store.baseUrl = baseUrl;
+    store.config = { ...config };
 
     // Sequential integer ids (LLM-friendly: "task 12"). Counter persists in a
     // _meta document; cached in memory after the single startup read.
-    const meta = db.iter().find(d => d._id.startsWith('_meta'));
+    const meta = (await iterAllDocs()).find(d => typeof d._id === 'string' && d._id.startsWith('_meta'));
     if (!meta) {
-        META_ID = db.insertWithPrefix('_meta', { nextId: 2 });
+        META_ID = (await db.insert({ nextId: 2 }, { prefix: '_meta' })).id;
         NEXT_ID = 1;
     } else {
         META_ID = meta._id;
+        if (typeof meta.nextId !== 'number') throw new Error(`notepad.init: _meta document ${meta._id} has no numeric nextId (got ${JSON.stringify(meta.nextId)})`);
         NEXT_ID = meta.nextId;
     }
+    ALLOC_LOCK = Promise.resolve();
 
     // Seed the context registry on first boot (empty registry only). David
     // trims the list via context_remove before real use — that's why remove
     // exists even though the proposal lists only add/list/rename.
-    if (listContextDocs().length === 0) {
+    if ((await listContextDocs()).length === 0) {
         for (const name of SEED_CONTEXTS) {
-            db.insertWithPrefix('_ctx', { name });
+            await db.insert({ name }, { prefix: '_ctx' });
         }
         logger.info(`[Notepad] Seeded context registry: ${SEED_CONTEXTS.join(', ')}`, null, 'Notepad');
     }
 
-    logger.info(`[Notepad] nDB open at ${dbPath} (${countItems()} items, ${listContextDocs().length} contexts)`, null, 'Notepad');
+    logger.info(
+        `[Notepad] ndb serve db "${dbName}" at ${baseUrl} (${await countItems()} items, ${(await listContextDocs()).length} contexts)`,
+        null, 'Notepad'
+    );
+}
+
+async function iterAllDocs() {
+    return store.db.allSnapshotDocs();
 }
 
 function isItemDoc(d) {
-    return !d._id.startsWith('_');
+    return typeof d._id === 'string' && !d._id.startsWith('_');
 }
 
-function countItems() {
-    return store.db.iter().filter(isItemDoc).length;
+async function countItems() {
+    return (await iterAllDocs()).filter(isItemDoc).length;
 }
 
 // ── Record helpers ───────────────────────────────────────────────────
 
-function allocId() {
-    const id = NEXT_ID;
-    NEXT_ID += 1;
-    store.db.set(META_ID, 'nextId', NEXT_ID);
-    return id;
+async function allocId() {
+    const task = ALLOC_LOCK.then(async () => {
+        const id = NEXT_ID;
+        NEXT_ID += 1;
+        await store.db.patch(META_ID, [{ op: 'set', path: 'nextId', value: NEXT_ID }]);
+        return id;
+    });
+    ALLOC_LOCK = task.then(() => {}, () => {});
+    return task;
 }
 
-function findById(id) {
-    const hits = store.db.find('id', id).filter(isItemDoc);
+async function findById(id) {
+    const { results } = await store.db.find('id', id);
+    const hits = results.filter(isItemDoc);
     if (hits.length === 0) throw new Error(`Notepad item #${id} not found`);
     return hits[0];
 }
@@ -224,9 +256,9 @@ function byBoard(a, b) {
 
 // ── Context registry (contexts are deliberate state too) ────────────
 
-function listContextDocs() {
-    return store.db.iter()
-        .filter(d => d._id.startsWith('_ctx'))
+async function listContextDocs() {
+    return (await iterAllDocs())
+        .filter(d => typeof d._id === 'string' && d._id.startsWith('_ctx'))
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -241,62 +273,62 @@ function canonicalContext(name) {
 
 // Unknown contexts error with a fuzzy suggestion — freeform contexts rot into
 // "raum" / "raum.com" / "website" drift.
-function assertContextExists(name) {
+async function assertContextExists(name) {
     const canonical = canonicalContext(name);
-    const known = listContextDocs().map(d => d.name);
+    const known = (await listContextDocs()).map(d => d.name);
     if (known.includes(canonical)) return canonical;
     const suggestion = known.find(k => k.startsWith(canonical) || canonical.startsWith(k) || k.includes(canonical) || canonical.includes(k));
     throw new Error(`unknown context "${canonical}"${suggestion ? ` — did you mean "${suggestion}"?` : ` — known contexts: ${known.join(', ')}`}`);
 }
 
-export function contextAdd(args) {
+export async function contextAdd(args) {
     requireFields(args, ['name'], 'notepad.context_add');
     const canonical = canonicalContext(args.name);
-    if (listContextDocs().some(d => d.name === canonical)) {
+    if ((await listContextDocs()).some(d => d.name === canonical)) {
         throw new Error(`notepad.context_add: context "${canonical}" already exists`);
     }
-    store.db.insertWithPrefix('_ctx', { name: canonical, createdAt: new Date().toISOString() });
-    return { added: canonical, contexts: listContextDocs().map(d => d.name) };
+    await store.db.insert({ name: canonical, createdAt: new Date().toISOString() }, { prefix: '_ctx' });
+    return { added: canonical, contexts: (await listContextDocs()).map(d => d.name) };
 }
 
-export function contexts() {
-    return { contexts: listContextDocs().map(d => d.name) };
+export async function contexts() {
+    return { contexts: (await listContextDocs()).map(d => d.name) };
 }
 
-export function contextRename(args) {
+export async function contextRename(args) {
     requireFields(args, ['from', 'to'], 'notepad.context_rename');
-    const from = assertContextExists(args.from);
+    const from = await assertContextExists(args.from);
     const to = canonicalContext(args.to);
     if (from === to) throw new Error('notepad.context_rename: from and to are the same');
-    if (listContextDocs().some(d => d.name === to)) throw new Error(`notepad.context_rename: context "${to}" already exists`);
+    if ((await listContextDocs()).some(d => d.name === to)) throw new Error(`notepad.context_rename: context "${to}" already exists`);
 
-    const oldDoc = listContextDocs().find(d => d.name === from);
-    store.db.insertWithPrefix('_ctx', { name: to, createdAt: oldDoc.createdAt });
-    store.db.delete(oldDoc._id);
-    for (const doc of store.db.iter().filter(d => isItemDoc(d) && d.context === from)) {
-        store.db.set(doc._id, 'context', to);
+    const oldDoc = (await listContextDocs()).find(d => d.name === from);
+    await store.db.insert({ name: to, createdAt: oldDoc.createdAt }, { prefix: '_ctx' });
+    await store.db.delete(oldDoc._id);
+    for (const doc of (await iterAllDocs()).filter(d => isItemDoc(d) && d.context === from)) {
+        await store.db.patch(doc._id, [{ op: 'set', path: 'context', value: to }]);
     }
-    return { renamed: from, to, contexts: listContextDocs().map(d => d.name) };
+    return { renamed: from, to, contexts: (await listContextDocs()).map(d => d.name) };
 }
 
 // Not in the original proposal — needed so David can trim the seed list.
 // Refuses while any item still references the context (implicit renumbering
 // is the drift problem the registry exists to prevent).
-export function contextRemove(args) {
+export async function contextRemove(args) {
     requireFields(args, ['name'], 'notepad.context_remove');
-    const name = assertContextExists(args.name);
-    const users = store.db.iter().filter(d => isItemDoc(d) && d.context === name);
+    const name = await assertContextExists(args.name);
+    const users = (await iterAllDocs()).filter(d => isItemDoc(d) && d.context === name);
     if (users.length > 0) {
         throw new Error(`notepad.context_remove: "${name}" is used by ${users.length} item(s) (#${users.map(d => d.id).join(', #')}) — move or clear them first`);
     }
-    const doc = listContextDocs().find(d => d.name === name);
-    store.db.delete(doc._id);
-    return { removed: name, contexts: listContextDocs().map(d => d.name) };
+    const doc = (await listContextDocs()).find(d => d.name === name);
+    await store.db.delete(doc._id);
+    return { removed: name, contexts: (await listContextDocs()).map(d => d.name) };
 }
 
 // ── Mutations (shared by MCP tools + REST routes) ────────────────────
 
-export function addItem(args) {
+export async function addItem(args) {
     requireFields(args, ['type', 'title', 'owner'], 'notepad.add');
     requireType(args.type);
     const { type, title } = args;
@@ -304,13 +336,13 @@ export function addItem(args) {
 
     const now = new Date().toISOString();
     const doc = {
-        id: allocId(), type, title: title.trim(), notes: args.notes ?? null,
+        id: await allocId(), type, title: title.trim(), notes: args.notes ?? null,
         owner: requireOwner(args.owner), createdAt: now, updatedAt: now,
     };
 
     if (args.context !== undefined) {
         if (type === 'contact') throw new Error('notepad.add: context is not valid on contact items');
-        doc.context = assertContextExists(args.context);
+        doc.context = await assertContextExists(args.context);
     }
     if (args.ref !== undefined) doc.ref = normalizeRefs(args.ref);
     if (args.body !== undefined) {
@@ -338,40 +370,45 @@ export function addItem(args) {
         if (args.address) doc.address = args.address;
     }
 
-    const _id = store.db.insert(doc);
-    return { _id, item: publicDoc(store.db.get(_id)) };
+    const { id: _id } = await store.db.insert(doc);
+    return { _id, item: publicDoc(await store.db.get(_id)) };
 }
 
-export function listItems(args = {}) {
+export async function listItems(args = {}) {
     const { type, status, owner, context, limit = 100 } = args;
-    let docs = store.db.iter().filter(isItemDoc);
+    // Rust-side filtering: `id` exists only on real items (_ctx/_meta carry the
+    // registry and the counter, never an item id).
+    const filter = { id: { $exists: true } };
     if (type) {
         requireType(type);
-        docs = docs.filter(d => d.type === type);
+        filter.type = { $eq: type };
     }
-    if (status) docs = docs.filter(d => d.status === status);
-    if (owner) {
-        requireOwner(owner);
-        docs = docs.filter(d => (d.owner ?? 'david') === owner);
-    }
-    if (context) docs = docs.filter(d => d.context === assertContextExists(context));
-    docs.sort((a, b) => a.id - b.id);
-    return docs.slice(0, limit).map(taskOrFull);
+    if (status) filter.status = { $eq: status };
+    if (owner) filter.owner = { $eq: requireOwner(owner) };
+    if (context) filter.context = { $eq: await assertContextExists(context) };
+
+    const { results } = await store.db.query({
+        filter,
+        sort: { field: 'id', dir: 'asc' },
+        offset: 0,
+        limit,
+    });
+    return results.map(taskOrFull);
 }
 
 function taskOrFull(doc) {
     return doc.type === 'task' && doc.status === 'open' ? taskSummary(doc) : publicDoc(doc);
 }
 
-export function getItem(args) {
+export async function getItem(args) {
     requireFields(args, ['id'], 'notepad.get');
-    return publicDoc(findById(requireId(args.id, 'id', 'notepad.get')), { includeBody: true });
+    return publicDoc(await findById(requireId(args.id, 'id', 'notepad.get')), { includeBody: true });
 }
 
-export function updateItem(args) {
+export async function updateItem(args) {
     requireFields(args, ['id'], 'notepad.update');
     if (args.type !== undefined) throw new Error('notepad.update: type cannot be changed (use notepad.promote for idea→task)');
-    const doc = findById(requireId(args.id, 'id', 'notepad.update'));
+    const doc = await findById(requireId(args.id, 'id', 'notepad.update'));
     const { id: _ignored, ...patch } = args;
     if (Object.keys(patch).length === 0) throw new Error('notepad.update: no fields to update (received keys: [id])');
 
@@ -380,7 +417,7 @@ export function updateItem(args) {
     if (patch.owner !== undefined) patch.owner = requireOwner(patch.owner);
     if (patch.context !== undefined) {
         if (doc.type === 'contact') throw new Error('notepad.update: context is not valid on contact items');
-        patch.context = assertContextExists(patch.context);
+        patch.context = await assertContextExists(patch.context);
     }
     if (patch.ref !== undefined) patch.ref = normalizeRefs(patch.ref);
     if (patch.body !== undefined && typeof patch.body !== 'string') throw new Error('notepad.update: body must be a string');
@@ -395,102 +432,114 @@ export function updateItem(args) {
     }
 
     patch.updatedAt = new Date().toISOString();
-    applyPatch(doc._id, patch);
-    return publicDoc(store.db.get(doc._id));
+    // One atomic patch: a null field is removed, everything else set — an
+    // array `steps` swap replaces the array wholesale.
+    await store.db.patch(doc._id, Object.entries(patch).map(([field, value]) =>
+        value === null
+            ? { op: 'remove', path: field }
+            : { op: 'set', path: field, value }
+    ));
+    return publicDoc(await store.db.get(doc._id));
 }
 
-// db.set() per field: delta patches, and nDB's set() on an array field
-// replaces it wholesale (steps swap is one write, not a doc rewrite).
-function applyPatch(_id, patch) {
-    for (const [field, value] of Object.entries(patch)) {
-        if (value === null) {
-            store.db.remove(_id, field);
-        } else {
-            store.db.set(_id, field, value);
-        }
-    }
-}
-
-export function completeItem(args) {
+export async function completeItem(args) {
     requireFields(args, ['id'], 'notepad.complete');
-    const doc = findById(requireId(args.id, 'id', 'notepad.complete'));
+    const doc = await findById(requireId(args.id, 'id', 'notepad.complete'));
     if (doc.type !== 'task') throw new Error(`notepad.complete: item #${doc.id} is a ${doc.type}, only tasks can be completed`);
 
+    const now = new Date().toISOString();
+    let ops;
     if (args.stepIndex !== undefined) {
         const idx = requireId(args.stepIndex, 'stepIndex', 'notepad.complete');
         const steps = doc.steps || [];
         if (idx >= steps.length) throw new Error(`notepad.complete: stepIndex ${idx} out of range (task has ${steps.length} steps)`);
-        store.db.set(doc._id, `steps.${idx}.done`, true);
+        ops = [{ op: 'set', path: `steps.${idx}.done`, value: true }];
     } else {
-        store.db.set(doc._id, 'status', 'done');
-        store.db.set(doc._id, 'completedAt', new Date().toISOString());
+        ops = [
+            { op: 'set', path: 'status', value: 'done' },
+            { op: 'set', path: 'completedAt', value: now },
+        ];
     }
-    store.db.set(doc._id, 'updatedAt', new Date().toISOString());
-    return publicDoc(store.db.get(doc._id));
+    ops.push({ op: 'set', path: 'updatedAt', value: now });
+    await store.db.patch(doc._id, ops);
+    return publicDoc(await store.db.get(doc._id));
 }
 
-export function removeItem(args) {
+export async function removeItem(args) {
     requireFields(args, ['id'], 'notepad.remove');
-    const doc = findById(requireId(args.id, 'id', 'notepad.remove'));
+    const doc = await findById(requireId(args.id, 'id', 'notepad.remove'));
     // Release bucket attachments — nDB only trashes a file when no active
-    // document still references its nURI (dedup means shared files survive).
+    // document still references its nURI (dedup means shared files survive,
+    // and a still-referenced file answers 409, which is not a failure here).
     for (const att of doc.attachments || []) {
-        try { store.db.releaseFile(att.ref); } catch (e) {
-            logger.warn(`[Notepad] releaseFile(${att.ref}) failed: ${e.message}`, null, 'Notepad');
+        const ref = String(att.ref || '');
+        const sep = ref.indexOf(':');
+        if (sep < 0) throw new Error(`notepad.remove: attachment ref "${ref}" is not <bucket>:<hash>.<ext>`);
+        try {
+            await store.db.releaseFile(ref.slice(0, sep), ref.slice(sep + 1));
+        } catch (e) {
+            logger.warn(`[Notepad] releaseFile(${ref}) left the file in place: ${e.message}`, null, 'Notepad');
         }
     }
-    store.db.delete(doc._id);
+    await store.db.delete(doc._id);
     return { removed: doc.id, title: doc.title };
 }
 
-export function promoteIdea(args) {
+export async function promoteIdea(args) {
     requireFields(args, ['id'], 'notepad.promote');
-    const doc = findById(requireId(args.id, 'id', 'notepad.promote'));
+    const doc = await findById(requireId(args.id, 'id', 'notepad.promote'));
     if (doc.type !== 'idea') throw new Error(`notepad.promote: item #${doc.id} is a ${doc.type}, only ideas can be promoted`);
 
-    const task = addItem({
+    const task = await addItem({
         type: 'task', title: doc.title, notes: doc.notes,
         owner: doc.owner ?? 'david', context: doc.context, ref: doc.ref, body: doc.body,
     });
-    store.db.set(doc._id, 'status', 'promoted');
-    store.db.set(doc._id, 'promotedTo', task.item.id);
-    store.db.set(doc._id, 'updatedAt', new Date().toISOString());
-    return { idea: publicDoc(store.db.get(doc._id)), task: task.item };
+    await store.db.patch(doc._id, [
+        { op: 'set', path: 'status', value: 'promoted' },
+        { op: 'set', path: 'promotedTo', value: task.item.id },
+        { op: 'set', path: 'updatedAt', value: new Date().toISOString() },
+    ]);
+    return { idea: publicDoc(await store.db.get(doc._id)), task: task.item };
 }
 
-export function attachBuffer(id, name, data, mime) {
-    const doc = findById(requireId(id, 'id', 'notepad.attach'));
-    const meta = store.db.storeFile('notepad', name, data, mime);
-    const ref = `${meta._file.bucket}:${meta._file.id}.${meta._file.ext}`;
+export async function attachBuffer(id, name, data, mime) {
+    const doc = await findById(requireId(id, 'id', 'notepad.attach'));
+    const meta = await store.db.storeFile('notepad', data, name);
 
     const attachments = doc.attachments || [];
-    attachments.push({ ref, name: meta.name, type: mime, size: meta.size, addedAt: new Date().toISOString() });
-    store.db.set(doc._id, 'attachments', attachments);
-    store.db.set(doc._id, 'updatedAt', new Date().toISOString());
+    attachments.push({ ref: meta.ref, name, type: mime, size: meta.size, addedAt: new Date().toISOString() });
+    await store.db.patch(doc._id, [
+        { op: 'set', path: 'attachments', value: attachments },
+        { op: 'set', path: 'updatedAt', value: new Date().toISOString() },
+    ]);
 
-    return { item: doc.id, attachment: attachments[attachments.length - 1], url: `/notepad/files/${meta._file.id}.${meta._file.ext}` };
+    return { item: doc.id, attachment: attachments[attachments.length - 1], url: `/notepad/files/${meta.hash}.${meta.ext}` };
 }
 
-export function attachFile(args) {
+export async function attachFile(args) {
     requireFields(args, ['id', 'path'], 'notepad.attach');
     if (!fs.existsSync(args.path)) throw new Error(`notepad.attach: file not found: ${args.path}`);
     const ext = extname(args.path).toLowerCase();
     return attachBuffer(args.id, args.name ?? basename(args.path), fs.readFileSync(args.path), EXT_MIME[ext] ?? 'application/octet-stream');
 }
 
-export function getFileBuffer(hash, ext) {
-    return store.db.getFile('notepad', hash, ext);
+// Returns the raw bytes, or null when the bucket holds no such file.
+export async function getFileBuffer(hash, ext) {
+    const got = await store.db.getFile('notepad', `${hash}.${ext}`);
+    if (!got) return null;
+    return got.buffer;
 }
 
 // ── Snapshot (the Today view — computed on read, never stored) ───────
 
-export function snapshot(args = {}) {
+export async function snapshot(args = {}) {
     const dueSoonDays = store.config.dueSoonDays ?? 7;
     const staleDays = store.config.staleDays ?? 60;
     const today = todayStr();
     const staleCutoff = new Date(Date.now() - staleDays * 86400000).toISOString();
 
-    const docs = store.db.iter().filter(isItemDoc);
+    const all = await iterAllDocs();
+    const docs = all.filter(isItemDoc);
     const openTasks = docs.filter(d => d.type === 'task' && d.status === 'open');
     const openIdeas = docs.filter(d => d.type === 'idea' && d.status === 'open');
 
@@ -503,7 +552,7 @@ export function snapshot(args = {}) {
     // 1. Project-start view: everything open in one context (the pin check —
     // part of project start, same slot as reading the project's Agents.md).
     if (args.context) {
-        const ctx = assertContextExists(args.context);
+        const ctx = await assertContextExists(args.context);
         result.context = ctx;
         result.contextOpen = [
             ...openTasks.filter(d => d.context === ctx).sort(byBoard).map(taskSummary),
@@ -535,7 +584,10 @@ export function snapshot(args = {}) {
         .map(d => ({ id: d.id, title: d.title, owner: d.owner ?? 'david', createdAt: d.createdAt }));
 
     // Footer: the context vocabulary, visible before creating a new one.
-    result.contexts = listContextDocs().map(d => d.name);
+    result.contexts = all
+        .filter(d => typeof d._id === 'string' && d._id.startsWith('_ctx'))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(d => d.name);
 
     return result;
 }
@@ -549,16 +601,16 @@ function ok(result) {
     return { content: [{ type: 'text', text: JSON.stringify(result) }], isError: false };
 }
 
-export const notepad_add = (args) => ok(addItem(args));
-export const notepad_list = (args) => ok(listItems(args));
-export const notepad_get = (args) => ok(getItem(args));
-export const notepad_update = (args) => ok(updateItem(args));
-export const notepad_complete = (args) => ok(completeItem(args));
-export const notepad_remove = (args) => ok(removeItem(args));
-export const notepad_promote = (args) => ok(promoteIdea(args));
-export const notepad_attach = (args) => ok(attachFile(args));
-export const notepad_snapshot = (args) => ok(snapshot(args));
-export const notepad_context_add = (args) => ok(contextAdd(args));
-export const notepad_contexts = () => ok(contexts());
-export const notepad_context_rename = (args) => ok(contextRename(args));
-export const notepad_context_remove = (args) => ok(contextRemove(args));
+export const notepad_add = async (args) => ok(await addItem(args));
+export const notepad_list = async (args) => ok(await listItems(args));
+export const notepad_get = async (args) => ok(await getItem(args));
+export const notepad_update = async (args) => ok(await updateItem(args));
+export const notepad_complete = async (args) => ok(await completeItem(args));
+export const notepad_remove = async (args) => ok(await removeItem(args));
+export const notepad_promote = async (args) => ok(await promoteIdea(args));
+export const notepad_attach = async (args) => ok(await attachFile(args));
+export const notepad_snapshot = async (args) => ok(await snapshot(args));
+export const notepad_context_add = async (args) => ok(await contextAdd(args));
+export const notepad_contexts = async () => ok(await contexts());
+export const notepad_context_rename = async (args) => ok(await contextRename(args));
+export const notepad_context_remove = async (args) => ok(await contextRemove(args));

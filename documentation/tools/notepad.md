@@ -10,8 +10,12 @@ v2 spec: `scratch/notepad-proposal.md` (agreed brainstorm).
 
 ## Data model
 
-One nDB database at `data/notepad/data.jsonl` (own folder → own `_files/`
-buckets). One shared integer id space, sequential via a `_meta` counter doc.
+One `notepad` database mounted by `ndb serve` (`config.ndb.serviceUrl`, name
+`config.ndb.dbs.notepad`; `agents.notepad.ndbUrl` / `agents.notepad.dbName`
+override) — each DB folder owns its `_files/` buckets. Reached over HTTP via
+`src/lib/ndb-client.js`; startup fails loudly when the service is unhealthy or
+the DB is not mounted. One shared integer id space, sequential via a `_meta`
+counter doc (allocation is serialized, so a restart never reissues an id).
 Indexes: `id`, `type`, `status`.
 
 Every item: `{ id, type, title, notes, owner, createdAt, updatedAt, …type fields }`.
@@ -34,10 +38,11 @@ Type changes are rejected (`notepad.update` has no `type`); field validation is
 per-type — setting `due` on a contact is a 400, not a silent drop.
 
 Attachments: `attachments[]` of `{ref, name, type, size, addedAt}` where `ref`
-is an nURI (`notepad:<8-char-hash>.<ext>`) into the nDB file bucket. SHA-256
-dedup; deleting an item releases its refs and nDB trashes files no active doc
-references (restorable). Served at `GET /notepad/files/:hash.:ext`
-(immutable-cache headers — content-hashed URLs).
+is an nURI (`notepad:<hash>.<ext>`) into the nDB file bucket. SHA-256 dedup;
+deleting an item releases its refs and the service trashes files no active doc
+references (restorable). New uploads carry the full 64-hex SHA-256; converted
+databases keep serving their 8-hex legacy filenames. Served at
+`GET /notepad/files/:hash.:ext` (immutable-cache headers — content-hashed URLs).
 
 ## Context registry
 
@@ -83,8 +88,8 @@ auto-archive, no background curation.
 
 ## REST API (same server, port 3100)
 
-One writer (the agent's nDB), two transports. LAN-trust posture, no auth —
-same as `/storage/`, revisit at multi-user time.
+One writer (the agent's `notepad` DB in `ndb serve`), two transports. LAN-trust
+posture, no auth — same as `/storage/`, revisit at multi-user time.
 
 | Route | Purpose |
 |-------|---------|
@@ -97,7 +102,7 @@ same as `/storage/`, revisit at multi-user time.
 | `POST /notepad/items/:id/promote` | idea → task |
 | `POST /notepad/items/:id/complete` | body `{stepIndex}` optional |
 | `POST /notepad/items/:id/attachments?name=x.jpg` | raw-body upload (25 MB) |
-| `GET /notepad/files/:hash.:ext` | bucket file (immutable cache) |
+| `GET /notepad/files/:hash.:ext` | bucket file (immutable cache; 8-hex legacy and 64-hex SHA-256 both resolve) |
 | `GET /notepad/contexts` | registry list |
 | `POST /notepad/contexts` | `{name}` — create |
 | `PATCH /notepad/contexts/:name` | `{to}` — rename (rewrites items) |

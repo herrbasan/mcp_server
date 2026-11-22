@@ -3,7 +3,9 @@
 Reference documentation for the persistent memory system. Last verified
 2026-11-22 against `src/agents/memory/index.js`, `src/agents/dreaming/index.js`,
 both agents' `config.json`, and the vdb agent's nVDB v2 HTTP surface at `main`
-(`24ac535`).
+(`24ac535`). Since Phase 2a of the nDB v2 cutover the memory store is reached
+over HTTP from a resident `ndb serve` — there is no napi addon in the memory
+path (`src/lib/ndb-client.js`).
 
 ## What it is
 
@@ -26,7 +28,7 @@ dreaming deduplicates and organizes.
 
 | Store | Path | Role |
 |---|---|---|
-| **nDB** (document store) | `data/memories/data.jsonl` | Memory metadata: id, description, category, confidence, timestamp, data, embedStatus. Append-only JSONL, immediate persistence, soft-delete via tombstones. |
+| **nDB** (document store) | `memories` DB mounted by `ndb serve` (`ndb.serviceUrl`, default `http://127.0.0.1:8323`) | Memory metadata: id, description, category, confidence, timestamp, data, embedStatus. Append-only JSONL, immediate persistence, soft-delete via tombstones. The on-disk folder belongs to the serve, not this repo. |
 | **nVDB** (vector index) | `memory` collection in the shared `nvdb serve` (`agents.vdb.serviceUrl`, default `http://127.0.0.1:3510`) | One vector per memory (embeds description + data). Hybrid (dense + BM25F) and Level-2 reranked. There is no addon in Node: memory receives the vdb agent's HTTP client via `dependsOn: "vdb"` plus the effective `embeddingPath`, `queryInstruct`, `fuzzyEdits`, `relevanceFloor`, `rerankerLoaded`, `hybrid` and `rerank` settings. The collection's on-disk location belongs to the serve, not this repo. |
 
 - **Vector space**: 2560-dim `qwen3-embedding-4b`, embedded through
@@ -41,11 +43,11 @@ dreaming deduplicates and organizes.
   `acl` = principals, `metadata { memId, category, confidence }`, 1 KB
   `excerpt`, plus `content_hash` / `envelope_hash` from `v2-hash.js`. The
   embedded text is description + data capped at `maxMemoryChars`.
-- nDB indexes: `id`, `category`, `embedStatus` (nDB v1.3).
-- **Init fail-fast probe**: memory opens a throwaway in-memory nDB and verifies
-  the delta-op index fix (v1.3, commit 0ea6afd). A stale nDB binary throws at
-  startup ("rebuild the nDB submodule") rather than silently poisoning
-  pending-memory lookups.
+- **Init**: `createNdbClient(ndb.serviceUrl)` → `GET /health`; the configured DB
+  (`ndb.dbs.memories`, overridable via `agents.memory.dbName`) must be listed in
+  `health.dbs` or init throws naming the URL and the DB. Then the `id`,
+  `category`, `embedStatus` hash indexes are created (idempotent), and the
+  `_meta` doc (`nextId` allocator) is located — created if the DB is empty.
 - **Init reconciliation**: `syncMemories()` compares nDB documents against
   `GET /v2/collections/memory/fingerprints` and upserts changed / deletes
   vanished ids in 200-document batches, then commits — nDB stays authoritative.
@@ -75,8 +77,8 @@ Exposed as `memory.store`, `memory.recall`, `memory.get`, `memory.forget`,
 | `memory.recall` | `query*`, `limit?` (default 5), `category?`, `search?` | Hybrid search, see below. `search` selects layers for one request (same keys as `vdb.search`); the reply's first line names the mode that ran. |
 | `memory.get` | `id*` | Full memory incl. `data` payload. `#123` and `"123"` both accepted. |
 | `memory.forget` | `id*` | Soft-delete in nDB (tombstone) + vector removed from nVDB + flush both. |
-| `memory.list` | `category?`, `limit?` (positive int), `sort?` `newest\|oldest` | Chronological ID order; returns id+description+category only, never `data`. |
-| `memory.update` | `id*`, then any of `description/category/confidence/data` | Prefer over forget+store (keeps ID history). Re-embeds detached if description or data changed. `data: null` removes the field. Timestamp refreshed. |
+| `memory.list` | `category?`, `limit?` (positive int), `sort?` `newest\|oldest` | Filtering, sort and limit run in Rust (`POST /query`, filter `id: {$exists: true}` keeps out the `_meta` doc); without `limit` it pages 1000 at a time. Returns id+description+category only, never `data`. |
+| `memory.update` | `id*`, then any of `description/category/confidence/data` | Prefer over forget+store (keeps ID history). All field changes go out as **one atomic `PATCH`** (single journal record; a failing path aborts the batch). Re-embeds detached if description or data changed. `data: null` removes the field. Timestamp refreshed. |
 | `memory.overview` | `format?` `clusters\|summary\|full` (default `summary`) | Renders `data/dream_map.json`; also triggers background embed self-heal (rate-limited 1 pass/min, 10 embeds/pass) when pending memories exist. |
 | `memory.embed_heal` | `batchLimit?` (default 50) | Force re-embedding of memories stuck at `embedStatus: 'pending'`. Stops at first failure. |
 
@@ -107,8 +109,8 @@ mode is gone). Per recall:
    `parent_id` (`group_by_parent: { max_per_parent: 2 }`), a native promoted
    `category` filter when `category` is given, and
    `top_k = max(limit × 3, rerank ? effectiveShortlist : limit, 20)`.
-4. Hits hydrate from nDB by `_id`; tombstoned/missing docs are dropped before
-   reranking.
+4. Hits hydrate from nDB in **one** `POST /docs/mget` batch (deduplicated, chunked
+   at 1000 ids); tombstoned/missing docs are dropped before reranking.
 5. When a reranker is loaded, `POST /v2/collections/memory/level2` scores the
    shortlist — `max(limit, agents.vdb.rerank.shortlist)` (12) unless the
    request passes `search.shortlist` — at the adaptive `rerank_weight` (0.2
@@ -230,7 +232,10 @@ If `data/dream_map.json` doesn't exist yet: guidance text pointing at
 
 | Key | Default / value | Effect |
 |---|---|---|
-| `agents.memory.dbPath` | `data/memories/data.jsonl` | nDB location. |
+| `ndb.serviceUrl` | `http://127.0.0.1:8323` | `ndb serve` the memory store talks to. |
+| `ndb.dbs.memories` | `memories` | Mounted DB name holding memory documents. |
+| `agents.memory.ndbUrl` | (unset) | Per-agent override of `ndb.serviceUrl` (tests). |
+| `agents.memory.dbName` | (unset) | Per-agent override of `ndb.dbs.memories` (tests). |
 | `agents.memory.maxMemoryChars` | 6000 | Embed input truncation. |
 | `agents.dreaming.intervalMinutes` | 15 | Dream cadence. |
 | `agents.dreaming.contextBudget` | 800000 | Distill+dream token budget. |

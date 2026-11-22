@@ -83,9 +83,9 @@ Model routing is handled by the Gateway. Do not rely on a `models` section in `c
 - `src/agents/stylereview/` — UX/UI, NUI-pattern, and SVG/chart style review agent. Tier-0 deterministic Chromium geometry/spacing/typography/contrast/SVG/NUI probe + single-pass LLM UX/taste critique (`stylereview.review`). NUI pages inject the complete nui_wc2 registry, LLM cheatsheet, and component/addon docs; deterministic checks distinguish definite contract misuse from component opportunities and flag bespoke inline/stylesheet overrides on NUI components and their documented native children. The full-DOM audit includes dormant controls, and `probeInteractions` follows bounded multi-step usage flows while avoiding submit/destructive actions; reference: `documentation/tools/stylereview.md`; tests: `npm run test:stylereview`.
 - `docs/` — working documents (plans, handovers, notes). (Curated reference docs live in storage under `D:\MCP_Storage\documentation\`, not here.)
 - `documentation/` — in-repo reference docs: `fileops.md` (shared file-ops engine), `html-to-markdown.md` (shared HTML→CommonMark converter) and `documentation/tools/` (the full tool catalog — one doc per system plus `tools/overview.md` index).
-- `data/` — runtime data: memories (nDB), dream maps, forge tools, storage, VDB index, notepad (nDB + file buckets).
+- `data/` — runtime data: dream maps, forge tools, storage, VDB index. Memories, notepad items and code-review findings live in the nDB service (`ndb serve`), not in this tree.
 - `data/chat/sessions/` — persistent headless chat sessions (one pretty-printed JSON per session, owned by the `chat` agent).
-- `nDB/` — nDB submodule (herrbasan/nDB) — embeddable document database (Rust + napi-rs).
+- `nDB/` — nDB submodule (herrbasan/nDB) — document database (Rust). `mcp_server` reaches it only through the `ndb serve` HTTP binary (`src/lib/ndb-client.js`); the napi addon is no longer loaded.
 - `src/nCharts` — nCharts submodule (SVG diagrams).
 - `src/nui_wc2` — nui_wc2 submodule, canonical MD-Blocks renderer used by the print agent.
 ### nConvert (universal document ingest)
@@ -185,21 +185,30 @@ An unreachable service is a loud error naming the URL and the start command.
 
 The `memory` agent uses a two-database architecture (mirrors the LLM Gateway Chat app):
 
-- **nDB** (`data/memories/data.jsonl`, database-as-a-folder) — document store for memory metadata. O(1) lookups, indexed queries (`category`, `id`, `embedStatus`), append-only JSONL persistence, soft-delete via tombstones. Loaded via `src/agents/memory/ndb-loader.js` (native binary from `nDB/` submodule).
+- **nDB** (`memories` DB mounted by `ndb serve` at `ndb.serviceUrl`, default `http://127.0.0.1:8323`) — document store for memory metadata. O(1) lookups, indexed queries (`category`, `id`, `embedStatus`), append-only JSONL persistence, soft-delete via tombstones. Reached over HTTP through `src/lib/ndb-client.js` — no napi addon anywhere in the data path (Phase 2a of the nDB v2 cutover).
 - **nVDB** (`memory` collection in the shared `nvdb serve` at `agents.vdb.serviceUrl`, default `http://127.0.0.1:3510`) — vector index for embedding search. The memory agent receives the VDB agent's HTTP client via `dependsOn: "vdb"` (plus the effective `embeddingPath`, `queryInstruct`, `fuzzyEdits`, `relevanceFloor`, `rerankerLoaded`, `hybrid`/`rerank` settings) and searches `memory` directly; it caches no index state. The serve process owns the on-disk collection.
 
 The legacy `data/memories.json` (37MB, inline embeddings) is kept as a cold backup and vector source for backfill. It is no longer read or written by the memory agent at runtime.
 
-The dreaming agent accesses memories via `memoryAgent.memories.iter()` (with fallback to `.memories` array for backward compatibility).
+The dreaming agent accesses memories via `await memoryAgent.memories.iter()` (async, backed by a pinned `GET /v2/dbs/memories/snapshot`) and counts them with `await memoryAgent.memories.count()`.
 
 ## Notepad (deliberate state)
 
-The `notepad` agent (`src/agents/notepad/`, own nDB at `data/notepad/`) stores
-ideas (pins), tasks with flat step checklists, important dates (optionally
-yearly recurring), contacts, and file attachments (nDB bucket, SHA-256 dedup).
-It is deliberate state — NOT memory; don't merge the two. Two boards
-(`owner: david | machine`); registry-validated contexts; `body` long-payload
-delivered only via `notepad.get`.
+The `notepad` agent (`src/agents/notepad/`) stores ideas (pins), tasks with flat
+step checklists, important dates (optionally yearly recurring), contacts, and
+file attachments (nDB bucket, SHA-256 dedup). It is deliberate state — NOT
+memory; don't merge the two. Two boards (`owner: david | machine`);
+registry-validated contexts; `body` long-payload delivered only via
+`notepad.get`.
+
+Its `notepad` database is mounted by `ndb serve` (`config.ndb.serviceUrl`, name
+`config.ndb.dbs.notepad`; `agents.notepad.ndbUrl` / `agents.notepad.dbName`
+override) and reached over HTTP through `src/lib/ndb-client.js`. The agent
+fails loudly at startup when the service is unhealthy or the DB is not mounted.
+List filtering runs Rust-side (`POST /query`), mutations are single atomic
+`PATCH` operations (including dotted `steps.<i>.done`), and attachments use the
+service's file buckets — new uploads carry the full 64-hex SHA-256, while
+converted databases keep serving 8-hex legacy filenames.
 
 - **MCP tools**: `notepad.add/list/get/update/complete/remove/promote/attach/snapshot`
   + `notepad.context_add/contexts/context_rename/context_remove`.

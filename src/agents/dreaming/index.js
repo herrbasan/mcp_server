@@ -902,9 +902,13 @@ async function runPipeline(force = false, onProgress = null) {
     const startTime = Date.now();
 
     try {
-        // Get memories from the memory agent.
-        // New nDB-backed agent exposes .iter(); legacy JSON agent exposes .memories array.
-        const allMemories = memoryAgent?.memories?.iter?.() || memoryAgent?.memories?.memories;
+        // Get memories from the memory agent (nDB-backed: async iter()).
+        const iterMemories = memoryAgent?.memories?.iter;
+        if (typeof iterMemories !== 'function') {
+            logger.warn('[Dreaming] Memory agent exposes no memories.iter() — dreaming disabled', null, 'Dream');
+            return { skipped: true, reason: 'memory_iter_unavailable' };
+        }
+        const allMemories = await iterMemories();
         if (!allMemories || allMemories.length === 0) {
             logger.info('[Dreaming] No memories to dream on', null, 'Dream');
             return { skipped: true, reason: 'no_memories' };
@@ -1158,7 +1162,9 @@ export async function dream_status(args, context) {
     lines.push(`Interval: ${config.intervalMinutes || 60} minutes`);
     lines.push(`Context budget: ${(config.contextBudget || 800000).toLocaleString()} tokens`);
 
-    const memCount = memoryAgent?.memories?.memories?.length || 0;
+    const memCount = typeof memoryAgent?.memories?.count === 'function'
+        ? await memoryAgent.memories.count()
+        : 0;
     lines.push(`Memory bank: ${memCount} memories`);
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };

@@ -10,6 +10,8 @@ import * as vdb from '../src/agents/vdb/index.js';
 import * as memory from '../src/agents/memory/index.js';
 import * as storage from '../src/agents/storage/index.js';
 import { createV2Client } from '../src/agents/vdb/v2-client.js';
+import { createNdbClient } from '../src/lib/ndb-client.js';
+import { startNdbTestServer } from './helpers/ndb-test-server.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -78,7 +80,8 @@ async function run() {
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nvdb-v2-e2e-'));
     const nvdbDir = path.join(tmpRoot, 'nvdb');
     const storageDir = path.join(tmpRoot, 'storage');
-    const memDbPath = path.join(tmpRoot, 'memories', 'data.jsonl');
+    const ndbRootDir = path.join(tmpRoot, 'ndb');
+    const memDbPath = path.join(ndbRootDir, 'memories', 'data.jsonl');
     await fs.mkdir(path.join(storageDir, 'documentation'), { recursive: true });
     await fs.mkdir(path.join(storageDir, 'religion'), { recursive: true });
     await fs.mkdir(path.dirname(memDbPath), { recursive: true });
@@ -124,6 +127,9 @@ async function run() {
     let stderr = '';
     proc.stderr.on('data', d => { stderr += d.toString(); });
 
+    // Real `ndb serve` hosting the memories DB.
+    const ndbServer = await startNdbTestServer({ rootDir: ndbRootDir });
+
     try {
         const client = createV2Client(serviceUrl);
         const health = await waitForHealth(client);
@@ -131,8 +137,12 @@ async function run() {
         assert.equal(health.reranker_loaded, true, 'nvdb serve loaded ONNX reranker');
         console.log('✓ nvdb serve healthy with reranker_loaded=true');
 
-        // Initialize vdb and memory agents against local nvdb serve
+        // Initialize vdb and memory agents against local nvdb serve + ndb serve
         const config = {
+            ndb: {
+                serviceUrl: ndbServer.url,
+                dbs: { memories: 'memories' },
+            },
             agents: {
                 storage: { root: storageDir },
                 vdb: {
@@ -149,7 +159,6 @@ async function run() {
                     rerank: { enabled: true, shortlist: 20, weight: 0.2 },
                 },
                 memory: {
-                    dbPath: memDbPath,
                     maxMemoryChars: 6000,
                 },
             },
@@ -259,6 +268,47 @@ async function run() {
         assert.equal(memCheck.clean, true, `memory integrity_check clean: ${JSON.stringify(memCheck)}`);
         console.log('✓ memory store/recall/category/integrity_check clean');
 
+        // 9b. memories adapter (dreaming's read path) + list via Rust POST /query
+        const iterDocs = await memInstance.memories.iter();
+        assert.equal(iterDocs.length, 2, `adapter iter() returns both memories (got ${iterDocs.length})`);
+        assert.equal(await memInstance.memories.count(), 2, 'adapter count() matches');
+        assert.ok(iterDocs.every(d => d._id.startsWith('mem_')), 'iter() excludes the _meta doc');
+
+        const listNewest = await memory.memory_list({}, {});
+        assert.ok(listNewest.content[0].text.includes('2 memories'), `list total: ${listNewest.content[0].text.slice(0, 80)}`);
+        const newestFirst = listNewest.content[0].text.split('\n').filter(l => l.startsWith('[#'));
+        assert.deepEqual(newestFirst.map(l => l.slice(0, l.indexOf(']') + 1)), ['[#2]', '[#1]'], 'list newest-first via query sort');
+        const listOldest = await memory.memory_list({ sort: 'oldest', limit: 1 }, {});
+        assert.ok(listOldest.content[0].text.includes('[#1]'), 'limit + oldest sort pushed into query');
+        assert.ok(listOldest.content[0].text.includes('(1 of 2 shown'), 'limit truncation reported');
+        const listCat = await memory.memory_list({ category: 'architecture' }, {});
+        assert.ok(listCat.content[0].text.includes('nui_wc2') && !listCat.content[0].text.includes('Prototype Fund'), 'category filter pushed into query');
+
+        // 9c. update through one atomic PATCH, then read back
+        await memory.memory_update(
+            { id: 1, description: 'Prototype Fund grant approved for open-source tooling', category: 'funding-approved', confidence: 1 },
+            { gateway: mockGateway }
+        );
+        const patched = (await memory.memory_get({ id: 1 }, {})).content[0].text;
+        assert.ok(patched.includes('grant approved'), `patched description: ${patched}`);
+        assert.ok(patched.includes('funding-approved'), 'patched category visible');
+        const patchedDoc = await createNdbClient(ndbServer.url).db('memories').query({
+            filter: { id: { $eq: 1 } },
+            limit: 1,
+        });
+        assert.equal(patchedDoc.results[0].embedStatus, 'pending', 'text change marks embedStatus pending');
+        const memCheckAfterUpdate = await memory.memoryIntegrityCheck({ checkVectors: false });
+        assert.equal(memCheckAfterUpdate.clean, true, `integrity_check clean after PATCH: ${JSON.stringify(memCheckAfterUpdate)}`);
+
+        // 9d. forget removes the doc from ndb serve and the vector index
+        await memory.memory_forget({ id: 2 }, {});
+        assert.equal((await memInstance.memories.count()), 1, 'count drops after forget');
+        const forgotten = await memory.memory_get({ id: 2 }, {});
+        assert.equal(forgotten.isError, true, 'forgotten memory no longer resolves');
+        const memCheckAfterForget = await memory.memoryIntegrityCheck({ checkVectors: true });
+        assert.equal(memCheckAfterForget.clean, true, `integrity_check clean after forget: ${JSON.stringify(memCheckAfterForget)}`);
+        console.log('✓ memory list/update(PATCH)/forget via ndb serve HTTP');
+
         // 10. File edit + delete lifecycle -> integrity_check stays clean
         await fs.unlink(path.join(storageDir, 'religion', 'meta-export.json'));
         const resync = JSON.parse((await vdb.vdb_trigger_scan({}, {})).content[0].text);
@@ -274,6 +324,7 @@ async function run() {
         throw err;
     } finally {
         proc.kill();
+        await ndbServer.stop();
         await fs.rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
 }

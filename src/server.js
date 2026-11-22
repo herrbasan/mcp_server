@@ -23,6 +23,7 @@ import {
     getFileBuffer as notepadGetFileBuffer, snapshot as notepadSnapshot,
     contextAdd as notepadContextAdd, contexts as notepadContexts,
     contextRename as notepadContextRename, contextRemove as notepadContextRemove,
+    FILE_REF_RE as notepadFileRefRe,
 } from './agents/notepad/index.js';
 import { submitIngest as nconvertSubmit, serviceCall as nconvertCall, uiJob, subscribeJobs } from './agents/nconvert/index.js';
 import { initUploadRoutes } from './upload.js';
@@ -247,16 +248,17 @@ async function start() {
 
     // ── Notepad REST API ──
     // Same data the notepad agent exposes as MCP tools — one writer (the
-    // agent's nDB at data/notepad/), two transports. Consumed by the shared
-    // notepad component (localweb dashboard + chat app) and for manual edits.
-    // LAN-trust posture, same as /storage/ — no auth until multi-user (see
-    // docs/plan-multi-user-mcp.md). Routes 503 until the agent has initialized.
+    // `notepad` DB mounted by `ndb serve`, reached over HTTP), two transports.
+    // Consumed by the shared notepad component (localweb dashboard + chat app)
+    // and for manual edits. LAN-trust posture, same as /storage/ — no auth
+    // until multi-user (see docs/plan-multi-user-mcp.md). Routes 503 until the
+    // agent has initialized.
     const notepadReady = (req, res, next) => {
         if (!notepadStore.db) { res.status(503).json({ error: 'notepad agent not initialized' }); return; }
         next();
     };
-    const notepadRoute = (fn) => (req, res) => {
-        try { res.json(fn(req)); } catch (e) { res.status(400).json({ error: e.message }); }
+    const notepadRoute = (fn) => async (req, res) => {
+        try { res.json(await fn(req)); } catch (e) { res.status(400).json({ error: e.message }); }
     };
     const notepadId = (req) => parseInt(req.params.id, 10);
 
@@ -298,15 +300,20 @@ async function start() {
         }));
 
     // Bucket files by nURI tail (hash.ext) — <img> / thumbnail sources.
-    app.get('/notepad/files/:fileRef', notepadReady, (req, res) => {
-        const m = /^([0-9a-f]{8})\.([A-Za-z0-9]+)$/.exec(req.params.fileRef);
-        if (!m) { res.status(400).json({ error: 'fileRef must be <8-char-hash>.<ext>' }); return; }
+    // `ndb serve` writes 64-hex SHA-256 ids; converted legacy buckets hold
+    // 8-hex ids. Both are content-addressed and must keep resolving.
+    app.get('/notepad/files/:fileRef', notepadReady, async (req, res) => {
+        const m = notepadFileRefRe.exec(req.params.fileRef);
+        if (!m) { res.status(400).json({ error: 'fileRef must be <hash>.<ext> (8-hex legacy or 64-hex SHA-256)' }); return; }
         try {
-            const buf = notepadGetFileBuffer(m[1], m[2]);
+            const buf = await notepadGetFileBuffer(m[1], m[2]);
+            if (!buf) { res.status(404).json({ error: `file not found: ${req.params.fileRef}` }); return; }
             res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // content-hashed — safe to cache forever
             res.type(m[2]).end(buf);
         } catch (e) {
-            res.status(404).json({ error: `file not found: ${req.params.fileRef}` });
+            // The bucket lives in ndb serve now: an unreachable DB is a 502,
+            // never a silent "not found".
+            res.status(502).json({ error: `notepad file bucket unavailable: ${e.message}` });
         }
     });
 
