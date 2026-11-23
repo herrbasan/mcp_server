@@ -35,20 +35,20 @@ GATEWAY_HTTP_URL=http://localhost:3400
 
 Model routing is handled by the LLM Gateway. See the Gateway's configuration for task-to-model mapping.
 
-### 4. Run the retrieval service
+### 4. Run the storage and retrieval services
 
-Semantic search (`vdb.*`, `storage.search`) and memory recall talk to a
-standalone **`nvdb serve`** process at `http://127.0.0.1:3510`
-(`agents.vdb.serviceUrl` in `config.json`). Start it before the server:
+The MCP server talks to two standalone Rust services over localhost HTTP — no native `.node` addons or ONNX runtimes live in Node:
 
-```bash
-nvdb serve --dir <index-path> --host 127.0.0.1 --port 3510 --reranker-model <modelDir>
-```
+- **`ndb serve`** (`http://127.0.0.1:8323`, configured under `ndb` in `config.json`) — System of Record for `memories`, `notepad`, and `codereview`:
+  ```bash
+  ndb serve --config <path-to-ndb-serve.json>
+  ```
+- **`nvdb serve`** (`http://127.0.0.1:3510`, configured under `agents.vdb.serviceUrl`) — hybrid lexical/vector/rerank search for `storage` and `memory`:
+  ```bash
+  nvdb serve --dir <index-path> --host 127.0.0.1 --port 3510 --reranker-model <modelDir>
+  ```
 
-The MCP server holds no vector engine itself — no native addon, no ONNX runtime
-in Node. It aborts at startup if `nvdb serve` is unreachable, or if reranking is
-enabled in `config.json` while the serve reports no loaded reranker. Details:
-`documentation/tools/vdb.md`.
+Start both before the server. It aborts at startup if either service is unreachable, a required DB is unmounted, or reranking is enabled while `nvdb serve` has no loaded reranker. Details: `documentation/tools/vdb.md`, `documentation/tools/memory.md`, `documentation/tools/notepad.md`.
 
 ### 5. Start the server
 
