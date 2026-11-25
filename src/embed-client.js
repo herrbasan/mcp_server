@@ -22,9 +22,9 @@ const logger = getLogger();
  * only add a stateful failure mode on top of a stateless service.
  *
  * Config (env or config.json gateway section):
- *   EMBED_URL  — gateway base URL, e.g. http://localhost:3400. Embeds always
- *                go through the gateway, which owns the embed model — this
- *                client sends NO model so the gateway uses its default.
+ *   EMBED_URL    — embedding service base URL, e.g. http://localhost:3400.
+ *   EMBED_MODEL  — optional model field for strict OpenAI-compatible providers.
+ *                  Omit it when the selected route owns its default model.
  */
 
 // Foreground (search queries): keep snappy — degrade to recency rather than
@@ -123,17 +123,24 @@ function acceptVector(inputText, vector, where) {
     return vector;
 }
 
-export function createEmbedClient(embedUrl, accessKey = null) {
+export function createEmbedClient(embedUrl, accessKey = null, embedModel = null) {
     if (!embedUrl) throw new Error('createEmbedClient: embedUrl is required (env EMBED_URL or config gateway.embedUrl)');
+    if (embedModel !== null && (typeof embedModel !== 'string' || !embedModel.trim())) {
+        throw new TypeError(`createEmbedClient: embedModel must be a non-empty string when provided (got ${String(embedModel)})`);
+    }
     const baseUrl = embedUrl.replace(/\/+$/, '');
     const headers = { 'Content-Type': 'application/json' };
     if (accessKey) headers['Authorization'] = `Bearer ${accessKey}`;
 
+    function requestBody(input) {
+        return embedModel === null ? { input } : { input, model: embedModel };
+    }
+
     // An index lives in exactly one vector space, so the route that produced
     // its vectors must be selected explicitly. The Gateway serves one route per
     // embedding model (`/v1/embeddings` for qwen3-embedding-4b); anything else
-    // is a typo, not a fallback. No model is sent either way — each route owns
-    // its upstream model.
+    // is a typo, not a fallback. A configured model is included for strict
+    // OpenAI-compatible providers; otherwise the route owns its model.
     const DEFAULT_EMBED_PATH = '/v1/embeddings';
     function resolvePath(opts) {
         const value = opts?.path ?? DEFAULT_EMBED_PATH;
@@ -169,8 +176,7 @@ export function createEmbedClient(embedUrl, accessKey = null) {
         async embed(text, opts) {
             if (typeof text !== 'string') throw new TypeError(`embed: text must be a string (got ${typeof text})`);
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_TIMEOUT_MS;
-            // No model sent — the gateway resolves the route's embed model.
-            const data = await post({ input: text }, timeout, resolvePath(opts));
+            const data = await post(requestBody(text), timeout, resolvePath(opts));
             if (!data || !Array.isArray(data.data)) {
                 throw new Error(`embed: provider response has no data array (got ${data === null ? 'null' : typeof data?.data})`);
             }
@@ -197,8 +203,7 @@ export function createEmbedClient(embedUrl, accessKey = null) {
                 if (typeof texts[i] !== 'string') throw new TypeError(`embedBatch: texts[${i}] is not a string (got ${typeof texts[i]})`);
             }
             const timeout = opts?.background ? EMBED_BACKGROUND_TIMEOUT_MS : EMBED_BATCH_TIMEOUT_MS;
-            // No model sent — the gateway resolves the route's embed model.
-            const data = await post({ input: texts }, timeout, resolvePath(opts));
+            const data = await post(requestBody(texts), timeout, resolvePath(opts));
             if (!data || !Array.isArray(data.data)) {
                 throw new Error(`embedBatch: provider response has no data array (got ${data === null ? 'null' : typeof data?.data})`);
             }
