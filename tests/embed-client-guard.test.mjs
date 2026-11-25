@@ -68,6 +68,22 @@ const V = {
 
 const client = createEmbedClient('http://embed.test:8080/');
 
+// Strict OpenAI-compatible providers require a configured model field.
+{
+    reset();
+    const configured = createEmbedClient('http://embed.test:8080', null, 'Qwen/Qwen3-Embedding-4B-GGUF');
+    answer({ data: [{ index: 0, embedding: [8.1, 8.2, 8.3, 8.4] }] });
+    await configured.embed('configured-single');
+    ok(JSON.parse(requests[0].init.body).model === 'Qwen/Qwen3-Embedding-4B-GGUF', 'configured model is included in a single embedding request');
+
+    reset();
+    answer({ data: [{ index: 0, embedding: [8.5, 8.6, 8.7, 8.8] }, { index: 1, embedding: [8.9, 9.0, 9.1, 9.2] }] });
+    await configured.embedBatch(['configured-batch-1', 'configured-batch-2']);
+    const batchBody = JSON.parse(requests[0].init.body);
+    ok(batchBody.model === 'Qwen/Qwen3-Embedding-4B-GGUF', 'configured model is included in a batch embedding request');
+    ok(Array.isArray(batchBody.input) && batchBody.input.length === 2, 'configured batch request keeps the input array shape');
+}
+
 // ── 1. normal single embed ───────────────────────────────────────────────
 {
     reset();
@@ -75,7 +91,9 @@ const client = createEmbedClient('http://embed.test:8080/');
     const vector = await client.embed('alpha-text');
     ok(Array.isArray(vector) && vector.length === 4 && vector[0] === V.alpha[0], 'single embed returns the provider vector');
     ok(requests.length === 1 && requests[0].url === 'http://embed.test:8080/v1/embeddings', 'single embed posts to /v1/embeddings');
-    ok(JSON.parse(requests[0].init.body).input === 'alpha-text', 'single embed body is { input: text }');
+    const body = JSON.parse(requests[0].init.body);
+    ok(body.input === 'alpha-text', 'single embed body is { input: text }');
+    ok(!('model' in body), 'default embedding route omits the optional model field');
 }
 
 // Typed arrays are a valid vector shape.

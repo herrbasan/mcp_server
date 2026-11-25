@@ -8,7 +8,8 @@
   "gateway": {
     "wsUrl": "ws://localhost:3400/v1/realtime",
     "httpUrl": "http://localhost:3400",
-    "accessKey": "someKey33!!"
+    "accessKey": "someKey33!!",
+    "embedModel": null
   },
   "ndb": {
     "serviceUrl": "http://127.0.0.1:8323",
