@@ -17,6 +17,7 @@
         "test:v2-hash": "node tests/v2-hash.test.mjs",
         "test:image": "node tests/image-agent-test.mjs",
         "test:ndb": "node tests/ndb-mcp-e2e.test.mjs",
+        "test:qfacade": "node tests/ndb-query-facade.test.mjs",
         "update:submodules": "git submodule update --remote --merge && echo submodules updated — rebuild native binaries if Rust code changed"
     },
     "dependencies": {

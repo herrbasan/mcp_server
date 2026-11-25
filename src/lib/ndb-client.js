@@ -17,9 +17,14 @@
  *   DELETE /v2/dbs/:n/doc/:id         -> { ok, deleted, seq }
  *   POST /v2/dbs/:n/doc/:id/restore   -> { ok, doc, seq }
  *   POST /v2/dbs/:n/docs/mget         -> { ok, docs: { id: doc }, missing: [id] }
- *   POST /v2/dbs/:n/query             -> { ok, total, count, results, took_ms }
+ *   POST /v2/dbs/:n/query             -> { ok, total, count, results, took_ms, scanned_docs, used_indexes, next_cursor }
+ *   POST /v2/dbs/:n/search            -> same envelope as /query (text required)
  *   POST /v2/dbs/:n/find              -> { ok, count, results, took_ms }
  *   POST /v2/dbs/:n/facets            -> { ok, facets }
+ *   GET  /v2/dbs/:n/schema            -> { ok, schema }
+ *   PUT  /v2/dbs/:n/schema            -> { ok, schema }
+ *   POST /v2/dbs/:n/profile/classification -> { ok, schema }
+ *   POST /v2/dbs/:n/doc/:id/peek       -> { ok, id, seq, doc, ranges }
  *   POST /v2/dbs/:n/index             -> { ok, field, type, created }
  *   POST /v2/dbs/:n/compact           -> { ok, lineage }
  *   POST /v2/dbs/:n/flush             -> { ok }
@@ -66,6 +71,54 @@ function assertPositiveInt(value, label) {
         throw new TypeError(`${label} must be a positive integer, got ${String(value)}`);
     }
     return n;
+}
+
+/** Accepts a legacy `{field, dir}` object or an array of sort keys; returns sort_keys. */
+function normalizeSortKeys(sort, sortKeys) {
+    const input = sortKeys ?? (Array.isArray(sort) ? sort : sort ? [sort] : null);
+    if (input == null) return null;
+    if (!Array.isArray(input) || input.length === 0) {
+        throw new TypeError('sort_keys must be a non-empty array of {field, dir?} entries');
+    }
+    return input.map((k, i) => {
+        if (!k || typeof k !== 'object' || typeof k.field !== 'string' || !k.field) {
+            throw new TypeError(`sort_keys[${i}]: field is required`);
+        }
+        const out = { field: k.field };
+        if (k.dir !== undefined) {
+            if (k.dir !== 'asc' && k.dir !== 'desc') {
+                throw new TypeError(`sort_keys[${i}]: dir must be 'asc' or 'desc', got ${String(k.dir)}`);
+            }
+            out.dir = k.dir;
+        }
+        if (k.missing !== undefined) {
+            if (k.missing !== 'first' && k.missing !== 'last') {
+                throw new TypeError(`sort_keys[${i}]: missing must be 'first' or 'last', got ${String(k.missing)}`);
+            }
+            out.missing = k.missing;
+        }
+        return out;
+    });
+}
+
+/** Accepts a plain query string or a `{query, fields}` object; returns the wire object. */
+function normalizeText(text) {
+    if (text == null) return null;
+    if (typeof text === 'string') {
+        if (!text) throw new TypeError('text must not be empty');
+        return { query: text };
+    }
+    if (typeof text !== 'object' || Array.isArray(text) || typeof text.query !== 'string' || !text.query) {
+        throw new TypeError('text must be a non-empty string or an object with a non-empty query string');
+    }
+    const out = { query: text.query };
+    if (text.fields !== undefined) {
+        if (!Array.isArray(text.fields) || text.fields.length === 0) {
+            throw new TypeError('text.fields must be a non-empty string array');
+        }
+        out.fields = text.fields;
+    }
+    return out;
 }
 
 export function createNdbClient(baseUrl, { token = null, timeoutMs = 30_000 } = {}) {
@@ -235,13 +288,158 @@ export function createNdbClient(baseUrl, { token = null, timeoutMs = 30_000 } = 
                 return { doc: r.doc, seq: r.seq };
             },
 
-            /** POST /query -> { total, count, results, took_ms } */
-            async query({ filter = {}, sort = null, offset = 0, limit = 1000, fields = null } = {}) {
+            /**
+             * POST /query -> { total, count, results, took_ms, scanned_docs, used_indexes, next_cursor }
+             *
+             * Phase 4A passthroughs (all optional, strictly additive):
+             *   sortKeys / sort_keys  -> multi-key deterministic order (+ _id tie-break server-side)
+             *   cursor                -> opaque next_cursor from the previous page
+             *   text                  -> standalone lexical query ({query, fields})
+             *   maxScanDocs           -> mandatory scan budget (422 scan_budget_exceeded)
+             * Legacy `sort`, `offset`, `limit`, `fields` and the `sort_by`/`sort_dir`
+             * convenience pair keep their exact previous behaviour.
+             */
+            async query({
+                filter = {},
+                sort = null,
+                sortKeys = null,
+                sort_keys = null,
+                sort_by = null,
+                sort_dir = null,
+                offset = 0,
+                limit = 1000,
+                fields = null,
+                cursor = null,
+                text = null,
+                maxScanDocs = null,
+                max_scan_docs = null,
+            } = {}) {
                 const body = { filter, offset, limit };
-                if (sort) body.sort = sort;
+                if (sort_by !== null) {
+                    if (typeof sort_by !== 'string' || !sort_by) {
+                        throw new TypeError('query: sort_by must be a field name');
+                    }
+                    body.sort = sort_dir ? { field: sort_by, dir: sort_dir } : { field: sort_by };
+                } else if (sort) {
+                    body.sort = sort;
+                }
+                const keys = normalizeSortKeys(null, sortKeys ?? sort_keys);
+                if (keys) body.sort_keys = keys;
                 if (fields?.length) body.fields = fields;
+                if (cursor !== null) {
+                    if (typeof cursor !== 'string' || !cursor) {
+                        throw new TypeError('query: cursor must be a non-empty string');
+                    }
+                    body.cursor = cursor;
+                }
+                const textQuery = normalizeText(text);
+                if (textQuery) body.text = textQuery;
+                const scanBudget = maxScanDocs ?? max_scan_docs;
+                if (scanBudget !== null) body.max_scan_docs = scanBudget;
                 const r = await request('POST', `${base}/query`, { json: body });
-                return { total: r.total, count: r.count, results: r.results, took_ms: r.took_ms };
+                return {
+                    total: r.total,
+                    count: r.count,
+                    results: r.results,
+                    took_ms: r.took_ms,
+                    scanned_docs: r.scanned_docs,
+                    used_indexes: r.used_indexes,
+                    next_cursor: r.next_cursor ?? null,
+                };
+            },
+
+            /**
+             * POST /search -> same envelope as /query, with `text` required.
+             * Standalone lexical search (term AND + quoted phrases), no nVDB needed.
+             */
+            async searchText({
+                text,
+                filter = {},
+                sort = null,
+                sortKeys = null,
+                sort_keys = null,
+                offset = 0,
+                limit = 1000,
+                fields = null,
+                cursor = null,
+                maxScanDocs = null,
+                max_scan_docs = null,
+            } = {}) {
+                const textQuery = normalizeText(text);
+                if (!textQuery) throw new TypeError('searchText: text is required');
+                const body = { text: textQuery, filter, offset, limit };
+                if (sort) body.sort = sort;
+                const keys = normalizeSortKeys(null, sortKeys ?? sort_keys);
+                if (keys) body.sort_keys = keys;
+                if (fields?.length) body.fields = fields;
+                if (cursor !== null) {
+                    if (typeof cursor !== 'string' || !cursor) {
+                        throw new TypeError('searchText: cursor must be a non-empty string');
+                    }
+                    body.cursor = cursor;
+                }
+                const scanBudget = maxScanDocs ?? max_scan_docs;
+                if (scanBudget !== null) body.max_scan_docs = scanBudget;
+                const r = await request('POST', `${base}/search`, { json: body });
+                return {
+                    total: r.total,
+                    count: r.count,
+                    results: r.results,
+                    took_ms: r.took_ms,
+                    scanned_docs: r.scanned_docs,
+                    used_indexes: r.used_indexes,
+                    next_cursor: r.next_cursor ?? null,
+                };
+            },
+
+            /** GET /schema -> { classification_profile, field_mapping, indexes } */
+            async getSchema() {
+                const r = await request('GET', `${base}/schema`);
+                return r.schema;
+            },
+
+            /** PUT /schema -> { classification_profile, field_mapping, indexes } */
+            async setFieldMapping(fieldMapping) {
+                if (!Array.isArray(fieldMapping)) {
+                    throw new TypeError('setFieldMapping: fieldMapping must be an array');
+                }
+                const r = await request('PUT', `${base}/schema`, { json: { field_mapping: fieldMapping } });
+                return r.schema;
+            },
+
+            /** POST /profile/classification -> { classification_profile, field_mapping, indexes } */
+            async enableClassificationProfile({ enabled = true, backfillEmpty = false } = {}) {
+                const r = await request('POST', `${base}/profile/classification`, {
+                    json: { enabled, backfill_empty: backfillEmpty },
+                });
+                return r.schema;
+            },
+
+            /**
+             * POST /doc/:id/peek -> { id, seq, doc, ranges }
+             * Range offsets count Unicode scalar values (text) / array elements (slices).
+             * `expectedSeq` pins the read: a moved document answers 409 conflict.
+             */
+            async peekItem(id, { fields, textRanges, arraySlices, expectedSeq } = {}) {
+                if (typeof id !== 'string' || !id) throw new TypeError('peekItem: id is required');
+                const body = {};
+                if (fields?.length) body.fields = fields;
+                if (textRanges !== undefined) {
+                    if (!Array.isArray(textRanges)) throw new TypeError('peekItem: textRanges must be an array');
+                    body.text_ranges = textRanges;
+                }
+                if (arraySlices !== undefined) {
+                    if (!Array.isArray(arraySlices)) throw new TypeError('peekItem: arraySlices must be an array');
+                    body.array_slices = arraySlices;
+                }
+                if (expectedSeq !== undefined) {
+                    if (!Number.isInteger(expectedSeq) || expectedSeq < 0) {
+                        throw new TypeError('peekItem: expectedSeq must be a non-negative integer');
+                    }
+                    body.expected_seq = expectedSeq;
+                }
+                const r = await request('POST', `${base}/doc/${encodeURIComponent(id)}/peek`, { json: body });
+                return { id: r.id, seq: r.seq, doc: r.doc, ranges: r.ranges ?? {} };
             },
 
             /** POST /find -> { count, results, took_ms } */

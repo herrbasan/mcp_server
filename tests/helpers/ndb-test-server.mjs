@@ -9,10 +9,14 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const EXE_NAME = process.platform === 'win32' ? 'ndb.exe' : 'ndb';
 const NDB_ROOT = process.env.NDB_ROOT || 'D:\\DEV\\nDB';
+// `--db`/`--dir` creation defaults to v1 (StorageFormat::Auto). With
+// NDB_TEST_RAM=1 every database the test mounts is a v3 (RAM-first) folder, so
+// the whole suite runs on the RAM engine instead of the v1 compatibility path.
+const RAM_FIRST = process.env.NDB_TEST_RAM === '1';
 
 function resolveBinary() {
     if (process.env.NDB_BIN) {
@@ -33,6 +37,29 @@ function resolveBinary() {
         );
     }
     return found;
+}
+
+/** Run a `ndb` CLI subcommand; any non-zero exit is a hard error. */
+function runCli(binary, args, label) {
+    const res = spawnSync(binary, args, { encoding: 'utf8', windowsHide: true });
+    if (res.status !== 0) {
+        throw new Error(`${label} failed (${args.join(' ')}): ${res.stderr || res.stdout}`);
+    }
+    return res.stdout;
+}
+
+/** Convert one database folder to v3 RAM-first (init when it does not exist). */
+function toRamFirst(binary, dbPath) {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    if (!fs.existsSync(dbPath)) {
+        runCli(binary, ['init', dbPath, '--ram'], 'ndb init --ram');
+        return;
+    }
+    if (fs.existsSync(path.join(dbPath, 'manifest.json'))) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(dbPath, 'manifest.json'), 'utf8'));
+        if (manifest.version === 3) return;
+    }
+    runCli(binary, ['migrate', dbPath, '--ram'], 'ndb migrate --ram');
 }
 
 function getFreePort() {
@@ -82,6 +109,18 @@ export async function startNdbTestServer({ rootDir, dbs, token, port, timeoutMs 
         throw new Error('startNdbTestServer: rootDir (--dir) or dbs ([name, path] pairs) is required');
     }
     const binary = resolveBinary();
+    if (RAM_FIRST) {
+        for (const [, dbPath] of dbs || []) toRamFirst(binary, dbPath);
+        if (rootDir) {
+            for (const entry of fs.readdirSync(rootDir, { withFileTypes: true })) {
+                if (!entry.isDirectory()) continue;
+                const child = path.join(rootDir, entry.name);
+                if (fs.existsSync(path.join(child, 'data.jsonl')) || fs.existsSync(path.join(child, 'manifest.json'))) {
+                    toRamFirst(binary, child);
+                }
+            }
+        }
+    }
     const chosenPort = port ?? await getFreePort();
     const args = ['serve', '--bind', '127.0.0.1', '--port', String(chosenPort)];
     if (rootDir) args.push('--dir', rootDir);
