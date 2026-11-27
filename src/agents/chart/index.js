@@ -22,6 +22,7 @@ import { getLogger } from '../../utils/logger.js';
 import { audit, check, CONTRACT, variantSvg, resolve } from '../../nCharts/src/index.js';
 import { ICONS } from '../../nCharts/src/icons.js';
 import { sketchify } from './sketch.js';
+import { chart_showcase } from './showcase.js';
 
 const logger = getLogger();
 
@@ -251,4 +252,8 @@ export async function chart_render(args) {
 
     logger.info(`[chart] Wrote ${base}${previewPng ? ' + preview' : ''}`, null, 'Chart');
     return { content, isError: false };
+}
+
+export async function chart_showcase_tool(args) {
+    return chart_showcase(args, { storageRoot, chartDir, nmediaProcess, previewSize });
 }

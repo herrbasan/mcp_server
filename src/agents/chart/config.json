@@ -28,6 +28,20 @@
                 },
                 "required": []
             }
+        },
+        {
+            "name": "chart_showcase",
+            "description": "Generate a self-contained contact sheet of nCharts output: every chart type (or a chosen subset) rendered through the real renderer in one or all visual styles (instrument, print, neo, card, minimal) and light or dark theme. Returns an SVG contact sheet plus a PNG preview the caller can inspect. Use this when asked 'show me what you can draw', 'what styles exist', or to compare a type across styles before choosing a spec.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "style": { "type": "string", "enum": ["instrument", "print", "neo", "card", "minimal"], "description": "Limit the sheet to one visual style. Omit to show all 5 side by side." },
+                    "types": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of chart types (e.g. ['waffle','dumbbell','sankey']). Omit for all 23." },
+                    "theme": { "type": "string", "enum": ["dark", "light"], "description": "Sheet theme. Default dark." },
+                    "preview": { "type": "boolean", "description": "Include a PNG raster the model can look at. Default true." }
+                },
+                "required": []
+            }
         }
     ]
 }
